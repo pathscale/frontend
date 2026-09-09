@@ -2,8 +2,10 @@
 name = "frontend_panic_runtime"
 version = "0.1.0"
 edition = "2024"
-publish = false
+license = "Apache-2.0 OR MIT"
 description = "the panic handler and personality routine a final no_std binary must supply, and nothing else"
+repository = "https://github.com/pathscale/frontend"
+publish = true
 
 # A lang item may be defined once per linked binary, so this crate may only ever be *named* by a
 # final binary. Its own test harness would link `test`, which links `std`, which defines
