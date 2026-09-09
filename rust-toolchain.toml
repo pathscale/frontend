@@ -1,0 +1,16 @@
+# The toolchain that compiles this repository.
+#
+# `compiler/` is rustc's own source, and rustc's crates use unstable `std` APIs that ship with the
+# release they belong to. A host toolchain older than the source cannot compile them, which is why
+# upstream's bootstrap builds `library/` first. Pinning a nightly of the same vintage removes the
+# problem instead: this one is rustc 1.100.0-nightly (fd7ed57df 2026-08-29) and the source is
+# upstream 4b7e3a76d8d (2026-08-30). One day apart, and it compiles with no `--cfg bootstrap`.
+#
+# **This is not the sysroot.** It is the compiler that builds this one. The library this compiler
+# can then *read* is a separate artefact with a much narrower requirement, because crate metadata
+# records who wrote it: see `scripts/build-sysroot.sh` and the `CFG_VERSION` in
+# `.cargo/config.toml`. Changing this pin does not change that one, and the two are allowed to
+# differ.
+[toolchain]
+channel = "nightly-2026-08-30"
+profile = "minimal"

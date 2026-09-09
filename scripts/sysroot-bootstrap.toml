@@ -1,0 +1,29 @@
+# Bootstrap configuration for the UPSTREAM rust checkout that `build-sysroot.sh` drives.
+#
+# `rust.codegen-backends` not containing "llvm" makes bootstrap's `llvm_enabled()`
+# false, which drops the `llvm` cargo feature from rustc_interface, which drops
+# `rustc_codegen_llvm` and with it `rustc_llvm` and the libLLVM link.
+profile = "compiler"
+
+[build]
+build = "aarch64-apple-darwin"
+host = ["aarch64-apple-darwin"]
+target = ["aarch64-apple-darwin"]
+docs = false
+compiler-docs = false
+extended = false
+tools = []
+profiler = false
+sanitizers = false
+locked-deps = true
+
+[llvm]
+download-ci-llvm = false
+
+[rust]
+codegen-backends = ["cranelift"]
+lld = false
+llvm-tools = false
+debug = false
+incremental = false
+deny-warnings = false

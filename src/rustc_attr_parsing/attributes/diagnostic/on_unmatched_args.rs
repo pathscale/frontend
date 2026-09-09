@@ -1,0 +1,47 @@
+use alloc::boxed::Box;
+use crate::rustc_attr_ir::diagnostic::Directive;
+use crate::rustc_feature::AttributeStability;
+
+use crate::rustc_attr_parsing::attributes::diagnostic::*;
+use crate::rustc_attr_parsing::attributes::prelude::*;
+
+#[derive(Default)]
+pub(crate) struct OnUnmatchedArgsParser {
+    span: Option<Span>,
+    directive: Option<(Span, Directive)>,
+}
+
+impl AttributeParser for OnUnmatchedArgsParser {
+    const ATTRIBUTES: AcceptMapping<Self> = &[(
+        &[sym::diagnostic, sym::on_unmatched_args],
+        template!(List: &[r#"/*opt*/ message = "...", /*opt*/ label = "...", /*opt*/ note = "...""#]),
+        AttributeStability::Stable, // Unstable, stability checked manually below
+        |this, cx, args| {
+            gate_diagnostic_attr!(diagnostic_on_unmatched_args);
+
+            let span = cx.attr_span;
+            this.span = Some(span);
+
+            let mode = Mode::DiagnosticOnUnmatchedArgs;
+            let Some(items) = parse_list(cx, args, mode) else { return };
+
+            let Some(directive) = parse_directive_items(cx, mode, items.mixed(), true) else {
+                return;
+            };
+            merge_directives(cx, &mut this.directive, (span, directive));
+        },
+    )];
+
+    const ALLOWED_TARGETS: AllowedTargets<'_> =
+        AllowedTargets::AllowListWarnRest(&[Allow(Target::MacroDef)]);
+
+    fn finalize(self, _cx: &FinalizeContext<'_, '_>) -> Option<AttributeKind> {
+        if let Some(_span) = self.span {
+            Some(AttributeKind::OnUnmatchedArgs {
+                directive: self.directive.map(|d| Box::new(d.1)),
+            })
+        } else {
+            None
+        }
+    }
+}

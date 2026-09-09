@@ -1,0 +1,83 @@
+//! Some helper functions for `AutoDeref`.
+
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// search cannot see them - and a `#[derive]` can use them without the name appearing
+// in this file at all, which is why they are not trimmed by inspection.
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
+use core::iter;
+
+use itertools::Itertools;
+use crate::rustc_hir_analysis::autoderef::{Autoderef, AutoderefKind};
+use crate::rustc_infer::infer::InferOk;
+use crate::rustc_infer::traits::PredicateObligations;
+use crate::rustc_middle::ty::adjustment::{Adjust, Adjustment, DerefAdjustKind, OverloadedDeref};
+use crate::rustc_middle::ty::{self, Ty};
+use crate::rustc_span::Span;
+
+use super::method::MethodCallee;
+use super::{FnCtxt, PlaceOp};
+
+impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
+    pub(crate) fn autoderef(&'a self, span: Span, base_ty: Ty<'tcx>) -> Autoderef<'a, 'tcx> {
+        Autoderef::new(self, self.param_env, self.body_def_id, span, base_ty)
+    }
+
+    pub(crate) fn try_overloaded_deref(
+        &self,
+        span: Span,
+        base_ty: Ty<'tcx>,
+    ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
+        self.try_overloaded_place_op(span, base_ty, None, PlaceOp::Deref)
+    }
+
+    /// Returns the adjustment steps.
+    pub(crate) fn adjust_steps(&self, autoderef: &Autoderef<'a, 'tcx>) -> Vec<Adjustment<'tcx>> {
+        self.register_infer_ok_obligations(self.adjust_steps_as_infer_ok(autoderef))
+    }
+
+    pub(crate) fn adjust_steps_as_infer_ok(
+        &self,
+        autoderef: &Autoderef<'a, 'tcx>,
+    ) -> InferOk<'tcx, Vec<Adjustment<'tcx>>> {
+        let steps = autoderef.steps();
+        if steps.is_empty() {
+            return InferOk { obligations: PredicateObligations::new(), value: vec![] };
+        }
+
+        let mut obligations = PredicateObligations::new();
+        let targets =
+            steps.iter().skip(1).map(|&(ty, _)| ty).chain(iter::once(autoderef.final_ty()));
+        let steps: Vec<_> = steps
+            .iter()
+            .map(|&(source, kind)| match kind {
+                AutoderefKind::Overloaded => {
+                    self.try_overloaded_deref(autoderef.span(), source)
+                        .and_then(|InferOk { value: method, obligations: o }| {
+                            obligations.extend(o);
+                            // FIXME: we should assert the sig is &T here... there's no reason for this to be fallible.
+                            if let ty::Ref(_, _, mutbl) = *method.sig.output().kind() {
+                                Some(DerefAdjustKind::Overloaded(OverloadedDeref {
+                                    mutbl,
+                                    span: autoderef.span(),
+                                }))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(DerefAdjustKind::Builtin)
+                }
+                AutoderefKind::Builtin => DerefAdjustKind::Builtin,
+            })
+            .zip_eq(targets)
+            .map(|(autoderef, target)| Adjustment { kind: Adjust::Deref(autoderef), target })
+            .collect();
+
+        InferOk { obligations, value: steps }
+    }
+}

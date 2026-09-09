@@ -1,0 +1,94 @@
+# rustc's frontend, as one crate.
+#
+# Upstream ships this as sixty-odd crates. Published, each name is permanent and each is a
+# dependency somebody has to take, so they are modules of this one instead. Three crates exist
+# where sixty-eight did, and the other two exist only because the language insists: a proc-macro
+# crate compiles separately for the host and cannot be merged into a normal one, and it cannot
+# export a normal item for a normal crate to use.
+
+[package]
+name = "frontend"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "rustc's frontend with no LLVM and no std: parsing through MIR, as a library"
+repository = "https://github.com/pathscale/frontend"
+readme = "README.md"
+publish = true
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+# **Load-bearing for `no_std`.** Without it cargo unifies features across the host and target
+# graphs, so `frontend_macros` - a proc macro, which may perfectly well use `std` - pulled
+# `indexmap`'s default features, and `indexmap/std` arrived in `frontend`'s own build. The symptom
+# is not a feature complaint: it is `E0152, found duplicate lang item eh_personality ... first
+# defined in crate std (which indexmap depends on)` in `frontend_panic_runtime`, which is the one
+# crate whose lang items collide with std's. A resolver of 2 or later keeps the two graphs apart.
+resolver = "3"
+members = ["frontend_macros", "frontend_diag_template", "frontend_panic_runtime", "frontend_arena"]
+
+[features]
+# `nightly` gates the derives that come from the proc-macro crate. Upstream keeps it optional so
+# `rustc_abi` and `rustc_index` can build on stable for rust-analyzer; that split is preserved
+# rather than flattened, because it is the only thing making those modules usable off nightly.
+default = ["nightly", "rustc"]
+nightly = ["dep:rustc_macros"]
+# `rustc_pattern_analysis` gates its rustc-facing modules behind this, so that upstream can use
+# the crate standalone for a different pattern-matching client. Here the rustc-facing side is the
+# only side there is, which is why it defaults on.
+rustc = []
+
+[dependencies]
+# The two crates that could not be merged. `rustc_macros` is the historical name and the source
+# still says `rustc_macros::`, so it is aliased rather than renamed across ten thousand sites.
+rustc_macros = { package = "frontend_macros", path = "frontend_macros", version = "0.1.0", optional = true }
+frontend_diag_template = { path = "frontend_diag_template", version = "0.1.0" }
+# Not a module, deliberately. See `frontend_arena/Cargo.toml`.
+frontend_arena = { path = "frontend_arena", version = "0.1.0" }
+
+arrayvec = { version = "^0.7.8", default-features = false }
+bitflags = "2.9.1"
+cfg-if = { version = "1.0.0", default-features = false }
+blake3 = { version = "=1.5.5", default-features = false }
+derive-where = "1.6.1"
+derive_setters = "0.1.6"
+either = { version = "^1.18.0", default-features = false }
+ekostd = { version = "^0.1.0", features = ["nightly", "serde"] }
+hashbrown = { version = "0.17.0", default-features = false, features = ["default-hasher", "nightly"] }
+indexmap = { version = "2.14.0", default-features = false }
+itertools = { version = "^0.15.0", default-features = false, features = ["use_alloc"] }
+itoa = "^1.0.18"
+libc = { version = "^0.2.189", default-features = false }
+libm = "^0.2.16"
+log = { version = "0.4", default-features = false }
+md5 = { package = "md-5", version = "0.10.0", default-features = false }
+memchr = { version = "2.7.6", default-features = false, features = ["alloc"] }
+object = { version = "0.39.1", default-features = false, features = ["read_core", "archive", "elf", "macho", "pe", "xcoff", "unaligned"] }
+parking_lot = { package = "parking_lot_lite_hack", version = "^0.12.7", default-features = false }
+rand = { version = "0.9.0", default-features = false }
+rand_xoshiro = "0.7.0"
+rustc-demangle = "0.1.28"
+rustc_apfloat = "0.2.3"
+rustc-hash = { version = "2.0.0", default-features = false }
+rustc-literal-escaper = "0.0.8"
+serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive"] }
+serde_derive = "1.0.219"
+serde_json = { version = "1.0.59", default-features = false, features = ["alloc"] }
+serde_path_to_error = "0.1.17"
+sha1 = { version = "0.10.0", default-features = false }
+sha2 = { version = "0.10.1", default-features = false }
+smallvec = { version = "1.8.1", features = ["union", "may_dangle"] }
+thin-vec = { version = "0.2.19", default-features = false }
+tracing = { version = "^0.1.44", default-features = false, features = ["attributes"] }
+tracing-core = { version = "0.1.34", default-features = false }
+unicode-ident = "1.0.22"
+unicode-normalization = { version = "0.1.25", default-features = false }
+unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"] }
+unicode-security = "0.1.0"
+unicode-width = "0.2.2"
+
+[profile.release]
+debug = false
+incremental = false

@@ -1,0 +1,347 @@
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// search cannot see them - and a `#[derive]` can use them without the name appearing
+// in this file at all, which is why they are not trimmed by inspection.
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
+use alloc::borrow::Cow;
+use eko::file::File;
+// `std::hash::DefaultHasher` and `std::io::{Read, Write}` were here for the long-type spill file
+// that this file no longer writes (see `string_with_limit`'s caller below). Nothing names them
+// any more, so they are dropped rather than mapped - `DefaultHasher` has no `core` equivalent.
+use core::hash::{Hash, Hasher};
+use eko::path::PathBuf;
+
+use crate::pluralize;
+use crate::rustc_hir as hir;
+use crate::rustc_hir::def::{CtorOf, DefKind};
+use rustc_macros::extension;
+use crate::rustc_structures::Limit;
+pub use crate::rustc_type_ir::error::ExpectedFound;
+
+use crate::rustc_middle::ty::print::{FmtPrinter, Print, with_forced_trimmed_paths};
+use crate::rustc_middle::ty::{self, Ty, TyCtxt};
+
+pub type TypeError<'tcx> = crate::rustc_type_ir::error::TypeError<TyCtxt<'tcx>>;
+
+/// Explains the source of a type err in a short, human readable way.
+/// This is meant to be placed in parentheses after some larger message.
+/// You should also invoke `note_and_explain_type_err()` afterwards
+/// to present additional details, particularly when it comes to lifetime-
+/// related errors.
+#[extension(pub trait TypeErrorToStringExt<'tcx>)]
+impl<'tcx> TypeError<'tcx> {
+    fn to_string(self, tcx: TyCtxt<'tcx>) -> Cow<'static, str> {
+        fn report_maybe_different(expected: &str, found: &str) -> String {
+            // A naive approach to making sure that we're not reporting silly errors such as:
+            // (expected closure, found closure).
+            if expected == found {
+                format!("expected {expected}, found a different {found}")
+            } else {
+                format!("expected {expected}, found {found}")
+            }
+        }
+
+        match self {
+            TypeError::CyclicTy(_) => "recursive type with infinite-size name".into(),
+            TypeError::CyclicConst(_) => "encountered a self-referencing constant".into(),
+            TypeError::Mismatch => "types differ".into(),
+            TypeError::PolarityMismatch(values) => {
+                format!("expected {} polarity, found {} polarity", values.expected, values.found)
+                    .into()
+            }
+            TypeError::SafetyMismatch(values) => {
+                format!("expected {} fn, found {} fn", values.expected, values.found).into()
+            }
+            TypeError::AbiMismatch(values) => {
+                format!("expected {} fn, found {} fn", values.expected, values.found).into()
+            }
+            TypeError::ArgumentMutability(_) | TypeError::Mutability => {
+                "types differ in mutability".into()
+            }
+            TypeError::TupleSize(values) => format!(
+                "expected a tuple with {} element{}, found one with {} element{}",
+                values.expected,
+                pluralize!(values.expected),
+                values.found,
+                pluralize!(values.found)
+            )
+            .into(),
+            TypeError::ArraySize(values) => format!(
+                "expected an array with a size of {}, found one with a size of {}",
+                values.expected, values.found,
+            )
+            .into(),
+            TypeError::ArgCount => "incorrect number of function parameters".into(),
+            TypeError::RegionsDoesNotOutlive(..) => "lifetime mismatch".into(),
+            // Actually naming the region here is a bit confusing because context is lacking
+            TypeError::RegionsInsufficientlyPolymorphic(..) => {
+                "one type is more general than the other".into()
+            }
+            TypeError::RegionsPlaceholderMismatch => {
+                "one type is more general than the other".into()
+            }
+            TypeError::ArgumentSorts(values, _) | TypeError::Sorts(values) => {
+                let expected = values.expected.sort_string(tcx);
+                let found = values.found.sort_string(tcx);
+                report_maybe_different(&expected, &found).into()
+            }
+            TypeError::Traits(values) => {
+                let (mut expected, mut found) = with_forced_trimmed_paths!((
+                    tcx.def_path_str(values.expected),
+                    tcx.def_path_str(values.found),
+                ));
+                if expected == found {
+                    expected = tcx.def_path_str(values.expected);
+                    found = tcx.def_path_str(values.found);
+                }
+                report_maybe_different(&format!("trait `{expected}`"), &format!("trait `{found}`"))
+                    .into()
+            }
+            TypeError::VariadicMismatch(ref values) => format!(
+                "expected {} fn, found {} function",
+                if values.expected { "variadic" } else { "non-variadic" },
+                if values.found { "variadic" } else { "non-variadic" }
+            )
+            .into(),
+            TypeError::SplatMismatch(ref values) => format!(
+                "expected fn with {}, found fn with {}",
+                if let Some(index) = values.expected {
+                    format!("arg {index} splatted")
+                } else {
+                    "no splatted arg".to_string()
+                },
+                if let Some(index) = values.found {
+                    format!("arg {index} splatted")
+                } else {
+                    "no splatted arg".to_string()
+                }
+            )
+            .into(),
+            TypeError::ProjectionMismatched(ref values) => format!(
+                "expected `{}`, found `{}`",
+                tcx.alias_term_kind_def_path_str(values.expected),
+                tcx.alias_term_kind_def_path_str(values.found)
+            )
+            .into(),
+            TypeError::ExistentialMismatch(ref values) => report_maybe_different(
+                &format!("trait `{}`", values.expected),
+                &format!("trait `{}`", values.found),
+            )
+            .into(),
+            TypeError::ConstMismatch(ref values) => {
+                format!("expected `{}`, found `{}`", values.expected, values.found).into()
+            }
+            TypeError::ForceInlineCast => {
+                "cannot coerce functions which must be inlined to function pointers".into()
+            }
+            TypeError::IntrinsicCast => "cannot coerce intrinsics to function pointers".into(),
+            TypeError::TargetFeatureCast(_) => {
+                "cannot coerce functions with `#[target_feature(..)]` to safe function pointers"
+                    .into()
+            }
+        }
+    }
+}
+
+impl<'tcx> Ty<'tcx> {
+    pub fn sort_string(self, tcx: TyCtxt<'tcx>) -> Cow<'static, str> {
+        match *self.kind() {
+            ty::Foreign(def_id) => format!("extern type `{}`", tcx.def_path_str(def_id)).into(),
+            ty::FnDef(def_id, ..) => match tcx.def_kind(def_id) {
+                DefKind::Ctor(CtorOf::Struct, _) => "struct constructor".into(),
+                DefKind::Ctor(CtorOf::Variant, _) => "enum constructor".into(),
+                _ => "fn item".into(),
+            },
+            ty::FnPtr(..) => "fn pointer".into(),
+            ty::Dynamic(inner, ..) if let Some(principal) = inner.principal() => {
+                format!("`dyn {}`", tcx.def_path_str(principal.def_id())).into()
+            }
+            ty::Dynamic(..) => "trait object".into(),
+            ty::Closure(..) => "closure".into(),
+            ty::Coroutine(def_id, ..) => {
+                format!("{:#}", tcx.coroutine_kind(def_id).unwrap()).into()
+            }
+            ty::CoroutineWitness(..) => "coroutine witness".into(),
+            ty::Infer(ty::TyVar(_)) => "inferred type".into(),
+            ty::Infer(ty::IntVar(_)) => "integer".into(),
+            ty::Infer(ty::FloatVar(_)) => "floating-point number".into(),
+            ty::Placeholder(..) => "placeholder type".into(),
+            ty::Bound(..) => "bound type".into(),
+            ty::Infer(ty::FreshTy(_)) => "fresh type".into(),
+            ty::Infer(ty::FreshIntTy(_)) => "fresh integral type".into(),
+            ty::Infer(ty::FreshFloatTy(_)) => "fresh floating-point type".into(),
+            ty::Alias(_, ty::AliasTy { kind: ty::Projection { .. } | ty::Inherent { .. }, .. }) => {
+                "associated type".into()
+            }
+            ty::Param(p) => format!("type parameter `{p}`").into(),
+            ty::Alias(_, ty::AliasTy { kind: ty::Opaque { .. }, .. }) => {
+                if tcx.ty_is_opaque_future(self) { "future".into() } else { "opaque type".into() }
+            }
+            ty::Error(_) => "type error".into(),
+            _ => {
+                let width = tcx.sess.diagnostic_width();
+                let length_limit = core::cmp::max(width / 4, 40);
+                format!(
+                    "`{}`",
+                    tcx.string_with_limit(self, length_limit, hir::def::Namespace::TypeNS)
+                )
+                .into()
+            }
+        }
+    }
+
+    pub fn prefix_string(self, tcx: TyCtxt<'_>) -> Cow<'static, str> {
+        match *self.kind() {
+            ty::Infer(_)
+            | ty::Error(_)
+            | ty::Bool
+            | ty::Char
+            | ty::Int(_)
+            | ty::Uint(_)
+            | ty::Float(_)
+            | ty::Str
+            | ty::Never => "type".into(),
+            ty::Tuple(tys) if tys.is_empty() => "unit type".into(),
+            ty::Adt(def, _) => def.descr().into(),
+            ty::Foreign(_) => "extern type".into(),
+            ty::Array(..) => "array".into(),
+            ty::Pat(..) => "pattern type".into(),
+            ty::Slice(_) => "slice".into(),
+            ty::RawPtr(_, _) => "raw pointer".into(),
+            ty::Ref(.., mutbl) => match mutbl {
+                hir::Mutability::Mut => "mutable reference",
+                _ => "reference",
+            }
+            .into(),
+            ty::FnDef(def_id, ..) => match tcx.def_kind(def_id) {
+                DefKind::Ctor(CtorOf::Struct, _) => "struct constructor".into(),
+                DefKind::Ctor(CtorOf::Variant, _) => "enum constructor".into(),
+                _ => "fn item".into(),
+            },
+            ty::FnPtr(..) => "fn pointer".into(),
+            ty::UnsafeBinder(_) => "unsafe binder".into(),
+            ty::Dynamic(..) => "trait object".into(),
+            ty::Closure(..) | ty::CoroutineClosure(..) => "closure".into(),
+            ty::Coroutine(def_id, ..) => {
+                format!("{:#}", tcx.coroutine_kind(def_id).unwrap()).into()
+            }
+            ty::CoroutineWitness(..) => "coroutine witness".into(),
+            ty::Tuple(..) => "tuple".into(),
+            ty::Placeholder(..) => "higher-ranked type".into(),
+            ty::Bound(..) => "bound type variable".into(),
+            ty::Alias(_, ty::AliasTy { kind: ty::Projection { .. } | ty::Inherent { .. }, .. }) => {
+                "associated type".into()
+            }
+            ty::Alias(_, ty::AliasTy { kind: ty::Free { .. }, .. }) => "type alias".into(),
+            ty::Param(_) => "type parameter".into(),
+            ty::Alias(_, ty::AliasTy { kind: ty::Opaque { .. }, .. }) => "opaque type".into(),
+        }
+    }
+}
+
+impl<'tcx> TyCtxt<'tcx> {
+    pub fn string_with_limit<T>(self, t: T, length_limit: usize, ns: hir::def::Namespace) -> String
+    where
+        T: Copy + for<'a> Print<FmtPrinter<'a, 'tcx>>,
+    {
+        let mut type_limit = 50;
+        let regular = FmtPrinter::print_string(self, ns, |p| t.print(p))
+            .expect("could not write to `String`");
+        if regular.len() <= length_limit {
+            return regular;
+        }
+        let mut short;
+        loop {
+            // Look for the longest properly trimmed path that still fits in length_limit.
+            short = with_forced_trimmed_paths!({
+                let mut p = FmtPrinter::new_with_limit(self, ns, Limit(type_limit));
+                t.print(&mut p).expect("could not print type");
+                p.into_buffer()
+            });
+            if short.len() <= length_limit || type_limit == 0 {
+                break;
+            }
+            type_limit -= 1;
+        }
+        short
+    }
+
+    /// When calling this after a `Diag` is constructed, the preferred way of doing so is
+    /// `tcx.short_string(ty, diag.long_ty_path())`. The diagnostic itself is the one that keeps
+    /// the existence of a "long type" anywhere in the diagnostic, so the note carrying the full
+    /// type is only printed once. The lookup will use the type namespace.
+    pub fn short_string<T>(self, t: T, path: &mut Option<String>) -> String
+    where
+        T: Copy + Hash + for<'a> Print<FmtPrinter<'a, 'tcx>>,
+    {
+        self.short_string_namespace(t, path, hir::def::Namespace::TypeNS)
+    }
+
+    /// When calling this after a `Diag` is constructed, the preferred way of doing so is
+    /// `tcx.short_string(ty, diag.long_ty_path())`. The diagnostic itself is the one that keeps
+    /// the existence of a "long type" anywhere in the diagnostic, so the note telling the user
+    /// where we wrote the file to is only printed once.
+    pub fn short_string_namespace<T>(
+        self,
+        t: T,
+        path: &mut Option<String>,
+        namespace: hir::def::Namespace,
+    ) -> String
+    where
+        T: Copy + Hash + for<'a> Print<FmtPrinter<'a, 'tcx>>,
+    {
+        let regular = FmtPrinter::print_string(self, namespace, |p| t.print(p))
+            .expect("could not write to `String`");
+
+        if !self.sess.opts.unstable_opts.write_long_types_to_disk || self.sess.opts.verbose {
+            return regular;
+        }
+
+        let width = self.sess.diagnostic_width();
+        let length_limit = width / 2;
+        if regular.len() <= width * 2 / 3 {
+            return regular;
+        }
+        // **The long type is not written to a file.**
+        //
+        // This opened `long-type-<hash>.txt` in the output directory, read the whole thing back to
+        // avoid duplicate lines, and appended - a disk round trip per over-long type in a
+        // diagnostic, in the middle of type checking. The caller then printed "the full type name
+        // has been written to ...", which names a file on the compiler process's own
+        // disk that the client asking the question cannot see.
+        //
+        // The caller is a program, not a terminal: the long value belongs in the record it gets back,
+        // not in a temporary file. That is what `rustc_error_messages`'s own note said was
+        // scheduled - "a server hands the long value back in the record instead of spilling it to
+        // a file" - and removing the spill is what let `LongTyPath` stop being an
+        // `Option<PathBuf>`, which was the only `std` reference in thirty-one files that do
+        // nothing with it.
+        //
+        // The short form is still returned, so a diagnostic stays readable. What is lost is the
+        // file nobody could read; what replaces it is the caller keeping the full string.
+        let short = self.string_with_limit(t, length_limit, namespace);
+        if regular == short {
+            return regular;
+        }
+        *path = Some(regular);
+        short
+    }
+
+    pub fn alias_term_kind_def_path_str(self, alias: ty::AliasTermKind<'tcx>) -> String {
+        match alias {
+            ty::AliasTermKind::ProjectionTy { def_id }
+            | ty::AliasTermKind::InherentTy { def_id }
+            | ty::AliasTermKind::OpaqueTy { def_id }
+            | ty::AliasTermKind::FreeTy { def_id }
+            | ty::AliasTermKind::AnonConst { def_id }
+            | ty::AliasTermKind::ProjectionConst { def_id }
+            | ty::AliasTermKind::FreeConst { def_id }
+            | ty::AliasTermKind::InherentConst { def_id } => self.def_path_str(def_id),
+        }
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "frontend_diag_template"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "the inline diagnostic message template syntax, parsed once for both the macro that checks it and the emitter that renders it"
+repository = "https://github.com/pathscale/frontend"
+publish = true
+
+# No dependencies, and that is the point. This crate exists to be the *one* parser for the
+# inline diagnostic message syntax, shared by the proc-macro that validates a template at
+# compile time and the emitter that renders it at run time. `rustc_error_messages` already
+# depends on `rustc_macros`, so the shared code cannot live in either of them - it has to sit
+# underneath both. It carries `core` and `alloc` and nothing else.
+[dependencies]

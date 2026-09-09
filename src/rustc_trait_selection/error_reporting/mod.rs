@@ -1,0 +1,77 @@
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// search cannot see them - and a `#[derive]` can use them without the name appearing
+// in this file at all, which is why they are not trimmed by inspection.
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
+use core::ops::Deref;
+
+use crate::rustc_errors::DiagCtxtHandle;
+use crate::rustc_infer::infer::InferCtxt;
+use crate::rustc_infer::traits::PredicateObligations;
+use rustc_macros::extension;
+use crate::bug;
+use crate::rustc_middle::ty::{self, Ty};
+
+pub mod infer;
+pub mod traits;
+
+/// A helper for building type related errors. The `typeck_results`
+/// field is only populated during an in-progress typeck.
+/// Get an instance by calling `InferCtxt::err_ctxt` or `FnCtxt::err_ctxt`.
+///
+/// You must only create this if you intend to actually emit an error (or
+/// perhaps a warning, though preferably not.) It provides a lot of utility
+/// methods which should not be used during the happy path.
+pub struct TypeErrCtxt<'a, 'tcx> {
+    pub infcx: &'a InferCtxt<'tcx>,
+    pub param_env: Option<ty::ParamEnv<'tcx>>,
+
+    pub typeck_results: Option<core::cell::Ref<'a, ty::TypeckResults<'tcx>>>,
+    pub diverging_fallback_has_occurred: bool,
+
+    pub autoderef_steps: Box<dyn Fn(Ty<'tcx>) -> Vec<(Ty<'tcx>, PredicateObligations<'tcx>)> + 'a>,
+}
+
+#[extension(pub trait InferCtxtErrorExt<'tcx>)]
+impl<'tcx> InferCtxt<'tcx> {
+    /// Creates a `TypeErrCtxt` for emitting various inference errors.
+    /// During typeck, use `FnCtxt::err_ctxt` instead.
+    fn err_ctxt(&self) -> TypeErrCtxt<'_, 'tcx> {
+        TypeErrCtxt {
+            infcx: self,
+            param_env: None,
+            typeck_results: None,
+            diverging_fallback_has_occurred: false,
+            autoderef_steps: Box::new(|ty| {
+                debug_assert!(false, "shouldn't be using autoderef_steps outside of typeck");
+                vec![(ty, PredicateObligations::new())]
+            }),
+        }
+    }
+}
+
+impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
+    pub fn dcx(&self) -> DiagCtxtHandle<'a> {
+        self.infcx.dcx()
+    }
+
+    /// This is just to avoid a potential footgun of accidentally
+    /// dropping `typeck_results` by calling `InferCtxt::err_ctxt`
+    #[deprecated(note = "you already have a `TypeErrCtxt`")]
+    #[allow(unused)]
+    pub fn err_ctxt(&self) -> ! {
+        bug!("called `err_ctxt` on `TypeErrCtxt`. Try removing the call");
+    }
+}
+
+impl<'tcx> Deref for TypeErrCtxt<'_, 'tcx> {
+    type Target = InferCtxt<'tcx>;
+    fn deref(&self) -> &InferCtxt<'tcx> {
+        self.infcx
+    }
+}

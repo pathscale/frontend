@@ -1,0 +1,38 @@
+[package]
+name = "frontend_panic_runtime"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the panic handler and personality routine a final no_std binary must supply, and nothing else"
+
+# A lang item may be defined once per linked binary, so this crate may only ever be *named* by a
+# final binary. Its own test harness would link `test`, which links `std`, which defines
+# `panic_impl` and `eh_personality` too - so it has no test target. There is nothing here to
+# unit-test in any case: both items are reached by the runtime and not by a caller.
+[lib]
+test = false
+doctest = false
+
+# `panic_unwind` and `unwind` are sysroot crates, named by `extern crate`.
+[dependencies]
+# The catch side, which records what a panic said so whoever catches it can name it. Splitting
+# them is the `#[panic_handler]`: only a `no_std` binary may carry one, and every other target
+# links `std` and gets it from there, so the half that anyone may link is the other crate.
+#
+# Default features on, deliberately. The link probe below is the only evidence this repository has
+# about what gets linked, and evidence about a configuration nobody builds is not evidence. Turning
+# them off would also compile the big crate a second time under a second feature set, for a check
+# whose whole cost is that it builds.
+frontend = { path = "..", version = "0.1.0" }
+# For the link probe's `#[global_allocator]`. A `no_std` binary has none until it names one, and
+# `frontend` allocates on every path, so without it the probe cannot be built and there is no link
+# line to read.
+ekostd = { version = "^0.1.0", features = ["nightly"] }
+
+# The link probe. See `src/bin/link-probe.rs`: it exists so `no-std-link-check.sh` has a link line
+# to read, because a library does not have one.
+[[bin]]
+name = "link-probe"
+path = "src/bin/link-probe.rs"
+test = false
+doc = false

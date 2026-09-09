@@ -1,0 +1,40 @@
+[package]
+name = "frontend_macros"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "the derives and attribute macros the frontend crate is built from"
+repository = "https://github.com/pathscale/frontend"
+publish = true
+
+[lib]
+proc-macro = true
+
+# `fluent-bundle` and `fluent-syntax` were here to parse a diagnostic message template at
+# expansion time. `rustc_diag_template` parses the same syntax and is the same parser the emitter
+# runs, so the check and the render can no longer disagree.
+[dependencies]
+# tidy-alphabetical-start
+# `default-features = false`, and the reason is not this crate. A proc macro may use `std` freely -
+# it runs on the host. But `cargo check --workspace` resolves this crate's features in the same
+# graph as `frontend`'s, so `indexmap/std` ends up behind a `#![no_std]` crate and the first thing
+# that notices is `E0152, duplicate lang item eh_personality` over in the panic runtime.
+#
+# What `std` supplies here is `RandomState`, the default hasher. `FxBuildHasher` replaces it, and
+# is the better choice regardless: a proc macro that hashes with a randomly seeded hasher produces
+# a different iteration order on every run.
+indexmap = { version = "2.4.0", default-features = false }
+rustc-hash = { version = "2.0.0", default-features = false }
+proc-macro2 = "^1.0.107"
+quote = "^1.0.47"
+# `version` alongside `path` is what makes this publishable: crates.io rejects a path dependency
+# that carries no version, because a path means nothing to anyone downloading the package. The
+# path is still what a local build uses.
+frontend_diag_template = { path = "../frontend_diag_template", version = "0.1.0" }
+# `visit-mut` as well as `full`: `type_ir_derives` uses `syn::visit_mut::VisitMut`. In a workspace
+# build another crate happened to turn that feature on and it was never declared here; packaged on
+# its own there is nobody else to turn it on, and the build fails with "could not find `visit_mut`
+# in `syn`". Only `cargo publish`'s verification step catches that.
+syn = { version = "2.0.9", features = ["full", "visit-mut"] }
+synstructure = "0.13.0"
+# tidy-alphabetical-end

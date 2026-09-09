@@ -1,0 +1,19 @@
+# The arenas, kept as their own crate.
+#
+# Everything else that was sixty crates became modules of `frontend`. This one did not, and the
+# reason is `TypedArena`'s destructor: it is `unsafe impl<#[may_dangle] T> Drop`, and that eyepatch
+# is what lets `rustc_interface` declare an arena as a local, hand out `&'tcx` references into it,
+# and still drop it at the end of the function. Merged into the same crate as its users, dropck
+# stops honouring it and every arena holding a type with a destructor drags a `'tcx` obligation
+# into `create_and_enter_global_ctxt`. Across a crate boundary it behaves as it always has.
+[package]
+name = "frontend_arena"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "the typed and dropless arenas the frontend allocates into"
+repository = "https://github.com/pathscale/frontend"
+publish = true
+
+[dependencies]
+smallvec = { version = "1.8.1", features = ["union", "may_dangle"] }

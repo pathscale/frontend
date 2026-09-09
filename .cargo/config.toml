@@ -1,0 +1,35 @@
+# What bootstrap supplies, supplied here instead.
+#
+# rustc's crates read these with `env!`/`option_env!` at compile time, and read unstable features
+# that only a bootstrap compiler is allowed to name. Upstream's `x.py` sets them; this repository
+# has no bootstrap, so they are set here and `cargo build` is the whole build.
+#
+# `--cfg bootstrap` is deliberately NOT set: that gate is for a stage0 compiler older than the
+# source, and `rust-toolchain.toml` pins one of the same vintage instead.
+
+[env]
+RUSTC_BOOTSTRAP = "1"
+CFG_RELEASE = "1.100.0-dev"
+# **This string decides which sysroot this compiler can read**, and getting it wrong is not a
+# version complaint: crate metadata records the compiler that wrote it, an older sysroot desyncs
+# inside a serializer and a newer one fails in type checking. Both read as unrelated bugs.
+#
+# It must equal the `rustc --version` output of the compiler that built the sysroot, minus the
+# leading `rustc `. No published nightly matches this tree and none can, because it sits between
+# two of them, so the sysroot has to be built: `scripts/build-sysroot.sh`.
+#
+# `1.100.0-dev` is what bootstrap stamps on a locally built compiler, which is what that script
+# produces, so this is the right default for the sysroot this repository tells you to build.
+#
+# **It is a default, not a constraint.** A consumer that points at a different sysroot overrides it
+# per session, without rebuilding anything:
+#
+#     config.rustc_version = rustc_interface::util::rustc_version_of_sysroot(&sysroot);
+#
+# which asks that sysroot rather than making anyone write the string down twice. Getting it wrong
+# does not produce a version complaint: an older sysroot desyncs inside a serializer and a newer
+# one fails in type checking, and neither says which knob was wrong.
+CFG_VERSION = "1.100.0-dev"
+CFG_RELEASE_CHANNEL = "nightly"
+CFG_COMPILER_HOST_TRIPLE = "aarch64-apple-darwin"
+RUSTC_INSTALL_BINDIR = "bin"
