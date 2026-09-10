@@ -1490,15 +1490,26 @@ impl DiagCtxtInner {
             if let Some(out) = &mut out {
                 // The second line was the delayed bug's captured `Backtrace`; there is no
                 // backtrace without std, so only the message is written to the ICE file.
-                _ = write!(
-                    out,
-                    "delayed bug: {}\n",
-                    bug.inner
-                        .messages
-                        .iter()
-                        .filter_map(|(msg, _)| msg.as_str())
-                        .collect::<String>(),
-                );
+                //
+                // **Substituted, and never dropped.** This was
+                // `filter_map(|(msg, _)| msg.as_str())`, and `as_str` answers `None` for a
+                // template - the same hole that made `PlainEmitter` print `error[E0463]:` with
+                // nothing after the colon. Here it was quieter and worse: a delayed bug built
+                // from a `#[diag("...")]` attribute or a `msg!` is a `DiagMessage::Inline`, so
+                // the ICE file recorded the empty string and the one artefact left to read said
+                // nothing at all. `try_format_diag_message` does the substitution and
+                // `diag_message_source` hands back the raw template when it cannot, which is
+                // exactly what the two emitters do.
+                let message: String = bug
+                    .inner
+                    .messages
+                    .iter()
+                    .map(|(msg, _)| {
+                        try_format_diag_message(msg, &bug.inner.args)
+                            .unwrap_or_else(|| Cow::Borrowed(diag_message_source(msg)))
+                    })
+                    .collect();
+                _ = write!(out, "delayed bug: {message}\n");
             }
 
             let mut bug = if decorate { bug.decorate() } else { bug.inner };
