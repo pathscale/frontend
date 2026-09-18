@@ -1,16 +1,37 @@
 //! Live `analyze_source` without a pinned matching sysroot.
 //!
-//! `run_compiler` still `abort_if_errors`, which kills the process, not the
-//! request. Keep `Capabilities.references` off until a resident driver exists.
-//! These tests stay ignored until that abort is contained.
+//! `abort_if_errors` still raises a fatal error. `analyze_source` catches it, so
+//! a refused program is `Err` and the process stays up.
+
+const WITHIN_CRATE: &str = r#"
+#![feature(no_core, lang_items)]
+#![no_core]
+#[lang = "pointee_sized"]
+pub trait PointeeSized {}
+#[lang = "meta_sized"]
+pub trait MetaSized: PointeeSized {}
+#[lang = "sized"]
+pub trait Sized: MetaSized {}
+#[lang = "copy"]
+pub trait Copy {}
+fn foo() {}
+fn bar() { foo(); }
+"#;
 
 #[test]
-#[ignore = "run_compiler abort_if_errors kills the process"]
-fn within_crate_refs_do_not_need_a_pinned_sysroot() {
-    let facts = frontend::frontend_facts::analyze_source(
-        "fixture",
-        "#![feature(no_core)]\n#![no_core]\nfn foo() {}\nfn bar() { foo(); }\n",
+fn a_refused_program_does_not_kill_the_process() {
+    assert!(
+        frontend::unwind_janky::unwinding_is_enabled(),
+        "panic=unwind is required to contain abort_if_errors"
     );
+    let refused = frontend::frontend_facts::analyze_source("fixture", "fn");
+    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[test]
+fn within_crate_refs_do_not_need_a_pinned_sysroot() {
+    let facts = frontend::frontend_facts::analyze_source("fixture", WITHIN_CRATE)
+        .expect("within-crate fixture should analyse");
     assert!(
         facts
             .references
@@ -21,7 +42,6 @@ fn within_crate_refs_do_not_need_a_pinned_sysroot() {
 }
 
 #[test]
-#[ignore = "run_compiler abort_if_errors kills the process"]
 fn host_sysroot_is_defined_and_optional() {
     let printed = std::process::Command::new("rustc")
         .args(["--print", "sysroot"])
@@ -33,9 +53,10 @@ fn host_sysroot_is_defined_and_optional() {
     assert!(!sysroot.is_empty());
     let facts = frontend::frontend_facts::analyze_source_with_sysroot(
         "fixture",
-        "#![feature(no_core)]\n#![no_core]\nfn foo() {}\nfn bar() { foo(); }\n",
+        WITHIN_CRATE,
         Some(sysroot),
-    );
+    )
+    .expect("host sysroot is optional, not a pin");
     assert!(
         facts
             .definitions
