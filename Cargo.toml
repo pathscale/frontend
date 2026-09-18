@@ -19,6 +19,10 @@ publish = true
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "frontend-facts"
+path = "src/bin/frontend_facts.rs"
+
 [workspace]
 # **Load-bearing for `no_std`.** Without it cargo unifies features across the host and target
 # graphs, so `frontend_macros` - a proc macro, which may perfectly well use `std` - pulled

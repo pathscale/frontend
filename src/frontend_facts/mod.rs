@@ -14,6 +14,9 @@
 //! run in [`crate::rustc_span::fatal_error::catch_fatal_errors`] so a refused
 //! program is `Err`, not a dead daemon. That wrap needs `panic = "unwind"`.
 //!
+//! These types serialize so a helper process can emit them. Agentcode stays on
+//! rustc 1.97.1 and cannot path-dep this crate.
+//!
 //! Within-crate first. A sysroot is optional: when present it is the library
 //! tree this session reads, when absent rustc's default search is used. The
 //! `force_pinned_sysroot` cargo feature is the opt-in vintage pin; without it
@@ -39,9 +42,10 @@ use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::{FileName, Span};
 use crate::rustc_structures::CrateType;
+use serde::{Deserialize, Serialize};
 
 /// Byte range inside one source file, relative to that file's start.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ByteSpan {
     pub file: String,
     pub start: u32,
@@ -49,7 +53,8 @@ pub struct ByteSpan {
 }
 
 /// Kind of a named definition. Anonymous compiler items are omitted, not guessed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FactKind {
     Fn,
     AssocFn,
@@ -72,7 +77,7 @@ pub enum FactKind {
 }
 
 /// One named definition rustc can prove.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Definition {
     pub def_path: String,
     pub name: String,
@@ -81,7 +86,7 @@ pub struct Definition {
 }
 
 /// One `use` / `pub use`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub module_def_path: String,
     pub path: String,
@@ -90,7 +95,7 @@ pub struct Import {
 }
 
 /// One `impl` block, inherent or trait.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Impl {
     pub def_path: String,
     pub self_type: String,
@@ -99,14 +104,15 @@ pub struct Impl {
 }
 
 /// Kind of a resolved use of a definition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RefKind {
     Path,
     Method,
 }
 
 /// One resolved reference. Locals and primitives are omitted: they are not defs.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
     pub from_def_path: String,
     pub to_def_path: String,
@@ -115,7 +121,7 @@ pub struct Reference {
 }
 
 /// Facts for one crate after analysis.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
     pub definitions: Vec<Definition>,
