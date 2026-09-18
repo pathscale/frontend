@@ -10,8 +10,10 @@
 //! `TyCtxt`. A resident holder that outlives one call is a later increment, not
 //! required to emit definitions, references, imports, impls, or trait impls.
 //!
-//! Within-crate first. Cross-crate facts need a sysroot built from the same
-//! upstream commit; this module does not invent one.
+//! Within-crate first. A sysroot is optional: when present it is the library
+//! tree this session reads, when absent rustc's default search is used. The
+//! `force_pinned_sysroot` cargo feature is the opt-in vintage pin; without it
+//! the session claims the version the chosen sysroot actually carries.
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
@@ -25,9 +27,12 @@ use crate::rustc_hir::def_id::LOCAL_CRATE;
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{ExprKind, ItemKind, UseKind};
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
+#[cfg(not(feature = "force_pinned_sysroot"))]
+use crate::rustc_interface::util::rustc_version_of_sysroot;
 use crate::rustc_middle::ty::TyCtxt;
-use crate::rustc_session::config::{Input, Options};
+use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::{FileName, Span};
+use crate::rustc_structures::CrateType;
 
 /// Byte range inside one source file, relative to that file's start.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -231,11 +236,50 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
 }
 
 /// Analyse one crate from source. Fatal rustc errors abort: this is rustc, not
-/// an IDE recovery engine. Matching sysroot required to type-check `core`.
+/// an IDE recovery engine.
+///
+/// Equivalent to [`analyze_source_with_sysroot`] with `sysroot = None`.
 pub fn analyze_source(crate_name: &str, source: &str) -> CrateFacts {
+    analyze_source_with_sysroot(crate_name, source, None)
+}
+
+/// Analyse one crate from source against an optional sysroot.
+///
+/// `sysroot` is defined when `Some`: that tree is this session's library root.
+/// When `None`, an `FRONTEND_SYSROOT` env value is used if set, otherwise
+/// rustc's default sysroot search. None of these require the tree to have been
+/// built from this frontend's upstream commit.
+///
+/// Without the `force_pinned_sysroot` feature, the session claims the version
+/// string the chosen sysroot actually carries. With the feature, the compiled-in
+/// `CFG_VERSION` is kept and other vintages are refused.
+pub fn analyze_source_with_sysroot(
+    crate_name: &str,
+    source: &str,
+    sysroot: Option<&str>,
+) -> CrateFacts {
     let mut opts = Options::default();
     opts.crate_name = Some(crate_name.to_string());
-    let using_internal_features = alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
+    opts.crate_types = alloc::vec![CrateType::Rlib];
+    let explicit = sysroot
+        .map(eko::path::PathBuf::from)
+        .or_else(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from))
+        .or_else(host_sysroot);
+    if explicit.is_some() {
+        opts.sysroot = Sysroot::new(explicit);
+    }
+    let rustc_version = {
+        #[cfg(feature = "force_pinned_sysroot")]
+        {
+            None
+        }
+        #[cfg(not(feature = "force_pinned_sysroot"))]
+        {
+            rustc_version_of_sysroot(opts.sysroot.path()).or_else(host_rustc_version)
+        }
+    };
+    let using_internal_features =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
     let config = Config {
         opts,
         input: Input::Str {
@@ -244,12 +288,38 @@ pub fn analyze_source(crate_name: &str, source: &str) -> CrateFacts {
         },
         psess_created: None,
         using_internal_features,
-        rustc_version: None,
+        rustc_version,
     };
     run_compiler(config, |compiler| {
         let krate = parse(&compiler.sess);
         create_and_enter_global_ctxt(compiler, krate, extract)
     })
+}
+
+/// `rustc --print sysroot` of the compiler on PATH. Defined when rustc is
+/// installed; not a vintage pin.
+fn host_sysroot() -> Option<eko::path::PathBuf> {
+    let out = eko::command::Command::new("rustc")
+        .arg("--print")
+        .arg("sysroot")
+        .output()?;
+    if !out.success() {
+        return None;
+    }
+    let line = alloc::string::String::from_utf8(out.stdout).ok()?;
+    let line = line.trim();
+    (!line.is_empty()).then(|| eko::path::PathBuf::from(line))
+}
+
+fn host_rustc_version() -> Option<alloc::string::String> {
+    let out = eko::command::Command::new("rustc").arg("--version").output()?;
+    if !out.success() {
+        return None;
+    }
+    let line = alloc::string::String::from_utf8(out.stdout).ok()?;
+    let line = line.trim();
+    let version = line.strip_prefix("rustc ").unwrap_or(line).trim();
+    (!version.is_empty()).then(|| version.to_string())
 }
 
 fn byte_span(tcx: TyCtxt<'_>, span: Span) -> ByteSpan {

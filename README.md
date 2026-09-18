@@ -51,9 +51,12 @@ dependents, and dependents do not need it.
 
 ## Running it needs a sysroot, and this is the part that surprises people
 
-**No published nightly will work.** Crate metadata records the version string of the compiler that
-wrote it, and this frontend accepts only metadata from its own vintage. It sits *between two
-nightlies*, so both directions fail, and neither failure says "wrong sysroot":
+**A matching vintage is optional.** Crate metadata records the version string of the compiler that
+wrote it. By default this frontend claims the version of the sysroot you actually point at
+(`rustc_version_of_sysroot`), so a published nightly's libraries can load. Enable the
+`force_pinned_sysroot` cargo feature to keep the compiled-in `CFG_VERSION` and refuse any other
+vintage. That pin sits *between two nightlies*, so both directions fail, and neither failure says
+"wrong sysroot":
 
 | sysroot relative to this fork | what you get |
 | --- | --- |
