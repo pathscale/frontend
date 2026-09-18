@@ -131,6 +131,7 @@ pub extern crate tracing;
 
 pub mod datafrog;
 pub mod ena;
+pub mod frontend_facts;
 pub mod frontend_semantics;
 pub mod odht;
 pub mod polonius_engine;
