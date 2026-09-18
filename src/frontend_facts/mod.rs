@@ -10,6 +10,10 @@
 //! `TyCtxt`. A resident holder that outlives one call is a later increment, not
 //! required to emit definitions, references, imports, impls, or trait impls.
 //!
+//! Fatal rustc errors used to abort the process. [`analyze_source`] wraps the
+//! run in [`crate::rustc_span::fatal_error::catch_fatal_errors`] so a refused
+//! program is `Err`, not a dead daemon. That wrap needs `panic = "unwind"`.
+//!
 //! Within-crate first. A sysroot is optional: when present it is the library
 //! tree this session reads, when absent rustc's default search is used. The
 //! `force_pinned_sysroot` cargo feature is the opt-in vintage pin; without it
@@ -30,7 +34,9 @@ use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_co
 #[cfg(not(feature = "force_pinned_sysroot"))]
 use crate::rustc_interface::util::rustc_version_of_sysroot;
 use crate::rustc_middle::ty::TyCtxt;
+use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_session::config::{Input, Options, Sysroot};
+use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::{FileName, Span};
 use crate::rustc_structures::CrateType;
 
@@ -235,11 +241,12 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     facts
 }
 
-/// Analyse one crate from source. Fatal rustc errors abort: this is rustc, not
-/// an IDE recovery engine.
+/// Analyse one crate from source.
 ///
-/// Equivalent to [`analyze_source_with_sysroot`] with `sysroot = None`.
-pub fn analyze_source(crate_name: &str, source: &str) -> CrateFacts {
+/// Fatal rustc errors are `Err(FatalError)`: this is rustc, not an IDE recovery
+/// engine, but the error kills the compilation, not the process. Equivalent to
+/// [`analyze_source_with_sysroot`] with `sysroot = None`.
+pub fn analyze_source(crate_name: &str, source: &str) -> Result<CrateFacts, FatalError> {
     analyze_source_with_sysroot(crate_name, source, None)
 }
 
@@ -257,10 +264,18 @@ pub fn analyze_source_with_sysroot(
     crate_name: &str,
     source: &str,
     sysroot: Option<&str>,
-) -> CrateFacts {
+) -> Result<CrateFacts, FatalError> {
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "analyze_source needs panic=unwind so abort_if_errors can be caught"
+    );
     let mut opts = Options::default();
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
+    // Options::default() disallows `#![feature]` the way a stable CLI would.
+    // This crate is a nightly frontend; within-crate no_core analysis needs the
+    // same gates nightly rustc has.
+    opts.unstable_features = UnstableFeatures::Allow;
     let explicit = sysroot
         .map(eko::path::PathBuf::from)
         .or_else(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from))
@@ -290,9 +305,11 @@ pub fn analyze_source_with_sysroot(
         using_internal_features,
         rustc_version,
     };
-    run_compiler(config, |compiler| {
-        let krate = parse(&compiler.sess);
-        create_and_enter_global_ctxt(compiler, krate, extract)
+    catch_fatal_errors(|| {
+        run_compiler(config, |compiler| {
+            let krate = parse(&compiler.sess);
+            create_and_enter_global_ctxt(compiler, krate, extract)
+        })
     })
 }
 
