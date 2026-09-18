@@ -92,6 +92,9 @@ pub struct Import {
     pub path: String,
     pub span: ByteSpan,
     pub reexport: bool,
+    /// Names this `use` binds. `use crate::foo as bar` is `["bar"]`.
+    /// Empty for a glob. `ListStem` items are omitted, not listed with no names.
+    pub bindings: Vec<String>,
 }
 
 /// One `impl` block, inherent or trait.
@@ -215,9 +218,11 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
             .filter(|s| *s != "{{root}}")
             .collect::<Vec<_>>()
             .join("::");
-        let path_str = match use_kind {
-            UseKind::Glob => format!("{path_str}::*"),
-            UseKind::Single(_) | UseKind::ListStem => path_str,
+        // Degenerate `use foo::{}` exists so rustc can gate features. It binds nothing.
+        let (path_str, bindings) = match use_kind {
+            UseKind::Glob => (format!("{path_str}::*"), Vec::new()),
+            UseKind::Single(ident) => (path_str, vec![ident.as_str().to_string()]),
+            UseKind::ListStem => continue,
         };
         let module = tcx.parent_module_from_def_id(item.owner_id.def_id);
         facts.imports.push(Import {
@@ -225,6 +230,7 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
             path: path_str,
             span: byte_span(tcx, item.span),
             reexport: tcx.local_visibility(item.owner_id.def_id).is_public(),
+            bindings,
         });
     }
 
