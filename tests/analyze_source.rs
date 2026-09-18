@@ -41,6 +41,50 @@ fn within_crate_refs_do_not_need_a_pinned_sysroot() {
     );
 }
 
+const WITHIN_CRATE_USES: &str = r#"
+#![feature(no_core, lang_items)]
+#![no_core]
+#[lang = "pointee_sized"]
+pub trait PointeeSized {}
+#[lang = "meta_sized"]
+pub trait MetaSized: PointeeSized {}
+#[lang = "sized"]
+pub trait Sized: MetaSized {}
+#[lang = "copy"]
+pub trait Copy {}
+pub fn foo() {}
+mod inner {
+    pub use crate::foo as bar;
+    use crate::foo;
+    use crate::*;
+    fn uses() { foo(); bar(); }
+}
+"#;
+
+#[test]
+fn use_bindings_include_rename_and_skip_list_stems() {
+    let facts = frontend::frontend_facts::analyze_source("fixture", WITHIN_CRATE_USES)
+        .expect("within-crate uses should analyse");
+    let renamed = facts
+        .imports
+        .iter()
+        .find(|import| import.reexport && import.path == "crate::foo")
+        .expect("pub use crate::foo as bar");
+    assert_eq!(renamed.bindings, ["bar"], "{facts:?}");
+    let plain = facts
+        .imports
+        .iter()
+        .find(|import| !import.reexport && import.path == "crate::foo")
+        .expect("use crate::foo");
+    assert_eq!(plain.bindings, ["foo"], "{facts:?}");
+    let glob = facts
+        .imports
+        .iter()
+        .find(|import| import.path.ends_with("::*"))
+        .expect("use crate::*");
+    assert!(glob.bindings.is_empty(), "{facts:?}");
+}
+
 #[test]
 fn host_sysroot_is_defined_and_optional() {
     let printed = std::process::Command::new("rustc")
