@@ -39,6 +39,11 @@ nightly = ["dep:rustc_macros"]
 # the crate standalone for a different pattern-matching client. Here the rustc-facing side is the
 # only side there is, which is why it defaults on.
 rustc = []
+# Keep the compiled-in `CFG_VERSION` and refuse crate metadata from any other
+# vintage. Off by default: a sysroot is optional, and when one is present the
+# session claims the version that sysroot actually carries. Parsing compatibility
+# is an edition range, not a pin to one bootstrap stamp.
+force_pinned_sysroot = []
 
 [dependencies]
 # The two crates that could not be merged. `rustc_macros` is the historical name and the source
@@ -51,7 +56,7 @@ frontend_arena = { path = "frontend_arena", version = "0.1.0" }
 arrayvec = { version = "^0.7.8", default-features = false }
 bitflags = "2.9.1"
 cfg-if = { version = "1.0.0", default-features = false }
-blake3 = { version = "=1.5.5", default-features = false }
+blake3 = { version = "1.8.2", default-features = false }
 derive-where = "1.6.1"
 derive_setters = "0.1.6"
 either = { version = "^1.18.0", default-features = false }
