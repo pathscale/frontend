@@ -51,17 +51,29 @@ dependents, and dependents do not need it.
 
 ## Running it needs a sysroot, and this is the part that surprises people
 
-**A matching vintage is optional.** Crate metadata records the version string of the compiler that
-wrote it. By default this frontend claims the version of the sysroot you actually point at
-(`rustc_version_of_sysroot`), so a published nightly's libraries can load. Enable the
-`force_pinned_sysroot` cargo feature to keep the compiled-in `CFG_VERSION` and refuse any other
-vintage. That pin sits *between two nightlies*, so both directions fail, and neither failure says
-"wrong sysroot":
+**A matching vintage is mandatory, and no published nightly can supply one.** The sysroot has to
+have been built from the exact upstream commit in [UPSTREAM.md](UPSTREAM.md). That pin sits
+*between two nightlies*, so both directions fail, and no failure says "wrong sysroot":
 
 | sysroot relative to this fork | what you get |
 | --- | --- |
 | older | an assertion inside `rustc_serialize`, which reads as a corrupt file |
 | newer | an `ExplicitBug` in `rustc_hir_typeck`, usually "expected associated item for operator trait" |
+| any other commit, version check silenced | a bare `error[E0463]: can't find crate for `std`` |
+
+The version string is the smaller half of this. The larger half is that crate metadata encodes
+every preinterned symbol as a bare index into the `symbols!` list in `rustc_span::symbol`
+(`SYMBOL_PREDEFINED`). Upstream adds and removes entries in that list continuously, and an index
+written by one commit means a different string under another. When the crate name recorded in
+`libstd`'s metadata decodes to the wrong symbol, `crate_matches` rejects the file without
+recording a rejection, so the diagnostic is a bare `E0463` with no note about versions at all.
+Crates whose names sit before the first divergence still load, so the failure is partial: `core`
+and `alloc` can come up while `std`, `test` and `unwind` do not.
+
+`rustc_version_of_sysroot` therefore does **not** make a published nightly usable. It silences the
+version check and leaves the symbol table wrong, turning an `E0514` that names the problem into an
+`E0463` that names nothing. Enable the `force_pinned_sysroot` cargo feature to keep the
+compiled-in `CFG_VERSION` and refuse any other vintage.
 
 So the library has to be built from the same upstream commit:
 
@@ -75,14 +87,16 @@ checkout is present. Read the script before running it; it says what it needs an
 `CFG_VERSION` in `.cargo/config.toml` is the string that has to match, and the script prints the
 one your sysroot actually carries and tells you whether they agree.
 
-That constant is the default, not a constraint. Point at a different sysroot and override it for
-that session, with no rebuild:
+If you build that sysroot somewhere the compiled-in default does not describe, you can read the
+string out of it instead of writing it down twice:
 
 ```rust
 config.rustc_version = rustc_interface::util::rustc_version_of_sysroot(&sysroot);
 ```
 
-which reads the string out of the sysroot rather than asking you to keep two copies in step.
+That is for a sysroot built from the pinned commit under a different `CFG_VERSION`. It is not a
+way to accept a sysroot from a different commit: see above, the version string is not the thing
+that has to match.
 
 ## Deliberate differences from upstream
 

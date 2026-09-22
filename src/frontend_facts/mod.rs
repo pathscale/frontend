@@ -266,12 +266,24 @@ pub fn analyze_source(crate_name: &str, source: &str) -> Result<CrateFacts, Fata
 ///
 /// `sysroot` is defined when `Some`: that tree is this session's library root.
 /// When `None`, an `FRONTEND_SYSROOT` env value is used if set, otherwise
-/// rustc's default sysroot search. None of these require the tree to have been
-/// built from this frontend's upstream commit.
+/// rustc's default sysroot search.
+///
+/// **The tree has to have been built from this frontend's upstream commit.**
+/// Crate metadata encodes every preinterned symbol as a bare index into the
+/// `symbols!` table in `rustc_span::symbol` (`SYMBOL_PREDEFINED`, see
+/// `rustc_metadata::rmeta::encoder::encode_symbol_or_byte_symbol`), and that
+/// table changes commit to commit. A sysroot from any other commit decodes its
+/// late symbols as whatever now sits at that index, so a crate whose name is a
+/// preinterned symbol is not recognised and `E0463` says only "can't find
+/// crate". Crates whose names sit before the first divergence still load, so a
+/// mismatched sysroot fails partially rather than cleanly.
 ///
 /// Without the `force_pinned_sysroot` feature, the session claims the version
 /// string the chosen sysroot actually carries. With the feature, the compiled-in
-/// `CFG_VERSION` is kept and other vintages are refused.
+/// `CFG_VERSION` is kept and other vintages are refused. Claiming the sysroot's
+/// own string only silences the version check; it does not make the symbol table
+/// agree, so it turns a loud `E0514` into a silent `E0463`. Prefer
+/// `force_pinned_sysroot` unless you know the sysroot is from the pinned commit.
 pub fn analyze_source_with_sysroot(
     crate_name: &str,
     source: &str,
