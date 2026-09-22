@@ -300,12 +300,34 @@ pub fn analyze_source_with_sysroot(
     // This crate is a nightly frontend; within-crate no_core analysis needs the
     // same gates nightly rustc has.
     opts.unstable_features = UnstableFeatures::Allow;
-    let explicit = sysroot
+    // **The sysroot is an optional parameter, because this is a parser.**
+    //
+    // Definitions, imports, impls and within-crate references are read out of
+    // the source this was handed. None of them needs a standard library to
+    // exist. A library only matters to a caller who wants paths resolved into
+    // it, and that caller says so by naming a sysroot.
+    //
+    // Nothing named means `no_core`, so no external crate is loaded, no prelude
+    // import is resolved, and the facts come back with no library anywhere on
+    // the machine. It goes through `crate_attr` rather than being prepended to
+    // the source, because prepended text moves every byte span this crate
+    // reports and those spans are the whole product.
+    //
+    // This used to fall back to `rustc --print sysroot`, which fetched a
+    // library nobody had asked for and then failed to read it: crate metadata
+    // encodes preinterned symbols as bare indices into `rustc_span::symbol`'s
+    // table, nothing checks that two tables agree, and a table from another
+    // commit decodes `std` as whatever now sits at that index. The result was a
+    // bare `E0463` for a library the caller never wanted.
+    let named = sysroot
         .map(eko::path::PathBuf::from)
-        .or_else(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from))
-        .or_else(host_sysroot);
-    if explicit.is_some() {
-        opts.sysroot = Sysroot::new(explicit);
+        .or_else(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from));
+    let has_sysroot = named.is_some();
+    if has_sysroot {
+        opts.sysroot = Sysroot::new(named);
+    } else {
+        opts.unstable_opts.crate_attr.push("no_core".to_string());
+        opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
     }
     let rustc_version = {
         #[cfg(feature = "force_pinned_sysroot")]
@@ -314,7 +336,14 @@ pub fn analyze_source_with_sysroot(
         }
         #[cfg(not(feature = "force_pinned_sysroot"))]
         {
-            rustc_version_of_sysroot(opts.sysroot.path()).or_else(host_rustc_version)
+            // Only worth asking when something will actually be read. With
+            // `no_core` no metadata is opened, so there is no vintage to agree
+            // with and no reason to spawn a compiler to ask about one.
+            if has_sysroot {
+                rustc_version_of_sysroot(opts.sysroot.path()).or_else(host_rustc_version)
+            } else {
+                None
+            }
         }
     };
     let using_internal_features =
@@ -335,21 +364,6 @@ pub fn analyze_source_with_sysroot(
             create_and_enter_global_ctxt(compiler, krate, extract)
         })
     })
-}
-
-/// `rustc --print sysroot` of the compiler on PATH. Defined when rustc is
-/// installed; not a vintage pin.
-fn host_sysroot() -> Option<eko::path::PathBuf> {
-    let out = eko::command::Command::new("rustc")
-        .arg("--print")
-        .arg("sysroot")
-        .output()?;
-    if !out.success() {
-        return None;
-    }
-    let line = alloc::string::String::from_utf8(out.stdout).ok()?;
-    let line = line.trim();
-    (!line.is_empty()).then(|| eko::path::PathBuf::from(line))
 }
 
 fn host_rustc_version() -> Option<alloc::string::String> {
