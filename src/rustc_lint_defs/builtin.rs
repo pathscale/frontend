@@ -507,7 +507,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(must_not_suspend)]
     /// #![warn(must_not_suspend)]
     ///
@@ -1197,7 +1197,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(test_accepted_feature)]
     /// fn main() {}
     /// ```
@@ -2454,7 +2454,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(sanitize)]
     ///
     /// #[inline(always)]
@@ -2485,7 +2485,7 @@ declare_lint! {
     /// [sanitize]: https://doc.rust-lang.org/nightly/unstable-book/language-features/no-sanitize.html
     /// ### Example
     ///
-    /// ```rust,no_run
+    /// ```text
     /// #![feature(sanitize)]
     ///
     /// #[sanitize(realtime = "nonblocking")]
@@ -3160,7 +3160,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #[cfg(feature = "nightly")]
     /// macro foo() {}
     /// ```
@@ -3178,7 +3178,7 @@ declare_lint! {
     /// into a position where the compiler does not parse the syntax, such as a
     /// functionlike macro.
     ///
-    /// ```rust
+    /// ```text
     /// # #![deny(unstable_syntax_pre_expansion)]
     ///
     /// macro_rules! identity {
@@ -4529,7 +4529,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(rustc_attrs)]
     /// #![allow(internal_features)]
     ///
@@ -5408,7 +5408,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(explicit_tail_calls)]
     /// #![expect(incomplete_features)]
     ///
@@ -5674,7 +5674,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust,no_run
+    /// ```text
     /// fn main() {
     ///     let x = panic!();
     ///     x.clone();

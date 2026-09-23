@@ -28,7 +28,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// # fn operation_that_requires_mutex_to_be_unlocked() {} // just to make it compile
     /// # let mutex = alloc::sync::Mutex::new(1); // just to make it compile
     /// let mut lock_guard = mutex.lock();

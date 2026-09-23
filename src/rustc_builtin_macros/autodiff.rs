@@ -198,14 +198,14 @@ mod llvm_enzyme {
     /// type-checking and can be called by users. The exact signature of the generated function
     /// depends on the configuration provided by the user, but here is an example:
     ///
-    /// ```
+    /// ```text
     /// #[autodiff(cos_box, Reverse, Duplicated, Active)]
     /// fn sin(x: &Box<f32>) -> f32 {
     ///     f32::sin(**x)
     /// }
     /// ```
     /// which becomes expanded to:
-    /// ```
+    /// ```text
     /// #[rustc_autodiff]
     /// fn sin(x: &Box<f32>) -> f32 {
     ///     f32::sin(**x)

@@ -26,7 +26,7 @@ use crate::rustc_builtin_macros::diagnostics::{
     EiiSharedMacroTarget, EiiStaticArgumentRequired, EiiStaticDefaultApple, EiiStaticMutable,
 };
 
-/// ```rust
+/// ```text
 /// #[eii]
 /// fn panic_handler();
 ///

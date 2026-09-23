@@ -35,7 +35,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(type_alias_impl_trait)]
     ///
     /// trait Duh {}

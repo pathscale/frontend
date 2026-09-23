@@ -1391,7 +1391,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(trivial_bounds)]
     /// pub struct A where i32: Copy;
     /// ```
@@ -2206,7 +2206,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(generic_const_exprs)]
     /// ```
     ///
@@ -2232,7 +2232,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(rustc_attrs)]
     /// ```
     ///

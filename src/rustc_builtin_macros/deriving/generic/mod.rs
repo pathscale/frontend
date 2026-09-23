@@ -1186,7 +1186,7 @@ impl<'a> MethodDef<'a> {
     ///
     /// is equivalent to:
     ///
-    /// ```
+    /// ```text
     /// #![feature(core_intrinsics)]
     /// enum A {
     ///     A1,

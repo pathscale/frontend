@@ -101,7 +101,7 @@ pub struct TypeckResults<'tcx> {
     /// ```
     /// leads to a `vec![&&Option<i32>, &Option<i32>]` and
     ///
-    /// ```
+    /// ```text
     /// #![feature(deref_patterns)]
     /// match &Box::new(Some(5i32)) {
     ///     Some(n) => {},

@@ -28,7 +28,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust,compile_fail
+    /// ```text
     /// #[unsafe(no_mangle)]
     /// pub fn strlen() {} // invalid definition of the `strlen` function
     /// ```

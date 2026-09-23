@@ -47,7 +47,7 @@ pub struct OwnedSlice {
 /// ## Examples
 ///
 /// ```rust
-/// # use crate::rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
+/// # use frontend::rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
 /// let vec = vec![1, 2, 3, 4];
 ///
 /// // Identical to slicing via `&v[1..3]` but produces an owned slice
@@ -56,7 +56,7 @@ pub struct OwnedSlice {
 /// ```
 ///
 /// ```rust
-/// # use crate::rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
+/// # use frontend::rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
 /// # use core::ops::Deref;
 /// let vec = vec![1, 2, 3, 4];
 ///
@@ -104,7 +104,7 @@ impl OwnedSlice {
     /// # Examples
     ///
     /// ```rust
-    /// # use crate::rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
+    /// # use frontend::rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
     /// let vec = vec![1, 2, 3, 4];
     ///
     /// // Identical to slicing via `&v[1..3]` but produces an owned slice

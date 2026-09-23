@@ -34,7 +34,7 @@
 //! forming a diamond-shaped acyclic graph and then pointing to the fifth
 //! which is cyclic.
 //!
-//! ```rust
+//! ```text
 //! #![feature(rustc_private)]
 //!
 //! //! use crate::rustc_graphviz as dot;
@@ -86,7 +86,7 @@
 //! # pub fn main() { render_to(&mut Vec::new()) }
 //! ```
 //!
-//! ```no_run
+//! ```text
 //! # pub fn render_to<W:std::io::Write>(output: &mut W) { unimplemented!() }
 //! pub fn main() {
 //!     use eko::file::File;
@@ -138,7 +138,7 @@
 //! labeled with the &sube; character (specified using the HTML character
 //! entity `&sube`).
 //!
-//! ```rust
+//! ```text
 //! #![feature(rustc_private)]
 //!
 //! //! use crate::rustc_graphviz as dot;
@@ -182,7 +182,7 @@
 //! # pub fn main() { render_to(&mut Vec::new()) }
 //! ```
 //!
-//! ```no_run
+//! ```text
 //! # pub fn render_to<W:std::io::Write>(output: &mut W) { unimplemented!() }
 //! pub fn main() {
 //!     use eko::file::File;
@@ -199,7 +199,7 @@
 //! The output from this example is the same as the second example: the
 //! Hasse-diagram for the subsets of the set `{x, y}`.
 //!
-//! ```rust
+//! ```text
 //! #![feature(rustc_private)]
 //!
 //! //! use crate::rustc_graphviz as dot;
@@ -251,7 +251,7 @@
 //! # pub fn main() { render_to(&mut Vec::new()) }
 //! ```
 //!
-//! ```no_run
+//! ```text
 //! # pub fn render_to<W:std::io::Write>(output: &mut W) { unimplemented!() }
 //! pub fn main() {
 //!     use eko::file::File;

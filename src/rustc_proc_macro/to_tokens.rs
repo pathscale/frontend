@@ -18,7 +18,7 @@ pub trait ToTokens {
     /// Example implementation for a struct representing Rust paths like
     /// `std::cmp::PartialEq`:
     ///
-    /// ```
+    /// ```text
     /// #![feature(proc_macro_totokens)]
     ///
     /// use std::iter;

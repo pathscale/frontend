@@ -25,7 +25,7 @@
 //!
 //! ```
 //! # struct Bar {}
-//! use crate::rustc_data_structures::frozen::Frozen;
+//! use frontend::rustc_data_structures::frozen::Frozen;
 //!
 //! struct Foo {
 //!     /// Some computed data that should never change after construction.

@@ -313,7 +313,7 @@ impl<Tuple: Ord> Variable<Tuple> {
     /// pairs are symmetric, this should result in all pairs (x, y) for x and y in 0 .. 11.
     ///
     /// ```
-    /// use crate::datafrog::{Iteration, Relation};
+    /// use frontend::datafrog::{Iteration, Relation};
     ///
     /// let mut iteration = Iteration::new();
     /// let variable = iteration.variable::<(usize, usize)>("source");
@@ -350,7 +350,7 @@ impl<Tuple: Ord> Variable<Tuple> {
     /// pairs (for 0, 3, 6, and 9) which should leave us with 16 total pairs.
     ///
     /// ```
-    /// use crate::datafrog::{Iteration, Relation};
+    /// use frontend::datafrog::{Iteration, Relation};
     ///
     /// let mut iteration = Iteration::new();
     /// let variable = iteration.variable::<(usize, usize)>("source");
@@ -384,7 +384,7 @@ impl<Tuple: Ord> Variable<Tuple> {
     /// pairs (x, y) where x visits y as part of its Collatz journey.
     ///
     /// ```
-    /// use crate::datafrog::{Iteration, Relation};
+    /// use frontend::datafrog::{Iteration, Relation};
     ///
     /// let mut iteration = Iteration::new();
     /// let variable = iteration.variable::<(usize, usize)>("source");

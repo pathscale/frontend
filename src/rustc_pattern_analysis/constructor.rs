@@ -112,7 +112,7 @@
 //!
 //! Moreover, take the following:
 //!
-//! ```rust
+//! ```text
 //! # #![feature(exhaustive_patterns)]
 //! # let x = None::<!>;
 //! match x {

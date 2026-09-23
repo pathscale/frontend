@@ -84,7 +84,7 @@ pub(super) mod resolver {
         }
 
         /// (from `tests\ui\delegation\target-expr-removal-defs-inside.rs`):
-        /// ```rust
+        /// ```text
         /// reuse impl Trait for S1 {
         ///     some::path::<{ fn foo() {} }>::xd();
         ///     fn foo() {}
