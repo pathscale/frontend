@@ -49,6 +49,10 @@ rustc = []
 # session claims the version that sysroot actually carries. Parsing compatibility
 # is an edition range, not a pin to one bootstrap stamp.
 force_pinned_sysroot = []
+# Syntax-level diagnostics ported from rust-analyzer, in `frontend_facts::diagnostics`. Off by
+# default: nothing else in the crate calls them, and a caller who does not want them does not
+# compile them.
+diagnostics = []
 
 [dependencies]
 # The two crates that could not be merged. `rustc_macros` is the historical name and the source

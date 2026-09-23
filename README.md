@@ -65,6 +65,29 @@ scripts and one proc macro - and every one of them still yields to a value you s
 The `.cargo/config.toml` here configures *this* workspace's own build. Cargo does not apply it to
 dependents, and dependents do not need it.
 
+## Syntax-level diagnostics
+
+Behind the `diagnostics` cargo feature, which is off by default:
+
+```toml
+frontend = { version = "...", features = ["diagnostics"] }
+```
+
+`frontend_facts::diagnostics::diagnose(source)` parses one crate with `rustc_parse` and runs
+checks ported from rust-analyzer's `ide-diagnostics` that the syntax alone decides: `break`
+outside a loop, undeclared and unreachable labels, `.await` outside `async`, `return` outside a
+function body, naming conventions, unnecessary braces in `use`, a trailing `return`, an
+unnecessary `else`, redundant field names, missing bodies, duplicate fields and union literals.
+There is no expansion, no name resolution, no type checking and no sysroot, so it answers in one
+parse and a few linear passes, which suits editors and other tooling.
+
+It returns the parser's own errors as `Err` when the source does not parse, and otherwise
+diagnostics with rust-analyzer's codes, severities and messages and byte offsets into the source.
+`diagnose_with(source, &Options { codes, min_severity })` runs only the listed codes, and a check
+that is not selected does not run. Nothing else in the crate calls into it. Like `analyze_source`,
+it needs a panic catcher installed through `unwind_janky::install_catcher`. Provenance is in
+[UPSTREAM.md](UPSTREAM.md).
+
 ## Only if you deliberately name a sysroot
 
 You almost certainly do not need this section; see "Read this first" above. It applies only
