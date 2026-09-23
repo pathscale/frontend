@@ -1227,7 +1227,7 @@ impl FilePathMapping {
                     .local_path()
                     .expect("working directory should be local")
                     .to_path_buf()
-                    .join(&local_path)
+                    .join(without_leading_cur_dir(&local_path))
             },
         };
 
@@ -1243,7 +1243,11 @@ impl FilePathMapping {
                 } else {
                     // Create an absolute path and remap it as well.
                     let (abs_path, abs_was_remapped) = self.map_prefix(
-                        working_directory.maybe_remapped.name.clone().join(&remapped_path),
+                        working_directory
+                            .maybe_remapped
+                            .name
+                            .clone()
+                            .join(without_leading_cur_dir(&remapped_path)),
                     );
 
                     // If either the embeddable name or the working directory was
@@ -1301,4 +1305,20 @@ impl FilePathMapping {
 
         found
     }
+}
+
+/// `path` without the `./` it may start with, for joining onto a directory.
+///
+/// `std`'s `PathBuf` compares by components, so `/foo/./src/main.rs` and `/foo/src/main.rs` were
+/// the same path upstream and the join never had to drop the `.`. `eko`'s paths compare bytes,
+/// so the embedded name kept a `/./` that upstream's own test says it must not carry.
+fn without_leading_cur_dir(path: &Path) -> &Path {
+    let mut path = path;
+    while let Ok(rest) = path.strip_prefix(".") {
+        if rest.as_os_str().is_empty() || rest == path {
+            break;
+        }
+        path = rest;
+    }
+    path
 }
