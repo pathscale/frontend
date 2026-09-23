@@ -25,7 +25,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(strict_provenance_lints)]
     /// #![warn(implicit_provenance_casts)]
     ///

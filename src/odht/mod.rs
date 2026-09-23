@@ -21,7 +21,7 @@
 //!
 //! ```rust
 //!
-//! use crate::odht::{HashTable, HashTableOwned, Config, FxHashFn};
+//! use frontend::odht::{HashTable, HashTableOwned, Config, FxHashFn};
 //!
 //! struct MyConfig;
 //!

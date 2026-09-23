@@ -2612,7 +2612,7 @@ pub(super) fn check_type_bounds<'tcx>(
 ///
 /// A note regarding the use of bound vars here:
 /// Imagine as an example
-/// ```
+/// ```text
 /// trait Family {
 ///     type Member<C: Eq>;
 /// }

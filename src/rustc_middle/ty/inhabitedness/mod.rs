@@ -4,7 +4,7 @@
 //! `ParamEnv` and module ID.
 //!
 //! # Example
-//! ```rust
+//! ```text
 //! mod a {
 //!     pub mod b {
 //!         pub struct SecretlyUninhabited {
@@ -163,7 +163,7 @@ impl<'tcx> Ty<'tcx> {
     /// Checks whether a type is visibly uninhabited from a particular module.
     ///
     /// # Example
-    /// ```
+    /// ```text
     #[cfg_attr(bootstrap, doc = "#![feature(never_type)]")]
     /// # fn main() {}
     /// enum Void {}

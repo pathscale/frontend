@@ -279,7 +279,7 @@ pub enum TyKind<I: Interner> {
     /// Looking at the following example, the witness for this coroutine
     /// may end up as something like `for<'a> [Vec<i32>, &'a Vec<i32>]`:
     ///
-    /// ```
+    /// ```text
     /// #![feature(coroutines)]
     /// #[coroutine] static |a| {
     ///     let x = &vec![3];

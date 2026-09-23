@@ -20,7 +20,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust,edition2018
+    /// ```text
     /// #![feature(unqualified_local_imports)]
     /// #![warn(unqualified_local_imports)]
     ///

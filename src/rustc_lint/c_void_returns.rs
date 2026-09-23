@@ -25,7 +25,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// use alloc::ffi::c_void;
     ///
     /// unsafe extern "C" {

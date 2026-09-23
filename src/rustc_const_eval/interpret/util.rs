@@ -138,8 +138,8 @@ impl EnteredTraceSpan for tracing::span::EnteredSpan {
 /// The full documentation for the [tracing::span!] syntax can be found at [tracing] under "Using the
 /// Macros". A few possibly confusing syntaxes are listed here:
 /// ```rust
-/// # use crate::enter_trace_span;
-/// # type M = crate::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
+/// # use frontend::enter_trace_span;
+/// # type M = frontend::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
 /// # let my_display_var = String::new();
 /// # let my_debug_var = String::new();
 /// // logs a span named "hello" with a field named "arg" of value 42 (works only because
@@ -163,8 +163,8 @@ impl EnteredTraceSpan for tracing::span::EnteredSpan {
 /// selecting a span, clicking on the "NAME" argument on the right, and clicking on "Visualize
 /// argument values".
 /// ```rust
-/// # use crate::enter_trace_span;
-/// # type M = crate::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
+/// # use frontend::enter_trace_span;
+/// # type M = frontend::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
 /// // for example, the first will expand to the second
 /// let _trace = enter_trace_span!(M, borrow_tracker::on_stack_pop, /* ... */);
 /// let _trace = enter_trace_span!(M, "borrow_tracker", borrow_tracker = "on_stack_pop", /* ... */);
@@ -181,8 +181,8 @@ impl EnteredTraceSpan for tracing::span::EnteredSpan {
 /// interpreter. You should use a value of [tracing::field::Empty] so that other tracing layers
 /// (e.g. the logger) will ignore the `tracing_separate_thread` field. For example:
 /// ```rust
-/// # use crate::enter_trace_span;
-/// # type M = crate::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
+/// # use frontend::enter_trace_span;
+/// # type M = frontend::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
 /// let _trace = enter_trace_span!(M, step::eval_statement, tracing_separate_thread = tracing::field::Empty);
 /// ```
 ///
@@ -192,9 +192,9 @@ impl EnteredTraceSpan for tracing::span::EnteredSpan {
 /// [EnteredTraceSpan::or_if_tracing_disabled], to e.g. log a line as an alternative to the tracing
 /// span for when tracing is disabled. For example:
 /// ```rust
-/// # use crate::enter_trace_span;
-/// # use crate::rustc_const_eval::interpret::EnteredTraceSpan;
-/// # type M = crate::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
+/// # use frontend::enter_trace_span;
+/// # use frontend::rustc_const_eval::interpret::EnteredTraceSpan;
+/// # type M = frontend::rustc_const_eval::const_eval::CompileTimeMachine<'static>;
 /// let _trace = enter_trace_span!(M, step::eval_statement)
 ///     .or_if_tracing_disabled(|| tracing::info!("eval_statement"));
 /// ```

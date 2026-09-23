@@ -152,7 +152,7 @@ impl WrappingRange {
     /// # Examples
     ///
     /// ```
-    /// use crate::rustc_abi::{Size, WrappingRange};
+    /// use frontend::rustc_abi::{Size, WrappingRange};
     ///
     /// let chain = core::iter::chain(10..20, 30..40);
     /// let range = WrappingRange::smallest_range_containing(chain, Size::from_bytes(2));

@@ -252,7 +252,7 @@ pub(super) fn check_well_formed(
 /// well-formed, meaning that they do not require any constraints not declared in the struct
 /// definition itself. For example, this definition would be illegal:
 ///
-/// ```rust
+/// ```text
 /// struct StaticRef<T> { x: &'static T }
 /// ```
 ///

@@ -107,7 +107,7 @@ pub(crate) fn expand_deriving_partial_eq(
 /// ```
 ///
 /// ### Example 2
-/// ```
+/// ```text
 /// mod ty {
 ///     pub type i32 = i32;
 /// }

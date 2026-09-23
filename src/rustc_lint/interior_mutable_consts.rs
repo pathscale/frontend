@@ -24,7 +24,7 @@ declare_lint! {
     ///
     /// ### Example
     ///
-    /// ```rust
+    /// ```text
     /// use alloc::sync::Once;
     ///
     /// const INIT: Once = Once::new(); // using `INIT` will always create a temporary and

@@ -13,7 +13,7 @@ use core::hash::Hasher;
 ///
 /// ```
 /// use core::hash::Hasher;
-/// use crate::rustc_stable_hash::ExtendedHasher;
+/// use frontend::rustc_stable_hash::ExtendedHasher;
 ///
 /// struct BogusHasher(u128);
 ///
@@ -66,8 +66,8 @@ pub trait ExtendedHasher: Hasher {
 /// # Example
 ///
 /// ```
-/// use crate::rustc_stable_hash::hashers::{StableSipHasher128, SipHasher128Hash};
-/// use crate::rustc_stable_hash::{StableHasher, FromStableHash};
+/// use frontend::rustc_stable_hash::hashers::{StableSipHasher128, SipHasher128Hash};
+/// use frontend::rustc_stable_hash::{StableHasher, FromStableHash};
 /// use core::hash::Hasher;
 ///
 /// struct Hash128([u64; 2]);
@@ -95,7 +95,7 @@ pub struct StableHasher<H: ExtendedHasher> {
 /// # Example
 ///
 /// ```
-/// use crate::rustc_stable_hash::{StableHasher, FromStableHash};
+/// use frontend::rustc_stable_hash::{StableHasher, FromStableHash};
 ///
 /// struct Hash128(u128);
 ///

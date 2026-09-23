@@ -198,7 +198,7 @@ pub struct LeafDef {
     ///
     /// Example:
     ///
-    /// ```
+    /// ```text
     /// #![feature(specialization)]
     /// trait Tr {
     ///     fn assoc(&self);

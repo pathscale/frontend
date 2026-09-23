@@ -770,7 +770,7 @@ impl SyntaxContext {
     /// Adjust this context for resolution in a scope created by the given expansion.
     /// For example, consider the following three resolutions of `f`:
     ///
-    /// ```rust
+    /// ```text
     /// #![feature(decl_macro)]
     /// mod foo {
     ///     pub fn f() {} // `f`'s `SyntaxContext` is empty.
