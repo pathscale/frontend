@@ -23,6 +23,8 @@
 //! `force_pinned_sysroot` cargo feature is the opt-in vintage pin; without it
 //! the session claims the version the chosen sysroot actually carries.
 
+pub mod syntax;
+
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
 use alloc::format;
