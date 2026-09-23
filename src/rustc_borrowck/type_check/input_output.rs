@@ -17,7 +17,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use itertools::Itertools;
 use crate::rustc_hir as hir;

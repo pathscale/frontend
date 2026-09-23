@@ -32,9 +32,7 @@ even other Rust compilers, such as rust-analyzer!
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![cfg_attr(feature = "nightly", allow(internal_features))]
-#![cfg_attr(feature = "nightly", feature(rustc_attrs))]
-#![cfg_attr(feature = "nightly", feature(step_trait))]
+#![cfg_attr(feature = "nightly", allow(internal_features))]#![cfg_attr(feature = "nightly", feature(step_trait))]
 
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
@@ -56,8 +54,6 @@ use alloc::string::ToString;
 
 use core::cmp::min;
 use core::fmt;
-#[cfg(feature = "nightly")]
-use core::iter::Step;
 use core::num::{NonZero, ParseIntError};
 use core::ops::{Add, AddAssign, Deref, Mul, Sub};
 use core::range::RangeInclusive;
@@ -1054,55 +1050,8 @@ impl AddAssign for Size {
     }
 }
 
-#[cfg(feature = "nightly")]
-impl Step for Size {
-    #[inline]
-    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
-        u64::steps_between(&start.bytes(), &end.bytes())
-    }
-
-    #[inline]
-    fn forward_checked(start: Self, count: usize) -> Option<Self> {
-        u64::forward_checked(start.bytes(), count).map(Self::from_bytes)
-    }
-
-    #[inline]
-    fn forward_overflowing(start: Self, count: usize) -> (Self, bool) {
-        let (s, o) = u64::forward_overflowing(start.bytes(), count);
-        (Self::from_bytes(s), o)
-    }
-
-    #[inline]
-    fn forward(start: Self, count: usize) -> Self {
-        Self::from_bytes(u64::forward(start.bytes(), count))
-    }
-
-    #[inline]
-    unsafe fn forward_unchecked(start: Self, count: usize) -> Self {
-        Self::from_bytes(unsafe { u64::forward_unchecked(start.bytes(), count) })
-    }
-
-    #[inline]
-    fn backward_checked(start: Self, count: usize) -> Option<Self> {
-        u64::backward_checked(start.bytes(), count).map(Self::from_bytes)
-    }
-
-    #[inline]
-    fn backward_overflowing(start: Self, count: usize) -> (Self, bool) {
-        let (s, o) = u64::backward_overflowing(start.bytes(), count);
-        (Self::from_bytes(s), o)
-    }
-
-    #[inline]
-    fn backward(start: Self, count: usize) -> Self {
-        Self::from_bytes(u64::backward(start.bytes(), count))
-    }
-
-    #[inline]
-    unsafe fn backward_unchecked(start: Self, count: usize) -> Self {
-        Self::from_bytes(unsafe { u64::backward_unchecked(start.bytes(), count) })
-    }
-}
+// No `impl Step for Size`: implementing `Step` is the unstable `step_trait`. A range of sizes is
+// walked in bytes instead, `(0..n.bytes()).map(Size::from_bytes)`.
 
 /// Alignment of a type in bytes (always a power of two).
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

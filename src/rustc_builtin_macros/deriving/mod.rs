@@ -16,13 +16,26 @@ use crate::rustc_expand::base::{Annotatable, ExpandResult, ExtCtxt, MultiItemMod
 use crate::rustc_span::{Span, Symbol, sym};
 use thin_vec::{ThinVec, thin_vec};
 
-macro pathvec($($rest:ident)::+) {{
-    vec![ $( sym::$rest ),+ ]
-}}
-
-macro path_std($($x:tt)*) {
-    generic::ty::Path::new( pathvec!( $($x)* ) )
+// These were decl_macro `macro`s, private to this module and imported by path from the child
+// modules (`use crate::rustc_builtin_macros::deriving::path_std;`). As `macro_rules!` they are
+// defined before the `mod` declarations below, so they are also in textual scope there, and the
+// `pub(crate) use` re-exports keep those path imports working. The bodies now resolve at the call
+// site, so their paths are absolute.
+macro_rules! pathvec {
+    ($($rest:ident)::+) => {{
+        ::alloc::vec![ $( $crate::rustc_span::sym::$rest ),+ ]
+    }};
 }
+pub(crate) use pathvec;
+
+macro_rules! path_std {
+    ($($x:tt)*) => {
+        $crate::rustc_builtin_macros::deriving::generic::ty::Path::new(
+            $crate::rustc_builtin_macros::deriving::pathvec!( $($x)* )
+        )
+    };
+}
+pub(crate) use path_std;
 
 pub(crate) mod bounds;
 pub(crate) mod clone;

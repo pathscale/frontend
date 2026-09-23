@@ -155,6 +155,8 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 }
 
 impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
+    type Result = ();
+
     fn visit_item(&mut self, i: &'a Item) {
         // Pick the def data. This need not be unique, but the more
         // information we encapsulate into, the better
@@ -311,15 +313,16 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
 
     fn visit_foreign_item(&mut self, fi: &'a ForeignItem) {
         let (ident, def_kind) = match fi.kind {
-            ForeignItemKind::Static(StaticItem {
-                ident,
-                ty: _,
-                mutability,
-                expr: _,
-                safety,
-                define_opaque: _,
-                eii_impl: _,
-            }) => {
+            ForeignItemKind::Static(ref static_item) => {
+                let StaticItem {
+                    ident,
+                    ty: _,
+                    mutability,
+                    expr: _,
+                    safety,
+                    define_opaque: _,
+                    eii_impl: _,
+                } = **static_item;
                 let safety = match safety {
                     ast::Safety::Unsafe(_) | ast::Safety::Default => hir::Safety::Unsafe,
                     ast::Safety::Safe(_) => hir::Safety::Safe,
@@ -327,8 +330,8 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
 
                 (ident, DefKind::Static { safety, mutability, nested: false })
             }
-            ForeignItemKind::Fn(Fn { ident, .. }) => (ident, DefKind::Fn),
-            ForeignItemKind::TyAlias(TyAlias { ident, .. }) => (ident, DefKind::ForeignTy),
+            ForeignItemKind::Fn(ref f) => (f.ident, DefKind::Fn),
+            ForeignItemKind::TyAlias(ref t) => (t.ident, DefKind::ForeignTy),
             ForeignItemKind::MacCall(_) => {
                 self.visit_invoc_in_module(fi.id);
                 self.visit_macro_invoc(fi.id);
@@ -398,16 +401,14 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
 
     fn visit_assoc_item(&mut self, i: &'a AssocItem, ctxt: visit::AssocCtxt) {
         let (ident, def_kind, ns) = match &i.kind {
-            AssocItemKind::Fn(Fn { ident, .. })
-            | AssocItemKind::Delegation(Delegation { ident, .. }) => {
-                (*ident, DefKind::AssocFn, ValueNS)
-            }
-            AssocItemKind::Const(ConstItem { ident, kind, .. }) => (
-                *ident,
-                DefKind::AssocConst { is_type_const: *kind == ConstItemKind::TypeConst },
+            AssocItemKind::Fn(f) => (f.ident, DefKind::AssocFn, ValueNS),
+            AssocItemKind::Delegation(d) => (d.ident, DefKind::AssocFn, ValueNS),
+            AssocItemKind::Const(c) => (
+                c.ident,
+                DefKind::AssocConst { is_type_const: c.kind == ConstItemKind::TypeConst },
                 ValueNS,
             ),
-            AssocItemKind::Type(TyAlias { ident, .. }) => (*ident, DefKind::AssocTy, TypeNS),
+            AssocItemKind::Type(t) => (t.ident, DefKind::AssocTy, TypeNS),
             AssocItemKind::MacCall(..) => {
                 self.visit_macro_invoc(i.id);
                 self.visit_assoc_item_mac_call(i, ctxt);
@@ -580,7 +581,9 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
                         .push((normal.item.path.segments[0].ident, self.parent_scope));
                 }
             }
-            AttrKind::Synthetic(CfgTrace(_) | CfgAttrTrace(_)) => {}
+            AttrKind::Synthetic(s) => match **s {
+                CfgTrace(_) | CfgAttrTrace(_) => {}
+            },
             AttrKind::DocComment(..) => {}
         }
         visit::walk_attribute(self, attr);

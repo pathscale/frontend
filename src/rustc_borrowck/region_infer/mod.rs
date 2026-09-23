@@ -1124,7 +1124,6 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         // duplicated. The polonius subset errors are deduplicated here, while keeping the
         // CFG-location ordering.
         // We can iterate the HashMap here because the result is sorted afterwards.
-        #[allow(rustc::potential_query_instability)]
         let mut subset_errors: Vec<_> = polonius_output
             .subset_errors
             .iter()
@@ -1528,8 +1527,9 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             // A constraint like `'r: 'x` can come from our constraint
             // graph.
 
-            // Always inline this closure because it can be hot.
-            let mut handle_trace = #[inline(always)]
+            // Upstream forced this closure inline with `#[inline(always)]`; attributes on
+            // expressions are unstable, so the hint is left to the optimiser.
+            let mut handle_trace =
             |sub, trace| {
                 if let Trace::NotVisited = context[sub] {
                     context[sub] = trace;

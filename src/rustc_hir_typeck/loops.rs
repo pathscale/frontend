@@ -106,8 +106,9 @@ pub(crate) fn check<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId, body: &'tcx hir
 
 impl<'hir> Visitor<'hir> for CheckLoopVisitor<'hir> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'hir> {
         self.tcx
     }
 

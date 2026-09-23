@@ -264,9 +264,7 @@ fn parse_rust_feature_list<'a>(
             let mut new_features = vec![base_feature];
             while let Some(new_feature) = new_features.pop() {
                 if implied_features.insert(new_feature) {
-                    if let Some(implied_features) = inverse_implied_features.get(&new_feature) {
-                        #[allow(rustc::potential_query_instability)]
-                        new_features.extend(implied_features)
+                    if let Some(implied_features) = inverse_implied_features.get(&new_feature) {                        new_features.extend(implied_features)
                     }
                 }
             }
@@ -311,7 +309,6 @@ pub fn internal_target_features<'a, const N: usize>(
             // directly-implied features.
             //
             // Iteration order is irrelevant because we're collecting into an `UnordSet`.
-            #[allow(rustc::potential_query_instability)]
             sess.target
                 .implied_target_features(base_feature, &features_map)
                 .into_iter()
@@ -365,11 +362,9 @@ pub fn internal_target_features<'a, const N: usize>(
                     let new_features = new_features.unwrap();
                     // Add feature to our set -- only if it is actually a recognized feature.
                     // Iteration order is irrelevant since this only influences an `FxHashMap`.
-                    #[allow(rustc::potential_query_instability)]
                     enabled_disabled_features.extend(new_features.iter().map(|&s| (s, enable)));
 
                     // Iteration order is irrelevant since this only influences an `UnordSet`.
-                    #[allow(rustc::potential_query_instability)]
                     if enable {
                         features.extend(new_features.into_iter().map(|f| Symbol::intern(f)));
                     } else {

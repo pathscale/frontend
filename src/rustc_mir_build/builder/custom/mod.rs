@@ -88,10 +88,9 @@ pub(super) fn build_custom_mir<'tcx>(
         block_map: FxHashMap::default(),
     };
 
-    let res = try {
-        pctxt.parse_args(params)?;
-        pctxt.parse_body(expr)?;
-    };
+    // `and_then` in place of an unstable `try {}` block: the body is parsed only if the
+    // arguments parsed.
+    let res = pctxt.parse_args(params).and_then(|()| pctxt.parse_body(expr));
     if let Err(err) = res {
         tcx.dcx().span_fatal(
             err.span,

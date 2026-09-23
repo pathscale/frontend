@@ -907,7 +907,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
     }
 
     fn visit_var_debug_info(&mut self, debuginfo: &VarDebugInfo<'tcx>) {
-        if let Some(VarDebugInfoFragment { ty, ref projection }) = debuginfo.composite {
+        if let Some(ref composite) = debuginfo.composite {
+            let VarDebugInfoFragment { ty, ref projection } = **composite;
             if ty.is_union() || ty.is_enum() {
                 self.fail(
                     START_BLOCK.start_location(),
@@ -974,8 +975,9 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
             }
         }
 
-        if let ClearCrossCrate::Set(LocalInfo::DerefTemp) =
+        if let ClearCrossCrate::Set(ref local_info) =
             self.body.local_decls[place.local].local_info
+            && let LocalInfo::DerefTemp = **local_info
             && !place.is_indirect_first_projection()
         {
             if cntxt != PlaceContext::MutatingUse(MutatingUseContext::Store)
@@ -1476,7 +1478,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
 
     fn visit_statement(&mut self, statement: &Statement<'tcx>, location: Location) {
         match &statement.kind {
-            StatementKind::Assign((dest, rvalue)) => {
+            StatementKind::Assign(assign) => {
+                let (dest, rvalue) = &**assign;
                 // LHS and RHS of the assignment must have the same type.
                 let left_ty = dest.ty(&self.body.local_decls, self.tcx).ty;
                 let right_ty = rvalue.ty(&self.body.local_decls, self.tcx);
@@ -1494,8 +1497,9 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                 }
 
                 if let Some(local) = dest.as_local()
-                    && let ClearCrossCrate::Set(LocalInfo::DerefTemp) =
+                    && let ClearCrossCrate::Set(ref local_info) =
                         self.body.local_decls[local].local_info
+                    && let LocalInfo::DerefTemp = **local_info
                     && !matches!(rvalue, Rvalue::CopyForDeref(_))
                 {
                     self.fail(location, "assignment to a `DerefTemp` must use `CopyForDeref`")
@@ -1517,7 +1521,9 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                     );
                 }
             }
-            StatementKind::Intrinsic(NonDivergingIntrinsic::Assume(op)) => {
+            StatementKind::Intrinsic(intrinsic)
+                if let NonDivergingIntrinsic::Assume(op) = &**intrinsic =>
+            {
                 let ty = op.ty(&self.body.local_decls, self.tcx);
                 if !ty.is_bool() {
                     self.fail(
@@ -1526,9 +1532,13 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                     );
                 }
             }
-            StatementKind::Intrinsic(NonDivergingIntrinsic::CopyNonOverlapping(
-                CopyNonOverlapping { src, dst, count },
-            )) => {
+            StatementKind::Intrinsic(intrinsic) => {
+                // `Assume` was handled by the previous arm, so this is `CopyNonOverlapping`.
+                let NonDivergingIntrinsic::CopyNonOverlapping(CopyNonOverlapping { src, dst, count }) =
+                    &**intrinsic
+                else {
+                    unreachable!()
+                };
                 let src_ty = src.ty(&self.body.local_decls, self.tcx);
                 let op_src_ty = if let Some(src_deref) = src_ty.builtin_deref(true) {
                     src_deref
@@ -1661,7 +1671,9 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
     }
 
     fn visit_local_decl(&mut self, local: Local, local_decl: &LocalDecl<'tcx>) {
-        if let ClearCrossCrate::Set(LocalInfo::DerefTemp) = local_decl.local_info {
+        if let ClearCrossCrate::Set(ref local_info) = local_decl.local_info
+            && let LocalInfo::DerefTemp = **local_info
+        {
             if self.body.phase >= MirPhase::Runtime(RuntimePhase::Initial) {
                 self.fail(
                     START_BLOCK.start_location(),

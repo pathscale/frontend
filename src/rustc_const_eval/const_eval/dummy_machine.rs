@@ -19,26 +19,32 @@ use crate::rustc_target::callconv::FnAbi;
 
 use crate::rustc_const_eval::interpret::{
     self, HasStaticRootDefId, ImmTy, Immediate, InterpCx, PointerArithmetic, interp_ok,
-    throw_machine_stop,
 };
 
 /// Macro for machine-specific `InterpError` without allocation.
 /// (These will never be shown to the user, but they help diagnose ICEs.)
-pub macro throw_machine_stop_str($($tt:tt)*) {{
-    // We make a new local type for it. The type itself does not carry any information,
-    // but its vtable (for the `MachineStopType` trait) does.
-    #[derive(Debug)]
-    struct Zst;
-    // Printing this type shows the desired string.
-    impl core::fmt::Display for Zst {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            write!(f, $($tt)*)
+// Was a `pub macro` (decl_macro). `#[macro_export]` plus the `pub use` below keeps the
+// `const_eval::throw_machine_stop_str` path working for importers. `macro_rules!` paths resolve
+// at the call site, so every path in the body is absolute.
+#[macro_export]
+macro_rules! throw_machine_stop_str {
+    ($($tt:tt)*) => {{
+        // We make a new local type for it. The type itself does not carry any information,
+        // but its vtable (for the `MachineStopType` trait) does.
+        #[derive(Debug)]
+        struct Zst;
+        // Printing this type shows the desired string.
+        impl ::core::fmt::Display for Zst {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                ::core::write!(f, $($tt)*)
+            }
         }
-    }
-    impl crate::rustc_middle::mir::interpret::MachineStopType for Zst {}
+        impl $crate::rustc_middle::mir::interpret::MachineStopType for Zst {}
 
-    throw_machine_stop!(Zst)
-}}
+        $crate::throw_machine_stop!(Zst)
+    }};
+}
+pub use crate::throw_machine_stop_str;
 
 pub struct DummyMachine;
 

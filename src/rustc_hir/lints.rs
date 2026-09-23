@@ -1,6 +1,5 @@
 #[allow(unused_imports)]
 use {alloc::boxed::Box};
-use crate::rustc_data_structures::sync::{DynSend, DynSync};
 use crate::rustc_error_messages::MultiSpan;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Level};
 use crate::rustc_hir_id::HirId;
@@ -18,10 +17,10 @@ pub struct DelayedLint {
     pub lint_id: LintId,
     pub id: HirId,
     pub span: MultiSpan,
+    // `+ DynSend + DynSync` dropped: they are no longer auto traits, so a trait object
+    // cannot name them (see `rustc_data_structures/marker.rs`).
     pub callback: Box<
         dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn core::any::Any) -> Diag<'a, ()>
-            + DynSend
-            + DynSync
             + 'static,
     >,
 }

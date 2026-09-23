@@ -165,6 +165,8 @@ fn highest_var_in_clauses<'tcx>(c: ty::Clauses<'tcx>) -> usize {
         max_var: usize,
     }
     impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for HighestVarInClauses {
+        type Result = ();
+
         fn visit_ty(&mut self, t: Ty<'tcx>) {
             if let ty::Bound(ty::BoundVarIndexKind::Canonical, bound_ty) = *t.kind() {
                 self.max_var = self.max_var.max(bound_ty.var.as_usize());

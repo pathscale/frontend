@@ -185,18 +185,11 @@ impl<H: ExtendedHasher> Hasher for StableHasher<H> {
         self.state.write(bytes);
     }
 
-    #[cfg(feature = "nightly")]
-    #[inline]
-    fn write_str(&mut self, s: &str) {
-        self.state.write_str(s);
-    }
-
-    #[cfg(feature = "nightly")]
-    #[inline]
-    fn write_length_prefix(&mut self, len: usize) {
-        // Our impl for `usize` will extend it if needed.
-        self.write_usize(len);
-    }
+    // `write_str` and `write_length_prefix` are not overridden: both are `hasher_prefixfree_extras`,
+    // unstable to implement. Nothing is lost by it. The provided `write_str` writes the bytes and a
+    // 0xFF terminator through `write` and `write_u8`, which forward to `state` exactly as the
+    // override did, and the provided `write_length_prefix` calls `write_usize`, whose impl below
+    // extends it to 64 bits just as the override relied on.
 
     #[inline]
     fn write_u8(&mut self, i: u8) {

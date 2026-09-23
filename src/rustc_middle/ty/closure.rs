@@ -437,22 +437,44 @@ pub fn analyze_coroutine_closure_captures<'a, 'tcx: 'a, T>(
     child_captures: impl IntoIterator<Item = &'a CapturedPlace<'tcx>>,
     mut for_each: impl FnMut((usize, &'a CapturedPlace<'tcx>), (usize, &'a CapturedPlace<'tcx>)) -> T,
 ) -> impl Iterator<Item = T> {
-    gen move {
-        let mut child_captures = child_captures.into_iter().enumerate().peekable();
+    // This was a `gen move {}` block (unstable). It is now an explicit state machine over
+    // `from_fn`: `current` is the parent capture being matched plus whether it has been used,
+    // and `finished` keeps the iterator fused so the final assertion runs once, as before.
+    let mut child_captures = child_captures.into_iter().enumerate().peekable();
+    let mut parent_captures = parent_captures.into_iter().enumerate();
+    let mut current: Option<((usize, &'a CapturedPlace<'tcx>), bool)> = None;
+    let mut finished = false;
 
-        // One parent capture may correspond to several child captures if we end up
-        // refining the set of captures via edition-2021 precise captures. We want to
-        // match up any number of child captures with one parent capture, so we keep
-        // peeking off this `Peekable` until the child doesn't match anymore.
-        for (parent_field_idx, parent_capture) in parent_captures.into_iter().enumerate() {
-            // Make sure we use every field at least once, b/c why are we capturing something
-            // if it's not used in the inner coroutine.
-            let mut field_used_at_least_once = false;
+    core::iter::from_fn(move || {
+        loop {
+            if finished {
+                return None;
+            }
+
+            // One parent capture may correspond to several child captures if we end up
+            // refining the set of captures via edition-2021 precise captures. We want to
+            // match up any number of child captures with one parent capture, so we keep
+            // peeking off this `Peekable` until the child doesn't match anymore.
+            if current.is_none() {
+                match parent_captures.next() {
+                    // Make sure we use every field at least once, b/c why are we capturing
+                    // something if it's not used in the inner coroutine.
+                    Some(parent) => current = Some((parent, false)),
+                    None => {
+                        finished = true;
+                        assert_eq!(child_captures.next(), None, "leftover child captures?");
+                        return None;
+                    }
+                }
+            }
+            let ((parent_field_idx, parent_capture), field_used_at_least_once) =
+                current.as_mut().unwrap();
+            let (parent_field_idx, parent_capture) = (*parent_field_idx, *parent_capture);
 
             // A parent matches a child if they share the same prefix of projections.
             // The child may have more, if it is capturing sub-fields out of
             // something that is captured by-move in the parent closure.
-            while child_captures.peek().is_some_and(|(_, child_capture)| {
+            if child_captures.peek().is_some_and(|(_, child_capture)| {
                 child_prefix_matches_parent_projections(parent_capture, child_capture)
             }) {
                 let (child_field_idx, child_capture) = child_captures.next().unwrap();
@@ -464,22 +486,21 @@ pub fn analyze_coroutine_closure_captures<'a, 'tcx: 'a, T>(
                     child capture ({child_capture:#?})"
                 );
 
-                yield for_each(
+                *field_used_at_least_once = true;
+                return Some(for_each(
                     (parent_field_idx, parent_capture),
                     (child_field_idx, child_capture),
-                );
-
-                field_used_at_least_once = true;
+                ));
             }
 
             // Make sure the field was used at least once.
             assert!(
-                field_used_at_least_once,
+                *field_used_at_least_once,
                 "we captured {parent_capture:#?} but it was not used in the child coroutine?"
             );
+            current = None;
         }
-        assert_eq!(child_captures.next(), None, "leftover child captures?");
-    }
+    })
 }
 
 fn child_prefix_matches_parent_projections(

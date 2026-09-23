@@ -223,10 +223,8 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                         second: exp_span.shrink_to_hi(),
                     })
                 }
-                ObligationCauseCode::MatchExpressionArm(MatchExpressionArmCause {
-                    prior_non_diverging_arms,
-                    ..
-                }) => {
+                ObligationCauseCode::MatchExpressionArm(arm_cause) => {
+                    let MatchExpressionArmCause { prior_non_diverging_arms, .. } = &**arm_cause;
                     if let [.., arm_span] = &prior_non_diverging_arms[..] {
                         Some(ConsiderAddingAwait::BothFuturesSugg {
                             first: arm_span.shrink_to_hi(),
@@ -262,10 +260,8 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     let then_span = self.find_block_span_from_hir_id(then_expr.hir_id);
                     Some(ConsiderAddingAwait::FutureSugg { span: then_span.shrink_to_hi() })
                 }
-                ObligationCauseCode::MatchExpressionArm(MatchExpressionArmCause {
-                    prior_non_diverging_arms,
-                    ..
-                }) => Some({
+                ObligationCauseCode::MatchExpressionArm(arm_cause) => Some({
+                    let MatchExpressionArmCause { prior_non_diverging_arms, .. } = &**arm_cause;
                     ConsiderAddingAwait::FutureSuggMultiple {
                         spans: prior_non_diverging_arms
                             .iter()
@@ -684,6 +680,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         }
 
         impl<'v> Visitor<'v> for IfVisitor {
+            type NestedFilter = hir::intravisit::IgnoreNested;
             type Result = ControlFlow<()>;
             fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) -> Self::Result {
                 match ex.kind {

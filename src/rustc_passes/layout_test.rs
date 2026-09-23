@@ -107,6 +107,8 @@ struct UnwrapLayoutCx<'tcx> {
 }
 
 impl<'tcx> LayoutOfHelpers<'tcx> for UnwrapLayoutCx<'tcx> {
+    type LayoutOfResult = crate::rustc_middle::ty::layout::TyAndLayout<'tcx>;
+
     fn handle_layout_err(&self, err: LayoutError<'tcx>, span: Span, ty: Ty<'tcx>) -> ! {
         span_bug!(
             span,

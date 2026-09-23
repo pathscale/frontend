@@ -198,7 +198,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     })
                     .join(", ");
 
-                let args = FormatArgs { unresolved: this.clone(), this, .. };
+                let args = FormatArgs { unresolved: this.clone(), ..FormatArgs::new(this) };
 
                 let CustomDiagnostic { message, label, notes, parent_label: _dead } =
                     directive.eval(None, &args);
@@ -229,7 +229,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         "<unnamed crate>".to_string()
                     };
                     let unresolved = import_error.segment.map(|s| s.name).unwrap_or(kw::Underscore);
-                    let args = FormatArgs { this, unresolved: unresolved.to_string(), .. };
+                    let args = FormatArgs { unresolved: unresolved.to_string(), ..FormatArgs::new(this) };
 
                     directive.eval(None, &args)
                 } else {
@@ -1508,7 +1508,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 Scope::DeriveHelpers(expn_id) => {
                     let res = Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper);
                     if filter_fn(res) {
-                        suggestions.extend(this.helper_attrs.get(&expn_id).into_flat_iter().map(
+                        suggestions.extend(this.helper_attrs.get(&expn_id).into_iter().flatten().map(
                             |&(ident, orig_ident_span, _)| {
                                 TypoSuggestion::new(ident.name, orig_ident_span, res)
                             },
@@ -2153,7 +2153,6 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         let mut derives = vec![];
         let mut all_attrs: UnordMap<Symbol, Vec<_>> = UnordMap::default();
         // We're collecting these in a hashmap, and handle ordering the output further down.
-        #[allow(rustc::potential_query_instability)]
         for (def_id, ext) in self
             .local_macro_map
             .iter()
@@ -4230,6 +4229,8 @@ impl UsePlacementFinder {
 }
 
 impl<'tcx> Visitor<'tcx> for UsePlacementFinder {
+    type Result = ();
+
     fn visit_crate(&mut self, c: &Crate) {
         if self.target_module == CRATE_NODE_ID {
             let inject = c.spans.inject_use_span;
@@ -4264,6 +4265,8 @@ struct BindingVisitor {
 }
 
 impl<'tcx> Visitor<'tcx> for BindingVisitor {
+    type Result = ();
+
     fn visit_pat(&mut self, pat: &ast::Pat) {
         if let ast::PatKind::Ident(_, ident, _) = pat.kind {
             self.identifiers.push(ident.name);

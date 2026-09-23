@@ -108,7 +108,9 @@ impl AttributeExt for Attribute {
         use SyntheticAttr::*;
         match &self.kind {
             AttrKind::Normal(normal) => normal.item.name(),
-            AttrKind::Synthetic(CfgTrace(_) | CfgAttrTrace(_)) => None,
+            AttrKind::Synthetic(s) => match **s {
+                CfgTrace(_) | CfgAttrTrace(_) => None,
+            },
             AttrKind::DocComment(..) => None,
         }
     }
@@ -119,7 +121,9 @@ impl AttributeExt for Attribute {
             AttrKind::Normal(normal) => {
                 Some(normal.item.path.segments.iter().map(|i| i.ident.name).collect())
             }
-            AttrKind::Synthetic(CfgTrace(_) | CfgAttrTrace(_)) => None,
+            AttrKind::Synthetic(s) => match **s {
+                CfgTrace(_) | CfgAttrTrace(_) => None,
+            },
             AttrKind::DocComment(_, _) => None,
         }
     }

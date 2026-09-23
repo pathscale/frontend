@@ -19,7 +19,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_infer::infer::InferCtxt;
 use rustc_macros::extension;
@@ -391,7 +391,8 @@ impl<'a, 'tcx> InspectGoal<'a, 'tcx> {
 
 /// The public API to interact with proof trees.
 pub trait ProofTreeVisitor<'tcx> {
-    type Result: VisitorResult = ();
+    // Stable Rust has no associated type defaults, so every impl names this type.
+    type Result: VisitorResult;
 
     fn span(&self) -> Span;
 

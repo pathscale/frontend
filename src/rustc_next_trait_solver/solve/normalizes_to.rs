@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 
 use crate::rustc_type_ir::fast_reject::DeepRejectCtxt;
 use crate::rustc_type_ir::inherent::*;

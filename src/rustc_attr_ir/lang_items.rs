@@ -24,7 +24,7 @@ use crate::rustc_attr_ir::target::{AssocCtxt, MethodKind, Target};
 pub struct LanguageItems {
     /// Mappings from lang items to their possibly found [`DefId`]s.
     /// The index corresponds to the order in [`LangItem`].
-    items: [Option<DefId>; core::mem::variant_count::<LangItem>()],
+    items: [Option<DefId>; LangItem::COUNT],
     reverse_items: FxIndexMap<DefId, LangItem>,
     /// Lang items that were not found during collection.
     pub missing: Vec<LangItem>,
@@ -34,7 +34,7 @@ impl LanguageItems {
     /// Construct an empty collection of lang items and no missing ones.
     pub fn new() -> Self {
         Self {
-            items: [None; core::mem::variant_count::<LangItem>()],
+            items: [None; LangItem::COUNT],
             reverse_items: FxIndexMap::default(),
             missing: Vec::new(),
         }
@@ -92,10 +92,14 @@ macro_rules! language_item_table {
         }
 
         impl LangItem {
+            /// The number of variants. Counted from the table rather than asked of
+            /// `mem::variant_count`, which is unstable.
+            pub(crate) const COUNT: usize = [$(LangItem::$variant),*].len();
+
             fn from_u32(u: u32) -> Option<LangItem> {
                 // This implementation is clumsy, but makes no assumptions
                 // about how discriminant tags are allocated within the
-                // range `0 .. core::mem::variant_count::<LangItem>()`.
+                // range `0 .. LangItem::COUNT`.
                 $(if u == LangItem::$variant as u32 {
                     return Some(LangItem::$variant)
                 })*

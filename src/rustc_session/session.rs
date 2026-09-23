@@ -645,7 +645,6 @@ impl Session {
         let found_positive = requested_features.clone().any(|r| r == "+crt-static");
 
         // JUSTIFICATION: necessary use of crate_types directly (see FIXME below)
-        #[allow(rustc::bad_opt_access)]
         if found_positive || found_negative {
             found_positive
         } else if crate_type == Some(CrateType::ProcMacro)
@@ -832,7 +831,6 @@ impl Session {
 }
 
 // JUSTIFICATION: defn of the suggested wrapper fns
-#[allow(rustc::bad_opt_access)]
 impl Session {
     pub fn verbose_internals(&self) -> bool {
         self.opts.unstable_opts.verbose_internals
@@ -1200,7 +1198,6 @@ impl Session {
 }
 
 // JUSTIFICATION: part of session construction
-#[allow(rustc::bad_opt_access)]
 fn default_emitter(sopts: &config::Options, source_map: Arc<SourceMap>) -> Box<DynEmitter> {
     let macro_backtrace = sopts.unstable_opts.macro_backtrace;
     let track_diagnostics = sopts.unstable_opts.track_diagnostics;
@@ -1258,7 +1255,6 @@ fn default_emitter(sopts: &config::Options, source_map: Arc<SourceMap>) -> Box<D
 }
 
 // JUSTIFICATION: literally session construction
-#[allow(rustc::bad_opt_access)]
 pub fn build_session(
     sopts: config::Options,
     io: CompilerIO,
@@ -1428,7 +1424,6 @@ pub fn generate_proc_macro_decls_symbol(stable_crate_id: StableCrateId) -> Strin
 /// If it is useful to have a Session available already for validating a commandline argument, you
 /// can do so here.
 // JUSTIFICATION: needs to access args to validate them
-#[allow(rustc::bad_opt_access)]
 fn validate_commandline_args_with_session_available(sess: &Session) {
     // Since we don't know if code in an rlib will be linked to statically or
     // dynamically downstream, rustc generates `__imp_` symbols that help linkers

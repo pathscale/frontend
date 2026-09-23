@@ -230,14 +230,13 @@ impl EarlyLintPass for UnsafeCode {
 
     fn check_item(&mut self, cx: &EarlyContext<'_>, it: &ast::Item) {
         match it.kind {
-            ast::ItemKind::Trait(ast::Trait { safety: ast::Safety::Unsafe(_), .. }) => {
+            ast::ItemKind::Trait(ref t) if matches!(t.safety, ast::Safety::Unsafe(_)) => {
                 self.report_unsafe(cx, it.span, BuiltinUnsafe::UnsafeTrait);
             }
 
-            ast::ItemKind::Impl(ast::Impl {
-                of_trait: Some(ast::TraitImplHeader { safety: ast::Safety::Unsafe(_), .. }),
-                ..
-            }) => {
+            ast::ItemKind::Impl(ast::Impl { of_trait: Some(ref h), .. })
+                if matches!(h.safety, ast::Safety::Unsafe(_)) =>
+            {
                 self.report_unsafe(cx, it.span, BuiltinUnsafe::UnsafeImpl);
             }
 
@@ -731,7 +730,8 @@ impl EarlyLintPass for AnonymousParameters {
             // This is a hard error in future editions; avoid linting and erroring
             return;
         }
-        if let ast::AssocItemKind::Fn(Fn { ref sig, .. }) = it.kind {
+        if let ast::AssocItemKind::Fn(ref f) = it.kind {
+            let Fn { ref sig, .. } = **f;
             for arg in sig.decl.inputs.iter() {
                 if let ast::PatKind::Missing = arg.pat.kind {
                     let ty_snip = cx.sess().source_map().span_to_snippet(arg.ty.span);
@@ -1371,6 +1371,8 @@ pub(crate) struct ShorthandAssocTyCollector {
 }
 
 impl hir::intravisit::Visitor<'_> for ShorthandAssocTyCollector {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_qpath(&mut self, qpath: &hir::QPath<'_>, id: hir::HirId, _: Span) {
         // Look for "type-parameter shorthand-associated-types". I.e., paths of the
         // form `T::Assoc` with `T` type param. These are reliant on trait bounds.

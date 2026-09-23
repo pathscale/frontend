@@ -597,6 +597,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         impl<'tcx> intravisit::Visitor<'tcx> for CollectClauses<'_, 'tcx> {
+            type NestedFilter = intravisit::IgnoreNested;
+            type Result = ();
             fn visit_ty(&mut self, ty: &'tcx hir::Ty<'tcx, AmbigArg>) {
                 if let Some(clauses) = self.fcx.trait_ascriptions.borrow().get(&ty.hir_id.local_id)
                 {

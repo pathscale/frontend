@@ -688,14 +688,10 @@ define_output_types! {
 }
 
 /// The type of diagnostics output to generate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorOutputType {
     /// Output meant for the consumption of humans.
-    #[default]
-    HumanReadable {
-        kind: HumanReadableErrorType = HumanReadableErrorType { short: false, unicode: false },
-        color_config: ColorConfig = ColorConfig::Auto,
-    },
+    HumanReadable { kind: HumanReadableErrorType, color_config: ColorConfig },
     /// Output that's consumed by other tools such as `rustfix` or the `RLS`.
     Json {
         /// Render the JSON in a human readable way (with indents and newlines).
@@ -705,6 +701,17 @@ pub enum ErrorOutputType {
         json_rendered: HumanReadableErrorType,
         color_config: ColorConfig,
     },
+}
+
+// Written by hand because stable `#[derive(Default)]` accepts only a unit variant as the
+// default, and stable Rust has no field default values to fill `HumanReadable` from.
+impl Default for ErrorOutputType {
+    fn default() -> Self {
+        ErrorOutputType::HumanReadable {
+            kind: HumanReadableErrorType { short: false, unicode: false },
+            color_config: ColorConfig::Auto,
+        }
+    }
 }
 
 #[derive(Clone, Hash, Debug)]
@@ -865,10 +872,10 @@ impl ExternEntry {
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct NextSolverConfig {
     /// Whether the new trait solver should be enabled in coherence.
-    pub coherence: bool = true,
+    pub coherence: bool,
     /// Whether the new trait solver should be enabled everywhere.
     /// This is only `true` if `coherence` is also enabled.
-    pub globally: bool = false,
+    pub globally: bool,
 }
 
 // FIXME(#160895): Using -Znext-solver as default on nightly

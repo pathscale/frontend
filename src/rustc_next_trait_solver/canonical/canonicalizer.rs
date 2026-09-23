@@ -156,7 +156,6 @@ impl<'a, D: SolverDelegate<Interner = I>, I: Interner> Canonicalizer<'a, D, I> {
                         variables: rest_canonicalizer.state.variables.clone(),
                         var_kinds: rest_canonicalizer.state.var_kinds.clone(),
                         // SAFETY: The iterated elements go straight back into a hashmap.
-                        #[allow(rustc::potential_query_instability)]
                         variable_lookup_table: rest_canonicalizer
                             .state
                             .variable_lookup_table
@@ -176,7 +175,6 @@ impl<'a, D: SolverDelegate<Interner = I>, I: Interner> Canonicalizer<'a, D, I> {
                     rest_canonicalizer.state.variables.extend(e.variables.iter().copied());
                     rest_canonicalizer.state.var_kinds.extend(e.var_kinds.iter().copied());
                     // SAFETY: The iterated elements go straight back into a hashmap.
-                    #[allow(rustc::potential_query_instability)]
                     rest_canonicalizer
                         .state
                         .variable_lookup_table

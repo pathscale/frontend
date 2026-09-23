@@ -78,18 +78,21 @@ impl AllocBytes for Box<[u8]> {
     }
 
     fn zeroed(size: Size, _align: Align, _params: ()) -> Option<Self> {
-        let bytes = Box::<[u8]>::try_new_zeroed_slice(size.bytes().try_into().ok()?).ok()?;
-        // SAFETY: the box was zero-allocated, which is a valid initial value for Box<[u8]>
-        let bytes = unsafe { bytes.assume_init() };
-        Some(bytes)
+        let len: usize = size.bytes().try_into().ok()?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).ok()?;
+        bytes.resize(len, 0u8);
+        Some(bytes.into_boxed_slice())
     }
 
     fn as_mut_ptr(&mut self) -> *mut u8 {
-        Box::as_mut_ptr(self).cast()
+        // `<[u8]>::as_mut_ptr` through the deref: `Box::as_mut_ptr` is unstable, and a bare
+        // `as_mut_ptr` here resolves to this trait method and recurses forever.
+        <[u8]>::as_mut_ptr(self)
     }
 
     fn as_ptr(&self) -> *const u8 {
-        Box::as_ptr(self).cast()
+        <[u8]>::as_ptr(self)
     }
 }
 
@@ -292,7 +295,6 @@ impl hash::Hash for Allocation {
 /// means that both the inner type (`Allocation`) and the outer type
 /// (`ConstAllocation`) are used quite a bit.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, StableHash)]
-#[rustc_pass_by_value]
 pub struct ConstAllocation<'tcx>(pub Interned<'tcx, Allocation>);
 
 impl<'tcx> fmt::Debug for ConstAllocation<'tcx> {
@@ -465,7 +467,7 @@ impl<Prov: Provenance, Bytes: AllocBytes> Allocation<Prov, (), Bytes> {
             ty::tls::with(|tcx| tcx.dcx().delayed_bug("exhausted memory during interpretation"));
             InterpErrorKind::ResourceExhaustion(ResourceExhaustionInfo::MemoryExhausted)
         })
-        .into()
+        .map_err(Into::into)
     }
 
     /// Try to create an Allocation of `size` bytes. Aborts if there is not enough memory

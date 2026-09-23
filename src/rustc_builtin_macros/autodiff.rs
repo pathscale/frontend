@@ -7,6 +7,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -88,7 +89,8 @@ mod llvm_enzyme {
     // Get information about the function the macro is applied to
     fn extract_item_info(iitem: &Box<ast::Item>) -> Option<(Visibility, FnSig, Ident, Generics)> {
         match &iitem.kind {
-            ItemKind::Fn(ast::Fn { sig, ident, generics, .. }) => {
+            ItemKind::Fn(f) => {
+                let ast::Fn { sig, ident, generics, .. } = &**f;
                 Some((iitem.vis.clone(), sig.clone(), *ident, generics.clone()))
             }
             _ => None,
@@ -239,7 +241,8 @@ mod llvm_enzyme {
             },
             Annotatable::AssocItem(assoc_item, _ctxt @ (Impl { of_trait: _ } | Trait)) => {
                 match &assoc_item.kind {
-                    ast::AssocItemKind::Fn(ast::Fn { sig, ident, generics, .. }) => {
+                    ast::AssocItemKind::Fn(f) => {
+                        let ast::Fn { sig, ident, generics, .. } = &**f;
                         Some((assoc_item.vis.clone(), sig.clone(), *ident, generics.clone(), true))
                     }
                     _ => None,
@@ -385,7 +388,8 @@ mod llvm_enzyme {
                 (ast::AttrKind::Normal(a), ast::AttrKind::Normal(b)) => {
                     let a = &a.item.path;
                     let b = &b.item.path;
-                    a.segments.iter().eq_by(&b.segments, |a, b| a.ident == b.ident)
+                    a.segments.len() == b.segments.len()
+                        && a.segments.iter().zip(&b.segments).all(|(a, b)| a.ident == b.ident)
                 }
                 _ => false,
             }

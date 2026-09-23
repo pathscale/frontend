@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::string::ToString;
 use alloc::borrow::ToOwned;
 use crate::rustc_ast::token::{self, IdentIsRaw, MetaVarKind, Token, TokenKind};
@@ -916,7 +917,7 @@ impl<'a> Parser<'a> {
 
         let sugg = if !lifetimes.is_empty() {
             let snippet =
-                lifetimes.iter().map(|param| param.ident.as_str()).intersperse(", ").collect();
+                lifetimes.iter().map(|param| param.ident.as_str()).separated_by(", ").collect();
 
             let (left, snippet) = if let Some(span) = param_insertion_point {
                 (span, if params.is_empty() { snippet } else { format!(", {snippet}") })
@@ -1610,7 +1611,7 @@ impl<'a> Parser<'a> {
         let generic_args_span = generic_args.span();
         let snippet = format!(
             "for<{}> ",
-            lifetimes.iter().map(|lt| lt.ident.as_str()).intersperse(", ").collect::<String>(),
+            lifetimes.iter().map(|lt| lt.ident.as_str()).separated_by(", ").collect::<String>(),
         );
         let before_fn_path = fn_path.span.shrink_to_lo();
         self.dcx()

@@ -334,17 +334,17 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 err.span_label(span, format!("cannot {act}"));
                 if let Some(mir::Statement {
                     source_info,
-                    kind:
-                        mir::StatementKind::Assign((
-                            _,
-                            mir::Rvalue::Ref(
-                                _,
-                                mir::BorrowKind::Mut { kind: mir::MutBorrowKind::Default },
-                                _,
-                            ),
-                        )),
+                    kind: mir::StatementKind::Assign(assign),
                     ..
                 }) = &self.body[location.block].statements.get(location.statement_index)
+                    && let (
+                        _,
+                        mir::Rvalue::Ref(
+                            _,
+                            mir::BorrowKind::Mut { kind: mir::MutBorrowKind::Default },
+                            _,
+                        ),
+                    ) = &**assign
                 {
                     match *decl.local_info() {
                         LocalInfo::User(BindingForm::Var(mir::VarBindingForm {
@@ -693,6 +693,8 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
             }
 
             impl<'tcx> Visitor<'tcx> for SuggestIndexOperatorAlternativeVisitor<'_, '_, 'tcx> {
+                type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                type Result = ();
                 fn visit_stmt(&mut self, stmt: &'tcx hir::Stmt<'tcx>) {
                     hir::intravisit::walk_stmt(self, stmt);
                     let expr = match stmt.kind {
@@ -1097,6 +1099,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         }
 
         impl<'tcx> Visitor<'tcx> for Finder {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
             type Result = ControlFlow<&'tcx Expr<'tcx>>;
             fn visit_expr(&mut self, e: &'tcx hir::Expr<'tcx>) -> Self::Result {
                 if e.span == self.span {
@@ -1455,10 +1458,10 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 let mut source_span = opt_assignment_rhs_span;
                 if let Some(mir::Statement {
                     source_info: _,
-                    kind:
-                        mir::StatementKind::Assign((_, mir::Rvalue::Use(mir::Operand::Copy(place), _))),
+                    kind: mir::StatementKind::Assign(assign),
                     ..
                 }) = first_assignment_stmt
+                    && let (_, mir::Rvalue::Use(mir::Operand::Copy(place), _)) = &**assign
                 {
                     let local_span = self.body.local_decls[place.local].source_info.span;
                     // `&self` in async functions have a `desugaring_kind`, but the local we assign
@@ -1806,6 +1809,7 @@ struct BindingFinder {
 }
 
 impl<'tcx> Visitor<'tcx> for BindingFinder {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
     type Result = ControlFlow<hir::HirId>;
     fn visit_stmt(&mut self, s: &'tcx hir::Stmt<'tcx>) -> Self::Result {
         if let hir::StmtKind::Let(local) = s.kind
@@ -1915,7 +1919,8 @@ fn suggest_ampmut<'tcx>(
     //                ^^ lifetime annotation not allowed
     //
     if let Some(rhs_stmt) = opt_assignment_rhs_stmt
-        && let StatementKind::Assign((lhs, rvalue)) = &rhs_stmt.kind
+        && let StatementKind::Assign(rhs_assign) = &rhs_stmt.kind
+        && let (lhs, rvalue) = &**rhs_assign
         && let mut rhs_span = rhs_stmt.source_info.span
         && let Ok(mut rhs_str) = tcx.sess.source_map().span_to_snippet(rhs_span)
     {
@@ -1936,7 +1941,8 @@ fn suggest_ampmut<'tcx>(
                 && let [user_ty_proj] = user_ty_projs.contents.as_slice()
                 && user_ty_proj.projs.is_empty()
                 && let Either::Left(rhs_stmt_new) = body.stmt_at(*assign)
-                && let StatementKind::Assign((_, rvalue_new)) = &rhs_stmt_new.kind
+                && let StatementKind::Assign(assign_new) = &rhs_stmt_new.kind
+                && let (_, rvalue_new) = &**assign_new
                 && let rhs_span_new = rhs_stmt_new.source_info.span
                 && let Ok(rhs_str_new) = tcx.sess.source_map().span_to_snippet(rhs_span_new)
             {

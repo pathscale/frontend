@@ -428,6 +428,8 @@ fn find_type_parameters(
     }
 
     impl<'a, 'b> visit::Visitor<'a> for Visitor<'a, 'b> {
+        type Result = ();
+
         fn visit_ty(&mut self, ty: &'a ast::Ty) {
             let stack_len = self.bound_generic_params_stack.len();
             if let ast::TyKind::FnPtr(fn_ptr) = &ty.kind
@@ -1026,7 +1028,9 @@ impl<'a> MethodDef<'a> {
 
             match ty {
                 // Selflike (`&Self`) arguments only occur in non-static methods.
-                Ref(Self_, _) if !self.is_static() => selflike_args.push(arg_expr),
+                Ref(inner, _) if matches!(**inner, Self_) && !self.is_static() => {
+                    selflike_args.push(arg_expr)
+                }
                 Self_ => cx.dcx().span_bug(span, "`Self` in non-return position"),
                 _ => nonselflike_args.push(arg_expr),
             }

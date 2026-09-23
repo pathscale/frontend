@@ -102,10 +102,10 @@ impl<'tcx> ThirBuildCx<'tcx> {
                 Some(DesugaringKind::ForLoop) => {
                     let arm = self.tcx.parent_hir_node(hir_expr.hir_id).expect_arm();
                     let expr = self.tcx.parent_hir_node(arm.hir_id).expect_expr();
-                    core::assert_matches!(expr.kind, hir::ExprKind::Match(..));
+                    crate::assert_matches!(expr.kind, hir::ExprKind::Match(..));
                     // ignore async for loops
                     if let hir::Node::Expr(expr) = self.tcx.parent_hir_node(expr.hir_id) {
-                        core::assert_matches!(expr.kind, hir::ExprKind::DropTemps(..));
+                        crate::assert_matches!(expr.kind, hir::ExprKind::DropTemps(..));
                         attrs = parsed_attrs(expr.hir_id, self.tcx)
                     }
                 }

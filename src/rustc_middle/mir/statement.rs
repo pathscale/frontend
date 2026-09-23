@@ -90,8 +90,9 @@ impl<'tcx> StatementKind<'tcx> {
 
     pub fn as_debuginfo(&self) -> Option<StmtDebugInfo<'tcx>> {
         match self {
-            StatementKind::Assign((place, Rvalue::Ref(_, _, ref_place)))
-                if let Some(local) = place.as_local() =>
+            StatementKind::Assign(assign)
+                if let (place, Rvalue::Ref(_, _, ref_place)) = &**assign
+                    && let Some(local) = place.as_local() =>
             {
                 Some(StmtDebugInfo::AssignRef(local, *ref_place))
             }
@@ -371,7 +372,8 @@ pub struct PlaceRef<'tcx> {
 // this impl will be unnecessary. Until then, we'll
 // leave this impl in place to prevent re-adding a
 // dependency on the `Ord` impl for `DefId`
-impl<'tcx> !PartialOrd for PlaceRef<'tcx> {}
+// (It was `impl<'tcx> !PartialOrd for PlaceRef<'tcx>`, an unstable negative impl; on stable
+// the rule is kept by not deriving or writing `PartialOrd`.)
 
 impl<'tcx> Place<'tcx> {
     // FIXME change this to a const fn by also making List::empty a const fn.
@@ -844,7 +846,8 @@ impl<'tcx> Rvalue<'tcx> {
                 Ty::new_ptr(tcx, place_ty, kind.to_mutbl_lossy())
             }
             Rvalue::Cast(.., ty) => ty,
-            Rvalue::BinaryOp(op, (ref lhs, ref rhs)) => {
+            Rvalue::BinaryOp(op, ref operands) => {
+                let (ref lhs, ref rhs) = **operands;
                 let lhs_ty = lhs.ty(local_decls, tcx);
                 let rhs_ty = rhs.ty(local_decls, tcx);
                 op.ty(tcx, lhs_ty, rhs_ty)

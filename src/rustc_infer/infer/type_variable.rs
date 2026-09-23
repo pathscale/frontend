@@ -307,7 +307,13 @@ impl<'tcx> TypeVariableTable<'_, 'tcx> {
         value_count: usize,
     ) -> (Range<TyVid>, Vec<TypeVariableOrigin>) {
         let range = TyVid::from_usize(value_count)..TyVid::from_usize(self.num_vars());
-        (range.clone(), range.map(|index| self.var_origin(index)).collect())
+        (
+            range.clone(),
+            (range.start.index()..range.end.index())
+                .map(TyVid::from_usize)
+                .map(|index| self.var_origin(index))
+                .collect(),
+        )
     }
 
     /// Returns indices of all root variables that are not yet instantiated.

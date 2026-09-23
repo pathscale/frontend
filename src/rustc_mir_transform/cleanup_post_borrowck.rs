@@ -42,8 +42,12 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for CleanupPostBorrowck {
         for basic_block in body.basic_blocks.as_mut_preserves_cfg().iter_mut() {
             for statement in basic_block.statements.iter_mut() {
                 match statement.kind {
+                    StatementKind::Assign(ref assign)
+                        if matches!(**assign, (_, Rvalue::Ref(_, BorrowKind::Fake(_), _))) =>
+                    {
+                        statement.make_nop(true)
+                    }
                     StatementKind::AscribeUserType(..)
-                    | StatementKind::Assign((_, Rvalue::Ref(_, BorrowKind::Fake(_), _)))
                     | StatementKind::Coverage(
                         // These kinds of coverage statements are markers inserted during
                         // MIR building, and are not needed after InstrumentCoverage.
@@ -53,22 +57,25 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for CleanupPostBorrowck {
                     | StatementKind::BackwardIncompatibleDropHint { .. } => {
                         statement.make_nop(true)
                     }
-                    StatementKind::Assign((
-                        _,
-                        Rvalue::Cast(
-                            ref mut cast_kind @ CastKind::PointerCoercion(
-                                PointerCoercion::ArrayToPointer
-                                | PointerCoercion::MutToConstPointer,
-                                _,
+                    StatementKind::Assign(ref mut assign) => {
+                        if let (
+                            _,
+                            Rvalue::Cast(
+                                ref mut cast_kind @ CastKind::PointerCoercion(
+                                    PointerCoercion::ArrayToPointer
+                                    | PointerCoercion::MutToConstPointer,
+                                    _,
+                                ),
+                                ..,
                             ),
-                            ..,
-                        ),
-                    )) => {
-                        // BorrowCk needed to track whether these cases were coercions or casts,
-                        // to know whether to check lifetimes in their pointees,
-                        // but from now on that distinction doesn't matter,
-                        // so just make them ordinary pointer casts instead.
-                        *cast_kind = CastKind::PtrToPtr;
+                        ) = **assign
+                        {
+                            // BorrowCk needed to track whether these cases were coercions or casts,
+                            // to know whether to check lifetimes in their pointees,
+                            // but from now on that distinction doesn't matter,
+                            // so just make them ordinary pointer casts instead.
+                            *cast_kind = CastKind::PtrToPtr;
+                        }
                     }
                     _ => (),
                 }

@@ -4215,18 +4215,18 @@ impl ItemKind {
     pub fn ident(&self) -> Option<Ident> {
         match *self {
             ItemKind::ExternCrate(_, ident)
-            | ItemKind::Static(StaticItem { ident, .. })
-            | ItemKind::Const(ConstItem { ident, .. })
-            | ItemKind::Fn(Fn { ident, .. })
             | ItemKind::Mod(_, ident, _)
-            | ItemKind::TyAlias(TyAlias { ident, .. })
             | ItemKind::Enum(ident, ..)
             | ItemKind::Struct(ident, ..)
             | ItemKind::Union(ident, ..)
-            | ItemKind::Trait(Trait { ident, .. })
-            | ItemKind::TraitAlias(TraitAlias { ident, .. })
-            | ItemKind::MacroDef(ident, _)
-            | ItemKind::Delegation(Delegation { ident, .. }) => Some(ident),
+            | ItemKind::MacroDef(ident, _) => Some(ident),
+            ItemKind::Static(ref i) => Some(i.ident),
+            ItemKind::Const(ref i) => Some(i.ident),
+            ItemKind::Fn(ref i) => Some(i.ident),
+            ItemKind::TyAlias(ref i) => Some(i.ident),
+            ItemKind::Trait(ref i) => Some(i.ident),
+            ItemKind::TraitAlias(ref i) => Some(i.ident),
+            ItemKind::Delegation(ref i) => Some(i.ident),
 
             ItemKind::ConstBlock(_) => Some(ConstBlockItem::IDENT),
 
@@ -4292,16 +4292,16 @@ impl ItemKind {
 
     pub fn generics(&self) -> Option<&Generics> {
         match self {
-            Self::Fn(Fn { generics, .. })
-            | Self::TyAlias(TyAlias { generics, .. })
-            | Self::Const(ConstItem { generics, .. })
-            | Self::Enum(_, generics, _)
+            Self::Enum(_, generics, _)
             | Self::Struct(_, generics, _)
             | Self::Union(_, generics, _)
-            | Self::Trait(Trait { generics, .. })
-            | Self::TraitAlias(TraitAlias { generics, .. })
-            | Self::Impl(Impl { generics, .. })
-            | Self::TestBinderConstraints(TestBinderConstraints { generics, .. }) => Some(generics),
+            | Self::Impl(Impl { generics, .. }) => Some(generics),
+            Self::Fn(i) => Some(&i.generics),
+            Self::TyAlias(i) => Some(&i.generics),
+            Self::Const(i) => Some(&i.generics),
+            Self::Trait(i) => Some(&i.generics),
+            Self::TraitAlias(i) => Some(&i.generics),
+            Self::TestBinderConstraints(i) => Some(&i.generics),
 
             Self::ExternCrate(..)
             | Self::Use(..)
@@ -4349,10 +4349,10 @@ pub enum AssocItemKind {
 impl AssocItemKind {
     pub fn ident(&self) -> Option<Ident> {
         match *self {
-            AssocItemKind::Const(ConstItem { ident, .. })
-            | AssocItemKind::Fn(Fn { ident, .. })
-            | AssocItemKind::Type(TyAlias { ident, .. })
-            | AssocItemKind::Delegation(Delegation { ident, .. }) => Some(ident),
+            AssocItemKind::Const(ref i) => Some(i.ident),
+            AssocItemKind::Fn(ref i) => Some(i.ident),
+            AssocItemKind::Type(ref i) => Some(i.ident),
+            AssocItemKind::Delegation(ref i) => Some(i.ident),
 
             AssocItemKind::MacCall(_) | AssocItemKind::DelegationMac(_) => None,
         }
@@ -4360,9 +4360,9 @@ impl AssocItemKind {
 
     pub fn defaultness(&self) -> Defaultness {
         match *self {
-            Self::Const(ConstItem { defaultness, .. })
-            | Self::Fn(Fn { defaultness, .. })
-            | Self::Type(TyAlias { defaultness, .. }) => defaultness,
+            Self::Const(ref i) => i.defaultness,
+            Self::Fn(ref i) => i.defaultness,
+            Self::Type(ref i) => i.defaultness,
             Self::MacCall(..) | Self::Delegation(..) | Self::DelegationMac(..) => {
                 Defaultness::Implicit
             }
@@ -4415,9 +4415,9 @@ pub enum ForeignItemKind {
 impl ForeignItemKind {
     pub fn ident(&self) -> Option<Ident> {
         match *self {
-            ForeignItemKind::Static(StaticItem { ident, .. })
-            | ForeignItemKind::Fn(Fn { ident, .. })
-            | ForeignItemKind::TyAlias(TyAlias { ident, .. }) => Some(ident),
+            ForeignItemKind::Static(ref i) => Some(i.ident),
+            ForeignItemKind::Fn(ref i) => Some(i.ident),
+            ForeignItemKind::TyAlias(ref i) => Some(i.ident),
 
             ForeignItemKind::MacCall(_) => None,
         }
@@ -4480,19 +4480,19 @@ mod size_asserts {
     static_assert_size!(AttrKind, 16);
     static_assert_size!(Attribute, 32);
     static_assert_size!(Block, 24);
-    static_assert_size!(Expr, 64);
-    static_assert_size!(ExprKind, 32);
+    static_assert_size!(Expr, 72);
+    static_assert_size!(ExprKind, 40);
     static_assert_size!(FieldDef, 80);
     static_assert_size!(Fn, 192);
     static_assert_size!(FnDecl, 24);
-    static_assert_size!(FnHeader, 76);
+    static_assert_size!(FnHeader, 80);
     static_assert_size!(FnSig, 96);
     static_assert_size!(ForeignItem, 72);
     static_assert_size!(ForeignItemKind, 16);
     static_assert_size!(GenericArg, 24);
     static_assert_size!(GenericArgs, 40);
     static_assert_size!(GenericBound, 80);
-    static_assert_size!(GenericParam, 80);
+    static_assert_size!(GenericParam, 88);
     static_assert_size!(Generics, 40);
     static_assert_size!(Impl, 80);
     static_assert_size!(Item, 144);
@@ -4500,9 +4500,9 @@ mod size_asserts {
     static_assert_size!(Lifetime, 16);
     static_assert_size!(LitKind, 24);
     static_assert_size!(Local, 96);
-    static_assert_size!(MetaItem, 80);
-    static_assert_size!(MetaItemKind, 40);
-    static_assert_size!(MetaItemLit, 40);
+    static_assert_size!(MetaItem, 88);
+    static_assert_size!(MetaItemKind, 48);
+    static_assert_size!(MetaItemLit, 48);
     static_assert_size!(NormalAttr, 80);
     static_assert_size!(Param, 40);
     static_assert_size!(Pat, 64);

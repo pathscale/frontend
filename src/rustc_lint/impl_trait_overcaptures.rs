@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::LazyCell;
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::unord::UnordSet;
@@ -217,6 +217,8 @@ where
     VarFn: FnOnce() -> FxHashMap<DefId, ty::Variance>,
     OutlivesFn: FnOnce() -> OutlivesEnvironment<'tcx>,
 {
+    type Result = ();
+
     fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(&mut self, t: &ty::Binder<'tcx, T>) {
         // When we get into a binder, we need to add its own bound vars to the scope.
         let mut added = vec![];

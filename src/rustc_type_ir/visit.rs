@@ -91,7 +91,8 @@ pub trait TypeSuperVisitable<I: Interner>: TypeVisitable<I> {
 /// that recurses into the type's fields in a non-custom fashion.
 pub trait TypeVisitor<I: Interner>: Sized {
     #[cfg(feature = "nightly")]
-    type Result: VisitorResult = ();
+    // Stable Rust has no associated type defaults, so every impl names this type.
+    type Result: VisitorResult;
 
     #[cfg(not(feature = "nightly"))]
     type Result: VisitorResult;

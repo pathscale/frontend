@@ -1,4 +1,3 @@
-#![allow(rustc::symbol_intern_string_literal)]
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -12,7 +11,8 @@ use core::iter::Peekable;
 use eko::path::PathBuf;
 use alloc::sync::Arc;
 use eko::thread::Mutex;
-use core::{assert_matches, str};
+use core::str;
+use crate::assert_matches;
 
 use ast::token::IdentIsRaw;
 use crate::rustc_ast::token::{self, Delimiter, Token};
@@ -2411,6 +2411,8 @@ fn get_spans_of_pat_idents(src: &str) -> Vec<Span> {
         spans: Vec<Span>,
     }
     impl<'a> visit::Visitor<'a> for PatIdentVisitor {
+        type Result = ();
+
         fn visit_pat(&mut self, p: &'a ast::Pat) {
             match &p.kind {
                 PatKind::Ident(_, ident, _) => {

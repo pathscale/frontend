@@ -25,13 +25,11 @@ impl Parse for Newtype {
         let mut ord = false;
         let mut stable_hash = false;
         let mut gate_rustc_only = quote! {};
-        let mut gate_rustc_only_cfg = quote! { all() };
 
         attrs.retain(|attr| match attr.path().get_ident() {
             Some(ident) => match &*ident.to_string() {
                 "gate_rustc_only" => {
                     gate_rustc_only = quote! { #[cfg(feature = "nightly")] };
-                    gate_rustc_only_cfg = quote! { feature = "nightly" };
                     false
                 }
                 "encodable" => {
@@ -115,40 +113,11 @@ impl Parse for Newtype {
         } else {
             quote! {}
         };
-        let step = if ord {
+        // No `impl Step`: implementing `core::iter::Step` is nightly-only (`step_trait`), and
+        // this crate builds on stable. So `a..b` over an index type is not an iterator; iterate
+        // `(a.index()..b.index()).map(Idx::from_usize)` instead.
+        let ord_impls = if ord {
             quote! {
-                #gate_rustc_only
-                impl ::core::iter::Step for #name {
-                    #[inline]
-                    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
-                        <usize as ::core::iter::Step>::steps_between(
-                            &Self::index(*start),
-                            &Self::index(*end),
-                        )
-                    }
-
-                    #[inline]
-                    fn forward_checked(start: Self, u: usize) -> Option<Self> {
-                        Self::index(start).checked_add(u).map(Self::from_usize)
-                    }
-
-                    #[inline]
-                    fn backward_checked(start: Self, u: usize) -> Option<Self> {
-                        Self::index(start).checked_sub(u).map(Self::from_usize)
-                    }
-
-                    #[inline]
-                    fn forward_overflowing(start: Self, u: usize) -> (Self, bool) {
-                        let (s, o) = Self::index(start).overflowing_add(u);
-                        (Self::from_usize(s), o)
-                    }
-
-                    #[inline]
-                    fn backward_overflowing(start: Self, u: usize) -> (Self, bool) {
-                        let (s, o) = Self::index(start).overflowing_sub(u);
-                        (Self::from_usize(s), o)
-                    }
-                }
                 impl ::core::cmp::Ord for #name {
                     #[inline]
                     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
@@ -195,13 +164,16 @@ impl Parse for Newtype {
 
         Ok(Self(quote! {
             #(#attrs)*
-            #[derive(Clone, Copy)]
-            #[cfg_attr(#gate_rustc_only_cfg, rustc_pass_by_value)]
+            // `PartialEq` and `Eq` derived rather than written by hand, because the derive is
+            // the stable way to get `StructuralPartialEq`, which a `const` of this type needs to
+            // be usable as a `match` pattern. The hand-written impl used to be paired with an
+            // explicit `impl StructuralPartialEq`, and that impl is nightly-only.
+            #[derive(Clone, Copy, PartialEq, Eq)]
             #vis struct #name {
-                #[cfg(not(#gate_rustc_only_cfg))]
+                // A plain `u32`, not `pattern_type!(u32 is 0..=MAX)`: pattern types are
+                // nightly-only. The cost is the niche above `MAX`, so `Option<Idx>` is 8 bytes
+                // rather than 4.
                 private_use_as_methods_instead: u32,
-                #[cfg(#gate_rustc_only_cfg)]
-                private_use_as_methods_instead: pattern_type!(u32 is 0..=#max),
             }
 
             #(#consts)*
@@ -269,7 +241,10 @@ impl Parse for Newtype {
                 /// Prefer using `from_u32`.
                 #[inline]
                 #vis const unsafe fn from_u32_unchecked(value: u32) -> Self {
-                    Self { private_use_as_methods_instead: unsafe { core::mem::transmute(value) } }
+                    // Still `unsafe fn`, so callers keep the contract; with a plain `u32` field
+                    // nothing here is unsafe any more, and the `transmute` went with the pattern
+                    // type it converted to.
+                    Self { private_use_as_methods_instead: value }
                 }
 
                 /// Extracts the value of this index as a `usize`.
@@ -281,7 +256,7 @@ impl Parse for Newtype {
                 /// Extracts the value of this index as a `u32`.
                 #[inline]
                 #vis const fn as_u32(self) -> u32 {
-                    unsafe { core::mem::transmute(self.private_use_as_methods_instead) }
+                    self.private_use_as_methods_instead
                 }
 
                 /// Extracts the value of this index as a `usize`.
@@ -319,7 +294,7 @@ impl Parse for Newtype {
                 }
             }
 
-            #step
+            #ord_impls
 
             #stable_hash_impl
 
@@ -350,17 +325,6 @@ impl Parse for Newtype {
                     Self::from_u32(value)
                 }
             }
-
-            impl ::core::cmp::Eq for #name {}
-
-            impl ::core::cmp::PartialEq for #name {
-                fn eq(&self, other: &Self) -> bool {
-                    self.as_u32().eq(&other.as_u32())
-                }
-            }
-
-            #gate_rustc_only
-            impl ::core::marker::StructuralPartialEq for #name {}
 
             impl ::core::hash::Hash for #name {
                 fn hash<H: ::core::hash::Hasher>(&self, state: &mut H) {

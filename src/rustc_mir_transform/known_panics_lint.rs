@@ -6,6 +6,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -426,7 +428,8 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                 trace!("checking UnaryOp(op = {:?}, arg = {:?})", op, arg);
                 self.check_unary_op(*op, arg, location)?;
             }
-            Rvalue::BinaryOp(op, (left, right)) => {
+            Rvalue::BinaryOp(op, operands) => {
+                let (left, right) = &**operands;
                 trace!("checking BinaryOp(op = {:?}, left = {:?}, right = {:?})", op, left, right);
                 self.check_binary_op(*op, left, right, location)?;
             }
@@ -566,7 +569,8 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
 
             CopyForDeref(place) | Reborrow(_, _, place) => self.eval_place(place)?.into(),
 
-            BinaryOp(bin_op, (ref left, ref right)) => {
+            BinaryOp(bin_op, ref operands) => {
+                let (ref left, ref right) = **operands;
                 let left = self.eval_operand(left)?;
                 let left = self.use_ecx(|this| this.ecx.read_immediate(&left))?;
 
@@ -842,7 +846,6 @@ impl<'tcx> Visitor<'tcx> for ConstPropagator<'_, 'tcx> {
         // To avoid this quadratic behaviour, we only clear the locals that were modified inside
         // the current block.
         // The order in which we remove consts does not matter.
-        #[allow(rustc::potential_query_instability)]
         for local in written_only_inside_own_block_locals.drain() {
             debug_assert_eq!(self.can_const_prop[local], ConstPropMode::OnlyInsideOwnBlock);
             self.remove_const(local);

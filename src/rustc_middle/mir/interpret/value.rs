@@ -323,7 +323,7 @@ impl<'tcx, Prov: Provenance> Scalar<Prov> {
 
     #[inline(always)]
     pub fn to_scalar_int(self) -> InterpResult<'tcx, ScalarInt> {
-        self.try_to_scalar_int().map_err(|_| err_unsup!(ReadPointerAsInt(None))).into()
+        self.try_to_scalar_int().map_err(|_| err_unsup!(ReadPointerAsInt(None)).into())
     }
 
     #[inline(always)]

@@ -560,28 +560,20 @@ fn extend_type_not_partial_eq<'tcx>(
     };
     if v.visit_ty(ty).is_break() {
         return;
-    }
-    #[allow(rustc::potential_query_instability)] // Span labels will be sorted by the rendering
-    for span in v.adts_with_manual_partialeq {
+    }    for span in v.adts_with_manual_partialeq {
         err.span_note(span, "the `PartialEq` trait must be derived, manual `impl`s are not sufficient; see https://doc.rust-lang.org/stable/std/marker/trait.StructuralPartialEq.html for details");
-    }
-    #[allow(rustc::potential_query_instability)] // Span labels will be sorted by the rendering
-    for span in v.adts_without_partialeq {
+    }    for span in v.adts_without_partialeq {
         err.span_label(
             span,
             "must be annotated with `#[derive(PartialEq)]` to be usable in patterns",
         );
-    }
-    #[allow(rustc::potential_query_instability)]
-    let mut manual: Vec<_> = v.manual.into_iter().map(|t| t.to_string()).collect();
+    }    let mut manual: Vec<_> = v.manual.into_iter().map(|t| t.to_string()).collect();
     manual.sort();
     for ty in manual {
         err.note(format!(
             "`{ty}` must be annotated with `#[derive(PartialEq)]` to be usable in patterns, manual `impl`s are not sufficient; see https://doc.rust-lang.org/stable/std/marker/trait.StructuralPartialEq.html for details"
         ));
-    }
-    #[allow(rustc::potential_query_instability)]
-    let mut without: Vec<_> = v.without.into_iter().map(|t| t.to_string()).collect();
+    }    let mut without: Vec<_> = v.without.into_iter().map(|t| t.to_string()).collect();
     without.sort();
     for ty in without {
         err.note(format!(

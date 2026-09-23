@@ -358,7 +358,8 @@ impl<'tcx> MutVisitor<'tcx> for MakeByMoveBody<'tcx> {
         // here at all since they're fully a MIR borrowck artifact, and we
         // don't need to borrowck by-move MIR bodies. But it's best to preserve
         // as much as we can between these two bodies :)
-        if let mir::StatementKind::Assign((_, rvalue)) = &statement.kind
+        if let mir::StatementKind::Assign(assign) = &statement.kind
+            && let (_, rvalue) = &**assign
             && let mir::Rvalue::Ref(_, mir::BorrowKind::Fake(mir::FakeBorrowKind::Shallow), place) =
                 rvalue
             && let mir::PlaceRef {

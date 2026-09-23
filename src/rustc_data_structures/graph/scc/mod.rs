@@ -18,7 +18,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::ops::Range;

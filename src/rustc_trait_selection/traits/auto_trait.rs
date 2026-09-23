@@ -864,7 +864,7 @@ impl<'tcx> AutoTraitFinder<'tcx> {
                                 selcx.infcx,
                                 c,
                                 obligation.param_env,
-                                |ty| Ok::<_, !>(ty.skip_norm_wip()),
+                                |ty| Ok::<_, crate::Never>(ty.skip_norm_wip()),
                             );
 
                             if let Err(EvaluateConstErr::InvalidConstParamTy(_)) = ct {

@@ -9,9 +9,7 @@ use core::ffi::CStr;
 
 use crate::rustc_proc_macro::{ConcatTreesHelper, Group, Ident, Literal, Punct, Span, TokenStream, TokenTree};
 
-/// Types that can be interpolated inside a [`quote!`] invocation.
-///
-/// [`quote!`]: crate::rustc_proc_macro::quote!
+/// Types that can be interpolated inside a `quote!` invocation.
 pub trait ToTokens {
     /// Write `self` to the given `TokenStream`.
     ///
@@ -77,8 +75,10 @@ pub trait ToTokens {
 }
 
 impl ToTokens for TokenTree {
+    // `extend(Some(..))` throughout this file is the body of the provided `Extend::extend_one`,
+    // which is unstable to call.
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.extend_one(self.clone());
+        tokens.extend(Some(self.clone()));
     }
 
     fn into_token_stream(self) -> TokenStream {
@@ -100,25 +100,25 @@ impl ToTokens for TokenStream {
 
 impl ToTokens for Literal {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.extend_one(TokenTree::from(self.clone()));
+        tokens.extend(Some(TokenTree::from(self.clone())));
     }
 }
 
 impl ToTokens for Ident {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.extend_one(TokenTree::from(self.clone()));
+        tokens.extend(Some(TokenTree::from(self.clone())));
     }
 }
 
 impl ToTokens for Punct {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.extend_one(TokenTree::from(self.clone()));
+        tokens.extend(Some(TokenTree::from(self.clone())));
     }
 }
 
 impl ToTokens for Group {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.extend_one(TokenTree::from(self.clone()));
+        tokens.extend(Some(TokenTree::from(self.clone())));
     }
 }
 

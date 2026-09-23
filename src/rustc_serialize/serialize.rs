@@ -12,8 +12,8 @@ use core::cell::{Cell, RefCell};
 use hashbrown::{HashMap, HashSet};
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use core::hash::{BuildHasher, Hash};
-use core::marker::{PhantomData, PointeeSized};
-use core::num::{NonZero, ZeroablePrimitive};
+use core::marker::PhantomData;
+use core::num::NonZero;
 use eko::path;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
@@ -93,6 +93,19 @@ pub trait Encoder {
     }
 
     fn emit_raw_bytes(&mut self, s: &[u8]);
+
+    /// Emits the elements of a `[u8]` (its length is already emitted).
+    ///
+    /// The default emits byte by byte. Opaque encoders, where a `u8` encodes as itself,
+    /// override it with `emit_raw_bytes`. This hook replaces the old specialized
+    /// `Encodable<FileEncoder>` and `Encodable<MemEncoder>` impls for `[u8]`, which
+    /// stable Rust cannot express.
+    #[inline]
+    fn emit_u8_slice(&mut self, s: &[u8]) {
+        for &b in s {
+            self.emit_u8(b);
+        }
+    }
 }
 
 // Note: all the methods in this trait are infallible, which may be surprising.
@@ -157,6 +170,16 @@ pub trait Decoder {
 
     fn read_raw_bytes(&mut self, len: usize) -> &[u8];
 
+    /// Reads the elements of a `Vec<u8>` (its length is already read).
+    ///
+    /// The default reads byte by byte. `MemDecoder` overrides it with `read_raw_bytes`.
+    /// This hook replaces the old specialized `Decodable<MemDecoder>` impl for `Vec<u8>`,
+    /// which stable Rust cannot express.
+    #[inline]
+    fn read_u8_vec(&mut self, len: usize) -> Vec<u8> {
+        (0..len).map(|_| self.read_u8()).collect()
+    }
+
     fn peek_byte(&self) -> u8;
     fn position(&self) -> usize;
 }
@@ -172,8 +195,22 @@ pub trait Decoder {
 ///   `crate::rustc_metadata::rmeta::Lazy`.
 /// * `TyEncodable` should be used for types that are only serialized in crate
 ///   metadata or the incremental cache. This is most types in `rustc_middle`.
-pub trait Encodable<S: Encoder>: PointeeSized {
+pub trait Encodable<S: Encoder> {
     fn encode(&self, s: &mut S);
+
+    /// Encodes the elements of a `[Self]`, after `[T]` has emitted the length.
+    ///
+    /// This is the `Hash::hash_slice` pattern, standing in for specialization: `u8`
+    /// overrides it to hand the whole slice to `Encoder::emit_u8_slice`.
+    #[inline]
+    fn encode_slice(slice: &[Self], s: &mut S)
+    where
+        Self: Sized,
+    {
+        for e in slice {
+            e.encode(s);
+        }
+    }
 }
 
 /// Trait for types that can be deserialized
@@ -189,6 +226,14 @@ pub trait Encodable<S: Encoder>: PointeeSized {
 ///   metadata or the incremental cache. This is most types in `rustc_middle`.
 pub trait Decodable<D: Decoder>: Sized {
     fn decode(d: &mut D) -> Self;
+
+    /// Decodes `len` elements into a `Vec`, after `Vec<T>` has read the length.
+    ///
+    /// Stands in for specialization: `u8` overrides it to use `Decoder::read_u8_vec`.
+    #[inline]
+    fn decode_vec(d: &mut D, len: usize) -> Vec<Self> {
+        (0..len).map(|_| Decodable::decode(d)).collect()
+    }
 }
 
 macro_rules! direct_serialize_impls {
@@ -211,7 +256,6 @@ macro_rules! direct_serialize_impls {
 
 direct_serialize_impls! {
     usize emit_usize read_usize,
-    u8 emit_u8 read_u8,
     u16 emit_u16 read_u16,
     u32 emit_u32 read_u32,
     u64 emit_u64 read_u64,
@@ -228,7 +272,31 @@ direct_serialize_impls! {
     char emit_char read_char
 }
 
-impl<S: Encoder, T: ?Sized + PointeeSized> Encodable<S> for &T
+// `u8` is written out by hand so it can route slices and vectors through the encoder's
+// and decoder's bulk byte hooks, which is what the old specialized impls did.
+impl<S: Encoder> Encodable<S> for u8 {
+    fn encode(&self, s: &mut S) {
+        s.emit_u8(*self);
+    }
+
+    #[inline]
+    fn encode_slice(slice: &[u8], s: &mut S) {
+        s.emit_u8_slice(slice);
+    }
+}
+
+impl<D: Decoder> Decodable<D> for u8 {
+    fn decode(d: &mut D) -> u8 {
+        d.read_u8()
+    }
+
+    #[inline]
+    fn decode_vec(d: &mut D, len: usize) -> Vec<u8> {
+        d.read_u8_vec(len)
+    }
+}
+
+impl<S: Encoder, T: ?Sized> Encodable<S> for &T
 where
     T: Encodable<S>,
 {
@@ -237,29 +305,39 @@ where
     }
 }
 
-impl<S: Encoder> Encodable<S> for ! {
+// `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+impl<S: Encoder> Encodable<S> for crate::Never {
     fn encode(&self, _s: &mut S) {
         unreachable!();
     }
 }
 
-impl<D: Decoder> Decodable<D> for ! {
-    fn decode(_d: &mut D) -> ! {
+impl<D: Decoder> Decodable<D> for crate::Never {
+    fn decode(_d: &mut D) -> crate::Never {
         unreachable!()
     }
 }
 
-impl<T: ZeroablePrimitive + Encodable<S>, S: Encoder> Encodable<S> for NonZero<T> {
-    fn encode(&self, s: &mut S) {
-        self.get().encode(s)
+// `ZeroablePrimitive` is unstable, so the `NonZero` impls are spelled out per integer type.
+macro_rules! nonzero_serialize_impls {
+    ($($ty:ty),*) => {
+        $(
+            impl<S: Encoder> Encodable<S> for NonZero<$ty> {
+                fn encode(&self, s: &mut S) {
+                    self.get().encode(s)
+                }
+            }
+
+            impl<D: Decoder> Decodable<D> for NonZero<$ty> {
+                fn decode(d: &mut D) -> Self {
+                    NonZero::new(<$ty as Decodable<D>>::decode(d)).unwrap()
+                }
+            }
+        )*
     }
 }
 
-impl<T: ZeroablePrimitive + Decodable<D>, D: Decoder> Decodable<D> for NonZero<T> {
-    fn decode(d: &mut D) -> Self {
-        NonZero::new(T::decode(d)).unwrap()
-    }
-}
+nonzero_serialize_impls!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
 
 impl<S: Encoder> Encodable<S> for str {
     fn encode(&self, s: &mut S) {
@@ -317,11 +395,10 @@ impl<D: Decoder, T: Decodable<D>> Decodable<D> for Rc<T> {
 }
 
 impl<S: Encoder, T: Encodable<S>> Encodable<S> for [T] {
-    default fn encode(&self, s: &mut S) {
+    fn encode(&self, s: &mut S) {
         s.emit_usize(self.len());
-        for e in self {
-            e.encode(s);
-        }
+        // `u8` overrides `encode_slice` to write bytes in bulk; see `Encoder::emit_u8_slice`.
+        T::encode_slice(self, s);
     }
 }
 
@@ -332,9 +409,10 @@ impl<S: Encoder, T: Encodable<S>> Encodable<S> for Vec<T> {
 }
 
 impl<D: Decoder, T: Decodable<D>> Decodable<D> for Vec<T> {
-    default fn decode(d: &mut D) -> Vec<T> {
+    fn decode(d: &mut D) -> Vec<T> {
         let len = d.read_usize();
-        (0..len).map(|_| Decodable::decode(d)).collect()
+        // `u8` overrides `decode_vec` to read bytes in bulk; see `Decoder::read_u8_vec`.
+        T::decode_vec(d, len)
     }
 }
 

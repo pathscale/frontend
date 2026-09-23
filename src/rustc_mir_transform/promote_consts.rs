@@ -21,7 +21,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::Cell;
-use core::{assert_matches, cmp, iter, mem};
+use core::{cmp, iter, mem};
+use crate::assert_matches;
 
 use either::{Left, Right};
 use crate::rustc_const_eval::check_consts::{ConstCx, qualifs};
@@ -479,7 +480,8 @@ impl<'tcx> Validator<'_, 'tcx> {
                 self.validate_operand(operand)?;
             }
 
-            Rvalue::BinaryOp(op, (lhs, rhs)) => {
+            Rvalue::BinaryOp(op, operands) => {
+                let (lhs, rhs) = &**operands;
                 let op = *op;
                 let lhs_ty = lhs.ty(self.body, self.tcx);
 
@@ -817,9 +819,10 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
         if loc.statement_index < num_stmts {
             let (mut rvalue, source_info) = {
                 let statement = &mut self.source[loc.block].statements[loc.statement_index];
-                let StatementKind::Assign((_, rhs)) = &mut statement.kind else {
+                let StatementKind::Assign(assign) = &mut statement.kind else {
                     span_bug!(statement.source_info.span, "{:?} is not an assignment", statement);
                 };
+                let (_, rhs) = &mut **assign;
 
                 (
                     if self.keep_original {
@@ -923,9 +926,10 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
             let local_decls = &mut self.source.local_decls;
             let loc = candidate.location;
             let statement = &mut blocks[loc.block].statements[loc.statement_index];
-            let StatementKind::Assign((_, Rvalue::Ref(region, borrow_kind, place))) =
-                &mut statement.kind
-            else {
+            let StatementKind::Assign(assign) = &mut statement.kind else {
+                bug!()
+            };
+            let (_, Rvalue::Ref(region, borrow_kind, place)) = &mut **assign else {
                 bug!()
             };
 
@@ -1035,7 +1039,8 @@ fn promote_candidates<'tcx>(
     let mut extra_statements = vec![];
     for candidate in candidates.into_iter().rev() {
         let Location { block, statement_index } = candidate.location;
-        if let StatementKind::Assign((place, _)) = &body[block].statements[statement_index].kind
+        if let StatementKind::Assign(assign) = &body[block].statements[statement_index].kind
+            && let (place, _) = &**assign
             && let Some(local) = place.as_local()
         {
             if temps[local] == TempState::PromotedOut {
@@ -1091,7 +1096,8 @@ fn promote_candidates<'tcx>(
     let promoted = |index: Local| temps[index] == TempState::PromotedOut;
     for block in body.basic_blocks_mut() {
         block.retain_statements(|statement| match &statement.kind {
-            StatementKind::Assign((place, _)) => {
+            StatementKind::Assign(assign) => {
+                let (place, _) = &**assign;
                 if let Some(index) = place.as_local() {
                     !promoted(index)
                 } else {

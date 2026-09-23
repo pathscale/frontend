@@ -10,7 +10,6 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::iter::TrustedLen;
 use core::ops::{Deref, DerefMut};
 use eko::path::{Path, PathBuf};
 use alloc::sync::Arc;
@@ -365,7 +364,8 @@ impl<D: Decoder, T: Decodable<D>> ExactSizeIterator for DecodeIterator<T, D> {
     }
 }
 
-unsafe impl<D: Decoder, T: Decodable<D>> TrustedLen for DecodeIterator<T, D> {}
+// No `TrustedLen` impl: it is the unstable `trusted_len`, and it was only a hint that lets
+// `collect` and `extend` allocate once. `ExactSizeIterator` above still gives an exact size hint.
 
 impl<T: ParameterizedOverTcx> LazyArray<T> {
     #[inline]
@@ -886,9 +886,7 @@ impl MetadataBlob {
                         let root = blob.get_root();
 
                         let def_kind = root.tables.def_kind.get(blob, item).unwrap();
-                        let def_key = root.tables.def_keys.get(blob, item).unwrap().decode(blob);
-                        #[allow(rustc::symbol_intern_string_literal)]
-                        let def_name = if item == CRATE_DEF_INDEX {
+                        let def_key = root.tables.def_keys.get(blob, item).unwrap().decode(blob);                        let def_name = if item == CRATE_DEF_INDEX {
                             kw::Crate
                         } else {
                             def_key
@@ -1340,32 +1338,40 @@ impl CrateMetadata {
     ///
     /// May panic if the provided `id` does not refer to a module.
     fn get_module_children(&self, tcx: TyCtxt<'_>, id: DefIndex) -> impl Iterator<Item = ModChild> {
-        gen move {
-            if let Some(data) = &self.root.proc_macro_data {
-                // If we are loading as a proc macro, we want to return
-                // the view of this crate as a proc macro crate.
-                if id == CRATE_DEF_INDEX {
-                    for (child_index, _) in data.macros.decode((self, tcx)) {
-                        yield self.get_mod_child(tcx, child_index);
-                    }
-                }
-            } else {
-                // Iterate over all children.
-                let non_reexports = self.root.tables.module_children_non_reexports.get(self, id);
-                let non_reexports =
-                    non_reexports.expect("provided `DefIndex` must refer to a module-like item");
-                for child_index in non_reexports.decode((self, tcx)) {
-                    yield self.get_mod_child(tcx, child_index);
-                }
-
-                let reexports = self.root.tables.module_children_reexports.get(self, id);
-                if !reexports.is_default() {
-                    for reexport in reexports.decode((self, tcx)) {
-                        yield reexport;
-                    }
-                }
-            }
-        }
+        // This was a `gen move {}` block (unstable). A gen block runs nothing until the first
+        // `next()`, so each stage is wrapped in `once(()).flat_map(..)`, which defers its
+        // lookups (and the `expect`) to the same point in iteration as before.
+        let proc_macro_data = self.root.proc_macro_data.is_some();
+        let proc_macro_children = core::iter::once(()).flat_map(move |()| {
+            let data = self.root.proc_macro_data.as_ref().filter(|_| id == CRATE_DEF_INDEX);
+            // If we are loading as a proc macro, we want to return
+            // the view of this crate as a proc macro crate.
+            data.into_iter()
+                .flat_map(move |data| data.macros.decode((self, tcx)))
+                .map(move |(child_index, _)| self.get_mod_child(tcx, child_index))
+        });
+        // Iterate over all children.
+        let non_reexports = core::iter::once(()).flat_map(move |()| {
+            let non_reexports = self.root.tables.module_children_non_reexports.get(self, id);
+            let non_reexports =
+                non_reexports.expect("provided `DefIndex` must refer to a module-like item");
+            non_reexports
+                .decode((self, tcx))
+                .map(move |child_index| self.get_mod_child(tcx, child_index))
+        });
+        let reexports = core::iter::once(()).flat_map(move |()| {
+            let reexports = self.root.tables.module_children_reexports.get(self, id);
+            (!reexports.is_default())
+                .then(|| reexports.decode((self, tcx)))
+                .into_iter()
+                .flatten()
+        });
+        let (with_proc_macros, without) = if proc_macro_data {
+            (Some(proc_macro_children), None)
+        } else {
+            (None, Some(non_reexports.chain(reexports)))
+        };
+        with_proc_macros.into_iter().flatten().chain(without.into_iter().flatten())
     }
 
     fn get_ambig_module_children(
@@ -1373,14 +1379,12 @@ impl CrateMetadata {
         tcx: TyCtxt<'_>,
         id: DefIndex,
     ) -> impl Iterator<Item = AmbigModChild> {
-        gen move {
+        // Was a `gen move {}` block (unstable); `once(()).flat_map` keeps the table lookup
+        // deferred to the first `next()` as it was.
+        core::iter::once(()).flat_map(move |()| {
             let children = self.root.tables.ambig_module_children.get(self, id);
-            if !children.is_default() {
-                for child in children.decode((self, tcx)) {
-                    yield child;
-                }
-            }
-        }
+            (!children.is_default()).then(|| children.decode((self, tcx))).into_iter().flatten()
+        })
     }
 
     fn is_item_mir_available(&self, id: DefIndex) -> bool {
@@ -2107,15 +2111,16 @@ impl CrateMetadata {
         tcx: TyCtxt<'_>,
         krate: CrateNum,
     ) -> impl Iterator<Item = DefId> {
-        gen move {
-            if let Some(data) = &self.root.proc_macro_data {
-                for def_id in
-                    data.macros.decode((self, tcx)).map(move |(index, _)| DefId { index, krate })
-                {
-                    yield def_id;
-                }
-            }
-        }
+        // Was a `gen move {}` block (unstable); `once(()).flat_map` keeps the work deferred
+        // to the first `next()` as it was.
+        core::iter::once(()).flat_map(move |()| {
+            self.root
+                .proc_macro_data
+                .as_ref()
+                .into_iter()
+                .flat_map(move |data| data.macros.decode((self, tcx)))
+                .map(move |(index, _)| DefId { index, krate })
+        })
     }
 
     pub(crate) fn name(&self) -> Symbol {

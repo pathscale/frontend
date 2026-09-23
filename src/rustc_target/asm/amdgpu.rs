@@ -395,8 +395,6 @@ pub(super) fn fill_reg_map(
     >,
 ) {
     use super::{InlineAsmReg, InlineAsmRegClass};
-
-    #[allow(rustc::potential_query_instability)]
     for class in regclass_map().keys() {
         let InlineAsmRegClass::Amdgpu(class) = *class else { unreachable!("Must be amdgpu class") };
         if let Some(set) = map.get_mut(&InlineAsmRegClass::Amdgpu(class)) {

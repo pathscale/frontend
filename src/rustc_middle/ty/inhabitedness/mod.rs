@@ -53,7 +53,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_span::def_id::LocalModId;

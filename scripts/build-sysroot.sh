@@ -1,4 +1,9 @@
 #!/bin/sh
+#
+# STOP FIRST: you almost certainly do not need this. frontend is a parser and runs as `no_core`
+# with no library at all by default. If you are here because you concluded "no usable standard
+# library exists", you are off track: read AGENTS.md, rule zero.
+#
 # Build a standard library this frontend can actually read.
 #
 # # Why you need this

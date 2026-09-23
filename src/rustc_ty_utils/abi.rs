@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use core::{assert_matches, iter};
+use core::iter;
+use crate::assert_matches;
 
 use crate::rustc_abi::Primitive::Pointer;
 use crate::rustc_abi::{Align, BackendRepr, ExternAbi, PointerKind, Scalar, Size};

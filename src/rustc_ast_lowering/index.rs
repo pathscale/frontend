@@ -129,6 +129,9 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
 }
 
 impl<'a, 'hir> Visitor<'hir> for NodeCollector<'a, 'hir> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
+
     // Because we want to track parent items and so forth, enable
     // deep walking so that we walk nested items in the context of
     // their outer items.

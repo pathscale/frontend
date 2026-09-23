@@ -124,7 +124,6 @@ impl<'k> StatCollector<'k> {
         use core::fmt::Write;
 
         // We will soon sort, so the initial order does not matter.
-        #[allow(rustc::potential_query_instability)]
         let mut nodes: Vec<_> = self.nodes.iter().collect();
         nodes.sort_by_cached_key(|(label, node)| (node.stats.accum_size(), label.to_owned()));
         nodes.reverse(); // bigger items first
@@ -170,7 +169,6 @@ impl<'k> StatCollector<'k> {
             );
             if !node.subnodes.is_empty() {
                 // We will soon sort, so the initial order does not matter.
-                #[allow(rustc::potential_query_instability)]
                 let mut subnodes: Vec<_> = node.subnodes.iter().collect();
                 subnodes.sort_by_cached_key(|(label, subnode)| {
                     (subnode.accum_size(), label.to_owned())
@@ -220,6 +218,8 @@ macro_rules! record_variants {
 }
 
 impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
+    type NestedFilter = hir_visit::IgnoreNested;
+    type Result = ();
     fn visit_param(&mut self, param: &'v hir::Param<'v>) {
         self.record("Param", Some(param.hir_id), param);
         hir_visit::walk_param(self, param)
@@ -562,6 +562,8 @@ impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
 }
 
 impl<'v> ast_visit::Visitor<'v> for StatCollector<'v> {
+    type Result = ();
+
     fn visit_foreign_item(&mut self, i: &'v ast::ForeignItem) {
         record_variants!(
             (self, i, i.kind, None, ast, ForeignItem, ForeignItemKind),

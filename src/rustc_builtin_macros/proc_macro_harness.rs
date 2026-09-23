@@ -174,6 +174,8 @@ impl<'a> CollectProcMacros<'a> {
 }
 
 impl<'a> Visitor<'a> for CollectProcMacros<'a> {
+    type Result = ();
+
     fn visit_item(&mut self, item: &'a ast::Item) {
         if let ast::ItemKind::MacroDef(..) = item.kind {
             if self.is_proc_macro_crate && attr::contains_name(&item.attrs, sym::macro_export) {

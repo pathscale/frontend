@@ -114,13 +114,10 @@ pub(crate) fn unexpected_cfg_name(
     sess: &Session,
     (name, name_span): (Symbol, Span),
     value: Option<(Symbol, Span)>,
-) -> diagnostics::UnexpectedCfgName {
-    #[allow(rustc::potential_query_instability)]
-    let possibilities: Vec<Symbol> = sess.check_config.expecteds.keys().copied().collect();
+) -> diagnostics::UnexpectedCfgName {    let possibilities: Vec<Symbol> = sess.check_config.expecteds.keys().copied().collect();
 
     let mut names_possibilities: Vec<_> = if value.is_none() {
         // We later sort and display all the possibilities, so the order here does not matter.
-        #[allow(rustc::potential_query_instability)]
         sess.check_config
             .expecteds
             .iter()
@@ -180,7 +177,6 @@ pub(crate) fn unexpected_cfg_name(
             sess.check_config.expecteds.get(&best_match)
         {
             // We will soon sort, so the initial order does not matter.
-            #[allow(rustc::potential_query_instability)]
             let mut possibilities = best_match_values.iter().flatten().collect::<Vec<_>>();
             possibilities.sort_by_key(|s| s.as_str());
 
@@ -306,7 +302,6 @@ pub(crate) fn unexpected_cfg_value(
     let mut have_none_possibility = false;
     // We later sort possibilities if it is not empty, so the
     // order here does not matter.
-    #[allow(rustc::potential_query_instability)]
     let possibilities: Vec<Symbol> = values
         .iter()
         .inspect(|a| have_none_possibility |= a.is_none())
@@ -441,9 +436,7 @@ pub(crate) fn unexpected_cfg_value(
     }
 }
 
-fn possible_well_known_names_for_cfg_value(sess: &Session, value: Symbol) -> Vec<Symbol> {
-    #[allow(rustc::potential_query_instability)]
-    let mut names = sess
+fn possible_well_known_names_for_cfg_value(sess: &Session, value: Symbol) -> Vec<Symbol> {    let mut names = sess
         .check_config
         .well_known_names
         .iter()

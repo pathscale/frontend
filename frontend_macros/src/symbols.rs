@@ -258,6 +258,9 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
             Value::SameAsName | Value::String(_) | Value::Unsupported(_) => continue,
         };
 
+        // `std::env::var` would work in a unit test, which `proc_macro::tracked` did not. The
+        // guard stays anyway: it keeps `symbols/tests.rs` independent of whatever environment
+        // the test runner happens to have, and that test expects exactly this message.
         if !proc_macro::is_available() {
             errors.error(
                 Span::call_site(),
@@ -266,9 +269,14 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
             break;
         }
 
-        let tracked_env = proc_macro::tracked::env_var(env_var.value());
+        // Plain `std::env::var`, because `proc_macro::tracked::env_var` is nightly-only
+        // (`proc_macro_tracked_env`). What is lost is the dependency record: cargo no longer
+        // learns from the macro that this variable feeds the expansion, so changing it does not
+        // by itself trigger a rebuild. A consumer that needs that declares
+        // `cargo:rerun-if-env-changed` in its own build script.
+        let env_value = std::env::var(env_var.value());
 
-        let value = match tracked_env {
+        let value = match env_value {
             Ok(value) => value,
             Err(err) => {
                 errors.list.push(syn::Error::new_spanned(expr, err));

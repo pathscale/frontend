@@ -267,7 +267,9 @@ pub struct UnordSet<V: Eq + Hash> {
 
 impl<V: Eq + Hash> UnordCollection for UnordSet<V> {}
 
-const impl<V: Eq + Hash> Default for UnordSet<V> {
+// Not `const impl` (`const_trait_impl`, unstable). Its only const callers were
+// default field values, which the stable port writes out at runtime.
+impl<V: Eq + Hash> Default for UnordSet<V> {
     #[inline]
     fn default() -> Self {
         Self { inner: FxHashSet::with_hasher(FxBuildHasher) }
@@ -466,7 +468,9 @@ pub struct UnordMap<K: Eq + Hash, V> {
 
 impl<K: Eq + Hash, V> UnordCollection for UnordMap<K, V> {}
 
-const impl<K: Eq + Hash, V> Default for UnordMap<K, V> {
+// Not `const impl` (`const_trait_impl`, unstable). Its only const callers were
+// default field values, which the stable port writes out at runtime.
+impl<K: Eq + Hash, V> Default for UnordMap<K, V> {
     #[inline]
     fn default() -> Self {
         Self { inner: FxHashMap::with_hasher(FxBuildHasher) }
@@ -800,7 +804,5 @@ fn hash_iter_order_independent<
 
 // Do not implement IntoIterator for the collections in this module.
 // They only exist to hide iteration order in the first place.
-impl<T> !IntoIterator for UnordBag<T> {}
-impl<V> !IntoIterator for UnordSet<V> {}
-impl<K, V> !IntoIterator for UnordMap<K, V> {}
-impl<T, I> !IntoIterator for UnordItems<T, I> {}
+// Upstream enforced this with `impl !IntoIterator` (unstable negative impls); on stable
+// the rule is kept by not writing one.

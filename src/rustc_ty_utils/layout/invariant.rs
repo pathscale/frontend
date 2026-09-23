@@ -1,4 +1,4 @@
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_abi::{BackendRepr, FieldsShape, Scalar, Size, TagEncoding, Variants};
 use crate::rustc_middle::ty::TypeVisitableExt;

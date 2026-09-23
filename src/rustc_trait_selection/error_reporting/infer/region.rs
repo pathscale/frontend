@@ -947,6 +947,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
 
         impl<'hir> hir::intravisit::Visitor<'hir> for LifetimeReplaceVisitor<'_> {
+            type NestedFilter = hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_lifetime(&mut self, lt: &'hir hir::Lifetime) {
                 if lt.kind == self.needle {
                     self.add_lt_suggs.push(lt.suggestion(self.new_lt));

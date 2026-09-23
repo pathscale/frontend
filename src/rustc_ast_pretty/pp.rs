@@ -260,8 +260,8 @@ struct BufEntry {
 #[must_use]
 pub struct BoxMarker;
 
-impl !Clone for BoxMarker {}
-impl !Copy for BoxMarker {}
+// Upstream wrote `impl !Clone` and `impl !Copy` here (unstable negative impls). The
+// struct derives neither, so it stays linear as long as nobody adds one.
 
 impl Drop for BoxMarker {
     fn drop(&mut self) {

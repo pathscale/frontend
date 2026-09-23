@@ -227,7 +227,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             // normalization, so try to deduplicate when possible to avoid
             // unnecessary ambiguity.
             let mut distinct_normalized_bounds = FxHashSet::default();
-            let _ = self.for_each_item_bound::<!>(
+            let _ = self.for_each_item_bound::<crate::Never>(
                 placeholder_trait_predicate.self_ty(),
                 |selcx, bound, idx, alias_bound_kind| {
                     let Some(bound) = bound.as_trait_clause() else {
@@ -1049,7 +1049,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                                     elaborate::supertrait_def_ids(self.tcx(), principal_def_id)
                                         .filter(|def_id| self.tcx().trait_is_auto(*def_id))
                                 })
-                                .into_flat_iter(),
+                                .into_iter()
+                                .flatten(),
                         )
                         .collect();
                     let auto_traits_compatible = b_data

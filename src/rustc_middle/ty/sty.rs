@@ -1,7 +1,5 @@
 //! This module contains `TyKind` and its major components.
 
-
-#![allow(rustc::usage_of_ty_tykind)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
@@ -13,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 use core::ops::{ControlFlow, Range};
 
 use hir::def::{CtorKind, DefKind};
@@ -43,7 +41,6 @@ use crate::rustc_middle::ty::{
 };
 
 // Re-export and re-parameterize some `I = TyCtxt<'tcx>` types here
-#[rustc_diagnostic_item = "TyKind"]
 pub type TyKind<'tcx> = ir::TyKind<TyCtxt<'tcx>>;
 pub type TypeAndMut<'tcx> = ir::TypeAndMut<TyCtxt<'tcx>>;
 pub type AliasTy<'tcx> = ir::AliasTy<TyCtxt<'tcx>>;
@@ -136,7 +133,8 @@ impl<'tcx> ty::CoroutineArgs<TyCtxt<'tcx>> {
         def_id: DefId,
         tcx: TyCtxt<'tcx>,
     ) -> impl Iterator<Item = (VariantIdx, Discr<'tcx>)> {
-        self.variant_range(def_id, tcx).map(move |index| {
+        let range = self.variant_range(def_id, tcx);
+        (range.start.as_usize()..range.end.as_usize()).map(VariantIdx::from_usize).map(move |index| {
             (index, Discr { val: index.as_usize() as u128, ty: self.discr_ty(tcx) })
         })
     }

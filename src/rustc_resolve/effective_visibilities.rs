@@ -360,6 +360,8 @@ impl<'a, 'ra, 'tcx> EffectiveVisibilitiesVisitor<'a, 'ra, 'tcx> {
 }
 
 impl<'a, 'ra, 'tcx> Visitor<'a> for EffectiveVisibilitiesVisitor<'a, 'ra, 'tcx> {
+    type Result = ();
+
     fn visit_item(&mut self, item: &'a ast::Item) {
         let def_id = self.r.owner_def_id(item.id);
         // Update effective visibilities of nested items.

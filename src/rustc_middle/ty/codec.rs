@@ -16,9 +16,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::hash::Hash;
-use core::intrinsics;
-use core::marker::{DiscriminantKind, PointeeSized};
+use core::hash::{Hash, Hasher};
 
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::FxHashMap;
@@ -74,8 +72,6 @@ pub trait EncodableWithShorthand<'tcx, E: TyEncoder<'tcx>>: Copy + Eq + Hash {
     type Variant: Encodable<E>;
     fn variant(&self) -> &Self::Variant;
 }
-
-#[allow(rustc::usage_of_ty_tykind)]
 impl<'tcx, E: TyEncoder<'tcx>> EncodableWithShorthand<'tcx, E> for Ty<'tcx> {
     type Variant = ty::TyKind<'tcx>;
 
@@ -107,8 +103,46 @@ impl<'tcx, E: TyEncoder<'tcx>> EncodableWithShorthand<'tcx, E> for ty::Predicate
 ///
 /// Implementations of this trait will typically allocate into an arena or interner,
 /// e.g. see `impl_ref_decodable_into_arena!`.
-pub trait RefDecodable<'tcx, D: TyDecoder<'tcx>>: PointeeSized {
+// Upstream bounds this `: PointeeSized` (unstable `sized_hierarchy`); a trait's `Self` is
+// already `?Sized`, which is the stable meaning, so the bound is simply dropped.
+pub trait RefDecodable<'tcx, D: TyDecoder<'tcx>> {
     fn decode(d: &mut D) -> &'tcx Self;
+}
+
+/// The discriminant of an enum value, as `intrinsics::discriminant_value` returned it.
+///
+/// That intrinsic is unstable. `core::mem::Discriminant` is stable and its `Hash` impl
+/// hashes the raw discriminant, which for a default-repr enum is one `isize`; this hasher
+/// catches that value. If core ever hashed it differently, the capture falls back to the
+/// leading bytes written, and the only consumer is the sanity assert in
+/// `encode_with_shorthand`.
+fn variant_discriminant<V>(variant: &V) -> isize {
+    struct Capture(Option<isize>);
+
+    impl Hasher for Capture {
+        fn finish(&self) -> u64 {
+            0
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            if self.0.is_none() {
+                let mut buf = [0u8; size_of::<isize>()];
+                let n = bytes.len().min(buf.len());
+                buf[..n].copy_from_slice(&bytes[..n]);
+                self.0 = Some(isize::from_ne_bytes(buf));
+            }
+        }
+
+        fn write_isize(&mut self, i: isize) {
+            if self.0.is_none() {
+                self.0 = Some(i);
+            }
+        }
+    }
+
+    let mut capture = Capture(None);
+    core::mem::discriminant(variant).hash(&mut capture);
+    capture.0.unwrap_or(0)
 }
 
 /// Encode the given value or a previously cached shorthand.
@@ -117,8 +151,10 @@ where
     E: TyEncoder<'tcx>,
     M: for<'b> Fn(&'b mut E) -> &'b mut FxHashMap<T, usize>,
     T: EncodableWithShorthand<'tcx, E>,
-    // The discriminant and shorthand must have the same size.
-    T::Variant: DiscriminantKind<Discriminant = isize>,
+    // Upstream also required `T::Variant: DiscriminantKind<Discriminant = isize>` so the
+    // discriminant and shorthand have the same size. `DiscriminantKind` is unstable; both
+    // variant types (`TyKind`, `PredicateKind`) are default-repr enums, whose discriminant
+    // is `isize`, and `variant_discriminant` below reads it as such.
 {
     let existing_shorthand = cache(encoder).get(value).copied();
     if let Some(shorthand) = existing_shorthand {
@@ -134,7 +170,7 @@ where
 
     // The shorthand encoding uses the same usize as the
     // discriminant, with an offset so they can't conflict.
-    let discriminant = intrinsics::discriminant_value(variant);
+    let discriminant = variant_discriminant(variant);
     assert!(SHORTHAND_OFFSET > discriminant as usize);
 
     let shorthand = start + SHORTHAND_OFFSET;
@@ -218,9 +254,7 @@ impl<'tcx, E: TyEncoder<'tcx>> Encodable<E> for ty::ParamEnv<'tcx> {
     }
 }
 
-impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {
-    #[allow(rustc::usage_of_ty_tykind)]
-    fn decode(decoder: &mut D) -> Ty<'tcx> {
+impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {    fn decode(decoder: &mut D) -> Ty<'tcx> {
         // Handle shorthands first, if we have a usize > 0x80.
         if decoder.positioned_at_shorthand() {
             let pos = decoder.read_usize();
@@ -521,6 +555,12 @@ macro_rules! implement_ty_decoder {
                 #[inline]
                 fn read_raw_bytes(&mut self, len: usize) -> &[u8] {
                     self.opaque.read_raw_bytes(len)
+                }
+
+                // `Vec<u8>` reads through the opaque decoder in one call.
+                #[inline]
+                fn read_u8_vec(&mut self, len: usize) -> alloc::vec::Vec<u8> {
+                    self.opaque.read_u8_vec(len)
                 }
 
                 #[inline]

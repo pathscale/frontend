@@ -105,8 +105,9 @@ impl<'a, 'hir> HirIdValidator<'a, 'hir> {
 
 impl<'a, 'hir> intravisit::Visitor<'hir> for HirIdValidator<'a, 'hir> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'hir> {
         self.tcx
     }
 

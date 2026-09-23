@@ -8,7 +8,6 @@
 # source, and `rust-toolchain.toml` pins one of the same vintage instead.
 
 [env]
-RUSTC_BOOTSTRAP = "1"
 CFG_RELEASE = "1.100.0-dev"
 # **This string decides which sysroot this compiler can read**, and getting it wrong is not a
 # version complaint: crate metadata records the compiler that wrote it, an older sysroot desyncs

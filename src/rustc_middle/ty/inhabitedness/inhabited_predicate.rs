@@ -63,7 +63,7 @@ impl<'tcx> InhabitedPredicate<'tcx> {
         module_def_id: LocalModId,
         reveal_opaque: &impl Fn(OpaqueTypeKey<'tcx>) -> Option<Ty<'tcx>>,
     ) -> bool {
-        let Ok(result) = self.apply_inner::<!>(
+        let Ok(result) = self.apply_inner::<crate::Never>(
             tcx,
             typing_env,
             &mut Default::default(),
@@ -82,7 +82,7 @@ impl<'tcx> InhabitedPredicate<'tcx> {
     /// privately uninhabited types are considered always uninhabited.
     pub fn apply_ignore_module(self, tcx: TyCtxt<'tcx>, typing_env: TypingEnv<'tcx>) -> bool {
         let Ok(result) =
-            self.apply_inner::<!>(tcx, typing_env, &mut Default::default(), &|_| Ok(true), &|_| {
+            self.apply_inner::<crate::Never>(tcx, typing_env, &mut Default::default(), &|_| Ok(true), &|_| {
                 None
             });
         result

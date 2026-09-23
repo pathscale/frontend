@@ -91,8 +91,14 @@ pub fn walk_expr<'thir, 'tcx: 'thir, V: Visitor<'thir, 'tcx>>(
             visitor.visit_pat(pat);
         }
         Loop { body } => visitor.visit_expr(&visitor.thir()[body]),
-        LoopMatch { match_data: LoopMatchMatchData { scrutinee, ref arms, .. }, .. }
-        | Match { scrutinee, ref arms, .. } => {
+        LoopMatch { ref match_data, .. } => {
+            let LoopMatchMatchData { scrutinee, ref arms, .. } = **match_data;
+            visitor.visit_expr(&visitor.thir()[scrutinee]);
+            for &arm in &**arms {
+                visitor.visit_arm(&visitor.thir()[arm]);
+            }
+        }
+        Match { scrutinee, ref arms, .. } => {
             visitor.visit_expr(&visitor.thir()[scrutinee]);
             for &arm in &**arms {
                 visitor.visit_arm(&visitor.thir()[arm]);
@@ -133,14 +139,15 @@ pub fn walk_expr<'thir, 'tcx: 'thir, V: Visitor<'thir, 'tcx>>(
                 visitor.visit_expr(&visitor.thir()[field]);
             }
         }
-        Adt(AdtExpr {
-            ref fields,
-            ref base,
-            adt_def: _,
-            variant_index: _,
-            args: _,
-            user_ty: _,
-        }) => {
+        Adt(ref adt_expr) => {
+            let AdtExpr {
+                ref fields,
+                ref base,
+                adt_def: _,
+                variant_index: _,
+                args: _,
+                user_ty: _,
+            } = **adt_expr;
             for field in &**fields {
                 visitor.visit_expr(&visitor.thir()[field.expr]);
             }
@@ -155,26 +162,29 @@ pub fn walk_expr<'thir, 'tcx: 'thir, V: Visitor<'thir, 'tcx>>(
         PlaceUnwrapUnsafeBinder { source }
         | ValueUnwrapUnsafeBinder { source }
         | WrapUnsafeBinder { source } => visitor.visit_expr(&visitor.thir()[source]),
-        Closure(ClosureExpr {
-            closure_id: _,
-            args: _,
-            upvars: _,
-            movability: _,
-            fake_reads: _,
-        }) => {}
+        Closure(ref closure_expr) => {
+            let ClosureExpr {
+                closure_id: _,
+                args: _,
+                upvars: _,
+                movability: _,
+                fake_reads: _,
+            } = **closure_expr;
+        }
         Literal { lit: _, neg: _ } => {}
         NonHirLiteral { lit: _, user_ty: _ } => {}
         ZstLiteral { user_ty: _ } => {}
         NamedConst { def_id: _, args: _, user_ty: _ } => {}
         ConstParam { param: _, def_id: _ } => {}
         StaticRef { alloc_id: _, ty: _, def_id: _ } => {}
-        InlineAsm(InlineAsmExpr {
-            asm_macro: _,
-            ref operands,
-            template: _,
-            options: _,
-            line_spans: _,
-        }) => {
+        InlineAsm(ref inline_asm) => {
+            let InlineAsmExpr {
+                asm_macro: _,
+                ref operands,
+                template: _,
+                options: _,
+                line_spans: _,
+            } = **inline_asm;
             for op in &**operands {
                 use InlineAsmOperand::*;
                 match op {

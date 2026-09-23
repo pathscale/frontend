@@ -278,8 +278,6 @@ impl<'tcx> TyCtxt<'tcx> {
                 bug!("unexpected self type: {self_ty:?}");
             }
         }
-
-        #[allow(rustc::usage_of_type_ir_traits)]
         self.for_each_blanket_impl(trait_def_id, f)
     }
 

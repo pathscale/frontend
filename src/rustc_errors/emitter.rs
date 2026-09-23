@@ -27,7 +27,6 @@ use core::iter;
 use eko::path::Path;
 
 use crate::rustc_data_structures::fx::FxIndexSet;
-use crate::rustc_data_structures::sync::DynSend;
 use crate::rustc_error_messages::DiagArgMap;
 use crate::rustc_span::hygiene::{ExpnKind, MacroKind};
 use crate::rustc_span::source_map::SourceMap;
@@ -58,7 +57,9 @@ pub enum TimingEvent {
     End,
 }
 
-pub type DynEmitter = dyn Emitter + DynSend;
+// `+ DynSend` dropped: no longer an auto trait, so a trait object cannot name it (see
+// `rustc_data_structures/marker.rs`).
+pub type DynEmitter = dyn Emitter;
 
 /// Emitter trait for emitting errors and other structured information.
 pub trait Emitter {
@@ -380,7 +381,7 @@ pub trait Emitter {
 
 /// An emitter that adds a note to each diagnostic.
 pub struct EmitterWithNote {
-    pub emitter: Box<dyn Emitter + DynSend>,
+    pub emitter: Box<dyn Emitter>,
     pub note: String,
 }
 

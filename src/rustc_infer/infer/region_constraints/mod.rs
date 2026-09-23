@@ -760,7 +760,10 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
             RegionVid::from(value_count)..RegionVid::from(self.storage.unification_table.len());
         (
             range.clone(),
-            (range.start..range.end).map(|index| self.storage.var_infos[index].origin).collect(),
+            (range.start.index()..range.end.index())
+                .map(RegionVid::from_usize)
+                .map(|index| self.storage.var_infos[index].origin)
+                .collect(),
         )
     }
 

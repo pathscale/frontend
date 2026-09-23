@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::assert_matches;
+use crate::assert_matches;
 use core::marker::PhantomData;
 
 use crate::rustc_data_structures::undo_log::{Rollback, UndoLogs};

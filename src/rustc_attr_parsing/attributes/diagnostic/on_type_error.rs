@@ -20,7 +20,7 @@ impl AttributeParser for OnTypeErrorParser {
         template!(List: &[r#"note = "...""#]),
         AttributeStability::Stable, // Unstable, stability checked manually below
         |this, cx, args| {
-            gate_diagnostic_attr!(diagnostic_on_type_error);
+            gate_diagnostic_attr!(cx, args, diagnostic_on_type_error);
 
             let span = cx.attr_span;
             this.span = Some(span);

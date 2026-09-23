@@ -268,6 +268,8 @@ fn get_lang_items(tcx: TyCtxt<'_>, (): ()) -> LanguageItems {
 }
 
 impl<'ast, 'tcx> visit::Visitor<'ast> for LanguageItemCollector<'ast, 'tcx> {
+    type Result = ();
+
     fn visit_item(&mut self, i: &'ast ast::Item) {
         let target = Target::from_ast_item(i);
 

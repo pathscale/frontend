@@ -431,10 +431,12 @@ macro_rules! make_mir_visitor {
                     self.visit_statement_debuginfo(debuginfo, location);
                 }
                 match kind {
-                    StatementKind::Assign((place, rvalue)) => {
+                    StatementKind::Assign(assign) => {
+                        let (place, rvalue) = & $($mutability)? **assign;
                         self.visit_assign(place, rvalue, location);
                     }
-                    StatementKind::FakeRead((_, place)) => {
+                    StatementKind::FakeRead(fake_read) => {
+                        let (_, place) = & $($mutability)? **fake_read;
                         self.visit_place(
                             place,
                             PlaceContext::NonMutatingUse(NonMutatingUseContext::Inspect),
@@ -469,7 +471,8 @@ macro_rules! make_mir_visitor {
                             location
                         );
                     }
-                    StatementKind::AscribeUserType((place, user_ty), variance) => {
+                    StatementKind::AscribeUserType(ascription, variance) => {
+                        let (place, user_ty) = & $($mutability)? **ascription;
                         self.visit_ascribe_user_ty(
                             place,
                             $(& $mutability)? *variance,
@@ -484,7 +487,7 @@ macro_rules! make_mir_visitor {
                         )
                     }
                     StatementKind::Intrinsic(intrinsic) => {
-                        match intrinsic {
+                        match & $($mutability)? **intrinsic {
                             NonDivergingIntrinsic::Assume(op) => self.visit_operand(op, location),
                             NonDivergingIntrinsic::CopyNonOverlapping(CopyNonOverlapping {
                                 src,
@@ -762,7 +765,8 @@ macro_rules! make_mir_visitor {
                         self.visit_ty($(& $mutability)? *ty, TyContext::Location(location));
                     }
 
-                    Rvalue::BinaryOp(_bin_op, (lhs, rhs)) => {
+                    Rvalue::BinaryOp(_bin_op, operands) => {
+                        let (lhs, rhs) = & $($mutability)? **operands;
                         self.visit_operand(lhs, location);
                         self.visit_operand(rhs, location);
                     }
@@ -922,10 +926,11 @@ macro_rules! make_mir_visitor {
 
                 self.visit_source_info(source_info);
                 let location = Location::START;
-                if let Some(VarDebugInfoFragment {
-                    ty,
-                    projection
-                }) = composite {
+                if let Some(fragment) = composite {
+                    let VarDebugInfoFragment {
+                        ty,
+                        projection
+                    } = & $($mutability)? **fragment;
                     self.visit_ty($(& $mutability)? *ty, TyContext::Location(location));
                     for elem in projection {
                         let ProjectionElem::Field(_, ty) = elem else { bug!() };

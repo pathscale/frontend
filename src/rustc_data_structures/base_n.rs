@@ -11,7 +11,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{ascii, fmt};
+use core::fmt;
 
 #[cfg(test)]
 mod tests;
@@ -20,28 +20,40 @@ pub const MAX_BASE: usize = 64;
 pub const ALPHANUMERIC_ONLY: usize = 62;
 pub const CASE_INSENSITIVE: usize = 36;
 
-const BASE_64: [ascii::Char; MAX_BASE] = {
+// Plain bytes where upstream has `ascii::Char`, which is the unstable `ascii_char`. The type was
+// only there to carry the proof that the buffer is ASCII; the `const` block below checks it
+// instead, and `as_str` relies on it.
+const BASE_64: [u8; MAX_BASE] = {
     let bytes = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ@$";
-    let Some(ascii) = bytes.as_ascii() else { panic!() };
-    *ascii
+    assert!(bytes.is_ascii());
+    *bytes
 };
 
 pub struct BaseNString {
     start: usize,
-    buf: [ascii::Char; 128],
+    buf: [u8; 128],
+}
+
+impl BaseNString {
+    fn as_str(&self) -> &str {
+        let digits = &self.buf[self.start..];
+        // SAFETY: every byte in `buf` is `b'0'` or was copied out of `BASE_64`, which is
+        // checked to be ASCII at compile time, and ASCII is valid UTF-8.
+        unsafe { core::str::from_utf8_unchecked(digits) }
+    }
 }
 
 impl core::ops::Deref for BaseNString {
     type Target = str;
 
     fn deref(&self) -> &str {
-        self.buf[self.start..].as_str()
+        self.as_str()
     }
 }
 
 impl AsRef<str> for BaseNString {
     fn as_ref(&self) -> &str {
-        self.buf[self.start..].as_str()
+        self.as_str()
     }
 }
 
@@ -63,7 +75,7 @@ pub trait ToBaseN: Into<u128> {
     }
 
     fn to_base(self, base: usize) -> BaseNString {
-        let mut output = [ascii::Char::Digit0; 128];
+        let mut output = [b'0'; 128];
 
         let mut n: u128 = self.into();
 

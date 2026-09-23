@@ -25,11 +25,11 @@ doctest = false
 # about what gets linked, and evidence about a configuration nobody builds is not evidence. Turning
 # them off would also compile the big crate a second time under a second feature set, for a check
 # whose whole cost is that it builds.
-frontend = { path = "..", version = "0.1.0" }
+frontend = { path = "..", version = "0.2.0" }
 # For the link probe's `#[global_allocator]`. A `no_std` binary has none until it names one, and
 # `frontend` allocates on every path, so without it the probe cannot be built and there is no link
 # line to read.
-ekostd = { version = "^0.1.0", features = ["nightly"] }
+ekostd = { version = "^0.1.0" }
 
 # The link probe. See `src/bin/link-probe.rs`: it exists so `no-std-link-check.sh` has a link line
 # to read, because a library does not have one.

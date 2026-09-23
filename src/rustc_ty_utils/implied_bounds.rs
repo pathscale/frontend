@@ -178,12 +178,14 @@ fn impl_spans(tcx: TyCtxt<'_>, def_id: LocalDefId) -> impl Iterator<Item = Span>
         let trait_args = impl_
             .of_trait
             .map(|of_trait| of_trait.trait_ref.path.segments.last().unwrap().args().args)
-            .into_flat_iter()
+            .into_iter()
+            .flatten()
             .map(|arg| arg.span());
         let dummy_spans_for_default_args = impl_
             .of_trait
             .map(|of_trait| iter::repeat(of_trait.trait_ref.path.span))
-            .into_flat_iter();
+            .into_iter()
+            .flatten();
         iter::once(impl_.self_ty.span).chain(trait_args).chain(dummy_spans_for_default_args)
     } else {
         bug!("unexpected item for impl {def_id:?}: {item:?}")

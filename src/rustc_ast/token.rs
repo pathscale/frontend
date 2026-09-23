@@ -1201,9 +1201,9 @@ mod size_asserts {
 
     use super::*;
     // tidy-alphabetical-start
-    static_assert_size!(Lit, 12);
+    static_assert_size!(Lit, 16);
     static_assert_size!(LitKind, 2);
-    static_assert_size!(Token, 24);
-    static_assert_size!(TokenKind, 16);
+    static_assert_size!(Token, 28);
+    static_assert_size!(TokenKind, 20);
     // tidy-alphabetical-end
 }

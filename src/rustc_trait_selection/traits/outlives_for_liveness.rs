@@ -494,6 +494,8 @@ impl<'tcx, OP> TypeVisitor<TyCtxt<'tcx>> for FreeRegionsVisitor<'tcx, OP>
 where
     OP: FnMut(ty::Region<'tcx>),
 {
+    type Result = ();
+
     fn visit_region(&mut self, r: ty::Region<'tcx>) {
         match r.kind() {
             // ignore bound regions, keep visiting

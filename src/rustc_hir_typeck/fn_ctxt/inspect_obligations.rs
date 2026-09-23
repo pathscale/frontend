@@ -236,6 +236,8 @@ struct NestedObligationsForSelfTy<'a, 'tcx> {
 }
 
 impl<'tcx> ProofTreeVisitor<'tcx> for NestedObligationsForSelfTy<'_, 'tcx> {
+    type Result = ();
+
     fn span(&self) -> Span {
         self.root_cause.span
     }
@@ -292,6 +294,8 @@ struct FindFromFloatForF32RootVids<'a, 'tcx> {
 }
 
 impl<'tcx> ProofTreeVisitor<'tcx> for FindFromFloatForF32RootVids<'_, 'tcx> {
+    type Result = ();
+
     fn span(&self) -> Span {
         self.span
     }

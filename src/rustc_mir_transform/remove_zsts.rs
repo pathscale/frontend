@@ -127,14 +127,14 @@ impl<'tcx> MutVisitor<'tcx> for Replacer<'_, 'tcx> {
 
     fn visit_statement(&mut self, statement: &mut Statement<'tcx>, loc: Location) {
         let place_for_ty = match statement.kind {
-            StatementKind::Assign((place, ref rvalue)) => {
+            StatementKind::Assign(ref assign) => {
+                let (place, ref rvalue) = **assign;
                 rvalue.is_safe_to_remove().then_some(place)
             }
             StatementKind::SetDiscriminant { ref place, variant_index: _ }
             | StatementKind::PlaceMention(ref place) => Some(**place),
-            StatementKind::AscribeUserType((place, _), _) | StatementKind::FakeRead((_, place)) => {
-                Some(place)
-            }
+            StatementKind::AscribeUserType(ref ascription, _) => Some(ascription.0),
+            StatementKind::FakeRead(ref fake_read) => Some(fake_read.1),
             StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
                 Some(local.into())
             }

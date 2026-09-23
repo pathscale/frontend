@@ -70,6 +70,8 @@ struct ParameterCollector {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ParameterCollector {
+    type Result = ();
+
     fn visit_ty(&mut self, t: Ty<'tcx>) {
         match *t.kind() {
             // Projections are not injective in general.

@@ -107,14 +107,13 @@ impl Encoder for MemEncoder {
     fn emit_raw_bytes(&mut self, s: &[u8]) {
         self.data.extend_from_slice(s);
     }
-}
 
-// Specialize encoding byte slices. This specialization also applies to encoding `Vec<u8>`s, etc.,
-// since the default implementations call `encode` on their slices internally.
-impl Encodable<MemEncoder> for [u8] {
-    fn encode(&self, e: &mut MemEncoder) {
-        Encoder::emit_usize(e, self.len());
-        e.emit_raw_bytes(self);
+    // A `u8` encodes as itself here, so a byte slice (and `Vec<u8>`, which encodes through
+    // its slice) is written in one call. This used to be a specialized `Encodable` impl for
+    // `[u8]`; stable Rust cannot specialize, so it is an encoder hook instead.
+    #[inline]
+    fn emit_u8_slice(&mut self, s: &[u8]) {
+        self.emit_raw_bytes(s);
     }
 }
 

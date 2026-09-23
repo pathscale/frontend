@@ -22,7 +22,7 @@ use crate::rustc_crate_store::{CrateDepKind, CrateSource, ExternCrate, ExternCra
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_data_structures::owned_slice::OwnedSlice;
 use crate::rustc_data_structures::svh::Svh;
-use crate::rustc_data_structures::sync::{self, FreezeReadGuard, FreezeWriteGuard};
+use crate::rustc_data_structures::sync::{FreezeReadGuard, FreezeWriteGuard};
 use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_expand::base::SyntaxExtension;
 use crate::rustc_hir as hir;
@@ -65,7 +65,9 @@ pub trait MetadataLoader {
     fn get_dylib_metadata(&self, target: &Target, filename: &Path) -> Result<OwnedSlice, String>;
 }
 
-pub type MetadataLoaderDyn = dyn MetadataLoader + Send + Sync + sync::DynSend + sync::DynSync;
+// `+ DynSend + DynSync` dropped: no longer auto traits, so a trait object cannot name them
+// (see `rustc_data_structures/marker.rs`).
+pub type MetadataLoaderDyn = dyn MetadataLoader + Send + Sync;
 
 pub struct CStore {
     metadata_loader: Box<MetadataLoaderDyn>,
@@ -1185,7 +1187,6 @@ impl CStore {
         // First up we check for global allocators. Look at the crate graph here
         // and see what's a global allocator, including if we ourselves are a
         // global allocator.
-        #[allow(rustc::symbol_intern_string_literal)]
         let this_crate = Symbol::intern("this crate");
 
         let mut global_allocator = self.has_global_allocator.then_some(this_crate);
@@ -1456,6 +1457,8 @@ fn fn_spans(krate: &ast::Crate, name: Symbol) -> Vec<Span> {
         spans: Vec<Span>,
     }
     impl<'ast> visit::Visitor<'ast> for Finder {
+        type Result = ();
+
         fn visit_item(&mut self, item: &'ast ast::Item) {
             if let Some(ident) = item.kind.ident()
                 && ident.name == self.name

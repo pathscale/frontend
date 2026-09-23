@@ -1,17 +1,6 @@
-// tidy-alphabetical-start
-#![allow(
-    rustc::default_hash_types,
-    reason = "we like performance but can't use `rustc_data_structures`"
-)]
-#![cfg_attr(bootstrap, feature(never_type))]
-#![deny(
-    rustc::potential_query_instability,
-    reason = "macros shall produce deterministic output/errors"
-)]
-#![feature(allow_internal_unstable)]
-#![feature(proc_macro_diagnostic)]
-#![feature(proc_macro_tracked_env)]
-// tidy-alphabetical-end
+// No `rustc::` tool lints here: stable does not know the `rustc` tool and rejects the attribute.
+// Deterministic output, which `potential_query_instability` used to guard, now rests on the
+// `FxBuildHasher` choice explained in `Cargo.toml`.
 
 use proc_macro::TokenStream;
 use synstructure::decl_derive;
@@ -61,6 +50,27 @@ pub fn symbols(input: TokenStream) -> TokenStream {
     symbols::symbols(input.into()).into()
 }
 
+/// Turns each comma-separated error-code literal `NNNN` into
+/// `pub const ENNNN: crate::rustc_errors::ErrCode = crate::rustc_errors::ErrCode::from_u32(NNNN);`.
+///
+/// `rustc_errors::codes` did this with `${concat(E, $num)}` (`macro_metavar_expr_concat`, which is
+/// unstable). `macro_rules!` has no stable way to build an identifier, and the alternative was
+/// rewriting all five hundred entries of `error_codes!` by hand, so this is the one proc macro the
+/// port adds. The literal's own text (`0001`) names the constant, exactly as `concat` did.
+#[proc_macro]
+pub fn error_code_constants(input: TokenStream) -> TokenStream {
+    let parser = syn::punctuated::Punctuated::<syn::LitInt, syn::Token![,]>::parse_terminated;
+    let codes = syn::parse_macro_input!(input with parser);
+    let consts = codes.iter().map(|code| {
+        let name = quote::format_ident!("E{}", code.to_string(), span = code.span());
+        quote::quote! {
+            pub const #name: crate::rustc_errors::ErrCode =
+                crate::rustc_errors::ErrCode::from_u32(#code);
+        }
+    });
+    quote::quote! { #(#consts)* }.into()
+}
+
 /// Derive an extension trait for a given impl block. The trait name
 /// goes into the parenthesized args of the macro, for greppability.
 /// For example:
@@ -86,15 +96,13 @@ pub fn extension(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Accepted attributes: `#[stable_hash]`, `#[encodable]`, `#[orderable]`,
 /// `#[debug_format = "Foo({})"]`, `#[max = 0xFFFF_FFFD]`, `#[gate_rustc_only]`.
+///
+/// There is no `#[allow_internal_unstable]` here any more: the attribute is itself nightly-only.
+/// It used to let the expansion use `step_trait`, `pattern_types`, `pattern_type_macro` and
+/// `structural_match` without the calling crate enabling them, so on stable the expansion has to
+/// avoid those features on its own, and it does: the field is a plain `u32` and there is no
+/// `Step` impl, so a range of indices does not iterate. See `index_newtype.rs`.
 #[proc_macro]
-#[allow_internal_unstable(
-    step_trait,
-    rustc_attrs,
-    trusted_step,
-    pattern_types,
-    pattern_type_macro,
-    structural_match
-)]
 pub fn newtype_index(input: TokenStream) -> TokenStream {
     index_newtype::newtype(input)
 }

@@ -853,7 +853,6 @@ impl EncoderState {
         if let Some(record_stats) = &self.stats {
             let record_stats = record_stats.lock();
             // `stats` is sorted below so we can allow this lint here.
-            #[allow(rustc::potential_query_instability)]
             let mut stats: Vec<_> = record_stats.values().collect();
             stats.sort_by_key(|s| -(s.node_counter as i64));
 

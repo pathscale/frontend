@@ -554,7 +554,8 @@ impl<'tcx> TypeckResults<'tcx> {
         self.closure_min_captures
             .get(&closure_def_id)
             .map(|closure_min_captures| closure_min_captures.values())
-            .into_flat_iter()
+            .into_iter()
+            .flatten()
             .flatten()
     }
 
@@ -890,7 +891,7 @@ impl<'tcx> IsIdentity for CanonicalUserType<'tcx> {
                     return false;
                 }
 
-                iter::zip(user_args.args, BoundVar::ZERO..).all(|(arg, cvar)| {
+                iter::zip(user_args.args, (BoundVar::ZERO.index()..).map(BoundVar::from_usize)).all(|(arg, cvar)| {
                     match arg.kind() {
                         GenericArgKind::Type(ty) => match ty.kind() {
                             ty::Bound(debruijn, b) => {

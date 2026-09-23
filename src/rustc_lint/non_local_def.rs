@@ -281,6 +281,8 @@ struct PathCollector<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for PathCollector<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_path(&mut self, path: &Path<'tcx>, _id: HirId) {
         self.paths.push(path.clone()); // need to clone, bc of the restricted lifetime
         intravisit::walk_path(self, path)

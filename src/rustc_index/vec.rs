@@ -265,17 +265,9 @@ impl<I: Idx, T> Extend<T> for IndexVec<I, T> {
         self.raw.extend(iter);
     }
 
-    #[inline]
-    #[cfg(feature = "nightly")]
-    fn extend_one(&mut self, item: T) {
-        self.raw.push(item);
-    }
-
-    #[inline]
-    #[cfg(feature = "nightly")]
-    fn extend_reserve(&mut self, additional: usize) {
-        self.raw.reserve(additional);
-    }
+    // `extend_one` and `extend_reserve` are not overridden: doing so is the unstable
+    // `extend_one`. The provided `extend_one` pushes through `extend`, and the reserve was only
+    // a capacity hint.
 }
 
 impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {

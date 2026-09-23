@@ -416,6 +416,8 @@ struct DetectNonGenericPointeeAttr<'a, 'b> {
 }
 
 impl<'a, 'b> crate::rustc_ast::visit::Visitor<'a> for DetectNonGenericPointeeAttr<'a, 'b> {
+    type Result = ();
+
     fn visit_attribute(&mut self, attr: &'a crate::rustc_ast::Attribute) -> Self::Result {
         if attr.has_name(sym::pointee) {
             self.cx.dcx().emit_err(diagnostics::NonGenericPointee { span: attr.span });
@@ -464,6 +466,8 @@ struct AlwaysErrorOnGenericParam<'a, 'b> {
 }
 
 impl<'a, 'b> crate::rustc_ast::visit::Visitor<'a> for AlwaysErrorOnGenericParam<'a, 'b> {
+    type Result = ();
+
     fn visit_attribute(&mut self, attr: &'a crate::rustc_ast::Attribute) -> Self::Result {
         if attr.has_name(sym::pointee) {
             self.cx.dcx().emit_err(diagnostics::NonGenericPointee { span: attr.span });

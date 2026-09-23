@@ -47,7 +47,7 @@ pub struct ModChild {
     pub ident: Ident,
     /// Resolution result corresponding to the item.
     /// Local variables cannot be exported, so this `Res` doesn't need the ID parameter.
-    pub res: Res<!>,
+    pub res: Res<crate::Never>,
     /// Visibility of the item.
     pub vis: ty::Visibility<ModId>,
     /// Reexport chain linking this module child to its original reexported item.

@@ -1,4 +1,3 @@
-use core::iter::Step;
 use core::marker::PhantomData;
 use core::ops::{Bound, Range, RangeBounds};
 
@@ -51,18 +50,15 @@ impl<I: Idx> IntervalSet<I> {
         self.map.clear();
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = I>
-    where
-        I: Step,
-    {
-        self.iter_intervals().flatten()
+    // No `I: Step` bounds in this file. `Step` is the unstable `step_trait`, and no index type
+    // implements it (see `frontend_macros/src/index_newtype.rs`), so a `Range<I>` does not
+    // iterate. The one place that walks the elements goes through `usize` instead.
+    pub fn iter(&self) -> impl Iterator<Item = I> {
+        self.iter_intervals().flat_map(|range| (range.start.index()..range.end.index()).map(I::new))
     }
 
     /// Iterates through intervals stored in the set, in order.
-    pub fn iter_intervals(&self) -> impl Iterator<Item = core::ops::Range<I>>
-    where
-        I: Step,
-    {
+    pub fn iter_intervals(&self) -> impl Iterator<Item = core::ops::Range<I>> {
         self.map.iter().map(|&(start, end)| I::new(start as usize)..I::new(end as usize + 1))
     }
 
@@ -204,17 +200,14 @@ impl<I: Idx> IntervalSet<I> {
         needle <= *prev_end
     }
 
-    pub fn superset(&self, other: &IntervalSet<I>) -> bool
-    where
-        I: Step,
-    {
+    pub fn superset(&self, other: &IntervalSet<I>) -> bool {
         let mut sup_iter = self.iter_intervals();
         let mut current = None;
         let contains = |sup: Range<I>, sub: Range<I>, current: &mut Option<Range<I>>| {
-            if sup.end < sub.start {
+            if sup.end.index() < sub.start.index() {
                 // if `sup.end == sub.start`, the next sup doesn't contain `sub.start`
                 None // continue to the next sup
-            } else if sup.end >= sub.end && sup.start <= sub.start {
+            } else if sup.end.index() >= sub.end.index() && sup.start.index() <= sub.start.index() {
                 *current = Some(sup); // save the current sup
                 Some(true)
             } else {
@@ -230,10 +223,7 @@ impl<I: Idx> IntervalSet<I> {
         })
     }
 
-    pub fn disjoint(&self, other: &IntervalSet<I>) -> bool
-    where
-        I: Step,
-    {
+    pub fn disjoint(&self, other: &IntervalSet<I>) -> bool {
         let helper = move || {
             let mut self_iter = self.iter_intervals();
             let mut other_iter = other.iter_intervals();
@@ -242,11 +232,11 @@ impl<I: Idx> IntervalSet<I> {
             let mut other_current = other_iter.next()?;
 
             loop {
-                if self_current.end <= other_current.start {
+                if self_current.end.index() <= other_current.start.index() {
                     self_current = self_iter.next()?;
                     continue;
                 }
-                if other_current.end <= self_current.start {
+                if other_current.end.index() <= self_current.start.index() {
                     other_current = other_iter.next()?;
                     continue;
                 }
@@ -310,10 +300,7 @@ impl<I: Idx> IntervalSet<I> {
         debug_assert!(self.check_invariants());
     }
 
-    pub fn union(&mut self, other: &IntervalSet<I>) -> bool
-    where
-        I: Step,
-    {
+    pub fn union(&mut self, other: &IntervalSet<I>) -> bool {
         assert_eq!(self.domain, other.domain);
         if self.map.len() < other.map.len() {
             let backup = self.clone();
@@ -357,7 +344,7 @@ where
     column_size: usize,
 }
 
-impl<R: Idx, C: Step + Idx> SparseIntervalMatrix<R, C> {
+impl<R: Idx, C: Idx> SparseIntervalMatrix<R, C> {
     pub fn new(column_size: usize) -> SparseIntervalMatrix<R, C> {
         SparseIntervalMatrix { rows: IndexVec::new(), column_size }
     }
@@ -378,17 +365,11 @@ impl<R: Idx, C: Step + Idx> SparseIntervalMatrix<R, C> {
         self.rows.ensure_contains_elem(row, || IntervalSet::new(self.column_size))
     }
 
-    pub fn union_row(&mut self, row: R, from: &IntervalSet<C>) -> bool
-    where
-        C: Step,
-    {
+    pub fn union_row(&mut self, row: R, from: &IntervalSet<C>) -> bool {
         self.ensure_row(row).union(from)
     }
 
-    pub fn union_rows(&mut self, read: R, write: R) -> bool
-    where
-        C: Step,
-    {
+    pub fn union_rows(&mut self, read: R, write: R) -> bool {
         if read == write || self.rows.get(read).is_none() {
             return false;
         }

@@ -510,14 +510,9 @@ impl Hasher for SipHasher128 {
         self.slice_write(msg);
     }
 
-    #[cfg(feature = "nightly")]
-    #[inline]
-    fn write_str(&mut self, s: &str) {
-        // This hasher works byte-wise, and `0xFF` cannot show up in a `str`,
-        // so just hashing the one extra byte is enough to be prefix-free.
-        self.write(s.as_bytes());
-        self.write_u8(0xFF);
-    }
+    // No `write_str` override: implementing it is the unstable `hasher_prefixfree_extras`, and the
+    // provided one already does what this hasher needs. It hashes the bytes and then 0xFF, which
+    // cannot appear in a `str`, so the one extra byte keeps it prefix-free.
 
     fn finish(&self) -> u64 {
         let mut buf = self.buf;

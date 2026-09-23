@@ -65,6 +65,8 @@ struct CheckParameters<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for CheckParameters<'tcx> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
         if let hir::ExprKind::Path(hir::QPath::Resolved(
             _,
@@ -198,6 +200,8 @@ impl CheckInlineAssembly {
 }
 
 impl<'tcx> Visitor<'tcx> for CheckInlineAssembly {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_stmt(&mut self, stmt: &'tcx hir::Stmt<'tcx>) {
         match stmt.kind {
             StmtKind::Item(..) => {}

@@ -436,19 +436,21 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     }
                 }
             }
-            ObligationCauseCode::MatchExpressionArm(MatchExpressionArmCause {
-                arm_block_id,
-                arm_span,
-                arm_ty,
-                prior_arm_block_id,
-                prior_arm_span,
-                prior_arm_ty,
-                source,
-                ref prior_non_diverging_arms,
-                scrut_span,
-                expr_span,
-                ..
-            }) => match source {
+            ObligationCauseCode::MatchExpressionArm(ref arm_cause) => {
+                let MatchExpressionArmCause {
+                    arm_block_id,
+                    arm_span,
+                    arm_ty,
+                    prior_arm_block_id,
+                    prior_arm_span,
+                    prior_arm_ty,
+                    source,
+                    ref prior_non_diverging_arms,
+                    scrut_span,
+                    expr_span,
+                    ..
+                } = **arm_cause;
+                match source {
                 hir::MatchSource::TryDesugar(scrut_hir_id) => {
                     if let Some(ty::error::ExpectedFound { expected, .. }) = exp_found {
                         let scrut_expr = self.tcx.hir_expect_expr(scrut_hir_id);
@@ -515,7 +517,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         err.subdiagnostic(subdiag);
                     }
                 }
-            },
+                }
+            }
             ObligationCauseCode::IfExpression { expr_id, .. } => {
                 let hir::Node::Expr(&hir::Expr {
                     kind: hir::ExprKind::If(cond_expr, then_expr, Some(else_expr)),
@@ -1546,6 +1549,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
 
         impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for OpaqueTypesVisitor<'tcx> {
+            type Result = ();
+
             fn visit_ty(&mut self, t: Ty<'tcx>) {
                 if let Some((kind, def_id)) = TyCategory::from_ty(self.tcx, t) {
                     let span = self.tcx.def_span(def_id);
@@ -2011,7 +2016,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 // specify a byte literal
                 (ty::Uint(ty::UintTy::U8), ty::Char) => {
                     if let Ok(code) = self.tcx.sess.source_map().span_to_snippet(span)
-                        && let Some(code) = code.strip_circumfix('\'', '\'')
+                        && let Some(code) =
+                            code.strip_prefix('\'').and_then(|c| c.strip_suffix('\''))
                         // forbid all Unicode escapes
                         && !code.starts_with("\\u")
                         // forbids literal Unicode characters beyond ASCII
@@ -2028,7 +2034,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 // specify a character literal (issue #92479)
                 (ty::Char, ty::Ref(_, r, _)) if r.is_str() => {
                     if let Ok(code) = self.tcx.sess.source_map().span_to_snippet(span)
-                        && let Some(code) = code.strip_circumfix('"', '"')
+                        && let Some(code) =
+                            code.strip_prefix('"').and_then(|c| c.strip_suffix('"'))
                         && code.chars().count() == 1
                     {
                         suggestions.push(TypeErrorAdditionalDiags::MeantCharLiteral {
@@ -2064,10 +2071,15 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             }
         }
         let code = trace.cause.code();
-        if let &(ObligationCauseCode::MatchExpressionArm(MatchExpressionArmCause {
-            source, ..
-        })
-        | ObligationCauseCode::BlockTailExpression(.., source)) = code
+        let match_source = match code {
+            ObligationCauseCode::MatchExpressionArm(arm_cause) => {
+                let MatchExpressionArmCause { source, .. } = **arm_cause;
+                Some(source)
+            }
+            &ObligationCauseCode::BlockTailExpression(.., source) => Some(source),
+            _ => None,
+        };
+        if let Some(source) = match_source
             && let hir::MatchSource::TryDesugar(_) = source
             && let Some((expected_ty, found_ty)) =
                 self.values_str(trace.values, &trace.cause, long_ty_path)
@@ -2098,6 +2110,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     span: Span,
                 }
                 impl<'v> Visitor<'v> for LetVisitor {
+                    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
                     type Result = ControlFlow<&'v hir::TyKind<'v>>;
                     fn visit_stmt(&mut self, s: &'v hir::Stmt<'v>) -> Self::Result {
                         // Find a local statement where the initializer has
@@ -2210,11 +2223,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             .collect();
 
         let format_args = FormatArgs {
-            this: item_name,
             generic_args,
             found: found_ty.to_string(),
             expected: expected_ty.to_string(),
-            ..
+            ..FormatArgs::new(item_name)
         };
         let CustomDiagnostic { notes, .. } = directive.eval(None, &format_args);
 
@@ -2622,7 +2634,8 @@ impl<'tcx> ObligationCause<'tcx> {
             ObligationCauseCode::BlockTailExpression(.., hir::MatchSource::TryDesugar(_)) => {
                 ObligationCauseFailureCode::TryCompat { span, subdiags }
             }
-            ObligationCauseCode::MatchExpressionArm(MatchExpressionArmCause { source, .. }) => {
+            ObligationCauseCode::MatchExpressionArm(arm_cause) => {
+                let MatchExpressionArmCause { source, .. } = &**arm_cause;
                 match source {
                     hir::MatchSource::TryDesugar(_) => {
                         ObligationCauseFailureCode::TryCompat { span, subdiags }

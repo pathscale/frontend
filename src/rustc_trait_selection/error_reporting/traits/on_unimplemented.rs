@@ -273,8 +273,13 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
             })
             .collect();
 
-        let format_args =
-            FormatArgs { this, this_path, this_resolved, generic_args, item_context, .. };
+        let format_args = FormatArgs {
+            this_path,
+            this_resolved,
+            generic_args,
+            item_context,
+            ..FormatArgs::new(this)
+        };
         (filter_options, format_args)
     }
 }

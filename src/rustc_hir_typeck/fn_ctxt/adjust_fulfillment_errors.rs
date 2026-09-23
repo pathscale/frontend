@@ -614,8 +614,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         span: Span,
     ) -> bool {
         if let traits::FulfillmentErrorCode::Select(traits::SelectionError::SignatureMismatch(
-            traits::SignatureMismatchData { expected_trait_ref, .. },
+            ref mismatch_data,
         )) = error.code
+            && let traits::SignatureMismatchData { expected_trait_ref, .. } = **mismatch_data
             && let ty::Closure(def_id, _) | ty::Coroutine(def_id, ..) =
                 expected_trait_ref.self_ty().kind()
             && span.overlaps(self.tcx.def_span(*def_id))

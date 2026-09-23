@@ -93,11 +93,12 @@ impl<'tcx, T: LateLintPass<'tcx>> LateContextAndPass<'tcx, T> {
 
 impl<'tcx, T: LateLintPass<'tcx>> hir_visit::Visitor<'tcx> for LateContextAndPass<'tcx, T> {
     type NestedFilter = nested_filter::All;
+    type Result = ();
 
     /// Because lints are scoped lexically, we want to walk nested
     /// items in the context of the outer item, so enable
     /// deep-walking.
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.context.tcx
     }
 
@@ -317,8 +318,6 @@ impl<'tcx, T: LateLintPass<'tcx>> hir_visit::Visitor<'tcx> for LateContextAndPas
 struct RuntimeCombinedLateLintPass<'tcx> {
     passes: Vec<LateLintPassObject<'tcx>>,
 }
-
-#[allow(rustc::lint_pass_impl_without_macro)]
 impl LintPass for RuntimeCombinedLateLintPass<'_> {
     fn name(&self) -> &'static str {
         panic!()

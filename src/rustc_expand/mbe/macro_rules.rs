@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
@@ -725,9 +726,7 @@ pub(super) fn try_match_macro_attr<'matcher, T: Tracker<'matcher>>(
 
         match result {
             Success(body_named_matches) => {
-                psess.gated_spans.merge(gated_spans_snapshot);
-                #[allow(rustc::potential_query_instability)]
-                named_matches.extend(body_named_matches);
+                psess.gated_spans.merge(gated_spans_snapshot);                named_matches.extend(body_named_matches);
                 return Ok((i, rule, named_matches));
             }
             Failure => {
@@ -1126,7 +1125,7 @@ fn check_matcher(
 fn has_compile_error_macro(rhs: &mbe::TokenTree) -> bool {
     match rhs {
         mbe::TokenTree::Delimited(.., d) => {
-            let has_compile_error = d.tts.array_windows::<3>().any(|[ident, bang, args]| {
+            let has_compile_error = d.tts.windows_array::<3>().any(|[ident, bang, args]| {
                 if let mbe::TokenTree::Token(ident) = ident
                     && let TokenKind::Ident(ident, _) = ident.kind
                     && ident == sym::compile_error

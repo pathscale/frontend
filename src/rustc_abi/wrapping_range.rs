@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use core::ops::RangeFull;
 use core::{fmt, iter};
 
@@ -203,7 +204,7 @@ impl WrappingRange {
         // range `(..=end) | (start..)`, so long as `start` and `end` aren't duplicates.
         values.sort_unstable();
         let wraparound_ranges = values
-            .array_windows::<2>()
+            .windows_array::<2>()
             .filter_map(|&[end, start]| (start != end).then_some(WrappingRange { start, end }));
 
         // Pick whichever range is smallest. By putting the non-wraparound range first,

@@ -37,34 +37,38 @@ impl<'a> State<'a> {
             ast::ForeignItemKind::Fn(func) => {
                 self.print_fn_full(vis, attrs, &*func);
             }
-            ast::ForeignItemKind::Static(ast::StaticItem {
-                ident,
-                ty,
-                mutability,
-                expr,
-                safety,
-                define_opaque,
-                eii_impl,
-            }) => self.print_item_const(
-                *ident,
-                Some(*mutability),
-                &ast::Generics::default(),
-                ty,
-                expr.as_deref(),
-                vis,
-                *safety,
-                ast::Defaultness::Implicit,
-                define_opaque.as_deref(),
-                eii_impl.as_deref(),
-            ),
-            ast::ForeignItemKind::TyAlias(ast::TyAlias {
-                defaultness,
-                ident,
-                generics,
-                after_where_clause,
-                bounds,
-                ty,
-            }) => {
+            ast::ForeignItemKind::Static(st) => {
+                let ast::StaticItem {
+                    ident,
+                    ty,
+                    mutability,
+                    expr,
+                    safety,
+                    define_opaque,
+                    eii_impl,
+                } = &**st;
+                self.print_item_const(
+                    *ident,
+                    Some(*mutability),
+                    &ast::Generics::default(),
+                    ty,
+                    expr.as_deref(),
+                    vis,
+                    *safety,
+                    ast::Defaultness::Implicit,
+                    define_opaque.as_deref(),
+                    eii_impl.as_deref(),
+                )
+            }
+            ast::ForeignItemKind::TyAlias(ta) => {
+                let ast::TyAlias {
+                    defaultness,
+                    ident,
+                    generics,
+                    after_where_clause,
+                    bounds,
+                    ty,
+                } = &**ta;
                 self.print_associated_type(
                     *ident,
                     generics,
@@ -191,15 +195,16 @@ impl<'a> State<'a> {
                 self.print_use_tree(tree);
                 self.word(";");
             }
-            ast::ItemKind::Static(StaticItem {
-                ident,
-                ty,
-                safety,
-                mutability: mutbl,
-                expr: body,
-                define_opaque,
-                eii_impl,
-            }) => {
+            ast::ItemKind::Static(st) => {
+                let StaticItem {
+                    ident,
+                    ty,
+                    safety,
+                    mutability: mutbl,
+                    expr: body,
+                    define_opaque,
+                    eii_impl,
+                } = &**st;
                 self.print_safety(*safety);
                 self.print_item_const(
                     *ident,
@@ -225,15 +230,16 @@ impl<'a> State<'a> {
                 }
                 self.end(ib);
             }
-            ast::ItemKind::Const(ast::ConstItem {
-                defaultness,
-                ident,
-                generics,
-                ty,
-                body,
-                kind: _,
-                define_opaque,
-            }) => {
+            ast::ItemKind::Const(c) => {
+                let ast::ConstItem {
+                    defaultness,
+                    ident,
+                    generics,
+                    ty,
+                    body,
+                    kind: _,
+                    define_opaque,
+                } = &**c;
                 self.print_item_const(
                     *ident,
                     None,
@@ -298,14 +304,15 @@ impl<'a> State<'a> {
                 self.end(ib);
                 self.end(cb);
             }
-            ast::ItemKind::TyAlias(ast::TyAlias {
-                defaultness,
-                ident,
-                generics,
-                after_where_clause,
-                bounds,
-                ty,
-            }) => {
+            ast::ItemKind::TyAlias(ta) => {
+                let ast::TyAlias {
+                    defaultness,
+                    ident,
+                    generics,
+                    after_where_clause,
+                    bounds,
+                    ty,
+                } = &**ta;
                 self.print_associated_type(
                     *ident,
                     generics,
@@ -344,7 +351,7 @@ impl<'a> State<'a> {
 
                 if let Some(of_trait) = of_trait {
                     let ast::TraitImplHeader { defaultness, safety, polarity, ref trait_ref } =
-                        *of_trait;
+                        **of_trait;
                     self.print_defaultness(defaultness);
                     self.print_constness(*constness);
                     self.print_safety(safety);
@@ -372,16 +379,17 @@ impl<'a> State<'a> {
                 let empty = item.attrs.is_empty() && items.is_empty();
                 self.bclose(item.span, empty, cb);
             }
-            ast::ItemKind::Trait(ast::Trait {
-                impl_restriction,
-                constness,
-                safety,
-                is_auto,
-                ident,
-                generics,
-                bounds,
-                items,
-            }) => {
+            ast::ItemKind::Trait(tr) => {
+                let ast::Trait {
+                    impl_restriction,
+                    constness,
+                    safety,
+                    is_auto,
+                    ident,
+                    generics,
+                    bounds,
+                    items,
+                } = &**tr;
                 let (cb, ib) = self.head("");
                 self.print_visibility(&item.vis);
                 self.print_impl_restriction(impl_restriction);
@@ -405,7 +413,8 @@ impl<'a> State<'a> {
                 let empty = item.attrs.is_empty() && items.is_empty();
                 self.bclose(item.span, empty, cb);
             }
-            ast::ItemKind::TraitAlias(TraitAlias { constness, ident, generics, bounds }) => {
+            ast::ItemKind::TraitAlias(ta) => {
+                let TraitAlias { constness, ident, generics, bounds } = &**ta;
                 let (cb, ib) = self.head("");
                 self.print_visibility(&item.vis);
                 self.print_constness(*constness);
@@ -617,15 +626,16 @@ impl<'a> State<'a> {
             ast::AssocItemKind::Fn(func) => {
                 self.print_fn_full(vis, attrs, &*func);
             }
-            ast::AssocItemKind::Const(ast::ConstItem {
-                defaultness,
-                ident,
-                generics,
-                ty,
-                body,
-                kind: _,
-                define_opaque,
-            }) => {
+            ast::AssocItemKind::Const(c) => {
+                let ast::ConstItem {
+                    defaultness,
+                    ident,
+                    generics,
+                    ty,
+                    body,
+                    kind: _,
+                    define_opaque,
+                } = &**c;
                 self.print_item_const(
                     *ident,
                     None,
@@ -639,14 +649,15 @@ impl<'a> State<'a> {
                     None,
                 );
             }
-            ast::AssocItemKind::Type(ast::TyAlias {
-                defaultness,
-                ident,
-                generics,
-                after_where_clause,
-                bounds,
-                ty,
-            }) => {
+            ast::AssocItemKind::Type(ta) => {
+                let ast::TyAlias {
+                    defaultness,
+                    ident,
+                    generics,
+                    after_where_clause,
+                    bounds,
+                    ty,
+                } = &**ta;
                 self.print_associated_type(
                     *ident,
                     generics,

@@ -9,7 +9,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use hashbrown::hash_map::Entry::{Occupied, Vacant};
-use core::{assert_matches, cmp};
+use core::cmp;
+use crate::assert_matches;
 
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_ast as ast;

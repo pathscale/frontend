@@ -3,6 +3,7 @@
 // in this file at all, which is why they are not trimmed by inspection.
 use core::fmt::Write as _;
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -25,7 +26,7 @@ use crate::rustc_crate_store::Untracked;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::sync::{
-    AppendOnlyIndexVec, DynSend, DynSync, FreezeLock, WorkerLocal, par_fns,
+    AppendOnlyIndexVec, FreezeLock, WorkerLocal, par_fns,
 };
 use crate::rustc_data_structures::thousands;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
@@ -343,7 +344,6 @@ fn print_macro_stats(ecx: &ExtCtxt<'_>) {
     };
 
     // No instability because we immediately sort the produced vector.
-    #[allow(rustc::potential_query_instability)]
     let mut macro_stats: Vec<_> = ecx
         .macro_stats
         .iter()
@@ -610,7 +610,8 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
     let deps_output = outputs.path(OutputType::DepInfo);
     let deps_filename = deps_output.as_path();
 
-    let result = try {
+    // Immediately called closure in place of an unstable `try {}` block.
+    let result = (|| -> Result<(), core::fmt::Error> {
         // Build a list of files used to compile the output and
         // write Makefile-compatible dependency rules
         let mut files: FxIndexMap<String, (u64, Option<SourceFileHash>)> = sess
@@ -739,7 +740,7 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
                     file,
                     "{}: {}\n",
                     path.display(),
-                    files.keys().map(String::as_str).intersperse(" ").collect::<String>()
+                    files.keys().map(String::as_str).separated_by(" ").collect::<String>()
                 )?;
             }
 
@@ -754,7 +755,6 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
             let env_depinfo = sess.env_depinfo.borrow();
             if !env_depinfo.is_empty() {
                 // We will soon sort, so the initial order does not matter.
-                #[allow(rustc::potential_query_instability)]
                 let mut envs: Vec<_> = env_depinfo
                     .iter()
                     .map(|(k, v)| (escape_dep_env(*k), v.map(escape_dep_env)))
@@ -798,7 +798,8 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
                 write_deps_to_file(&mut file)?;
             }
         }
-    };
+        Ok(())
+    })();
 
     match result {
         Ok(_) => {
@@ -1031,24 +1032,48 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     // Similarly, by creating `arena` here and passing in `&arena`, that reference has the type
     // `&'tcx WorkerLocal<Arena<'tcx>>`, also with one lifetime. And likewise for `hir_arena`.
 
-    // Wrapped in `Anchor`, which is the only thing standing between this function and dropck. See
-    // its definition below for why it is needed and why it is sound.
-    let gcx_cell = Anchor::new(OnceLock::new());
-    let arena = Anchor::new(WorkerLocal::new(|_| Arena::default()));
-    let hir_arena = Anchor::new(WorkerLocal::new(|_| crate::rustc_hir::Arena::default()));
+    // Each of these three is borrowed for `'tcx`, and `'tcx` also appears in its own type, so it
+    // is self-referential. Owned as ordinary locals, dropping one runs a destructor that dropck
+    // assumes may touch `'tcx` data, and it rejects that (E0597) unless the destructor is
+    // `#[may_dangle]`, which is `dropck_eyepatch`, unstable. Upstream's `Anchor` made exactly
+    // that promise with `unsafe impl<#[may_dangle] T> Drop`.
+    //
+    // This makes the same promise on stable, as narrowly: each owner lives on the heap behind a
+    // `FreeOnDrop`, which holds a raw pointer and so carries no lifetime for dropck to check.
+    // The guards are declared arena, hir arena, global context, so they free in the reverse
+    // order: the global context first, while both arenas it points into are still alive, then
+    // the arenas. Nothing is leaked. It is sound because nothing borrowing `'tcx` outlives this
+    // function: `f` returns a `T` chosen for every `'tcx`, so it cannot hold one.
+    struct FreeOnDrop<T>(*mut T);
+    impl<T> Drop for FreeOnDrop<T> {
+        fn drop(&mut self) {
+            // SAFETY: the pointer came from `Box::into_raw` below and is freed only here, once,
+            // after every `'tcx` borrow of it has ended (see above).
+            drop(unsafe { Box::from_raw(self.0) });
+        }
+    }
+    let arena_owner = FreeOnDrop(Box::into_raw(Box::new(WorkerLocal::new(|_| Arena::default()))));
+    let hir_arena_owner = FreeOnDrop(Box::into_raw(Box::new(WorkerLocal::new(|_| {
+        crate::rustc_hir::Arena::default()
+    }))));
+    let gcx_owner = FreeOnDrop(Box::into_raw(Box::new(OnceLock::new())));
+    // SAFETY: each pointer is live until its guard drops at the end of this function.
+    let arena = unsafe { &*arena_owner.0 };
+    let hir_arena = unsafe { &*hir_arena_owner.0 };
+    let gcx_cell = unsafe { &*gcx_owner.0 };
 
     let res = TyCtxt::create_global_ctxt(
-        &gcx_cell,
+        gcx_cell,
         &compiler.sess,
         crate_types,
         stable_crate_id,
-        &arena,
-        &hir_arena,
+        arena,
+        hir_arena,
         untracked,
         None,
         dep_graph,
         crate::rustc_query_impl::query_system(
-            &arena,
+            arena,
             providers.queries,
             providers.extern_queries,
             query_result_on_disk_cache,
@@ -1091,70 +1116,11 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     res
 }
 
-/// A local whose destructor dropck is asked not to reason about.
-///
-/// # Why this exists
-///
-/// `create_and_enter_global_ctxt` above is where the `'tcx` lifetime comes from. It declares a
-/// cell and two arenas as locals and hands out `&'tcx` references to them, so `'tcx` is
-/// universally quantified over the closure and the borrows stay live to the end of the function.
-/// Dropping any of the three therefore makes dropck ask whether that destructor could observe
-/// what is still borrowed, and here it answers yes:
-///
-/// ```text
-/// error[E0597]: `arena` does not live long enough
-///   borrow might be used here, when `arena` is dropped and runs the destructor for type
-///   `WorkerLocal<rustc_middle::arena::Arena<'_>>`
-/// ```
-///
-/// `TypedArena` already carries `unsafe impl<#[may_dangle] T> Drop`, which is exactly the promise
-/// that should settle this, and as sixty separate crates it does: the identical source compiles.
-/// Merged into one crate it stops being honoured for element types that have destructors -
-/// `TypedArena<Ty<'tcx>>` is accepted because `Ty` is `Copy`, `TypedArena<Body<'tcx>>` is not.
-/// Every other explanation was measured and ruled out: the feature set, the edition, the crate
-/// boundary (`frontend_arena` reproduces it exactly), and the set of `Drop` impls, which is
-/// identical in both trees.
-///
-/// # Why it is written this way
-///
-/// The value lives in a `ManuallyDrop`, so the field contributes no drop glue and dropck has
-/// nothing to recurse into; the destructor below then drops it by hand. That is not a trick
-/// invented here - it is what `std::sync::OnceLock` does, for this same reason, which is why
-/// upstream rustc can use one in this exact position.
-///
-/// Deferring the drop to the end of the function instead does not work: `'tcx` is universal, so
-/// the borrow never ends inside the body and `ManuallyDrop::drop` cannot take `&mut`.
-///
-/// # Soundness
-///
-/// `#[may_dangle] T` promises this destructor does not *inspect* `T`. It does not - it drops it,
-/// once. `T`'s own destructor still runs and is still checked; the eyepatch relaxes only what
-/// this impl is assumed to do. Same promise `std` makes, for the same reason.
-struct Anchor<T>(core::mem::ManuallyDrop<T>);
-
-impl<T> Anchor<T> {
-    fn new(value: T) -> Anchor<T> {
-        Anchor(core::mem::ManuallyDrop::new(value))
-    }
-}
-
-impl<T> core::ops::Deref for Anchor<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-unsafe impl<#[may_dangle] T> Drop for Anchor<T> {
-    fn drop(&mut self) {
-        // Safe: reached once, at the end of the value's life, and nothing reads it afterwards.
-        unsafe { core::mem::ManuallyDrop::drop(&mut self.0) };
-    }
-}
-
 struct DiagCallback<'tcx> {
     callback: Box<
-        dyn for<'b> FnOnce(DiagCtxtHandle<'b>, Level, &dyn Any) -> Diag<'b, ()> + DynSend + DynSync,
+        // `+ DynSend + DynSync` dropped: no longer auto traits (see
+        // `rustc_data_structures/marker.rs`).
+        dyn for<'b> FnOnce(DiagCtxtHandle<'b>, Level, &dyn Any) -> Diag<'b, ()>,
     >,
     tcx: TyCtxt<'tcx>,
 }
@@ -1489,7 +1455,6 @@ pub fn collect_crate_types(
     // command line, then reuse the empty `base` Vec to hold the types that
     // will be found in crate attributes.
     // JUSTIFICATION: before wrapper fn is available
-    #[allow(rustc::bad_opt_access)]
     let mut base = session.opts.crate_types.clone();
     if base.is_empty() {
         if let Some(Attribute::Parsed(AttributeKind::CrateType(crate_type))) =

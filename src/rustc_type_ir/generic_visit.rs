@@ -128,7 +128,6 @@ unsafe impl<S, V> GenericTypeVisitable<V> for core::hash::BuildHasherDefault<S> 
     fn generic_visit_with(&self, _visitor: &mut V) {}
 }
 
-#[expect(rustc::default_hash_types, rustc::potential_query_instability)]
 unsafe impl<
     Visitor,
     Key: GenericTypeVisitable<Visitor>,
@@ -142,7 +141,6 @@ unsafe impl<
     }
 }
 
-#[expect(rustc::default_hash_types, rustc::potential_query_instability)]
 unsafe impl<V, T: GenericTypeVisitable<V>, S: GenericTypeVisitable<V>> GenericTypeVisitable<V>
     for hashbrown::HashSet<T, S>
 {

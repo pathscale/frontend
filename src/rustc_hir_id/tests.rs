@@ -1,5 +1,3 @@
-
-#![allow(rustc::symbol_intern_string_literal)]
 use alloc::string::ToString;
 use crate::rustc_hashes::Hash64;
 use crate::rustc_span::def_id::{DefPathHash, StableCrateId};

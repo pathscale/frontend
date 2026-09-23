@@ -33,6 +33,8 @@ pub(crate) struct Borrowck<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Analysis<'tcx> for Borrowck<'a, 'tcx> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = BorrowckDomain;
 
     const NAME: &'static str = "borrowck";
@@ -438,7 +440,8 @@ impl<'a, 'tcx> Borrows<'a, 'tcx> {
             .borrow_set
             .borrows_on_local(place.local)
             .map(|bs| bs.iter().copied())
-            .into_flat_iter();
+            .into_iter()
+            .flatten();
 
         // If the borrowed place is a local with no projections, all other borrows of this
         // local must conflict. This is purely an optimization so we don't have to call
@@ -478,6 +481,8 @@ type BorrowsDomain = MixedBitSet<BorrowIndex>;
 /// - we also kill loans of conflicting places when overwriting a shared path: e.g. borrows of
 ///   `a.b.c` when `a` is overwritten.
 impl<'tcx> crate::rustc_mir_dataflow::Analysis<'tcx> for Borrows<'_, 'tcx> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = BorrowsDomain;
 
     const NAME: &'static str = "borrows";
@@ -508,7 +513,8 @@ impl<'tcx> crate::rustc_mir_dataflow::Analysis<'tcx> for Borrows<'_, 'tcx> {
         location: Location,
     ) {
         match &stmt.kind {
-            mir::StatementKind::Assign((lhs, rhs)) => {
+            mir::StatementKind::Assign(assign) => {
+                let (lhs, rhs) = &**assign;
                 if let mir::Rvalue::Ref(_, _, place) | mir::Rvalue::Reborrow(_, _, place) = rhs {
                     if place.ignore_borrow(
                         self.tcx,

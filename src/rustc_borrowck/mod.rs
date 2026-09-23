@@ -277,8 +277,7 @@ pub struct ClosureOutlivesSubjectTy<'tcx> {
 }
 // DO NOT implement `TypeVisitable` or `TypeFoldable` traits, because this
 // type is not recognized as a binder for late-bound region.
-impl<'tcx, I> !TypeVisitable<I> for ClosureOutlivesSubjectTy<'tcx> {}
-impl<'tcx, I> !TypeFoldable<I> for ClosureOutlivesSubjectTy<'tcx> {}
+// (Upstream said so with unstable negative impls; on stable, by not writing them.)
 
 impl<'tcx> ClosureOutlivesSubjectTy<'tcx> {
     /// All regions of `ty` must be of kind `ReVar` and must represent
@@ -829,12 +828,14 @@ impl<'a, 'tcx> ResultsVisitor<'tcx, Borrowck<'a, 'tcx>> for MirBorrowckCtxt<'a, 
         self.check_activations(location, span, state);
 
         match &stmt.kind {
-            StatementKind::Assign((lhs, rhs)) => {
+            StatementKind::Assign(assign) => {
+                let (lhs, rhs) = &**assign;
                 self.consume_rvalue(location, (rhs, span), state);
 
                 self.mutate_place(location, (*lhs, span), Shallow(None), state);
             }
-            StatementKind::FakeRead((_, place)) => {
+            StatementKind::FakeRead(fake_read) => {
+                let (_, place) = &**fake_read;
                 // Read for match doesn't access any memory and is used to
                 // assert that a place is safe and live. So we don't have to
                 // do any checks here.
@@ -852,7 +853,7 @@ impl<'a, 'tcx> ResultsVisitor<'tcx, Borrowck<'a, 'tcx>> for MirBorrowckCtxt<'a, 
                     state,
                 );
             }
-            StatementKind::Intrinsic(kind) => match kind {
+            StatementKind::Intrinsic(kind) => match &**kind {
                 NonDivergingIntrinsic::Assume(op) => {
                     self.consume_operand(location, (op, span), state);
                 }
@@ -1620,7 +1621,8 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
                 );
             }
 
-            Rvalue::BinaryOp(_bin_op, (operand1, operand2)) => {
+            Rvalue::BinaryOp(_bin_op, operands) => {
+                let (operand1, operand2) = &**operands;
                 self.consume_operand(location, (operand1, span), state);
                 self.consume_operand(location, (operand2, span), state);
             }
@@ -1742,15 +1744,21 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
                         let stmt = &bbd.statements[loc.statement_index];
                         debug!("temporary assigned in: stmt={:?}", stmt);
 
-                        match stmt.kind {
-                            StatementKind::Assign((
-                                _,
+                        let source = match &stmt.kind {
+                            StatementKind::Assign(assign) => match assign.1 {
                                 Rvalue::Ref(_, _, source)
-                                | Rvalue::Use(Operand::Copy(source) | Operand::Move(source), _),
-                            )) => {
+                                | Rvalue::Use(Operand::Copy(source) | Operand::Move(source), _) => {
+                                    Some(source)
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        match source {
+                            Some(source) => {
                                 propagate_closure_used_mut_place(self, source);
                             }
-                            _ => {
+                            None => {
                                 bug!(
                                     "closures should only capture user variables \
                                  or references to user variables"

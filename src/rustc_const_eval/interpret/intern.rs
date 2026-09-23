@@ -43,15 +43,34 @@ use super::{AllocId, Allocation, InterpCx, MPlaceTy, Machine, MemoryKind, PlaceT
 use crate::rustc_const_eval::const_eval::DummyMachine;
 use crate::rustc_const_eval::{const_eval, diagnostics};
 
-pub trait CompileTimeMachine<'tcx> = Machine<
+// Upstream is a trait alias (`trait_alias`, unstable). A supertrait-only trait with a blanket
+// impl is the stable equivalent: supertrait bounds, associated-type equalities included, are
+// elaborated wherever `M: CompileTimeMachine<'tcx>` is assumed, just as the alias's were.
+pub trait CompileTimeMachine<'tcx>:
+    Machine<
         'tcx,
         MemoryKind = const_eval::MemoryKind,
         Provenance = CtfeProvenance,
-        ExtraFnVal = !,
+        ExtraFnVal = crate::Never,
         FrameExtra = (),
         AllocExtra = (),
         MemoryMap = FxIndexMap<AllocId, (MemoryKind<const_eval::MemoryKind>, Allocation)>,
-    > + HasStaticRootDefId;
+    > + HasStaticRootDefId
+{
+}
+
+impl<'tcx, M> CompileTimeMachine<'tcx> for M where
+    M: Machine<
+            'tcx,
+            MemoryKind = const_eval::MemoryKind,
+            Provenance = CtfeProvenance,
+            ExtraFnVal = crate::Never,
+            FrameExtra = (),
+            AllocExtra = (),
+            MemoryMap = FxIndexMap<AllocId, (MemoryKind<const_eval::MemoryKind>, Allocation)>,
+        > + HasStaticRootDefId
+{
+}
 
 pub trait HasStaticRootDefId {
     /// Returns the `DefId` of the static item that is currently being evaluated.

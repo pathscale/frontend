@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::string::ToString;
 use core::fmt::Write;
 use core::mem;
@@ -1255,15 +1256,16 @@ impl<'a> Parser<'a> {
                 let kind = match AssocItemKind::try_from(kind) {
                     Ok(kind) => kind,
                     Err(kind) => match kind {
-                        ItemKind::Static(StaticItem {
-                            ident,
-                            ty,
-                            safety: _,
-                            mutability: _,
-                            expr,
-                            define_opaque,
-                            eii_impl: _,
-                        }) => {
+                        ItemKind::Static(st) => {
+                            let StaticItem {
+                                ident,
+                                ty,
+                                safety: _,
+                                mutability: _,
+                                expr,
+                                define_opaque,
+                                eii_impl: _,
+                            } = *st;
                             self.dcx()
                                 .emit_err(diagnostics::AssociatedStaticItemNotAllowed { span });
                             AssocItemKind::Const(Box::new(ConstItem {
@@ -1438,7 +1440,7 @@ impl<'a> Parser<'a> {
         let prefix: String = prefix
             .iter()
             .map(|seg| if seg.ident.name == kw::PathRoot { "" } else { seg.ident.as_str() })
-            .intersperse("::")
+            .separated_by("::")
             .collect();
 
         let mut comma_reached = false;
@@ -1594,7 +1596,8 @@ impl<'a> Parser<'a> {
                 let kind = match ForeignItemKind::try_from(kind) {
                     Ok(kind) => kind,
                     Err(kind) => match kind {
-                        ItemKind::Const(ConstItem { ident, ty, body, .. }) => {
+                        ItemKind::Const(c) => {
+                            let ConstItem { ident, ty, body, .. } = *c;
                             let const_span = Some(span.with_hi(ident.span.lo()))
                                 .filter(|span| span.can_be_used_for_suggestions());
                             self.dcx().emit_err(diagnostics::ExternItemCannotBeConst {
@@ -1623,10 +1626,11 @@ impl<'a> Parser<'a> {
         let span = self.psess.source_map().guess_head_span(span);
         let descr = kind.descr();
         let help = match kind {
-            ItemKind::DelegationMac(DelegationMac {
-                suffixes: DelegationSuffixes::Glob(_),
-                ..
-            }) => false,
+            ItemKind::DelegationMac(dm)
+                if matches!(**dm, DelegationMac { suffixes: DelegationSuffixes::Glob(_), .. }) =>
+            {
+                false
+            }
             _ => true,
         };
         self.dcx().emit_err(diagnostics::BadItemKind { span, descr, ctx, help });

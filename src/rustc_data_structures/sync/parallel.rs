@@ -109,7 +109,8 @@ pub fn spawn(func: impl FnOnce() + DynSend + 'static) {
 ///
 /// The first function is executed immediately on the current thread.
 /// Use that for the longest running function for better scheduling.
-pub fn par_fns(funcs: &mut [&mut (dyn FnMut() + DynSend)]) {
+// `+ DynSend` dropped from the trait object: no longer an auto trait (see `marker.rs`).
+pub fn par_fns(funcs: &mut [&mut dyn FnMut()]) {
     parallel_guard(|guard: &ParallelGuard| {
         for f in funcs {
             guard.run(|| f());

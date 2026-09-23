@@ -1,6 +1,5 @@
-
-#![allow(rustc::symbol_intern_string_literal)]
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_ast::token::{self, IdentIsRaw};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
 use crate::rustc_span::{BytePos, Span, create_default_session_globals_then, sym};
@@ -16,7 +15,7 @@ fn sp(a: u32, b: u32) -> Span {
 }
 
 fn cmp_token_stream(a: &TokenStream, b: &TokenStream) -> bool {
-    a.iter().eq_by(b.iter(), |x, y| x.eq_unspanned(y))
+    a.iter().eq_with(b.iter(), |x, y| x.eq_unspanned(y))
 }
 
 #[test]

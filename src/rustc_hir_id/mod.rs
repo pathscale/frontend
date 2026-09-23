@@ -101,7 +101,6 @@ impl ToStableHashKey for OwnerId {
 /// incremental compilation where we have to persist things through changes to
 /// the code base.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Encodable, Decodable, StableHash)]
-#[rustc_pass_by_value]
 pub struct HirId {
     pub owner: OwnerId,
     pub local_id: ItemLocalId,
@@ -110,8 +109,8 @@ pub struct HirId {
 // To ensure correctness of incremental compilation,
 // `HirId` must not implement `Ord` or `PartialOrd`.
 // See https://github.com/rust-lang/rust/issues/90317.
-impl !Ord for HirId {}
-impl !PartialOrd for HirId {}
+// Upstream enforced this with `impl !Ord` / `impl !PartialOrd` (unstable negative
+// impls); stable Rust relies on neither being derived or written.
 
 impl Debug for HirId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -4,6 +4,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -333,9 +334,9 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             && let Some(assoc) = self.diag_metadata.current_impl_item
         {
             let generics = match &assoc.kind {
-                AssocItemKind::Const(ast::ConstItem { generics, .. })
-                | AssocItemKind::Fn(ast::Fn { generics, .. })
-                | AssocItemKind::Type(ast::TyAlias { generics, .. }) => Some(generics),
+                AssocItemKind::Const(c) => Some(&c.generics),
+                AssocItemKind::Fn(f) => Some(&f.generics),
+                AssocItemKind::Type(t) => Some(&t.generics),
                 AssocItemKind::Delegation(..)
                 | AssocItemKind::MacCall(..)
                 | AssocItemKind::DelegationMac(..) => None,
@@ -570,7 +571,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             if let Some(module_def_id) = module
                 && let Some(directive) = self.r.on_unknown_data(module_def_id)
             {
-                let args = FormatArgs { unresolved: item_ident.to_string(), this: mod_str, .. };
+                let args = FormatArgs { unresolved: item_ident.to_string(), ..FormatArgs::new(mod_str) };
                 let CustomDiagnostic {
                     message,
                     label,
@@ -2144,7 +2145,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
 
             let (lhs_span, rhs_span) = match &expr.kind {
                 ExprKind::Field(base, ident) => (base.span, ident.span),
-                ExprKind::MethodCall(MethodCall { receiver, span, .. }) => (receiver.span, *span),
+                ExprKind::MethodCall(mc) => (mc.receiver.span, mc.span),
                 _ => return false,
             };
 
@@ -2840,7 +2841,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 {
                     return Some(match &assoc_item.kind {
                         ast::AssocItemKind::Const(..) => AssocSuggestion::AssocConst,
-                        ast::AssocItemKind::Fn(ast::Fn { sig, .. }) if sig.decl.has_self() => {
+                        ast::AssocItemKind::Fn(f) if f.sig.decl.has_self() => {
                             AssocSuggestion::MethodWithSelf { called }
                         }
                         ast::AssocItemKind::Fn(..) => AssocSuggestion::AssocFn { called },
@@ -3051,7 +3052,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             let (span, text) = match path.segments.first() {
                 Some(seg) if let Some(name) = seg.ident.as_str().strip_prefix("let") => {
                     // a special case for #117894
-                    let name = name.trim_prefix('_');
+                    let name = name.strip_prefix('_').unwrap_or(name);
                     (ident_span, format!("let {name}"))
                 }
                 _ => (ident_span.shrink_to_lo(), "let ".to_string()),
@@ -3175,12 +3176,9 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 ExprKind::Call(..) => (None, true),
                 // `Type.Foo(a, b)`, suggest replacing `.` -> `::` if variant `Foo` exists and is a tuple variant,
                 // otherwise suggest adding a variant after `Type`.
-                ExprKind::MethodCall(MethodCall {
-                    receiver,
-                    span,
-                    seg: PathSegment { ident, .. },
-                    ..
-                }) => {
+                ExprKind::MethodCall(method_call) => {
+                    let MethodCall { receiver, span, seg: PathSegment { ident, .. }, .. } =
+                        &**method_call;
                     let dot_span = receiver.span.between(*span);
                     let found_tuple_variant = variant_ctors.iter().any(|(path, _, ctor_kind)| {
                         *ctor_kind == CtorKind::Fn
@@ -3951,7 +3949,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                         let binders_sugg: String = binder_idents
                             .into_iter()
                             .map(|ident| ident.to_string())
-                            .intersperse(", ".to_owned())
+                            .separated_by(", ".to_owned())
                             .collect();
                         let sugg = format!(
                             "{}<{}>{}",
@@ -4193,8 +4191,6 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 ));
             }
         }
-
-        #[allow(rustc::symbol_intern_string_literal)]
         let existing_name = match &in_scope_lifetimes[..] {
             [] => Symbol::intern("'a"),
             [(existing, _)] => existing.name,
@@ -4214,7 +4210,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             }
             MissingLifetimeKind::Comma => {
                 let sugg: String = core::iter::repeat_n(existing_name.as_str(), lt.count)
-                    .intersperse(", ")
+                    .separated_by(", ")
                     .collect();
                 let is_empty_brackets = source_map.span_followed_by(lt.span, ">").is_some();
                 let sugg = if is_empty_brackets { sugg } else { format!("{sugg}, ") };
@@ -4222,7 +4218,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             }
             MissingLifetimeKind::Brackets => {
                 let sugg: String = core::iter::once("<")
-                    .chain(core::iter::repeat_n(existing_name.as_str(), lt.count).intersperse(", "))
+                    .chain(core::iter::repeat_n(existing_name.as_str(), lt.count).separated_by(", "))
                     .chain([">"])
                     .collect();
                 (lt.span.shrink_to_hi(), sugg)
@@ -4638,6 +4634,8 @@ struct LifetimeFinder<'ast> {
 }
 
 impl<'ast> Visitor<'ast> for LifetimeFinder<'ast> {
+    type Result = ();
+
     fn visit_ty(&mut self, t: &'ast Ty) {
         if let TyKind::Ref(_, mut_ty) | TyKind::PinnedRef(_, mut_ty) = &t.kind {
             self.seen.push(t);
@@ -4655,6 +4653,8 @@ struct RefPrefixSpanFinder {
 }
 
 impl<'ast> Visitor<'ast> for RefPrefixSpanFinder {
+    type Result = ();
+
     fn visit_ty(&mut self, t: &'ast Ty) {
         if self.span.is_some() {
             return;
@@ -4700,6 +4700,8 @@ impl<'a> ParentPathVisitor<'a> {
 }
 
 impl<'a> Visitor<'a> for ParentPathVisitor<'a> {
+    type Result = ();
+
     fn visit_ty(&mut self, ty: &'a Ty) {
         if self.parent.is_some() {
             return;

@@ -135,8 +135,9 @@ pub(crate) fn def_parents(tcx: TyCtxt<'_>) {
 
             impl<'tcx> intravisit::Visitor<'tcx> for AnonConstFinder<'tcx> {
                 type NestedFilter = nested_filter::All;
+                type Result = ();
 
-                fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+                fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
                     self.tcx
                 }
 

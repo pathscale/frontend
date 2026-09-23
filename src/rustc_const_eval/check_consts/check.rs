@@ -13,7 +13,8 @@ use alloc::vec::Vec;
 use alloc::borrow::Cow;
 use core::num::NonZero;
 use core::ops::Deref;
-use core::{assert_matches, mem};
+use core::mem;
+use crate::assert_matches;
 
 use crate::rustc_errors::{Diag, ErrorGuaranteed};
 use crate::rustc_hir::attrs::lang_items::LangItem;
@@ -649,7 +650,8 @@ impl<'tcx> Visitor<'tcx> for Checker<'_, 'tcx> {
                 }
             }
 
-            Rvalue::BinaryOp(op, (lhs, rhs)) => {
+            Rvalue::BinaryOp(op, operands) => {
+                let (lhs, rhs) = &**operands;
                 let lhs_ty = lhs.ty(self.body, self.tcx);
                 let rhs_ty = rhs.ty(self.body, self.tcx);
 

@@ -25,10 +25,10 @@
 set -eu
 
 MODULE=${1:-}
-UPSTREAM=${2:-$HOME/code/EKOPathRS/frontend/compiler}
+UPSTREAM=${2:?name the upstream compiler directory (rust-lang/rust compiler/)}
 
 if [ -z "$MODULE" ]; then
-    echo "usage: $0 <module> [upstream compiler dir]" >&2
+    echo "usage: $0 <module> <upstream compiler dir>" >&2
     echo "   eg: $0 rustc_error_messages" >&2
     exit 2
 fi

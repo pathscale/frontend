@@ -216,7 +216,9 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
             // native-lib mode). Therefore, we will only know the expected provenance and bytes
             // once we find the first non-wildcard fragment.
             let mut expected = None;
-            for idx in Size::ZERO..range.size {
+            // Walked in bytes: a `Range<Size>` is not an iterator on stable, since
+            // implementing `Step` for `Size` is the unstable `step_trait`.
+            for idx in (0..range.size.bytes()).map(Size::from_bytes) {
                 // Ensure there is provenance here.
                 let Some(frag) = self.get_byte(offset + idx, cx) else {
                     break 'prov None;
@@ -284,7 +286,17 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
         data_bytes: &[u8],
         ptr_size: Size,
     ) -> impl Iterator<Item = (Size, PointerFrag<Prov>)> {
-        if pos_range.is_empty() {
+        let pos_range_is_empty = {
+            use core::ops::Bound::{Excluded, Included, Unbounded};
+            !match (pos_range.start_bound(), pos_range.end_bound()) {
+                (Unbounded, _) | (_, Unbounded) => true,
+                (Included(start), Excluded(end))
+                | (Excluded(start), Included(end))
+                | (Excluded(start), Excluded(end)) => start < end,
+                (Included(start), Included(end)) => start <= end,
+            }
+        };
+        if pos_range_is_empty {
             return either::Left(core::iter::empty());
         }
         // Read ptr_size many bytes starting at ptr_pos.
@@ -293,7 +305,10 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
             .copy_from_slice(&data_bytes[ptr_pos.bytes_usize()..][..ptr_size.bytes_usize()]);
         // Yield the fragments of this pointer.
         either::Right(
-            (ptr_pos..ptr_pos + ptr_size).filter(move |pos| pos_range.contains(pos)).map(
+            (ptr_pos.bytes()..(ptr_pos + ptr_size).bytes())
+                .map(Size::from_bytes)
+                .filter(move |pos| pos_range.contains(pos))
+                .map(
                 move |pos| (pos, PointerFrag { idx: (pos - ptr_pos).bytes() as u8, bytes, prov }),
             ),
         )
@@ -368,7 +383,7 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
 
         // Make everything in the range wildcards.
         let bytes = self.bytes.get_or_insert_with(Box::default);
-        for offset in range.start..range.end() {
+        for offset in (range.start.bytes()..range.end().bytes()).map(Size::from_bytes) {
             // The fragment index and bytes do not matter for wildcard provenance.
             bytes.insert(
                 offset,
@@ -473,7 +488,8 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
             // We want to call `insert_presorted` only once so that, if possible, the entries
             // after the range we insert are moved back only once.
             let chunk_len = copy.ptrs.len() as u64;
-            self.ptrs.insert_presorted((0..chunk_len * repeat).map(|i| {
+            self.ptrs.insert_presorted((0..(chunk_len * repeat) as usize).map(|i| {
+                let i = i as u64;
                 let chunk = i / chunk_len;
                 let (offset, prov) = copy.ptrs[(i % chunk_len) as usize];
                 (shift_offset(chunk, offset), prov)
@@ -482,7 +498,8 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
         if !copy.bytes.is_empty() {
             let chunk_len = copy.bytes.len() as u64;
             self.bytes.get_or_insert_with(Box::default).insert_presorted(
-                (0..chunk_len * repeat).map(|i| {
+                (0..(chunk_len * repeat) as usize).map(|i| {
+                    let i = i as u64;
                     let chunk = i / chunk_len;
                     let (offset, frag) = &copy.bytes[(i % chunk_len) as usize];
                     (shift_offset(chunk, *offset), frag.clone())

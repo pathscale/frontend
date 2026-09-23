@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_middle::ty::outlives::{Component, compute_alias_components_recursive};
 use crate::rustc_middle::ty::{self, OutlivesClause, Ty, TyCtxt};

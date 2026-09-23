@@ -506,13 +506,16 @@ impl<'a, 'tcx> Visitor<'a, 'tcx> for UnsafetyVisitor<'a, 'tcx> {
                     self.requires_unsafe(expr.span, DerefOfRawPointer);
                 }
             }
-            ExprKind::InlineAsm(InlineAsmExpr {
-                asm_macro: asm_macro @ (AsmMacro::Asm | AsmMacro::NakedAsm),
-                ref operands,
-                template: _,
-                options: _,
-                line_spans: _,
-            }) => {
+            ExprKind::InlineAsm(ref inline_asm)
+                if matches!(inline_asm.asm_macro, AsmMacro::Asm | AsmMacro::NakedAsm) =>
+            {
+                let InlineAsmExpr {
+                    asm_macro,
+                    ref operands,
+                    template: _,
+                    options: _,
+                    line_spans: _,
+                } = **inline_asm;
                 // The `naked` attribute and the `naked_asm!` block form one atomic unit of
                 // unsafety, and `naked_asm!` does not itself need to be wrapped in an unsafe block.
                 if let AsmMacro::Asm = asm_macro {
@@ -550,25 +553,16 @@ impl<'a, 'tcx> Visitor<'a, 'tcx> for UnsafetyVisitor<'a, 'tcx> {
                 }
                 return;
             }
-            ExprKind::Adt(AdtExpr {
-                adt_def,
-                variant_index,
-                args: _,
-                user_ty: _,
-                fields: _,
-                base: _,
-            }) => {
+            ExprKind::Adt(ref adt_expr) => {
+                let AdtExpr { adt_def, variant_index, args: _, user_ty: _, fields: _, base: _ } =
+                    **adt_expr;
                 if adt_def.variant(variant_index).has_unsafe_fields() {
                     self.requires_unsafe(expr.span, InitializingTypeWithUnsafeField)
                 }
             }
-            ExprKind::Closure(ClosureExpr {
-                closure_id,
-                args: _,
-                upvars: _,
-                movability: _,
-                fake_reads: _,
-            }) => {
+            ExprKind::Closure(ref closure_expr) => {
+                let ClosureExpr { closure_id, args: _, upvars: _, movability: _, fake_reads: _ } =
+                    **closure_expr;
                 self.visit_inner_body(closure_id);
             }
             ExprKind::ConstBlock { did, args: _ } => {

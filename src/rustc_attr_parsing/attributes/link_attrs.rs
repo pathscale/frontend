@@ -154,16 +154,21 @@ impl CombineAttributeParser for LinkParser {
                         continue;
                     };
 
-                macro report_unstable_modifier($feature: ident) {
-                    if !features.$feature() {
-                        feature_err(
-                            sess,
-                            sym::$feature,
-                            span,
-                            format!("linking modifier `{modifier}` is unstable"),
-                        )
-                        .emit();
-                    }
+                // A local `macro_rules!` (was a decl_macro `macro`): it is defined after
+                // `features`, `sess`, `span` and `modifier` are bound, so its mixed-site
+                // hygiene still lets the body name them.
+                macro_rules! report_unstable_modifier {
+                    ($feature: ident) => {
+                        if !features.$feature() {
+                            feature_err(
+                                sess,
+                                sym::$feature,
+                                span,
+                                format!("linking modifier `{modifier}` is unstable"),
+                            )
+                            .emit();
+                        }
+                    };
                 }
                 let assign_modifier = |dst: &mut Option<bool>| {
                     if dst.is_some() {

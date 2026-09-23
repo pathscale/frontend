@@ -101,7 +101,10 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         use crate::rustc_middle::mir::StatementKind::*;
 
         match &stmt.kind {
-            Assign((place, rvalue)) => self.eval_rvalue_into_place(rvalue, *place)?,
+            Assign(assign) => {
+                let (place, rvalue) = &**assign;
+                self.eval_rvalue_into_place(rvalue, *place)?
+            }
 
             SetDiscriminant { place, variant_index } => {
                 let dest =
@@ -195,7 +198,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
 
             CopyForDeref(_) => bug!("`CopyForDeref` in runtime MIR"),
 
-            BinaryOp(bin_op, (ref left, ref right)) => {
+            BinaryOp(bin_op, ref operands) => {
+                let (left, right) = &**operands;
                 let layout = util::binop_left_homogeneous(bin_op).then_some(dest.layout);
                 let left = self.read_immediate(&self.eval_operand(left, layout)?)?;
                 let layout = util::binop_right_homogeneous(bin_op).then_some(left.layout);

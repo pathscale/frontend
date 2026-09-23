@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::string::String;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_ast::ast::{AttrStyle, LitKind, MetaItemLit};
 use crate::rustc_attr_ir::target::Target;
 use crate::rustc_attr_ir::{
@@ -463,9 +464,7 @@ impl DocParser {
                         }
                     }
 
-                    let values = values.unwrap_or(DocCfgHideShow::new_with_only_key(item.span()));
-                    #[allow(rustc::potential_query_instability)]
-                    for cfg_name in &cfg_names {
+                    let values = values.unwrap_or(DocCfgHideShow::new_with_only_key(item.span()));                    for cfg_name in &cfg_names {
                         match cfg_hide_show.values.entry(*cfg_name) {
                             IndexEntry::Vacant(v) => {
                                 v.insert(values.clone());
@@ -698,7 +697,7 @@ impl DocParser {
             }
             None => {
                 let full_name =
-                    path.segments().map(|s| s.as_str()).intersperse("::").collect::<String>();
+                    path.segments().map(|s| s.as_str()).separated_by("::").collect::<String>();
                 let name = Symbol::intern(&full_name);
                 cx.emit_lint(INVALID_DOC_ATTRIBUTES, DocUnknownAny { name }, path.span());
             }

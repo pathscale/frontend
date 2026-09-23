@@ -162,7 +162,7 @@ impl LocalizedConstraintGraph {
                 // The physical edges present at this node are:
                 //
                 // 1. the typeck edges that flow from region to region *at this point*.
-                for &succ in self.edges.get(&node).into_flat_iter() {
+                for &succ in self.edges.get(&node).into_iter().flatten() {
                     let succ = LocalizedNode { region: succ, point: node.point };
                     successor_found(succ);
                 }
@@ -239,7 +239,7 @@ impl LocalizedConstraintGraph {
                 }
 
                 // And finally, we have the logical edges, materialized at this point.
-                for &logical_succ in self.logical_edges.get(&node.region).into_flat_iter() {
+                for &logical_succ in self.logical_edges.get(&node.region).into_iter().flatten() {
                     let succ = LocalizedNode { region: logical_succ, point: node.point };
                     successor_found(succ);
                 }

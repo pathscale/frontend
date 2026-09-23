@@ -330,6 +330,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             uses: Vec<&'tcx hir::Expr<'tcx>>,
         }
         impl<'tcx> Visitor<'tcx> for FindExprs<'tcx> {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_expr(&mut self, ex: &'tcx hir::Expr<'tcx>) {
                 if let hir::ExprKind::Path(hir::QPath::Resolved(None, path)) = ex.kind
                     && let hir::def::Res::Local(hir_id) = path.res
@@ -665,6 +667,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             nest_depth: usize,
                         }
                         impl<'tcx> Visitor<'tcx> for FindBreaks<'tcx> {
+                            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                            type Result = ();
                             fn visit_expr(&mut self, ex: &'tcx hir::Expr<'tcx>) {
                                 let nest_depth = self.nest_depth;
                                 if let hir::ExprKind::Loop(_, label, _, _) = ex.kind {

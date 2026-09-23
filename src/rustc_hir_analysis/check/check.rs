@@ -481,7 +481,7 @@ fn best_definition_site_of_opaque<'tcx>(
     impl<'tcx> intravisit::Visitor<'tcx> for TaitConstraintLocator<'tcx> {
         type NestedFilter = nested_filter::All;
         type Result = ControlFlow<(Span, LocalDefId)>;
-        fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
             self.tcx
         }
         fn visit_expr(&mut self, ex: &'tcx hir::Expr<'tcx>) -> Self::Result {
@@ -2208,6 +2208,8 @@ fn opaque_type_cycle_error(tcx: TyCtxt<'_>, opaque_def_id: LocalDefId) -> ErrorG
                     closures: Vec<DefId>,
                 }
                 impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for OpaqueTypeCollector {
+                    type Result = ();
+
                     fn visit_ty(&mut self, t: Ty<'tcx>) {
                         match *t.kind() {
                             ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id: def }, .. }) => {

@@ -178,13 +178,20 @@ impl<'hir> LoweringContext<'_, 'hir> {
         i: &ItemKind,
     ) -> Vec<hir::Attribute> {
         match i {
-            ItemKind::Fn(Fn { eii_impl: None, .. })
-            | ItemKind::Static(StaticItem { eii_impl: None, .. }) => Vec::new(),
-            ItemKind::Fn(Fn { eii_impl: Some(eii_impl), .. })
-            | ItemKind::Static(StaticItem { eii_impl: Some(eii_impl), .. }) => {
-                vec![hir::Attribute::Parsed(AttributeKind::EiiImpl(Box::new(
-                    self.lower_eii_impl(eii_impl),
-                )))]
+            ItemKind::Fn(_) | ItemKind::Static(_) => {
+                let eii_impl: &Option<Box<EiiImpl>> = match i {
+                    ItemKind::Fn(f) => &f.eii_impl,
+                    ItemKind::Static(s) => &s.eii_impl,
+                    _ => unreachable!(),
+                };
+                match eii_impl {
+                    None => Vec::new(),
+                    Some(eii_impl) => {
+                        vec![hir::Attribute::Parsed(AttributeKind::EiiImpl(Box::new(
+                            self.lower_eii_impl(eii_impl),
+                        )))]
+                    }
+                }
             }
             ItemKind::MacroDef(name, MacroDef { eii_declaration: Some(target), .. }) => self
                 .lower_eii_decl(id, *name, target)
@@ -259,15 +266,16 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
                 self.lower_use_tree(use_tree, &prefix, id, vis_span, attrs)
             }
-            ItemKind::Static(ast::StaticItem {
-                ident,
-                ty,
-                safety: _,
-                mutability: m,
-                expr: e,
-                define_opaque,
-                eii_impl: _,
-            }) => {
+            ItemKind::Static(st) => {
+                let ast::StaticItem {
+                    ident,
+                    ty,
+                    safety: _,
+                    mutability: m,
+                    expr: e,
+                    define_opaque,
+                    eii_impl: _,
+                } = &**st;
                 let ident = self.lower_ident(*ident);
                 let ty = self
                     .lower_ty_alloc(ty, ImplTraitContext::Disallowed(ImplTraitPosition::StaticTy));
@@ -275,15 +283,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 self.lower_define_opaque(hir_id, define_opaque);
                 hir::ItemKind::Static(*m, ident, ty, body_id)
             }
-            ItemKind::Const(ConstItem {
-                defaultness: _,
-                ident,
-                generics,
-                ty,
-                body,
-                kind,
-                define_opaque,
-            }) => {
+            ItemKind::Const(c) => {
+                let ConstItem { defaultness: _, ident, generics, ty, body, kind, define_opaque } =
+                    &**c;
                 let ident = self.lower_ident(*ident);
                 let (generics, (ty, rhs)) = self.lower_generics(
                     generics,
@@ -313,15 +315,16 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     self.record_body(&[], body)
                 }),
             ),
-            ItemKind::Fn(Fn {
-                sig: FnSig { decl, header, span: fn_sig_span },
-                ident,
-                generics,
-                body,
-                contract,
-                define_opaque,
-                ..
-            }) => {
+            ItemKind::Fn(f) => {
+                let Fn {
+                    sig: FnSig { decl, header, span: fn_sig_span },
+                    ident,
+                    generics,
+                    body,
+                    contract,
+                    define_opaque,
+                    ..
+                } = &**f;
                 self.with_new_scopes(*fn_sig_span, |this| {
                     // Note: we don't need to change the return type from `T` to
                     // `impl Future<Output = T>` here because lower_body
@@ -380,7 +383,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     self.lower_body(|this| (&[], this.expr(span, hir::ExprKind::InlineAsm(asm))));
                 hir::ItemKind::GlobalAsm { asm, fake_body }
             }
-            ItemKind::TyAlias(TyAlias { ident, generics, after_where_clause, ty, .. }) => {
+            ItemKind::TyAlias(ta) => {
+                let TyAlias { ident, generics, after_where_clause, ty, .. } = &**ta;
                 // We lower
                 //
                 // type Foo = impl Trait
@@ -496,16 +500,17 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     constness,
                 })
             }
-            ItemKind::Trait(Trait {
-                impl_restriction,
-                constness,
-                is_auto,
-                safety,
-                ident,
-                generics,
-                bounds,
-                items,
-            }) => {
+            ItemKind::Trait(tr) => {
+                let Trait {
+                    impl_restriction,
+                    constness,
+                    is_auto,
+                    safety,
+                    ident,
+                    generics,
+                    bounds,
+                    items,
+                } = &**tr;
                 let constness = self.lower_constness(attrs, *constness);
                 let impl_restriction = self.lower_impl_restriction(impl_restriction, hir_id);
                 let ident = self.lower_ident(*ident);
@@ -536,7 +541,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     items,
                 }
             }
-            ItemKind::TraitAlias(TraitAlias { constness, ident, generics, bounds }) => {
+            ItemKind::TraitAlias(ta) => {
+                let TraitAlias { constness, ident, generics, bounds } = &**ta;
                 let constness = self.lower_constness(attrs, *constness);
                 let ident = self.lower_ident(*ident);
                 let (generics, bounds) = self.lower_generics(
@@ -583,7 +589,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
             ItemKind::MacCall(..) | ItemKind::DelegationMac(..) => {
                 panic!("macros should have been expanded by now")
             }
-            ItemKind::TestBinderConstraints(TestBinderConstraints { generics, body }) => {
+            ItemKind::TestBinderConstraints(tbc) => {
+                let TestBinderConstraints { generics, body } = &**tbc;
                 let (generics, body) = self.lower_generics(
                     generics,
                     ImplTraitContext::Disallowed(ImplTraitPosition::Bound),
@@ -744,7 +751,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let attrs =
             self.lower_attrs(hir_id, &i.attrs, i.span, Target::from_foreign_item_kind(&i.kind));
         let (ident, kind) = match &i.kind {
-            ForeignItemKind::Fn(Fn { sig, ident, generics, define_opaque, .. }) => {
+            ForeignItemKind::Fn(f) => {
+                let Fn { sig, ident, generics, define_opaque, .. } = &**f;
                 let fdec = &sig.decl;
                 let itctx = ImplTraitContext::Universal;
                 let (generics, (decl, fn_args)) = self.lower_generics(generics, itctx, |this| {
@@ -771,15 +779,16 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     ),
                 )
             }
-            ForeignItemKind::Static(StaticItem {
-                ident,
-                ty,
-                mutability,
-                expr: _,
-                safety,
-                define_opaque,
-                eii_impl: _,
-            }) => {
+            ForeignItemKind::Static(st) => {
+                let StaticItem {
+                    ident,
+                    ty,
+                    mutability,
+                    expr: _,
+                    safety,
+                    define_opaque,
+                    eii_impl: _,
+                } = &**st;
                 let ty = self
                     .lower_ty_alloc(ty, ImplTraitContext::Disallowed(ImplTraitPosition::StaticTy));
                 let safety = self.lower_safety(*safety, hir::Safety::Unsafe);
@@ -788,7 +797,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 }
                 (ident, hir::ForeignItemKind::Static(ty, *mutability, safety))
             }
-            ForeignItemKind::TyAlias(TyAlias { ident, .. }) => (ident, hir::ForeignItemKind::Type),
+            ForeignItemKind::TyAlias(ta) => (&ta.ident, hir::ForeignItemKind::Type),
             ForeignItemKind::MacCall(_) => panic!("macro shouldn't exist here"),
         };
 
@@ -932,15 +941,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
         );
 
         let (ident, generics, kind, has_value) = match &i.kind {
-            AssocItemKind::Const(ConstItem {
-                ident,
-                generics,
-                ty,
-                body,
-                kind,
-                define_opaque,
-                ..
-            }) => {
+            AssocItemKind::Const(c) => {
+                let ConstItem { ident, generics, ty, body, kind, define_opaque, .. } = &**c;
                 let (generics, kind) = self.lower_generics(
                     generics,
                     ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
@@ -972,7 +974,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
                 (*ident, generics, kind, body.is_some())
             }
-            AssocItemKind::Fn(Fn { sig, ident, generics, body: None, define_opaque, .. }) => {
+            AssocItemKind::Fn(f) if f.body.is_none() => {
+                let Fn { sig, ident, generics, define_opaque, .. } = &**f;
                 // FIXME(contracts): Deny contract here since it won't apply to
                 // any impl method or callees.
                 let idents = self.lower_fn_params_to_idents(&sig.decl);
@@ -997,15 +1000,13 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     false,
                 )
             }
-            AssocItemKind::Fn(Fn {
-                sig,
-                ident,
-                generics,
-                body: Some(body),
-                contract,
-                define_opaque,
-                ..
-            }) => {
+            AssocItemKind::Fn(f) => {
+                let Fn {
+                    sig, ident, generics, body: Some(body), contract, define_opaque, ..
+                } = &**f
+                else {
+                    unreachable!()
+                };
                 let body_id = self.lower_maybe_coroutine_body(
                     sig.span,
                     i.span,
@@ -1032,14 +1033,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     true,
                 )
             }
-            AssocItemKind::Type(TyAlias {
-                ident,
-                generics,
-                after_where_clause,
-                bounds,
-                ty,
-                ..
-            }) => {
+            AssocItemKind::Type(ta) => {
+                let TyAlias { ident, generics, after_where_clause, bounds, ty, .. } = &**ta;
                 let mut generics = generics.clone();
                 add_ty_alias_where_clause(&mut generics, after_where_clause, false);
                 let (generics, kind) = self.lower_generics(
@@ -1195,33 +1190,27 @@ impl<'hir> LoweringContext<'_, 'hir> {
         );
 
         let (ident, (generics, kind)) = match &i.kind {
-            AssocItemKind::Const(ConstItem {
-                ident,
-                generics,
-                ty,
-                body,
-                kind,
-                define_opaque,
-                ..
-            }) => (
-                *ident,
-                self.lower_generics(
-                    generics,
-                    ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
-                    |this| {
-                        let ty = this.lower_ty_alloc(
-                            ty,
-                            ImplTraitContext::Disallowed(ImplTraitPosition::ConstTy),
-                        );
-                        this.lower_define_opaque(hir_id, &define_opaque);
-                        let rhs = this.lower_const_item_rhs(body, *kind, i.span);
-                        hir::ImplItemKind::Const(ty, rhs)
-                    },
-                ),
-            ),
-            AssocItemKind::Fn(Fn {
-                sig, ident, generics, body, contract, define_opaque, ..
-            }) => {
+            AssocItemKind::Const(c) => {
+                let ConstItem { ident, generics, ty, body, kind, define_opaque, .. } = &**c;
+                (
+                    *ident,
+                    self.lower_generics(
+                        generics,
+                        ImplTraitContext::Disallowed(ImplTraitPosition::Generic),
+                        |this| {
+                            let ty = this.lower_ty_alloc(
+                                ty,
+                                ImplTraitContext::Disallowed(ImplTraitPosition::ConstTy),
+                            );
+                            this.lower_define_opaque(hir_id, &define_opaque);
+                            let rhs = this.lower_const_item_rhs(body, *kind, i.span);
+                            hir::ImplItemKind::Const(ty, rhs)
+                        },
+                    ),
+                )
+            }
+            AssocItemKind::Fn(f) => {
+                let Fn { sig, ident, generics, body, contract, define_opaque, .. } = &**f;
                 let body_id = self.lower_maybe_coroutine_body(
                     sig.span,
                     i.span,
@@ -1244,7 +1233,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
                 (*ident, (generics, hir::ImplItemKind::Fn(sig, body_id)))
             }
-            AssocItemKind::Type(TyAlias { ident, generics, after_where_clause, ty, .. }) => {
+            AssocItemKind::Type(ta) => {
+                let TyAlias { ident, generics, after_where_clause, ty, .. } = &**ta;
                 let mut generics = generics.clone();
                 add_ty_alias_where_clause(&mut generics, after_where_clause, false);
                 (

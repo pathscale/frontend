@@ -320,7 +320,9 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                     "invalid variant index for this enum"
                 );
                 let variants_start = niche_variants.start.as_u32();
-                let variant_index_relative = variant_index.as_u32().strict_sub(variants_start);
+                // `checked_sub(..).unwrap()` is `strict_sub` without the `strict_overflow_ops` gate.
+                let variant_index_relative =
+                    variant_index.as_u32().checked_sub(variants_start).unwrap();
                 // We need to use machine arithmetic when taking into account `niche_start`:
                 // tag_val = variant_index_relative + niche_start_val
                 let tag_layout = self.layout_of(tag_layout.primitive().to_int_ty(*self.tcx))?;

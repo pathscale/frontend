@@ -42,6 +42,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -378,7 +379,7 @@ impl LinkerFlavor {
                 .iter()
                 .filter(|cli| compatible(**cli))
                 .map(|cli| cli.desc())
-                .intersperse(", ")
+                .separated_by(", ")
                 .collect()
         })
     }
@@ -1746,7 +1747,6 @@ type StaticCow<T> = Cow<'static, T>;
 /// construction, all its fields logically belong to `Target` and available from `Target`
 /// through `Deref` impls.
 #[derive(PartialEq, Clone, Debug)]
-#[rustc_lint_opt_ty]
 pub struct TargetOptions {
     /// Used as the `target_endian` `cfg` variable. Defaults to little endian.
     pub endian: Endian,
@@ -1772,9 +1772,6 @@ pub struct TargetOptions {
     /// field.
     pub cfg_abi: CfgAbi,
     /// Vendor name to use for conditional compilation (`target_vendor`). Defaults to "unknown".
-    #[rustc_lint_opt_deny_field_access(
-        "use `Target::is_like_*` instead of this field; see https://github.com/rust-lang/rust/issues/100343 for rationale"
-    )]
     vendor: StaticCow<str>,
 
     /// Linker to invoke

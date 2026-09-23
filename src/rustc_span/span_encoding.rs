@@ -88,7 +88,6 @@ use crate::rustc_span::{BytePos, SPAN_TRACK, SpanData};
 /// accesses to `lo` and `hi` must introduce a dependency to the parent definition's span.
 /// This is performed using the callback `SPAN_TRACK` to access the query engine.
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
-#[rustc_pass_by_value]
 pub struct Span {
     lo_or_index: u32,
     len_with_tag_or_marker: u16,
@@ -389,7 +388,6 @@ impl Span {
 
     /// This function is used as a fast path when decoding the full `SpanData` is not necessary.
     /// It's a cut-down version of `data_untracked`.
-    #[cfg_attr(not(test), rustc_diagnostic_item = "SpanCtxt")]
     #[inline]
     pub fn ctxt(self) -> SyntaxContext {
         self.inline_ctxt()

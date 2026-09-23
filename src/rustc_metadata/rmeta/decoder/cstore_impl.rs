@@ -41,12 +41,12 @@ use crate::rustc_metadata::rmeta::table::IsDefault;
 use crate::rustc_metadata::{eii, foreign_modules, native_libs};
 
 trait ProcessQueryValue<'tcx, T> {
-    fn process_decoded(self, _tcx: TyCtxt<'tcx>, _err: impl Fn() -> !) -> T;
+    fn process_decoded(self, _tcx: TyCtxt<'tcx>, _err: impl Fn() -> crate::Never) -> T;
 }
 
 impl<T> ProcessQueryValue<'_, T> for T {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> !) -> T {
+    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> T {
         self
     }
 }
@@ -54,28 +54,28 @@ impl<T> ProcessQueryValue<'_, T> for T {
 // The `TypeVisitable` bound here is merely for `EarlyBinder`'s rigidness check.
 impl<'tcx, T: TypeVisitable<TyCtxt<'tcx>>> ProcessQueryValue<'tcx, ty::EarlyBinder<'tcx, T>> for T {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> !) -> ty::EarlyBinder<'tcx, T> {
+    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> ty::EarlyBinder<'tcx, T> {
         ty::EarlyBinder::bind_no_rigid_aliases(self)
     }
 }
 
 impl<T> ProcessQueryValue<'_, T> for Option<T> {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, err: impl Fn() -> !) -> T {
+    fn process_decoded(self, _tcx: TyCtxt<'_>, err: impl Fn() -> crate::Never) -> T {
         if let Some(value) = self { value } else { err() }
     }
 }
 
 impl<'tcx, T: ArenaAllocatable<'tcx>> ProcessQueryValue<'tcx, &'tcx T> for Option<T> {
     #[inline(always)]
-    fn process_decoded(self, tcx: TyCtxt<'tcx>, err: impl Fn() -> !) -> &'tcx T {
+    fn process_decoded(self, tcx: TyCtxt<'tcx>, err: impl Fn() -> crate::Never) -> &'tcx T {
         if let Some(value) = self { tcx.arena.alloc(value) } else { err() }
     }
 }
 
 impl<T, E> ProcessQueryValue<'_, Result<Option<T>, E>> for Option<T> {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> !) -> Result<Option<T>, E> {
+    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> Result<Option<T>, E> {
         Ok(self)
     }
 }
@@ -84,7 +84,7 @@ impl<'tcx, D: Decoder, T: Copy + Decodable<D>> ProcessQueryValue<'tcx, &'tcx [T]
     for Option<DecodeIterator<T, D>>
 {
     #[inline(always)]
-    fn process_decoded(self, tcx: TyCtxt<'tcx>, err: impl Fn() -> !) -> &'tcx [T] {
+    fn process_decoded(self, tcx: TyCtxt<'tcx>, err: impl Fn() -> crate::Never) -> &'tcx [T] {
         if let Some(iter) = self { tcx.arena.alloc_from_iter(iter) } else { err() }
     }
 }
@@ -93,14 +93,14 @@ impl<'tcx, D: Decoder, T: Copy + Decodable<D>> ProcessQueryValue<'tcx, Option<&'
     for Option<DecodeIterator<T, D>>
 {
     #[inline(always)]
-    fn process_decoded(self, tcx: TyCtxt<'tcx>, _err: impl Fn() -> !) -> Option<&'tcx [T]> {
+    fn process_decoded(self, tcx: TyCtxt<'tcx>, _err: impl Fn() -> crate::Never) -> Option<&'tcx [T]> {
         if let Some(iter) = self { Some(&*tcx.arena.alloc_from_iter(iter)) } else { None }
     }
 }
 
 impl ProcessQueryValue<'_, Option<DeprecationEntry>> for Option<Deprecation> {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> !) -> Option<DeprecationEntry> {
+    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> Option<DeprecationEntry> {
         self.map(DeprecationEntry::external)
     }
 }
@@ -588,7 +588,6 @@ pub(in crate::rustc_metadata::rmeta) fn provide(providers: &mut Providers) {
             //        the values of one map for only the missing keys of the other map,
             //        which is required to merge the fallback map into the visible parent map.
             //        In the meantime, use an "ordered" map internally for fallback entries.
-            #[allow(rustc::potential_query_instability)]
             for (child, parent) in fallback_map {
                 visible_parent_map.entry(child).or_insert(parent);
             }

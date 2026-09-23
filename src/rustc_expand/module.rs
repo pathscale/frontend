@@ -63,14 +63,16 @@ pub(crate) fn parse_external_mod(
     attrs: &mut AttrVec,
 ) -> ParsedExternalMod {
     // We bail on the first error, but that error does not cause a fatal error... (1)
-    let result: Result<_, ModError<'_>> = try {
+    // An immediately called closure stands in for a `try {}` block (unstable), so `?` and the
+    // early `return Err` stop here rather than leaving `parse_external_mod`.
+    let result: Result<_, ModError<'_>> = (|| {
         // Extract the file path and the new ownership.
         let mp = mod_file_path(sess, ident, attrs, &module.dir_path, dir_ownership)?;
         dir_ownership = mp.dir_ownership;
 
         // Ensure file paths are acyclic.
         if let Some(pos) = module.file_path_stack.iter().position(|p| p == &mp.file_path) {
-            do yeet ModError::CircularInclusion(module.file_path_stack[pos..].to_vec());
+            return Err(ModError::CircularInclusion(module.file_path_stack[pos..].to_vec()));
         }
 
         // Actually parse the external file as a module.
@@ -83,8 +85,8 @@ pub(crate) fn parse_external_mod(
         let (inner_attrs, items, inner_span) =
             parser.parse_mod(exp!(Eof)).map_err(ModError::ParserError)?;
         attrs.extend(inner_attrs);
-        (items, inner_span, mp.file_path)
-    };
+        Ok((items, inner_span, mp.file_path))
+    })();
 
     // (1) ...instead, we return a dummy module.
     let ((items, spans, file_path), had_parse_error) = match result {

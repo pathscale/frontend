@@ -15,8 +15,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![allow(rustc::direct_use_of_rustc_type_ir)]
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //

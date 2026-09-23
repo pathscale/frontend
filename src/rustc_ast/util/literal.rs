@@ -129,7 +129,8 @@ impl LitKind {
                     // programs with many long strings containing escapes.
                     unescape_str(
                         s,
-                        #[inline(always)]
+                        // Upstream's `#[inline(always)]` here is an attribute on an expression
+                        // (`stmt_expr_attributes`, unstable); it was only an inlining hint.
                         |_, res| match res {
                             Ok(c) => buf.push(c),
                             Err(err) => {

@@ -589,6 +589,8 @@ fn plug_infer_with_placeholders<'tcx>(
     }
 
     impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for PlugInferWithPlaceholder<'_, 'tcx> {
+        type Result = ();
+
         fn visit_ty(&mut self, ty: Ty<'tcx>) {
             let ty = self.infcx.shallow_resolve(ty);
             if ty.is_ty_var() {
@@ -736,6 +738,8 @@ struct AmbiguityCausesVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> ProofTreeVisitor<'tcx> for AmbiguityCausesVisitor<'a, 'tcx> {
+    type Result = ();
+
     fn span(&self) -> Span {
         DUMMY_SP
     }

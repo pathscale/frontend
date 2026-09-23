@@ -96,13 +96,14 @@ fn extract_branch_mappings(
     }
 
     mappings.extend(node.branch_spans.iter().filter_map(
-        |&BranchSpan { span, true_marker, false_marker }| try {
+        // The closure returns `Option` directly in place of an unstable `try {}` block.
+        |&BranchSpan { span, true_marker, false_marker }| {
             let bcb_from_marker = |marker: BlockMarkerId| graph.bcb_from_bb(block_markers[marker]?);
 
             let true_bcb = bcb_from_marker(true_marker)?;
             let false_bcb = bcb_from_marker(false_marker)?;
 
-            Mapping { span, kind: MappingKind::Branch { true_bcb, false_bcb } }
+            Some(Mapping { span, kind: MappingKind::Branch { true_bcb, false_bcb } })
         },
     ));
 }

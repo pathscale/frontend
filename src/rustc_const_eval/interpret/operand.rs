@@ -11,7 +11,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use either::{Either, Left, Right};
 use crate::rustc_abi as abi;
@@ -891,8 +891,9 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 Scalar::Int(int) => Scalar::Int(int),
             })
         };
-        let layout =
-            from_known_layout(self.tcx, self.typing_env(), layout, || self.layout_of(ty).into())?;
+        let layout = from_known_layout(self.tcx, self.typing_env(), layout, || {
+            self.layout_of(ty).map_err(Into::into)
+        })?;
         let imm = match val_val {
             mir::ConstValue::Indirect { alloc_id, offset } => {
                 // This is const data, no mutation allowed.

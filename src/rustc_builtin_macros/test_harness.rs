@@ -171,6 +171,8 @@ struct InnerItemLinter<'a> {
 }
 
 impl<'a> Visitor<'a> for InnerItemLinter<'_> {
+    type Result = ();
+
     fn visit_item(&mut self, i: &'a ast::Item) {
         if let Some(attr) = attr::find_by_name(&i.attrs, sym::rustc_test_marker) {
             self.sess.psess.buffer_lint(

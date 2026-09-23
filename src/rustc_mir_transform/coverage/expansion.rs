@@ -82,7 +82,7 @@ impl ExpnNode {
         let expn_data = context.outer_expn_data();
 
         let call_site = Some(expn_data.call_site).filter(|sp| !sp.is_dummy());
-        let call_site_context = try { call_site?.ctxt() };
+        let call_site_context = call_site.map(|call_site| call_site.ctxt());
 
         Self {
             context,

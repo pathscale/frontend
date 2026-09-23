@@ -22,10 +22,9 @@ use crate::rustc_proc_macro::bridge::{Buffer, Decode, Encode, Mark, arena, clien
 
 /// Handle for a symbol string stored within the Interner.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Symbol(NonZero<u32>);
-
-impl !Send for Symbol {}
-impl !Sync for Symbol {}
+// The second field replaces upstream's `impl !Send` / `impl !Sync` (unstable negative
+// impls): a raw-pointer marker makes the handle neither `Send` nor `Sync` on stable.
+pub struct Symbol(NonZero<u32>, core::marker::PhantomData<*const ()>);
 
 impl Symbol {
     /// Intern a new `Symbol`
@@ -157,6 +156,7 @@ impl Interner {
             self.sym_base
                 .checked_add(self.strings.len() as u32)
                 .expect("`proc_macro` symbol name overflow"),
+            core::marker::PhantomData,
         );
 
         let string: &str = self.arena.alloc_str(string);

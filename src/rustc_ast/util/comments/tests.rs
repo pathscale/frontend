@@ -1,5 +1,3 @@
-
-#![allow(rustc::symbol_intern_string_literal)]
 use crate::rustc_span::create_default_session_globals_then;
 
 use super::*;

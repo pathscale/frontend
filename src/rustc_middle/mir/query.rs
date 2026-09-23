@@ -66,26 +66,34 @@ pub struct CoroutineLayout<'tcx> {
 
 impl Debug for CoroutineLayout<'_> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `field(.., &fmt::from_fn(..))` is what the unstable `field_with`, `key_with` and
+        // `value_with` helpers do internally.
         fmt.debug_struct("CoroutineLayout")
-            .field_with("field_tys", |fmt| {
-                fmt.debug_map().entries(self.field_tys.iter_enumerated()).finish()
-            })
-            .field_with("variant_fields", |fmt| {
-                let mut map = fmt.debug_map();
-                for (idx, fields) in self.variant_fields.iter_enumerated() {
-                    map.key_with(|fmt| {
-                        let variant_name = ty::CoroutineArgs::variant_name(idx);
-                        if fmt.alternate() {
-                            write!(fmt, "{variant_name:9}({idx:?})")
-                        } else {
-                            write!(fmt, "{variant_name}")
-                        }
-                    });
-                    // Force variant fields to print in regular mode instead of alternate mode.
-                    map.value_with(|fmt| write!(fmt, "{fields:?}"));
-                }
-                map.finish()
-            })
+            .field(
+                "field_tys",
+                &fmt::from_fn(|fmt| {
+                    fmt.debug_map().entries(self.field_tys.iter_enumerated()).finish()
+                }),
+            )
+            .field(
+                "variant_fields",
+                &fmt::from_fn(|fmt| {
+                    let mut map = fmt.debug_map();
+                    for (idx, fields) in self.variant_fields.iter_enumerated() {
+                        map.key(&fmt::from_fn(|fmt| {
+                            let variant_name = ty::CoroutineArgs::variant_name(idx);
+                            if fmt.alternate() {
+                                write!(fmt, "{variant_name:9}({idx:?})")
+                            } else {
+                                write!(fmt, "{variant_name}")
+                            }
+                        }));
+                        // Force variant fields to print in regular mode instead of alternate mode.
+                        map.value(&fmt::from_fn(|fmt| write!(fmt, "{fields:?}")));
+                    }
+                    map.finish()
+                }),
+            )
             .field("storage_conflicts", &self.storage_conflicts)
             .finish()
     }

@@ -306,7 +306,6 @@ impl<'tcx> MirPatch<'tcx> {
         }
 
         // The order in which we patch terminators does not change the result.
-        #[allow(rustc::potential_query_instability)]
         for (src, patch) in self.term_patch_map {
             debug!("MirPatch: patching block {:?}", src);
             let bb = &mut bbs[src];

@@ -81,14 +81,23 @@ pub mod util;
 
 pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
     let mut register = |name, kind| resolver.register_builtin_macro(name, kind);
-    macro register_bang($($name:ident: $f:expr,)*) {
-        $(register(sym::$name, SyntaxExtensionKind::LegacyBang(Arc::new($f as MacroExpanderFn)));)*
+    // Local `macro_rules!` (were decl_macro `macro`s). Defined after `register` is bound, so
+    // mixed-site hygiene still lets the bodies call it; the paths they use are this module's
+    // imports, which are also in scope at the only call sites below.
+    macro_rules! register_bang {
+        ($($name:ident: $f:expr,)*) => {
+            $(register(sym::$name, SyntaxExtensionKind::LegacyBang(Arc::new($f as MacroExpanderFn)));)*
+        };
     }
-    macro register_attr($($name:ident: $f:expr,)*) {
-        $(register(sym::$name, SyntaxExtensionKind::LegacyAttr(Arc::new($f)));)*
+    macro_rules! register_attr {
+        ($($name:ident: $f:expr,)*) => {
+            $(register(sym::$name, SyntaxExtensionKind::LegacyAttr(Arc::new($f)));)*
+        };
     }
-    macro register_derive($($name:ident: $f:expr,)*) {
-        $(register(sym::$name, SyntaxExtensionKind::LegacyDerive(Arc::new(BuiltinDerive($f))));)*
+    macro_rules! register_derive {
+        ($($name:ident: $f:expr,)*) => {
+            $(register(sym::$name, SyntaxExtensionKind::LegacyDerive(Arc::new(BuiltinDerive($f))));)*
+        };
     }
 
     register_bang! {

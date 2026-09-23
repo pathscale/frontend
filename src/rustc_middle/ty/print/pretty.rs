@@ -75,13 +75,10 @@ macro_rules! define_helper {
                 }
             }
 
-            $(#[$a])*
-            pub macro $name($e:expr) {
-                {
-                    let _guard = $helper::new();
-                    $e
-                }
-            }
+            // The `$name!` guard macro is written out by hand below, not generated here: a
+            // `#[macro_export]` macro produced by a macro expansion cannot be named by path
+            // (`macro_expanded_macro_exports_accessed_by_absolute_paths`), and the callers
+            // import these by path.
 
             impl Drop for $helper {
                 fn drop(&mut self) {
@@ -150,29 +147,136 @@ impl Drop for RtnModeHelper {
     }
 }
 
+// The print-mode guard macros below were `pub macro` (decl_macro), which is path-scoped. As
+// `macro_rules!` they are `#[macro_export]`ed so that no module-order rule applies, and each is
+// re-exported here with `pub use crate::name;` so that `ty::print::name!` and
+// `use crate::rustc_middle::ty::print::name;` keep working through the `pub use self::pretty::*`
+// glob in `print/mod.rs`. `macro_rules!` paths resolve at the call site, so every path in a body
+// is `$crate::`-rooted and goes through `ty::print`, because `pretty` itself is private.
+
+/// Avoids running select queries during any prints that occur during the expression.
+#[macro_export]
+macro_rules! with_reduced_queries {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::ReducedQueriesGuard::new();
+        $e
+    }};
+}
+pub use crate::with_reduced_queries;
+
+/// Force impls to be named with just the filename/line number during the expression.
+#[macro_export]
+macro_rules! with_forced_impl_filename_line {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::ForcedImplGuard::new();
+        $e
+    }};
+}
+pub use crate::with_forced_impl_filename_line;
+
+/// Adds the crate name prefix to paths where appropriate during the expression.
+#[macro_export]
+macro_rules! with_resolve_crate_name {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::CrateNamePrefixGuard::new();
+        $e
+    }};
+}
+pub use crate::with_resolve_crate_name;
+
+/// Adds the `crate::rustc_middle::` prefix to paths where appropriate during the expression.
+#[macro_export]
+macro_rules! with_crate_prefix {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::CratePrefixGuard::new();
+        $e
+    }};
+}
+pub use crate::with_crate_prefix;
+
+/// Prevent path trimming during the expression.
+#[macro_export]
+macro_rules! with_no_trimmed_paths {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::NoTrimmedGuard::new();
+        $e
+    }};
+}
+pub use crate::with_no_trimmed_paths;
+
+/// Force path trimming during the expression.
+#[macro_export]
+macro_rules! with_forced_trimmed_paths {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::ForceTrimmedGuard::new();
+        $e
+    }};
+}
+pub use crate::with_forced_trimmed_paths;
+
+/// Prevent selection of visible paths during the expression.
+#[macro_export]
+macro_rules! with_no_visible_paths {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::NoVisibleGuard::new();
+        $e
+    }};
+}
+pub use crate::with_no_visible_paths;
+
+/// Prevent selection of visible paths through a doc hidden path during the expression.
+#[macro_export]
+macro_rules! with_no_visible_paths_if_doc_hidden {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::NoVisibleIfDocHiddenGuard::new();
+        $e
+    }};
+}
+pub use crate::with_no_visible_paths_if_doc_hidden;
+
 /// Print types for the purposes of a suggestion.
 ///
 /// Specifically, this will render RPITITs as `T::method(..)` which is suitable for
 /// things like where-clauses.
-pub macro with_types_for_suggestion($e:expr) {{
-    let _guard = $crate::rustc_middle::ty::print::pretty::RtnModeHelper::with(RtnMode::ForSuggestion);
-    $e
-}}
+#[macro_export]
+macro_rules! with_types_for_suggestion {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::RtnModeHelper::with(
+            $crate::rustc_middle::ty::print::RtnMode::ForSuggestion,
+        );
+        $e
+    }};
+}
+pub use crate::with_types_for_suggestion;
 
 /// Print types for the purposes of a signature suggestion.
 ///
 /// Specifically, this will render RPITITs as `impl Trait` rather than `T::method(..)`.
-pub macro with_types_for_signature($e:expr) {{
-    let _guard = $crate::rustc_middle::ty::print::pretty::RtnModeHelper::with(RtnMode::ForSignature);
-    $e
-}}
+#[macro_export]
+macro_rules! with_types_for_signature {
+    ($e:expr) => {{
+        let _guard = $crate::rustc_middle::ty::print::RtnModeHelper::with(
+            $crate::rustc_middle::ty::print::RtnMode::ForSignature,
+        );
+        $e
+    }};
+}
+pub use crate::with_types_for_signature;
 
 /// Avoids running any queries during prints.
-pub macro with_no_queries($e:expr) {{
-    $crate::rustc_middle::ty::print::with_reduced_queries!($crate::rustc_middle::ty::print::with_forced_impl_filename_line!(
-        $crate::rustc_middle::ty::print::with_no_trimmed_paths!($crate::rustc_middle::ty::print::with_no_visible_paths!($e))
-    ))
-}}
+#[macro_export]
+macro_rules! with_no_queries {
+    ($e:expr) => {{
+        $crate::rustc_middle::ty::print::with_reduced_queries!(
+            $crate::rustc_middle::ty::print::with_forced_impl_filename_line!(
+                $crate::rustc_middle::ty::print::with_no_trimmed_paths!(
+                    $crate::rustc_middle::ty::print::with_no_visible_paths!($e)
+                )
+            )
+        )
+    }};
+}
+pub use crate::with_no_queries;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WrapBinderMode {
@@ -2937,6 +3041,8 @@ impl<'tcx> FmtPrinter<'_, 'tcx> {
         }
 
         impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for RegionNameCollector<'tcx> {
+            type Result = ();
+
             fn visit_region(&mut self, r: ty::Region<'tcx>) {
                 trace!("address: {:p}", r.0.0);
 

@@ -1,4 +1,4 @@
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_abi::VariantIdx;
 use crate::rustc_data_structures::fx::FxIndexSet;
@@ -57,10 +57,11 @@ impl<'tcx> MaybePlacesSwitchIntData<'tcx> {
         // to the enum (`_1` in the example above) as well as the discriminants.
         let block_data = &body[block];
         for statement in block_data.statements.iter().rev() {
-            match statement.kind {
-                mir::StatementKind::Assign((lhs, mir::Rvalue::Discriminant(enum_place)))
-                    if lhs == discr =>
+            match &statement.kind {
+                mir::StatementKind::Assign(assign)
+                    if matches!(assign.1, mir::Rvalue::Discriminant(_)) && assign.0 == discr =>
                 {
+                    let mir::Rvalue::Discriminant(enum_place) = assign.1 else { unreachable!() };
                     match enum_place.ty(body, tcx).ty.kind() {
                         ty::Adt(enum_def, _) => {
                             // For each value in the SwitchInt, find the VariantIdx for the variant
@@ -204,6 +205,7 @@ impl<'a, 'tcx> HasMoveData<'tcx> for MaybeInitializedPlaces<'a, 'tcx> {
 }
 
 impl<'tcx> Analysis<'tcx> for MaybeInitializedPlaces<'_, 'tcx> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
     /// There can be many more `MovePathIndex` than there are locals in a MIR body.
     /// We use a mixed bitset to avoid paying too high a memory footprint.
     type Domain = MaybeReachable<MixedBitSet<MovePathIndex>>;
@@ -440,6 +442,7 @@ impl<'tcx> HasMoveData<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
 pub type MaybeUninitializedPlacesDomain = MixedBitSet<MovePathIndex>;
 
 impl<'tcx> Analysis<'tcx> for MaybeUninitializedPlaces<'_, 'tcx> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
     type Domain = MaybeUninitializedPlacesDomain;
 
     type SwitchIntData = MaybePlacesSwitchIntData<'tcx>;
@@ -674,6 +677,8 @@ impl<'tcx> HasMoveData<'tcx> for EverInitializedPlaces<'_, 'tcx> {
 pub type EverInitializedPlacesDomain = DenseBitSet<Local>;
 
 impl<'tcx> Analysis<'tcx> for EverInitializedPlaces<'_, 'tcx> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = EverInitializedPlacesDomain;
 
     const NAME: &'static str = "ever_init";

@@ -305,8 +305,9 @@ macro_rules! top_level_options {
                 let mut mods = Vec::<TargetModifier>::new();
                 $(
                     $(
-                        // Only expand for flags that have `TARGET_MODIFIER`.
-                        ${ignore($tmod_enum)}
+                        // Only expand for flags that have `TARGET_MODIFIER`. The
+                        // `metavar_ignore!` call drives this `$(...)?` on `$tmod_enum`.
+                        $crate::metavar_ignore!([$tmod_enum]);
                         self.$opt.gather_target_modifiers(&mut mods, &self.target_modifiers);
                     )?
                 )*
@@ -342,11 +343,9 @@ top_level_options!(
     /// `CodegenOptions`, think about how it influences incremental compilation. If in
     /// doubt, specify `[TRACKED]`, which is always "correct" but might lead to
     /// unnecessary re-compilation.
-    #[rustc_lint_opt_ty]
     pub struct Options {
         /// The crate config requested for the session, which may be combined
         /// with additional crate configurations during the compile process.
-        #[rustc_lint_opt_deny_field_access("use `TyCtxt::crate_types` instead of this field")]
         crate_types: Vec<CrateType> [TRACKED],
         optimize: OptLevel [TRACKED],
         /// Include the `debug_assertions` flag in dependency tracking, since it
@@ -396,9 +395,7 @@ top_level_options!(
         /// what rustc was invoked with, but massaged a bit to agree with
         /// commands like `--emit llvm-ir` which they're often incompatible with
         /// if we otherwise use the defaults of rustc.
-        #[rustc_lint_opt_deny_field_access("use `Session::codegen_units` instead of this field")]
         cli_forced_codegen_units: Option<usize> [UNTRACKED],
-        #[rustc_lint_opt_deny_field_access("use `Session::lto` instead of this field")]
         cli_forced_local_thinlto_off: bool [UNTRACKED],
 
         /// Remap source path prefixes in all output (messages, object files, debug, etc.).
@@ -443,7 +440,6 @@ top_level_options!(
         pretty: Option<PpMode> [UNTRACKED],
 
         /// The (potentially remapped) working directory
-        #[rustc_lint_opt_deny_field_access("use `SourceMap::working_dir` instead of this field")]
         working_dir: RealFileName [TRACKED],
         color: ColorConfig [UNTRACKED],
         verbose: bool [TRACKED_NO_CRATE_HASH],
@@ -477,7 +473,6 @@ macro_rules! options {
         )*
     ) => {
         #[derive(Clone)]
-        #[rustc_lint_opt_ty]
         pub struct $struct_name {
             $(
                 $(#[$attr])*
@@ -519,9 +514,10 @@ macro_rules! options {
                 match flag_name.replace('-', "_").as_str() {
                     $(
                         $(
-                            // Only expand for flags that have `TARGET_MODIFIER`.
-                            ${ignore($tmod_variant)}
-                            stringify!($opt) => true,
+                            // Only expand for flags that have `TARGET_MODIFIER`. The pattern
+                            // goes through `metavar_ignore!` so this `$(...)?` is driven by
+                            // `$tmod_variant` without emitting it.
+                            $crate::metavar_ignore!([$tmod_variant] stringify!($opt)) => true,
                         )?
                     )*
                     _ => false,
@@ -588,7 +584,6 @@ macro_rules! options {
 
 impl CodegenOptions {
     // JUSTIFICATION: defn of the suggested wrapper fn
-    #[allow(rustc::bad_opt_access)]
     pub fn instrument_coverage(&self) -> InstrumentCoverage {
         self.instrument_coverage
     }
@@ -759,7 +754,6 @@ options! {
     ar: () = ((), parse_ignore, [UNTRACKED],
         "this option has been removed",
         removed: Err),
-    #[rustc_lint_opt_deny_field_access("use `Session::code_model` instead of this field")]
     code_model: Option<CodeModel> = (None, parse_code_model, [TRACKED],
         "choose the code model to use (`rustc --print code-models` for details)"),
     codegen_units: Option<usize> = (None, parse_opt_number, [UNTRACKED],
@@ -778,7 +772,6 @@ options! {
         "allow the linker to link its default libraries (default: no)"),
     dlltool: Option<PathBuf> = (None, parse_opt_pathbuf, [UNTRACKED],
         "import library generation tool (ignored except when targeting windows-gnu)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::dwarf_version` instead of this field")]
     dwarf_version: Option<u32> = (None, parse_opt_number, [TRACKED],
         "version of DWARF debug information to emit (default: 2 or 4, depending on platform)"),
     embed_bitcode: bool = (true, parse_bool, [TRACKED],
@@ -787,7 +780,6 @@ options! {
         "extra data to put in each output filename"),
     force_frame_pointers: FramePointer = (FramePointer::MayOmit, parse_frame_pointer, [TRACKED],
         "force use of the frame pointers"),
-    #[rustc_lint_opt_deny_field_access("use `Session::must_emit_unwind_tables` instead of this field")]
     force_unwind_tables: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "force use of unwind tables"),
     help: bool = (false, parse_no_value, [UNTRACKED], "Print codegen options"),
@@ -797,7 +789,6 @@ options! {
         "this option has been removed \
         (consider using `-Cllvm-args=--inline-threshold=...`)",
         removed: Err),
-    #[rustc_lint_opt_deny_field_access("use `Session::instrument_coverage` instead of this field")]
     instrument_coverage: InstrumentCoverage = (InstrumentCoverage::No, parse_instrument_coverage, [TRACKED],
         "instrument the generated code to support LLVM source-based code coverage reports \
         (note, the compiler build config must include `profiler = true`); \
@@ -808,7 +799,6 @@ options! {
         "a single extra argument to append to the linker invocation (can be used several times)"),
     link_args: Vec<String> = (Vec::new(), parse_list, [UNTRACKED],
         "extra arguments to append to the linker invocation (space separated)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::link_dead_code` instead of this field")]
     link_dead_code: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "try to generate and link dead code (default: no)"),
     link_self_contained: LinkSelfContained = (LinkSelfContained::default(), parse_link_self_contained, [UNTRACKED],
@@ -825,7 +815,6 @@ options! {
         "generate build artifacts that are compatible with linker-based LTO"),
     llvm_args: Vec<String> = (Vec::new(), parse_list, [TRACKED],
         "a list of arguments to pass to LLVM (space separated)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::lto` instead of this field")]
     lto: LtoCli = (LtoCli::Unspecified, parse_lto, [TRACKED],
         "perform LLVM link-time optimizations"),
     metadata: Vec<String> = (Vec::new(), parse_list, [TRACKED],
@@ -843,10 +832,8 @@ options! {
         "disable LLVM's SLP vectorization pass"),
     opt_level: String = ("0".to_string(), parse_string, [TRACKED],
         "optimization level (0-3, s, or z; default: 0)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::overflow_checks` instead of this field")]
     overflow_checks: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "use overflow checks for integer arithmetic"),
-    #[rustc_lint_opt_deny_field_access("use `Session::panic_strategy` instead of this field")]
     panic: Option<PanicStrategy> = (None, parse_opt_panic_strategy, [TRACKED],
         "panic strategy to compile crate with"),
     passes: Vec<String> = (Vec::new(), parse_list, [TRACKED],
@@ -860,7 +847,6 @@ options! {
         "use the given `.prof` file for sample-based profile-guided optimization"),
     profile_use: Option<PathBuf> = (None, parse_opt_pathbuf, [TRACKED],
         "use the given `.profdata` file for profile-guided optimization"),
-    #[rustc_lint_opt_deny_field_access("use `Session::relocation_model` instead of this field")]
     relocation_model: Option<RelocModel> = (None, parse_relocation_model, [TRACKED],
         "control generation of position-independent code (PIC) \
         (`rustc --print relocation-models` for details)"),
@@ -876,7 +862,6 @@ options! {
         "this option has been removed \
         (use a corresponding *eabi target instead)",
         removed: Err),
-    #[rustc_lint_opt_deny_field_access("use `Session::split_debuginfo` instead of this field")]
     split_debuginfo: Option<SplitDebuginfo> = (None, parse_split_debuginfo, [TRACKED],
         "how to handle split-debuginfo, a platform-specific option"),
     strip: Strip = (Strip::None, parse_strip, [UNTRACKED],
@@ -946,13 +931,11 @@ options! {
         Multiple options can be combined with commas."),
     autodiff_post_passes: Option<String> = (None, parse_opt_string, [TRACKED],
         "set llvm passes to run after enzyme (no passes run when it is empty)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::binary_dep_depinfo` instead of this field")]
     binary_dep_depinfo: bool = (false, parse_bool, [TRACKED],
         "include artifacts (sysroot, crate dependencies) used during compilation in dep-info \
         (default: no)"),
     box_noalias: bool = (true, parse_bool, [TRACKED],
         "emit noalias metadata for box (default: yes)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::branch_protection` instead of this field")]
     branch_protection: Option<BranchProtection> = (None, parse_branch_protection, [TRACKED] { TARGET_MODIFIER: BranchProtection },
         "set options for branch target identification and pointer authentication on AArch64"),
     build_sdylib_interface: bool = (false, parse_bool, [UNTRACKED],
@@ -1025,7 +1008,6 @@ options! {
         "exclude the pass number when dumping MIR (used in tests) (default: no)"),
     dump_mir_graphviz: bool = (false, parse_bool, [UNTRACKED],
         "in addition to `.mir` files, create graphviz `.dot` files (default: no)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::dwarf_version` instead of this field")]
     dwarf_version: Option<u32> = (None, parse_opt_number, [TRACKED],
         "version of DWARF debug information to emit (default: 2 or 4, depending on platform)"),
     dylib_lto: bool = (false, parse_bool, [UNTRACKED],
@@ -1051,7 +1033,6 @@ options! {
         "rely on user specified linker commands to find clangrt"),
     extra_const_ub_checks: bool = (false, parse_bool, [TRACKED],
         "turns on more checks to detect const UB, which can be slow (default: no)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::fewer_names` instead of this field")]
     fewer_names: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "reduce memory use by retaining fewer names within compilation artifacts (LLVM-IR) \
         (default: no)"),
@@ -1204,7 +1185,6 @@ options! {
     mir_opt_bisect_limit: Option<usize> = (None, parse_opt_number, [TRACKED],
         "limit the number of MIR optimization pass executions (global across all bodies). \
         Pass executions after this limit are skipped and reported. (default: no limit)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::mir_opt_level` instead of this field")]
     mir_opt_level: Option<usize> = (None, parse_opt_number, [TRACKED],
         "MIR optimization level (0-4; default: 1 in non optimized builds and 2 in optimized builds)"),
     mir_preserve_ub: bool = (false, parse_bool, [TRACKED],
@@ -1333,7 +1313,6 @@ written to standard error output)"),
     retpoline_external_thunk: bool = (false, parse_bool, [TRACKED] { TARGET_MODIFIER: RetpolineExternalThunk },
         "enables retpoline-external-thunk, retpoline-indirect-branches and retpoline-indirect-calls \
         target features (default: no)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::sanitizers()` instead of this field")]
     sanitizer: SanitizerSet = (SanitizerSet::empty(), parse_sanitizers, [TRACKED] { TARGET_MODIFIER: Sanitizer },
         "use a sanitizer"),
     sanitizer_cfi_canonical_jump_tables: Option<bool> = (Some(true), parse_opt_bool, [TRACKED],
@@ -1403,7 +1382,6 @@ written to standard error output)"),
         "enable LTO unit splitting (default: no)"),
     src_hash_algorithm: Option<SourceFileHashAlgorithm> = (None, parse_src_file_hash, [TRACKED],
         "hash algorithm of source files in debug info (`md5`, `sha1`, or `sha256`)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::stack_protector` instead of this field")]
     stack_protector: StackProtector = (StackProtector::None, parse_stack_protector, [TRACKED] { MITIGATION: StackProtector },
         "control stack smash protection strategy (`rustc --print stack-protector-strategies` for details)"),
     staticlib_allow_rdylib_deps: bool = (false, parse_bool, [TRACKED],
@@ -1416,14 +1394,12 @@ written to standard error output)"),
         "prefer dynamic linking to static linking for staticlibs (default: no)"),
     strict_init_checks: bool = (false, parse_bool, [TRACKED],
         "control if mem::uninitialized and mem::zeroed panic on more UB"),
-    #[rustc_lint_opt_deny_field_access("use `Session::teach` instead of this field")]
     teach: bool = (false, parse_bool, [TRACKED],
         "show extended diagnostic help (default: no)"),
     temps_dir: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "the directory the intermediate files are written to"),
     terminal_urls: TerminalUrl = (TerminalUrl::No, parse_terminal_url, [UNTRACKED],
         "use the OSC 8 hyperlink terminal specification to print hyperlinks in the compiler output"),
-    #[rustc_lint_opt_deny_field_access("use `Session::lto` instead of this field")]
     thinlto: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable ThinLTO when possible"),
     threads: Option<String> = (None, parse_opt_string, [UNTRACKED],
@@ -1434,7 +1410,6 @@ written to standard error output)"),
         "the format to use for -Z time-passes (`text` (default) or `json`)"),
     tiny_const_eval_limit: bool = (false, parse_bool, [TRACKED],
         "sets a tiny, non-configurable limit for const eval; useful for compiler tests"),
-    #[rustc_lint_opt_deny_field_access("use `Session::tls_model` instead of this field")]
     tls_model: Option<TlsModel> = (None, parse_tls_model, [TRACKED],
         "choose the TLS model to use (`rustc --print tls-models` for details)"),
     trace_macros: bool = (false, parse_bool, [UNTRACKED],
@@ -1452,10 +1427,8 @@ written to standard error output)"),
         "in diagnostics, use heuristics to shorten paths referring to items"),
     tune_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
         "select processor to schedule for (`rustc --print target-cpus` for details)"),
-    #[rustc_lint_opt_deny_field_access("use `TyCtxt::use_typing_mode_post_typeck` instead of this field")]
     typing_mode_post_typeck_until_borrowck: bool = (false, parse_bool, [TRACKED],
         "enable `TypingMode::PostTypeckUntilBorrowck`, changing the way opaque types are handled during MIR borrowck"),
-    #[rustc_lint_opt_deny_field_access("use `Session::ub_checks` instead of this field")]
     ub_checks: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "emit runtime checks for Undefined Behavior (default: -Cdebug-assertions)"),
     ui_testing: bool = (false, parse_bool, [UNTRACKED],
@@ -1487,7 +1460,6 @@ written to standard error output)"),
     /// so this boolean value is mostly used for enabling unstable _values_ of
     /// stable options. That separate check doesn't handle boolean values, so
     /// to avoid an inconsistent state we also forbid them here.
-    #[rustc_lint_opt_deny_field_access("use `Session::unstable_options` instead of this field")]
     unstable_options: bool = (false, parse_no_value, [UNTRACKED],
         "adds unstable command line options to rustc interface (default: no)"),
     use_ctors_section: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -1498,7 +1470,6 @@ written to standard error output)"),
         "validate MIR after each transformation"),
     verbose_asm: bool = (false, parse_bool, [TRACKED],
         "add descriptive comments from LLVM to the assembly (may change behavior) (default: no)"),
-    #[rustc_lint_opt_deny_field_access("use `Session::verbose_internals` instead of this field")]
     verbose_internals: bool = (false, parse_bool, [TRACKED_NO_CRATE_HASH],
         "in general, enable more debug printouts (default: no)"),
     virtual_function_elimination: bool = (false, parse_bool, [TRACKED],

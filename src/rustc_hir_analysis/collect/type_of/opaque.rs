@@ -214,8 +214,9 @@ impl<'tcx> TaitConstraintLocator<'tcx> {
 
 impl<'tcx> intravisit::Visitor<'tcx> for TaitConstraintLocator<'tcx> {
     type NestedFilter = nested_filter::All;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
     fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {

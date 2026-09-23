@@ -1649,8 +1649,9 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for CheckAttrVisitor<'tcx> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

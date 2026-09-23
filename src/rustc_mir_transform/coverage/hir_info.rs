@@ -103,6 +103,7 @@ fn extract_hole_spans_from_hir<'tcx>(tcx: TyCtxt<'tcx>, hir_body: &hir::Body<'tc
         /// traverse into nested bodies of things that are not considered items,
         /// such as "anon consts" (e.g. array lengths).
         type NestedFilter = nested_filter::OnlyBodies;
+        type Result = ();
 
         fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
             self.tcx

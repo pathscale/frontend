@@ -55,24 +55,29 @@ impl<'a, 'tcx> Visitor<'tcx> for LoanInvalidationsGenerator<'a, 'tcx> {
         self.check_activations(location);
 
         match &statement.kind {
-            StatementKind::Assign((lhs, rhs)) => {
+            StatementKind::Assign(assign) => {
+                let (lhs, rhs) = &**assign;
                 self.consume_rvalue(location, rhs);
 
                 self.mutate_place(location, *lhs, Shallow(None));
             }
-            StatementKind::FakeRead((_, _)) => {
+            StatementKind::FakeRead(_) => {
                 // Only relevant for initialized/liveness/safety checks.
             }
-            StatementKind::Intrinsic(NonDivergingIntrinsic::Assume(op)) => {
-                self.consume_operand(location, op);
-            }
-            StatementKind::Intrinsic(NonDivergingIntrinsic::CopyNonOverlapping(
-                CopyNonOverlapping { src, dst, count },
-            )) => {
-                self.consume_operand(location, src);
-                self.consume_operand(location, dst);
-                self.consume_operand(location, count);
-            }
+            StatementKind::Intrinsic(intrinsic) => match &**intrinsic {
+                NonDivergingIntrinsic::Assume(op) => {
+                    self.consume_operand(location, op);
+                }
+                NonDivergingIntrinsic::CopyNonOverlapping(CopyNonOverlapping {
+                    src,
+                    dst,
+                    count,
+                }) => {
+                    self.consume_operand(location, src);
+                    self.consume_operand(location, dst);
+                    self.consume_operand(location, count);
+                }
+            },
             // Only relevant for mir typeck
             StatementKind::AscribeUserType(..)
             // Only relevant for liveness and unsafeck
@@ -326,7 +331,8 @@ impl<'a, 'tcx> LoanInvalidationsGenerator<'a, 'tcx> {
                 );
             }
 
-            Rvalue::BinaryOp(_bin_op, (operand1, operand2)) => {
+            Rvalue::BinaryOp(_bin_op, operands) => {
+                let (operand1, operand2) = &**operands;
                 self.consume_operand(location, operand1);
                 self.consume_operand(location, operand2);
             }

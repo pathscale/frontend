@@ -2,6 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -246,11 +248,12 @@ impl<'tcx, 'a> SimplifyMatch<'tcx, 'a> {
         // Check if the copy source matches the following pattern.
         // _2 = discriminant(*_1); // "*_1" is the expected the copy source.
         // switchInt(move _2) -> [0: bb3, 1: bb2, otherwise: bb1];
-        let &Statement {
-            kind: StatementKind::Assign((discr_place, Rvalue::Discriminant(copy_src_place))),
-            ..
-        } = bbs[self.switch_bb].statements.last()?
+        let &Statement { kind: StatementKind::Assign(ref assign), .. } =
+            bbs[self.switch_bb].statements.last()?
         else {
+            return None;
+        };
+        let (discr_place, Rvalue::Discriminant(copy_src_place)) = **assign else {
             return None;
         };
         if self.discr.place() != Some(discr_place) {
@@ -291,8 +294,9 @@ impl<'tcx, 'a> SimplifyMatch<'tcx, 'a> {
                 }
                 Rvalue::Use(Operand::Copy(src_place), _) if *src_place == copy_src_place => {}
                 // Check if `_3 = Foo::B` can be transformed to `_3 = copy *_1`.
-                Rvalue::Aggregate(AggregateKind::Adt(_, variant_index, _, _, None), fields)
-                    if fields.is_empty()
+                Rvalue::Aggregate(kind, fields)
+                    if let AggregateKind::Adt(_, variant_index, _, _, None) = &**kind
+                        && fields.is_empty()
                         && let Some(Discr { val, .. }) =
                             src_ty.ty.discriminant_for_variant(self.tcx, *variant_index)
                         && val == case => {}
@@ -506,7 +510,7 @@ fn candidate_assign<'tcx, 'a>(
             }
             Some((case, rval))
         })
-        .try_collect()?;
+        .collect::<Option<Vec<_>>>()?;
     Some((*dest, rvals, otherwise))
 }
 
@@ -530,7 +534,7 @@ fn candidate_const<'tcx, 'a>(
             let Rvalue::Use(Operand::Constant(const_), _) = rval else { return None };
             Some((case, &**const_))
         })
-        .try_collect()?;
+        .collect::<Option<Vec<_>>>()?;
     Some((consts, otherwise))
 }
 

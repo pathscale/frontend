@@ -8,7 +8,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 use core::cell::Cell;
 use core::fmt::Debug;
 use core::hash::Hash;
@@ -82,7 +82,8 @@ crate::rustc_index::newtype_index! {
 // We store a large collection of these in `prev_index_to_index` during
 // non-full incremental builds, and want to ensure that the element size
 // doesn't inadvertently increase.
-crate::static_assert_size!(Option<DepNodeIndex>, 4);
+// 8, not upstream's 4: `newtype_index` lost its niche with `#[rustc_layout_scalar_valid_range_end]`.
+crate::static_assert_size!(Option<DepNodeIndex>, 8);
 
 impl DepNodeIndex {
     const SINGLETON_ZERO_DEPS_ANON_NODE: DepNodeIndex = DepNodeIndex::ZERO;
@@ -883,7 +884,6 @@ impl DepGraph {
 
     pub fn debug_dep_kind_was_loaded_from_disk(&self, dep_kind: DepKind) -> bool {
         // We only check if we have a dep node corresponding to the given dep kind.
-        #[allow(rustc::potential_query_instability)]
         self.data
             .as_ref()
             .unwrap()

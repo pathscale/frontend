@@ -10,7 +10,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_errors::{Applicability, Diag, EmissionGuarantee};
 use crate::rustc_hir as hir;
@@ -261,7 +261,8 @@ impl<'tcx> BorrowExplanation<'tcx> {
 
                         impl<'hir> crate::rustc_hir::intravisit::Visitor<'hir> for FindLetExpr<'hir> {
                             type NestedFilter = crate::rustc_middle::hir::nested_filter::OnlyBodies;
-                            fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+                            type Result = ();
+                            fn maybe_tcx(&mut self) -> TyCtxt<'hir> {
                                 self.tcx
                             }
                             fn visit_expr(&mut self, expr: &'hir hir::Expr<'hir>) {
@@ -776,10 +777,9 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
             | UseSpans::FnSelfUse { var_span: span, .. } => {
                 let block = &self.body.basic_blocks[location.block];
 
-                let kind = if let Some(&Statement {
-                    kind: StatementKind::FakeRead((FakeReadCause::ForLet(_), place)),
-                    ..
-                }) = block.statements.get(location.statement_index)
+                let kind = if let Some(Statement { kind: StatementKind::FakeRead(fake_read), .. }) =
+                    block.statements.get(location.statement_index)
+                    && let (FakeReadCause::ForLet(_), place) = &**fake_read
                 {
                     if let Some(l) = place.as_local()
                         && let local_decl = &self.body.local_decls[l]
@@ -839,10 +839,10 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         // will only ever have one item at any given time, but by using a vector, we can pop from
         // it which simplifies the termination logic.
         let mut queue = vec![location];
-        let Some(Statement { kind: StatementKind::Assign((place, _)), .. }) = stmt else {
+        let Some(Statement { kind: StatementKind::Assign(assign), .. }) = stmt else {
             return false;
         };
-        let Some(mut target) = place.as_local() else { return false };
+        let Some(mut target) = assign.0.as_local() else { return false };
 
         debug!("was_captured_by_trait: target={:?} queue={:?}", target, queue);
         while let Some(current_location) = queue.pop() {
@@ -855,7 +855,8 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 debug!("was_captured_by_trait_object: stmt={:?}", stmt);
 
                 // The only kind of statement that we care about is assignments...
-                if let StatementKind::Assign((place, rvalue)) = &stmt.kind {
+                if let StatementKind::Assign(assign) = &stmt.kind {
+                    let (place, rvalue) = &**assign;
                     let Some(into) = place.local_or_deref_local() else {
                         // Continue at the next location.
                         queue.push(current_location.successor_within_block());

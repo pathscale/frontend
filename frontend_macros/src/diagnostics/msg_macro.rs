@@ -1,5 +1,6 @@
 use syn::{LitStr, parse_macro_input};
 
+use crate::diagnostics::error::with_emitted_errors;
 use crate::diagnostics::message::{Message, parse_or_report};
 
 pub(crate) fn msg_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -12,9 +13,18 @@ pub(crate) fn msg_macro(input: proc_macro::TokenStream) -> proc_macro::TokenStre
     //
     // Nothing checked it before: the old path parsed a template only for attribute messages, so
     // a malformed `msg!` was a run-time surprise.
-    parse_or_report(inline.span(), &inline.value());
+    //
+    // `parse_or_report` records its error rather than printing it, so the check has to run inside
+    // `with_emitted_errors` for the error to reach the output. See `error.rs`.
+    with_emitted_errors(|| {
+        parse_or_report(inline.span(), &inline.value());
 
-    let message =
-        Message { attr_span: inline.span(), message_span: inline.span(), value: inline.value() };
-    message.diag_message().into()
+        let message = Message {
+            attr_span: inline.span(),
+            message_span: inline.span(),
+            value: inline.value(),
+        };
+        message.diag_message()
+    })
+    .into()
 }

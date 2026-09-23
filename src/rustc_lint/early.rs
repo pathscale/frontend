@@ -74,6 +74,8 @@ impl<'ecx, T: EarlyLintPass> EarlyContextAndPass<'ecx, T> {
 }
 
 impl<'ast, 'ecx, T: EarlyLintPass> ast_visit::Visitor<'ast> for EarlyContextAndPass<'ecx, T> {
+    type Result = ();
+
     fn visit_id(&mut self, id: crate::rustc_ast::NodeId) {
         self.check_id(id);
     }
@@ -258,8 +260,6 @@ impl<'ast, 'ecx, T: EarlyLintPass> ast_visit::Visitor<'ast> for EarlyContextAndP
 struct RuntimeCombinedEarlyLintPass {
     passes: Vec<EarlyLintPassObject>,
 }
-
-#[allow(rustc::lint_pass_impl_without_macro)]
 impl LintPass for RuntimeCombinedEarlyLintPass {
     fn name(&self) -> &'static str {
         panic!()

@@ -179,8 +179,6 @@ impl<I: Interner> FlagComputation<I> {
             interner: core::marker::PhantomData,
         }
     }
-
-    #[allow(rustc::usage_of_ty_tykind)]
     pub fn for_kind(kind: &ty::TyKind<I>) -> FlagComputation<I> {
         let mut result = FlagComputation::new();
         result.add_kind(kind);
@@ -249,8 +247,6 @@ impl<I: Interner> FlagComputation<I> {
             self.add_exclusive_binder(outer_exclusive_binder.shifted_out(1));
         } // otherwise, this binder captures nothing
     }
-
-    #[allow(rustc::usage_of_ty_tykind)]
     fn add_kind(&mut self, kind: &ty::TyKind<I>) {
         match *kind {
             ty::Bool

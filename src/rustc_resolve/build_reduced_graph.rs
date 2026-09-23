@@ -422,7 +422,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 non_glob_decl: Some(decl),
                 orig_ident_span,
                 single_imports: Default::default(),
-                ..
+                glob_decl: None,
             });
 
             let key =
@@ -891,13 +891,17 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             }
 
             // These items live in the value namespace.
-            ItemKind::Const(ConstItem { ident, .. })
-            | ItemKind::Delegation(Delegation { ident, .. })
-            | ItemKind::Static(StaticItem { ident, .. }) => {
-                self.r.define_local(parent, ident, ValueNS, res, vis, sp, expansion);
+            ItemKind::Const(ref c) => {
+                self.r.define_local(parent, c.ident, ValueNS, res, vis, sp, expansion);
             }
-            ItemKind::Fn(Fn { ident, .. }) => {
-                self.r.define_local(parent, ident, ValueNS, res, vis, sp, expansion);
+            ItemKind::Delegation(ref d) => {
+                self.r.define_local(parent, d.ident, ValueNS, res, vis, sp, expansion);
+            }
+            ItemKind::Static(ref s) => {
+                self.r.define_local(parent, s.ident, ValueNS, res, vis, sp, expansion);
+            }
+            ItemKind::Fn(ref f) => {
+                self.r.define_local(parent, f.ident, ValueNS, res, vis, sp, expansion);
 
                 // Functions introducing procedural macros reserve a slot
                 // in the macro namespace as well (see #52225).
@@ -905,12 +909,19 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             }
 
             // These items live in the type namespace.
-            ItemKind::TyAlias(TyAlias { ident, .. })
-            | ItemKind::TraitAlias(TraitAlias { ident, .. }) => {
-                self.r.define_local(parent, ident, TypeNS, res, vis, sp, expansion);
+            ItemKind::TyAlias(ref t) => {
+                self.r.define_local(parent, t.ident, TypeNS, res, vis, sp, expansion);
+            }
+            ItemKind::TraitAlias(ref t) => {
+                self.r.define_local(parent, t.ident, TypeNS, res, vis, sp, expansion);
             }
 
-            ItemKind::Enum(ident, _, _) | ItemKind::Trait(ast::Trait { ident, .. }) => {
+            ItemKind::Enum(..) | ItemKind::Trait(..) => {
+                let ident = match item.kind {
+                    ItemKind::Enum(ident, _, _) => ident,
+                    ItemKind::Trait(ref t) => t.ident,
+                    _ => unreachable!(),
+                };
                 self.r.define_local(parent, ident, TypeNS, res, vis, sp, expansion);
 
                 let module = self.r.new_local_module(
@@ -1325,8 +1336,8 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             ItemKind::MacroDef(ident, def) => {
                 (self.res(def_id), *ident, item.span, def.macro_rules)
             }
-            ItemKind::Fn(ast::Fn { ident: fn_ident, .. }) => {
-                match self.proc_macro_stub(item, *fn_ident) {
+            ItemKind::Fn(fn_item) => {
+                match self.proc_macro_stub(item, fn_item.ident) {
                     Some((macro_kind, ident, span)) => {
                         let macro_kinds = macro_kind.into();
                         let res = Res::Def(DefKind::Macro(macro_kinds), def_id.to_def_id());

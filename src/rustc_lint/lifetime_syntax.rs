@@ -605,6 +605,9 @@ impl<'tcx, F> Visitor<'tcx> for LifetimeInfoCollector<'tcx, F>
 where
     F: FnMut(Info<'tcx>),
 {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
+
     #[instrument(skip(self))]
     fn visit_lifetime(&mut self, lifetime: &'tcx hir::Lifetime) {
         if let Some(syntax_category) = LifetimeSyntaxCategory::new(lifetime) {

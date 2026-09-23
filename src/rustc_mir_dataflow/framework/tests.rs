@@ -154,6 +154,7 @@ impl<D: Direction> MockAnalysis<'_, D> {
 }
 
 impl<'tcx, D: Direction> Analysis<'tcx> for MockAnalysis<'tcx, D> {
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<usize>;
     type Direction = D;
 

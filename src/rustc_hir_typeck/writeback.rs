@@ -267,6 +267,8 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 // traffic in node-ids or update typeck results in the type context etc.
 
 impl<'cx, 'tcx> Visitor<'tcx> for WritebackCx<'cx, 'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, e: &'tcx hir::Expr<'tcx>) {
         match e.kind {
             hir::ExprKind::Closure(&hir::Closure { body, .. }) => {

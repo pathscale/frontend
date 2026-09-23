@@ -327,9 +327,16 @@ pub fn build_output_filenames(attrs: &[ast::Attribute], sess: &Session) -> Outpu
 }
 
 /// Returns a version string such as "1.46.0 (04488afe3 2020-08-24)" when invoked by an in-tree tool.
-pub macro version_str() {
-    option_env!("CFG_VERSION")
+// Was a `pub macro` (decl_macro). `#[macro_export]` plus the `pub use` below keeps the
+// `rustc_interface::util::version_str!` path working. The expansion reads `CFG_VERSION` from the
+// environment of the crate that invokes it, as before.
+#[macro_export]
+macro_rules! version_str {
+    () => {
+        ::core::option_env!("CFG_VERSION")
+    };
 }
+pub use crate::version_str;
 
 /// Returns the version string for `rustc` itself (which may be different from a tool version).
 pub fn rustc_version_str() -> Option<&'static str> {

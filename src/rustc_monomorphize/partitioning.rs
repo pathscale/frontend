@@ -93,6 +93,7 @@
 //! inlining, even when they are not marked `#[inline]`.
 
 use alloc::vec::Vec;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::string::String;
 use alloc::string::ToString;
 use core::cmp;
@@ -1147,7 +1148,7 @@ where
 
     symbols.sort_by_key(|sym| sym.1);
 
-    for &[(mono_item1, ref sym1), (mono_item2, ref sym2)] in symbols.array_windows() {
+    for &[(mono_item1, ref sym1), (mono_item2, ref sym2)] in symbols.windows_array() {
         if sym1 == sym2 {
             let span1 = mono_item1.local_span(tcx);
             let span2 = mono_item2.local_span(tcx);

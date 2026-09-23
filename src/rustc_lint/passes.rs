@@ -124,8 +124,6 @@ macro_rules! declare_combined_late_lint_pass {
         impl<'tcx> $crate::rustc_lint::LateLintPass<'tcx> for $name {
             $crate::expand_combined_late_lint_pass_methods!([$($pass),*], $methods);
         }
-
-        #[allow(rustc::lint_pass_impl_without_macro)]
         impl $crate::rustc_lint::LintPass for $name {
             fn name(&self) -> &'static str {
                 stringify!($name)
@@ -239,8 +237,6 @@ macro_rules! declare_combined_early_lint_pass {
         impl $crate::rustc_lint::EarlyLintPass for $name {
             $crate::expand_combined_early_lint_pass_methods!([$($pass),*], $methods);
         }
-
-        #[allow(rustc::lint_pass_impl_without_macro)]
         impl $crate::rustc_lint::LintPass for $name {
             fn name(&self) -> &'static str {
                 panic!()

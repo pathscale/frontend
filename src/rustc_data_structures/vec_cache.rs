@@ -265,8 +265,11 @@ impl<K: Idx, V, I> Default for VecCache<K, V, I> {
     }
 }
 
-// SAFETY: No access to `V` is made.
-unsafe impl<K: Idx, #[may_dangle] V, I> Drop for VecCache<K, V, I> {
+// Upstream this is `unsafe impl<K: Idx, #[may_dangle] V, I> Drop`, promising dropck that no
+// access to `V` is made. `#[may_dangle]` (dropck_eyepatch) is unstable, so the impl is now
+// plain: dropck assumes the destructor may touch `V`, and requires anything `V` borrows to
+// strictly outlive the cache. The body is unchanged and still never reads a `V`.
+impl<K: Idx, V, I> Drop for VecCache<K, V, I> {
     fn drop(&mut self) {
         // We have unique ownership, so no locks etc. are needed. Since `K` and `V` are both `Copy`,
         // we are also guaranteed to just need to deallocate any large arrays (not iterate over

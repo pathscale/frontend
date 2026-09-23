@@ -62,10 +62,10 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for EnumSizeOpt {
 
         for (block, data) in body.basic_blocks.as_mut().iter_enumerated_mut() {
             for (statement_index, st) in data.statements.iter_mut().enumerate() {
-                let StatementKind::Assign((
-                    lhs,
-                    Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _),
-                )) = &st.kind
+                let StatementKind::Assign(assign) = &st.kind else {
+                    continue;
+                };
+                let (lhs, Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _)) = &**assign
                 else {
                     continue;
                 };

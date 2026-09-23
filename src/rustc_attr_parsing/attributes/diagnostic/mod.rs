@@ -79,25 +79,29 @@ impl<'sess> crate::rustc_attr_parsing::AttributeParser<'sess> {
     }
 }
 
-#[rustc_macro_transparency = "transparent"]
-macro gate_diagnostic_attr($feature:ident) {{
-    if let Some(features) = cx.features_option()
-        && !features.$feature()
-    {
-        args.ignore_args();
-        let nightly_build = cx.sess.is_nightly_build();
-        let span = cx.attr_span;
-        cx.emit_lint(
-            crate::rustc_lint_defs::builtin::UNKNOWN_DIAGNOSTIC_ATTRIBUTES,
-            $crate::rustc_attr_parsing::diagnostics::UnstableDiagnosticAttribute {
-                feature: sym::$feature,
-                nightly_build,
-            },
-            span,
-        );
-        return;
-    }
-}}
+// `cx` and `args` are passed in because `macro_rules!` locals are hygienic: the body cannot
+// name the caller's bindings the way the old transparent `macro` did.
+macro_rules! gate_diagnostic_attr {
+    ($cx:ident, $args:ident, $feature:ident) => {{
+        if let Some(features) = $cx.features_option()
+            && !features.$feature()
+        {
+            $args.ignore_args();
+            let nightly_build = $cx.sess.is_nightly_build();
+            let span = $cx.attr_span;
+            $cx.emit_lint(
+                $crate::rustc_lint_defs::builtin::UNKNOWN_DIAGNOSTIC_ATTRIBUTES,
+                $crate::rustc_attr_parsing::diagnostics::UnstableDiagnosticAttribute {
+                    feature: $crate::rustc_span::sym::$feature,
+                    nightly_build,
+                },
+                span,
+            );
+            return;
+        }
+    }};
+}
+pub(crate) use gate_diagnostic_attr;
 
 #[derive(Copy, Clone)]
 pub(crate) enum Mode {
@@ -291,42 +295,49 @@ fn parse_directive_items<'p>(
     for item in items {
         let span = item.span();
 
-        macro malformed() {{
-            cx.emit_lint(
-                MALFORMED_DIAGNOSTIC_ATTRIBUTES,
-                MalFormedDiagnosticAttributeLint {
-                    attribute: mode.as_str(),
-                    options: mode.allowed_options(),
+        // Local `macro_rules!` (were decl_macro `macro`s). They are defined after `cx`, `mode`
+        // and `span` are bound, so mixed-site hygiene still lets the bodies name them, and the
+        // unlabeled `continue` targets this `for` loop as before.
+        macro_rules! malformed {
+            () => {{
+                cx.emit_lint(
+                    MALFORMED_DIAGNOSTIC_ATTRIBUTES,
+                    MalFormedDiagnosticAttributeLint {
+                        attribute: mode.as_str(),
+                        options: mode.allowed_options(),
+                        span,
+                    },
                     span,
-                },
-                span,
-            );
-            continue;
-        }}
+                );
+                continue;
+            }};
+        }
 
-        macro or_malformed($($code:tt)*) {{
-            let Some(ret) = (
-                try {
-                    $($code)*
-                }
-            ) else {
-                malformed!()
-            };
-            ret
-        }}
+        macro_rules! or_malformed {
+            ($($code:tt)*) => {{
+                // An immediately called closure stands in for an unstable `try {}` block, so a
+                // `?` in `$code` yields `None` here instead of returning from the function.
+                let Some(ret) = (|| Some({ $($code)* }))() else {
+                    malformed!()
+                };
+                ret
+            }};
+        }
 
-        macro duplicate($name: ident, $($first_span:tt)*) {{
-            let first_span = $($first_span)*;
-            cx.emit_lint(
-                MALFORMED_DIAGNOSTIC_ATTRIBUTES,
-                IgnoredDiagnosticOption {
-                    first_span,
-                    later_span: span,
-                    option_name: $name,
-                },
-                span,
-            );
-        }}
+        macro_rules! duplicate {
+            ($name: ident, $($first_span:tt)*) => {{
+                let first_span = $($first_span)*;
+                cx.emit_lint(
+                    MALFORMED_DIAGNOSTIC_ATTRIBUTES,
+                    IgnoredDiagnosticOption {
+                        first_span,
+                        later_span: span,
+                        option_name: $name,
+                    },
+                    span,
+                );
+            }};
+        }
 
         let item: &MetaItemParser = or_malformed!(item.meta_item()?);
         let name = or_malformed!(item.ident()?).name;

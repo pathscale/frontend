@@ -20,34 +20,23 @@ use crate::rustc_middle::dep_graph::{DepNode, KeyFingerprintStyle};
 use crate::rustc_middle::ty::TyCtxt;
 
 /// Trait for query keys as seen by dependency-node tracking.
-pub trait DepNodeKey<'tcx>: Debug + Sized {
-    fn key_fingerprint_style() -> KeyFingerprintStyle;
-
-    /// This method turns a query key into an opaque `Fingerprint` to be used
-    /// in `DepNode`.
-    fn to_fingerprint(&self, tcx: TyCtxt<'tcx>) -> Fingerprint;
-
-    /// This method tries to recover the query key from the given `DepNode`,
-    /// something which is needed when forcing `DepNode`s during red-green
-    /// evaluation. The query system will only call this method if
-    /// `fingerprint_style()` is not `FingerprintStyle::Opaque`.
-    /// It is always valid to return `None` here, in which case incremental
-    /// compilation will treat the query as having changed instead of forcing it.
-    fn try_recover_key(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self>;
-}
-
-// Blanket impl of `DepNodeKey`, which is specialized by other impls elsewhere.
-impl<'tcx, T> DepNodeKey<'tcx> for T
-where
-    T: StableHash + Debug,
-{
+///
+/// The defaults are the opaque behaviour: hash the key with `StableHash`, and never
+/// recover it. They used to live in a blanket `impl<T: StableHash + Debug>` that the
+/// impls below specialized. Stable Rust cannot specialize, so the defaults moved into
+/// the trait and every opaque key type opts in with an empty impl (listed after the
+/// specialized ones). A key type missing from that list is a compile error at its
+/// query, not a silent change of fingerprint.
+pub trait DepNodeKey<'tcx>: Debug + Sized + StableHash {
     #[inline(always)]
-    default fn key_fingerprint_style() -> KeyFingerprintStyle {
+    fn key_fingerprint_style() -> KeyFingerprintStyle {
         KeyFingerprintStyle::Opaque
     }
 
+    /// This method turns a query key into an opaque `Fingerprint` to be used
+    /// in `DepNode`.
     #[inline(always)]
-    default fn to_fingerprint(&self, tcx: TyCtxt<'tcx>) -> Fingerprint {
+    fn to_fingerprint(&self, tcx: TyCtxt<'tcx>) -> Fingerprint {
         tcx.with_stable_hashing_context(|mut hcx| {
             let mut hasher = StableHasher::new();
             self.stable_hash(&mut hcx, &mut hasher);
@@ -55,8 +44,14 @@ where
         })
     }
 
+    /// This method tries to recover the query key from the given `DepNode`,
+    /// something which is needed when forcing `DepNode`s during red-green
+    /// evaluation. The query system will only call this method if
+    /// `fingerprint_style()` is not `FingerprintStyle::Opaque`.
+    /// It is always valid to return `None` here, in which case incremental
+    /// compilation will treat the query as having changed instead of forcing it.
     #[inline(always)]
-    default fn try_recover_key(_: TyCtxt<'tcx>, _: &DepNode) -> Option<Self> {
+    fn try_recover_key(_: TyCtxt<'tcx>, _: &DepNode) -> Option<Self> {
         None
     }
 }
@@ -236,4 +231,70 @@ impl<'tcx> DepNodeKey<'tcx> for LocalModId {
     fn try_recover_key(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
         LocalDefId::try_recover_key(tcx, dep_node).map(LocalModId::new_unchecked)
     }
+}
+
+// Opaque keys: the trait's default methods apply. This list replaces the old blanket impl
+// (see `DepNodeKey`), so it must name every query key type in `query/keys.rs` that has no
+// impl above, plus the non-query keys handed to `DepNode::construct` (`Symbol`, `MonoItem`).
+// The key's lifetime is kept independent of `'tcx`, as it was under the blanket impl.
+mod opaque_keys {
+    use core::fmt::Debug;
+
+    use super::DepNodeKey;
+    use crate::rustc_ast::tokenstream::TokenStream;
+    use crate::rustc_data_structures::stable_hash::StableHash;
+    use crate::rustc_hir::def_id::{CrateNum, DefId, LocalDefId};
+    use crate::rustc_middle::infer::canonical::CanonicalQueryInput;
+    use crate::rustc_middle::mono::{CollectionMode, MonoItem};
+    use crate::rustc_middle::ty::fast_reject::SimplifiedType;
+    use crate::rustc_middle::ty::layout::ValidityRequirement;
+    use crate::rustc_middle::ty::{self, GenericArg, GenericArgsRef, Ty};
+    use crate::rustc_middle::{mir, traits};
+    use crate::rustc_span::{Ident, LocalExpnId, Symbol};
+
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::ShimKind<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::InstanceKind<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::Instance<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for mir::interpret::GlobalId<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (Ty<'k>, Option<ty::ExistentialTraitRef<'k>>) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::LitToConstInput<'k> {}
+    impl<'tcx> DepNodeKey<'tcx> for SimplifiedType {}
+    impl<'tcx> DepNodeKey<'tcx> for (DefId, Ident) {}
+    impl<'tcx> DepNodeKey<'tcx> for (LocalDefId, LocalDefId, Ident) {}
+    impl<'tcx> DepNodeKey<'tcx> for (CrateNum, DefId) {}
+    impl<'tcx> DepNodeKey<'tcx> for (CrateNum, SimplifiedType) {}
+    impl<'tcx> DepNodeKey<'tcx> for (DefId, ty::SizedTraitKind) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for GenericArgsRef<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (DefId, GenericArgsRef<'k>) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::TraitRef<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for GenericArg<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for Ty<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (Ty<'k>, Ty<'k>) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::Clauses<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::AliasTyKind<'k> {}
+    impl<'tcx, 'k, T> DepNodeKey<'tcx> for ty::PseudoCanonicalInput<'k, T> where
+        Self: StableHash + Debug
+    {
+    }
+    impl<'tcx> DepNodeKey<'tcx> for Symbol {}
+    impl<'tcx> DepNodeKey<'tcx> for Option<Symbol> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for &'k [u8] {}
+    impl<'tcx, 'k, T> DepNodeKey<'tcx> for CanonicalQueryInput<'k, T> where Self: StableHash + Debug {}
+    impl<'tcx, 'k, T> DepNodeKey<'tcx> for (CanonicalQueryInput<'k, T>, bool) where
+        Self: StableHash + Debug
+    {
+    }
+    impl<'tcx, 'k, T> DepNodeKey<'tcx> for (CanonicalQueryInput<'k, T>, usize) where
+        Self: StableHash + Debug
+    {
+    }
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (Ty<'k>, crate::rustc_abi::VariantIdx) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (ty::Predicate<'k>, traits::WellFormedLoc) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (ty::PolyFnSig<'k>, &'k ty::List<Ty<'k>>) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (ty::Instance<'k>, &'k ty::List<Ty<'k>>) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for ty::Value<'k> {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (LocalExpnId, &'k TokenStream) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (ValidityRequirement, ty::PseudoCanonicalInput<'k, Ty<'k>>) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for (ty::Instance<'k>, CollectionMode) {}
+    impl<'tcx, 'k> DepNodeKey<'tcx> for MonoItem<'k> {}
 }

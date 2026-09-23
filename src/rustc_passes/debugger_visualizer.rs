@@ -54,6 +54,8 @@ struct DebuggerVisualizerCollector<'a> {
 }
 
 impl<'ast> crate::rustc_ast::visit::Visitor<'ast> for DebuggerVisualizerCollector<'_> {
+    type Result = ();
+
     fn visit_item(&mut self, item: &'ast crate::rustc_ast::Item) -> Self::Result {
         if let ItemKind::Mod(..) = item.kind {
             self.check_for_debugger_visualizer(&item.attrs);

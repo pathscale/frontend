@@ -6,7 +6,8 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::{assert_matches, iter};
+use core::iter;
+use crate::assert_matches;
 
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_data_structures::smallvec::SmallVec;

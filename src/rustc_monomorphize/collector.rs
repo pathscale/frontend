@@ -336,10 +336,17 @@ impl<'tcx> MonoItems<'tcx> {
 
 impl<'tcx> IntoIterator for MonoItems<'tcx> {
     type Item = Spanned<MonoItem<'tcx>>;
-    type IntoIter = impl Iterator<Item = Spanned<MonoItem<'tcx>>>;
+    // Named concretely; upstream's `impl Iterator` here is `impl_trait_in_assoc_type`
+    // (unstable). The closure is coerced to a fn pointer so the type can be written.
+    type IntoIter = core::iter::Map<
+        <FxIndexMap<MonoItem<'tcx>, Span> as IntoIterator>::IntoIter,
+        fn((MonoItem<'tcx>, Span)) -> Spanned<MonoItem<'tcx>>,
+    >;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.items.into_iter().map(|(item, span)| respan(span, item))
+        let to_spanned: fn((MonoItem<'tcx>, Span)) -> Spanned<MonoItem<'tcx>> =
+            |(item, span)| respan(span, item);
+        self.items.into_iter().map(to_spanned)
     }
 }
 
@@ -583,13 +590,13 @@ fn collect_items_rec<'tcx>(
         if mode == CollectionMode::UsedItems {
             used_items
                 .items
-                .retain(|k, _| visited.get_mut_or_init(|| state.visited.lock()).insert(*k));
+                .retain(|k, _| get_mut_or_init(&mut visited, || state.visited.lock()).insert(*k));
         }
 
         let mut mentioned = OnceCell::default();
         mentioned_items.items.retain(|k, _| {
             !visited.get_or_init(|| state.visited.lock()).contains(k)
-                && mentioned.get_mut_or_init(|| state.mentioned.lock()).insert(*k)
+                && get_mut_or_init(&mut mentioned, || state.mentioned.lock()).insert(*k)
         });
     }
     if mode == CollectionMode::MentionedItems {
@@ -1963,4 +1970,14 @@ pub(crate) fn collect_crate_mono_items<'tcx>(
 pub(crate) fn provide(providers: &mut Providers) {
     providers.hooks.should_codegen_locally = should_codegen_locally;
     providers.queries.items_of_instance = items_of_instance;
+}
+
+/// `OnceCell::get_mut_or_init`, which is the unstable `once_cell_get_mut`: initialise through
+/// the shared path, then take the unique borrow the caller already had.
+fn get_mut_or_init<T>(cell: &mut OnceCell<T>, init: impl FnOnce() -> T) -> &mut T {
+    cell.get_or_init(init);
+    match cell.get_mut() {
+        Some(value) => value,
+        None => unreachable!("`get_or_init` just filled the cell"),
+    }
 }

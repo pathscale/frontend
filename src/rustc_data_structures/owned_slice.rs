@@ -69,7 +69,8 @@ where
     O: Send + Sync + 'static,
     F: FnOnce(&O) -> &[u8],
 {
-    try_slice_owned(owner, |x| Ok::<_, !>(slicer(x))).into_ok()
+    // The error type is uninhabited, so the empty match is `into_ok` without the gate.
+    try_slice_owned(owner, |x| Ok::<_, crate::Never>(slicer(x))).unwrap_or_else(|never| match never {})
 }
 
 /// Makes an [`OwnedSlice`] out of an `owner` and a `slicer` function that can fail.

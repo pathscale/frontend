@@ -286,7 +286,10 @@ fn check_duplicate_params<'tcx>(
 ) -> Result<(), ErrorGuaranteed> {
     let mut base_params = cgp::parameters_for(tcx, parent_args, true);
     base_params.sort_unstable();
-    if let (_, [duplicate, ..]) = base_params.partition_dedup() {
+    // The list is sorted, so a repeat sits next to its twin. This finds the smallest repeated
+    // parameter, which is also the one the unstable `partition_dedup` put first among its
+    // duplicates.
+    if let Some(duplicate) = base_params.windows(2).find(|w| w[0] == w[1]).map(|w| &w[0]) {
         let param = impl1_args[duplicate.0 as usize];
         return Err(tcx
             .dcx()

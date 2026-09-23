@@ -114,15 +114,16 @@ pub(crate) trait Region: Debug + Hash + Eq + PartialEq + Copy + Clone {}
 
 pub(crate) trait Type: Debug + Hash + Eq + PartialEq + Copy + Clone {}
 
-impl Def for ! {
+// `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+impl Def for crate::Never {
     fn has_safety_invariants(&self) -> bool {
         unreachable!()
     }
 }
 
-impl Region for ! {}
+impl Region for crate::Never {}
 
-impl Type for ! {}
+impl Type for crate::Never {}
 
 #[cfg(test)]
 impl Region for usize {}

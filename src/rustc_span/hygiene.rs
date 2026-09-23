@@ -66,8 +66,8 @@ pub struct SyntaxContext(u32);
 // To ensure correctness of incremental compilation,
 // `SyntaxContext` must not implement `Ord` or `PartialOrd`.
 // See https://github.com/rust-lang/rust/issues/90317.
-impl !Ord for SyntaxContext {}
-impl !PartialOrd for SyntaxContext {}
+// Upstream enforced this with `impl !Ord` / `impl !PartialOrd` (unstable negative
+// impls); stable Rust relies on neither being derived or written.
 
 /// If this part of two syntax contexts is equal, then the whole syntax contexts should be equal.
 /// The other fields are only for caching.
@@ -135,8 +135,8 @@ crate::rustc_index::newtype_index! {
 // To ensure correctness of incremental compilation,
 // `LocalExpnId` must not implement `Ord` or `PartialOrd`.
 // See https://github.com/rust-lang/rust/issues/90317.
-impl !Ord for LocalExpnId {}
-impl !PartialOrd for LocalExpnId {}
+// Upstream enforced this with `impl !Ord` / `impl !PartialOrd` (unstable negative
+// impls); stable Rust relies on neither being derived or written.
 
 /// A unique hash value associated to an expansion.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Encodable, Decodable, StableHash)]
@@ -689,7 +689,6 @@ pub fn debug_hygiene_data(verbose: bool) -> String {
 
             // Sort the hash map for more reproducible output.
             // Because of this, it is fine to rely on the unstable iteration order of the map.
-            #[allow(rustc::potential_query_instability)]
             let mut foreign_expn_data: Vec<_> = data.foreign_expn_data.iter().collect();
             foreign_expn_data.sort_by_key(|(id, _)| (id.krate, id.local_id));
             foreign_expn_data.into_iter().for_each(debug_expn_data);
@@ -1054,8 +1053,8 @@ pub struct ExpnData {
     pub diagnostic_opaque: bool,
 }
 
-impl !PartialEq for ExpnData {}
-impl !Hash for ExpnData {}
+// Upstream: `impl !PartialEq` / `impl !Hash` for `ExpnData` (unstable negative impls),
+// so nobody compares or hashes the whole struct. On stable, kept by not writing either.
 
 impl ExpnData {
     pub fn new(
@@ -1345,7 +1344,6 @@ impl HygieneEncodeContext {
             // Drop the lock() temporary early.
             // It's fine to iterate over a HashMap, because the serialization of the table
             // that we insert data into doesn't depend on insertion order.
-            #[allow(rustc::potential_query_instability)]
             let latest_ctxts = { mem::take(&mut *self.latest_ctxts.lock()) }.into_iter();
             let all_ctxt_data: Vec<_> = HygieneData::with(|data| {
                 latest_ctxts
@@ -1359,7 +1357,6 @@ impl HygieneEncodeContext {
             }
 
             // Same as above, but for expansions instead of syntax contexts.
-            #[allow(rustc::potential_query_instability)]
             let latest_expns = { mem::take(&mut *self.latest_expns.lock()) }.into_iter();
             let all_expn_data: Vec<_> = HygieneData::with(|data| {
                 latest_expns

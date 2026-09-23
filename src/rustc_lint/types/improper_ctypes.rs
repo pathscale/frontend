@@ -1018,6 +1018,8 @@ impl<'tcx> ImproperCTypesLint {
         }
 
         impl<'tcx> hir::intravisit::Visitor<'_> for FnPtrFinder<'tcx> {
+            type NestedFilter = hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_ty(&mut self, ty: &'_ hir::Ty<'_, AmbigArg>) {
                 debug!(?ty);
                 self.current_depth += 1;

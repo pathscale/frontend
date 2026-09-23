@@ -55,6 +55,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -405,16 +407,16 @@ impl<'a, 'tcx> TOFinder<'a, 'tcx> {
         stmt: &Statement<'tcx>,
     ) -> Option<(Place<'tcx>, Option<TrackElem>)> {
         match stmt.kind {
-            StatementKind::Assign((place, _)) => Some((place, None)),
+            StatementKind::Assign(ref assign) => Some((assign.0, None)),
             StatementKind::SetDiscriminant { ref place, variant_index: _ } => {
                 Some((**place, Some(TrackElem::Discriminant)))
             }
             StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
                 Some((Place::from(local), None))
             }
-            | StatementKind::Intrinsic(NonDivergingIntrinsic::Assume(..))
-            // copy_nonoverlapping takes pointers and mutated the pointed-to value.
-            | StatementKind::Intrinsic(NonDivergingIntrinsic::CopyNonOverlapping(..))
+            // Both `NonDivergingIntrinsic` variants: `Assume`, and `CopyNonOverlapping`, which
+            // takes pointers and mutated the pointed-to value.
+            | StatementKind::Intrinsic(..)
             | StatementKind::AscribeUserType(..)
             | StatementKind::Coverage(..)
             | StatementKind::FakeRead(..)
@@ -529,7 +531,7 @@ impl<'a, 'tcx> TOFinder<'a, 'tcx> {
             // If we expect `lhs ?= A`, we have an opportunity if we assume `constant == A`.
             Rvalue::Aggregate(kind, operands) => {
                 let agg_ty = lhs_place.ty(self.body, self.tcx).ty;
-                let lhs = match kind {
+                let lhs = match &**kind {
                     // Do not support unions.
                     AggregateKind::Adt(.., Some(_)) => return,
                     AggregateKind::Adt(_, variant_index, ..) if agg_ty.is_enum() => {
@@ -580,11 +582,14 @@ impl<'a, 'tcx> TOFinder<'a, 'tcx> {
             }
             // We expect `lhs ?= A`. We found `lhs = Eq(rhs, B)`.
             // Create a condition on `rhs ?= B`.
-            Rvalue::BinaryOp(
-                op,
-                (Operand::Move(operand) | Operand::Copy(operand), Operand::Constant(value))
-                | (Operand::Constant(value), Operand::Move(operand) | Operand::Copy(operand)),
-            ) => {
+            Rvalue::BinaryOp(op, operands) => {
+                // This is the last arm before `_ => {}`, so returning here is the fallthrough.
+                let ((Operand::Move(operand) | Operand::Copy(operand), Operand::Constant(value))
+                | (Operand::Constant(value), Operand::Move(operand) | Operand::Copy(operand))) =
+                    &**operands
+                else {
+                    return;
+                };
                 let equals = match op {
                     BinOp::Eq => ScalarInt::TRUE,
                     BinOp::Ne => ScalarInt::FALSE,
@@ -642,13 +647,17 @@ impl<'a, 'tcx> TOFinder<'a, 'tcx> {
                 self.process_immediate(discr_target, discr, state)
             }
             // If we expect `lhs ?= true`, we have an opportunity if we assume `lhs == true`.
-            StatementKind::Intrinsic(NonDivergingIntrinsic::Assume(
-                Operand::Copy(place) | Operand::Move(place),
-            )) => {
+            StatementKind::Intrinsic(intrinsic)
+                if let NonDivergingIntrinsic::Assume(Operand::Copy(place) | Operand::Move(place)) =
+                    &**intrinsic =>
+            {
                 let Some(place) = self.place_value(*place, None) else { return };
                 state.fulfill_matches(place, ScalarInt::TRUE);
             }
-            StatementKind::Assign((lhs_place, rhs)) => self.process_assign(lhs_place, rhs, state),
+            StatementKind::Assign(assign) => {
+                let (lhs_place, rhs) = &**assign;
+                self.process_assign(lhs_place, rhs, state)
+            }
             _ => {}
         }
     }

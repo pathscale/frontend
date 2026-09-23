@@ -114,6 +114,8 @@ struct CollectNonRegionInfer<'tcx> {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for CollectNonRegionInfer<'tcx> {
+    type Result = ();
+
     fn visit_ty(&mut self, ty: Ty<'tcx>) {
         if self.visited.contains(&ty) {
             return;

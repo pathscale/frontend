@@ -379,7 +379,8 @@ impl<'a, 'tcx, F: Fn(Ty<'tcx>) -> bool> MoveDataBuilder<'a, 'tcx, F> {
     fn gather_statement(&mut self, stmt: &Statement<'tcx>) {
         debug!("gather_statement({:?}, {:?})", self.loc, stmt);
         match &stmt.kind {
-            StatementKind::Assign((place, Rvalue::CopyForDeref(reffed))) => {
+            StatementKind::Assign(assign) if matches!(assign.1, Rvalue::CopyForDeref(_)) => {
+                let (place, Rvalue::CopyForDeref(reffed)) = &**assign else { unreachable!() };
                 let local = place.as_local().unwrap();
                 assert!(self.body.local_decls[local].is_deref_temp());
 
@@ -389,12 +390,14 @@ impl<'a, 'tcx, F: Fn(Ty<'tcx>) -> bool> MoveDataBuilder<'a, 'tcx, F> {
                 let base_local = rev_lookup.un_derefer.deref_chain(local).first().unwrap().local;
                 rev_lookup.locals[local] = rev_lookup.locals[base_local];
             }
-            StatementKind::Assign((place, rval)) => {
+            StatementKind::Assign(assign) => {
+                let (place, rval) = &**assign;
                 self.create_move_path(*place);
                 self.gather_init(place.as_ref(), InitKind::Deep);
                 self.gather_rvalue(rval);
             }
-            StatementKind::FakeRead((_, place)) => {
+            StatementKind::FakeRead(fake_read) => {
+                let (_, place) = &**fake_read;
                 self.create_move_path(*place);
             }
             StatementKind::StorageLive(_) => {}
@@ -428,7 +431,8 @@ impl<'a, 'tcx, F: Fn(Ty<'tcx>) -> bool> MoveDataBuilder<'a, 'tcx, F> {
             | Rvalue::Cast(_, ref operand, _)
             | Rvalue::UnaryOp(_, ref operand)
             | Rvalue::WrapUnsafeBinder(ref operand, _) => self.gather_operand(operand),
-            Rvalue::BinaryOp(ref _binop, (ref lhs, ref rhs)) => {
+            Rvalue::BinaryOp(ref _binop, ref operands) => {
+                let (lhs, rhs) = &**operands;
                 self.gather_operand(lhs);
                 self.gather_operand(rhs);
             }

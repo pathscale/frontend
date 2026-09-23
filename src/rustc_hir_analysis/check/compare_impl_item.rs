@@ -1961,7 +1961,9 @@ fn compare_synthetic_generics<'tcx>(
                 // The case where the impl method uses `impl Trait` but the trait method uses
                 // explicit generics
                 err.span_label(impl_span, "expected generic parameter, found `impl Trait`");
-                try {
+                // Immediately called closure in place of an unstable `try {}` block: any `?`
+                // just skips the suggestion.
+                (|| {
                     // try taking the name from the trait impl
                     // FIXME: this is obviously suboptimal since the name can already be used
                     // as another generic argument
@@ -1993,12 +1995,15 @@ fn compare_synthetic_generics<'tcx>(
                         ],
                         Applicability::MaybeIncorrect,
                     );
-                };
+                    Some(())
+                })();
             } else {
                 // The case where the trait method uses `impl Trait`, but the impl method uses
                 // explicit generics.
                 err.span_label(impl_span, "expected `impl Trait`, found generic parameter");
-                try {
+                // Immediately called closure in place of an unstable `try {}` block: any `?`
+                // just skips the suggestion.
+                (|| {
                     let impl_m = impl_m.def_id.as_local()?;
                     let impl_m = tcx.hir_expect_impl_item(impl_m);
                     let (sig, _) = impl_m.expect_fn();
@@ -2006,6 +2011,7 @@ fn compare_synthetic_generics<'tcx>(
 
                     struct Visitor(hir::def_id::LocalDefId);
                     impl<'v> intravisit::Visitor<'v> for Visitor {
+                        type NestedFilter = intravisit::IgnoreNested;
                         type Result = ControlFlow<Span>;
                         fn visit_ty(&mut self, ty: &'v hir::Ty<'v, AmbigArg>) -> Self::Result {
                             if let hir::TyKind::Path(hir::QPath::Resolved(None, path)) = ty.kind
@@ -2037,7 +2043,8 @@ fn compare_synthetic_generics<'tcx>(
                         ],
                         Applicability::MaybeIncorrect,
                     );
-                };
+                    Some(())
+                })();
             }
             error_found = Some(err.emit_unless_delay(delay));
         }

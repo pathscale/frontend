@@ -487,12 +487,14 @@ impl<'tcx> ObligationCauseCode<'tcx> {
         match self {
             ObligationCauseCode::FunctionArg { parent_code, .. } => Some(parent_code),
             ObligationCauseCode::BuiltinDerived(derived)
-            | ObligationCauseCode::WellFormedDerived(derived)
-            | ObligationCauseCode::ImplDerived(ImplDerivedCause { derived, .. }) => {
+            | ObligationCauseCode::WellFormedDerived(derived) => Some(&derived.parent_code),
+            ObligationCauseCode::ImplDerived(impl_derived) => {
+                let ImplDerivedCause { derived, .. } = &**impl_derived;
                 Some(&derived.parent_code)
             }
-            ObligationCauseCode::BuiltinDerivedHost(derived)
-            | ObligationCauseCode::ImplDerivedHost(ImplDerivedHostCause { derived, .. }) => {
+            ObligationCauseCode::BuiltinDerivedHost(derived) => Some(&derived.parent_code),
+            ObligationCauseCode::ImplDerivedHost(impl_derived) => {
+                let ImplDerivedHostCause { derived, .. } = &**impl_derived;
                 Some(&derived.parent_code)
             }
             _ => None,
@@ -518,8 +520,11 @@ impl<'tcx> ObligationCauseCode<'tcx> {
         match self {
             ObligationCauseCode::FunctionArg { parent_code, .. } => Some((parent_code, None)),
             ObligationCauseCode::BuiltinDerived(derived)
-            | ObligationCauseCode::WellFormedDerived(derived)
-            | ObligationCauseCode::ImplDerived(ImplDerivedCause { derived, .. }) => {
+            | ObligationCauseCode::WellFormedDerived(derived) => {
+                Some((&derived.parent_code, Some(derived.parent_trait_pred)))
+            }
+            ObligationCauseCode::ImplDerived(impl_derived) => {
+                let ImplDerivedCause { derived, .. } = &**impl_derived;
                 Some((&derived.parent_code, Some(derived.parent_trait_pred)))
             }
             _ => None,

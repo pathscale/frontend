@@ -107,7 +107,13 @@ impl Arena {
     #[allow(clippy::mut_from_ref)] // arena allocator
     pub(crate) fn alloc_str<'a>(&'a self, string: &str) -> &'a mut str {
         let alloc = self.alloc_raw(string.len());
-        let bytes = alloc.write_copy_of_slice(string.as_bytes());
+        // `MaybeUninit::write_copy_of_slice`, spelled out without its feature gate.
+        for (slot, &byte) in alloc.iter_mut().zip(string.as_bytes()) {
+            slot.write(byte);
+        }
+        // SAFETY: `alloc` is exactly `string.len()` long and every byte was written above, and
+        // `MaybeUninit<u8>` has the layout of `u8`.
+        let bytes = unsafe { &mut *(alloc as *mut [MaybeUninit<u8>] as *mut [u8]) };
 
         // SAFETY: we convert from `&str` to `&[u8]`, clone it into the arena,
         // and immediately convert the clone back to `&str`.

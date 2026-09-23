@@ -410,6 +410,8 @@ impl StorageLiveLocals {
 pub(crate) struct MaybeUninitializedLocals;
 
 impl<'tcx> Analysis<'tcx> for MaybeUninitializedLocals {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
 
     const NAME: &'static str = "maybe_uninit_locals";
@@ -436,7 +438,8 @@ impl<'tcx> Analysis<'tcx> for MaybeUninitializedLocals {
     ) {
         match statement.kind {
             // An assignment makes a local initialized.
-            StatementKind::Assign((place, _)) => {
+            StatementKind::Assign(ref assign) => {
+                let (place, _) = **assign;
                 if let Some(local) = place.as_local() {
                     state.remove(local);
                 }

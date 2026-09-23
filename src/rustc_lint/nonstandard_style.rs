@@ -61,13 +61,91 @@ declare_lint_pass!(NonCamelCaseTypes => [NON_CAMEL_CASE_TYPES]);
 /// be title cased or lower cased. For the purposes of the lint suggestion, we care about being able
 /// to change the char's case.
 fn char_has_case(c: char) -> bool {
-    !c.to_lowercase().eq(c.to_titlecase())
+    !c.to_lowercase().eq(to_titlecase(c))
 }
 
 /// FIXME: we should add a more efficient version
 /// in the stdlib for this
 fn changes_when_titlecased(c: char) -> bool {
-    !c.to_titlecase().eq([c])
+    to_titlecase(c)[..] != [c]
+}
+
+// `char::to_titlecase` and `char::is_titlecase` are the unstable `titlecase` feature, so the two
+// are spelled out here from the Unicode data. Titlecase is uppercase except for the characters
+// below: the digraphs, which have a distinct title form; Georgian Mkhedruli, which titlecases to
+// itself; and the special-casing entries whose title form is not their upper form.
+
+/// `char::to_titlecase`: the full (possibly multi-char) titlecase mapping of `c`.
+fn to_titlecase(c: char) -> arrayvec::ArrayVec<char, 3> {
+    let mut out = arrayvec::ArrayVec::new();
+    let special: &[char] = match c {
+        '\u{01C4}'..='\u{01C6}' => &['\u{01C5}'],
+        '\u{01C7}'..='\u{01C9}' => &['\u{01C8}'],
+        '\u{01CA}'..='\u{01CC}' => &['\u{01CB}'],
+        '\u{01F1}'..='\u{01F3}' => &['\u{01F2}'],
+        '\u{00DF}' => &['S', 's'],
+        '\u{FB00}' => &['F', 'f'],
+        '\u{FB01}' => &['F', 'i'],
+        '\u{FB02}' => &['F', 'l'],
+        '\u{FB03}' => &['F', 'f', 'i'],
+        '\u{FB04}' => &['F', 'f', 'l'],
+        '\u{FB05}' | '\u{FB06}' => &['S', 't'],
+        '\u{0587}' => &['\u{0535}', '\u{0582}'],
+        '\u{FB13}' => &['\u{0544}', '\u{0576}'],
+        '\u{FB14}' => &['\u{0544}', '\u{0565}'],
+        '\u{FB15}' => &['\u{0544}', '\u{056B}'],
+        '\u{FB16}' => &['\u{054E}', '\u{0576}'],
+        '\u{FB17}' => &['\u{0544}', '\u{056D}'],
+        '\u{1FB2}' => &['\u{1FBA}', '\u{0345}'],
+        '\u{1FB4}' => &['\u{0386}', '\u{0345}'],
+        '\u{1FB7}' => &['\u{0391}', '\u{0342}', '\u{0345}'],
+        '\u{1FC2}' => &['\u{1FCA}', '\u{0345}'],
+        '\u{1FC4}' => &['\u{0389}', '\u{0345}'],
+        '\u{1FC7}' => &['\u{0397}', '\u{0342}', '\u{0345}'],
+        '\u{1FF2}' => &['\u{1FFA}', '\u{0345}'],
+        '\u{1FF4}' => &['\u{038F}', '\u{0345}'],
+        '\u{1FF7}' => &['\u{03A9}', '\u{0342}', '\u{0345}'],
+        '\u{1FB3}' => &['\u{1FBC}'],
+        '\u{1FC3}' => &['\u{1FCC}'],
+        '\u{1FF3}' => &['\u{1FFC}'],
+        // Greek with ypogegrammeni: the lowercase row titlecases to the prosgegrammeni row eight
+        // code points on, and that row, which is already titlecase, maps to itself.
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            out.push(char::from_u32(c as u32 + 8).unwrap());
+            return out;
+        }
+        _ if is_titlecase(c) => {
+            out.push(c);
+            return out;
+        }
+        '\u{10D0}'..='\u{10FA}' | '\u{10FD}'..='\u{10FF}' => {
+            out.push(c);
+            return out;
+        }
+        _ => {
+            out.extend(c.to_uppercase());
+            return out;
+        }
+    };
+    out.extend(special.iter().copied());
+    out
+}
+
+/// `char::is_titlecase`: whether `c` is in the general category Lt. There are thirty-one.
+fn is_titlecase(c: char) -> bool {
+    matches!(
+        c,
+        '\u{01C5}'
+            | '\u{01C8}'
+            | '\u{01CB}'
+            | '\u{01F2}'
+            | '\u{1F88}'..='\u{1F8F}'
+            | '\u{1F98}'..='\u{1F9F}'
+            | '\u{1FA8}'..='\u{1FAF}'
+            | '\u{1FBC}'
+            | '\u{1FCC}'
+            | '\u{1FFC}'
+    )
 }
 
 // contains a capitalisable character followed by, or preceded by, an underscore,
@@ -110,17 +188,17 @@ fn to_upper_camel_case(s: &str) -> String {
             for c in component.chars() {
                 // Preserve the case if an uppercase letter follows a lowercase letter, so that
                 // `camelCase` is converted to `CamelCase`.
-                if prev_is_lower_case && (c.is_uppercase() | c.is_titlecase()) {
+                if prev_is_lower_case && (c.is_uppercase() | is_titlecase(c)) {
                     new_word = true;
                 }
 
                 if new_word {
-                    camel_cased_component.extend(c.to_titlecase());
+                    camel_cased_component.extend(to_titlecase(c));
                 } else {
                     camel_cased_component.extend(c.to_lowercase());
                 }
 
-                prev_is_lower_case = c.is_lowercase() || c.is_titlecase();
+                prev_is_lower_case = c.is_lowercase() || is_titlecase(c);
                 prev_is_lowercased_sigma = !new_word && c == 'Σ';
                 new_word = false;
             }
@@ -179,14 +257,12 @@ impl EarlyLintPass for NonCamelCaseTypes {
         }
 
         match &it.kind {
-            ast::ItemKind::TyAlias(ast::TyAlias { ident, .. })
-            | ast::ItemKind::Enum(ident, ..)
+            ast::ItemKind::TyAlias(ty_alias) => self.check_case(cx, "type", &ty_alias.ident),
+            ast::ItemKind::Enum(ident, ..)
             | ast::ItemKind::Struct(ident, ..)
             | ast::ItemKind::Union(ident, ..) => self.check_case(cx, "type", ident),
-            ast::ItemKind::Trait(ast::Trait { ident, .. }) => self.check_case(cx, "trait", ident),
-            ast::ItemKind::TraitAlias(ast::TraitAlias { ident, .. }) => {
-                self.check_case(cx, "trait alias", ident)
-            }
+            ast::ItemKind::Trait(t) => self.check_case(cx, "trait", &t.ident),
+            ast::ItemKind::TraitAlias(ta) => self.check_case(cx, "trait alias", &ta.ident),
 
             // N.B. This check is only for inherent associated types, so that we don't lint against
             // trait impls where we should have warned for the trait definition already.
@@ -264,14 +340,14 @@ impl NonSnakeCase {
             for ch in s.chars() {
                 if !buf.is_empty()
                     && buf != "'"
-                    && (ch.is_uppercase() || ch.is_titlecase())
+                    && (ch.is_uppercase() || is_titlecase(ch))
                     && !last_upper
                 {
                     // We lowercase only at the end, to handle final sigma correctly
                     words.push(buf.to_lowercase());
                     buf = String::new();
                 }
-                last_upper = ch.is_uppercase() || ch.is_titlecase();
+                last_upper = ch.is_uppercase() || is_titlecase(ch);
                 buf.push(ch);
             }
             // We lowercase only at the end, to handle final sigma correctly
@@ -543,8 +619,9 @@ impl NonUpperCaseGlobals {
 
             impl<'v, 'tcx> Visitor<'v> for UsageCollector<'v, 'tcx> {
                 type NestedFilter = All;
+                type Result = ();
 
-                fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+                fn maybe_tcx(&mut self) -> crate::rustc_middle::ty::TyCtxt<'v> {
                     self.cx.tcx
                 }
 

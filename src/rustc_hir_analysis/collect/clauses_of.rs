@@ -8,7 +8,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use hir::Node;
 use crate::rustc_data_structures::fx::FxIndexSet;
@@ -440,6 +440,8 @@ fn const_evaluatable_clauses_of<'tcx>(
     }
 
     impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ConstCollector<'tcx> {
+        type Result = ();
+
         fn visit_const(&mut self, c: ty::Const<'tcx>) {
             if let ty::ConstKind::Alias(_, alias_const) = c.kind() {
                 if is_const_param_default(self.tcx, alias_const.kind) {

@@ -94,18 +94,36 @@ macro_rules! fixed_size_enum {
                 if b[0] == 0 {
                     return None;
                 }
-                match b[0] - 1 {
-                    $(${index()} => Some($($pat)*),)*
-                    _ => panic!("Unexpected {} code: {:?}", stringify!($ty), b[0]),
-                }
+                // `${index()}` (unstable `macro_metavar_expr`) used to number the arms; a
+                // running counter numbers the entries in the same order instead.
+                let mut code: u8 = 0;
+                $(
+                    if b[0] - 1 == code {
+                        return Some($($pat)*);
+                    }
+                    code += 1;
+                )*
+                let _ = code;
+                panic!("Unexpected {} code: {:?}", stringify!($ty), b[0])
             }
 
             #[inline]
             fn write_to_bytes(self, b: &mut [u8;1]) {
                 use $ty::*;
-                b[0] = match self {
+                // A running counter over an `if let` chain replaces `1 + ${index()}`. The
+                // `match` is kept so a variant missing from the list is still a compile error.
+                let mut code: u8 = 0;
+                $(
+                    code += 1;
+                    if let Some($($pat)*) = self {
+                        b[0] = code;
+                        return;
+                    }
+                )*
+                let _ = code;
+                match self {
                     None => unreachable!(),
-                    $(Some($($pat)*) => 1 + ${index()},)*
+                    $(Some($($pat)*) => unreachable!(),)*
                     $(Some($($($upat)*)|+) => unreachable!(),)?
                 }
             }
@@ -121,9 +139,18 @@ macro_rules! defaulted_enum {
             #[inline]
             fn from_bytes(b: &[u8; 1]) -> Self {
                 use $ty::*;
-                let val = match b[0] {
-                    $(${index()} => $($pat)*,)*
-                    _ => panic!("Unexpected {} code: {:?}", stringify!($ty), b[0]),
+                // `${index()}` (unstable) used to number the arms; a running counter numbers
+                // the entries in the same order instead.
+                let val = 'decode: {
+                    let mut code: u8 = 0;
+                    $(
+                        if b[0] == code {
+                            break 'decode $($pat)*;
+                        }
+                        code += 1;
+                    )*
+                    let _ = code;
+                    panic!("Unexpected {} code: {:?}", stringify!($ty), b[0])
                 };
                 // Make sure the first entry is always the default value,
                 // and none of the other values are the default value
@@ -135,9 +162,21 @@ macro_rules! defaulted_enum {
             fn write_to_bytes(self, b: &mut [u8; 1]) {
                 debug_assert!(!IsDefault::is_default(&self));
                 use $ty::*;
-                b[0] = match self {
-                    $($($pat)* => ${index()},)*
-                    $($($($upat)*)|+ => unreachable!(),)?
+                // A running counter over an `if let` chain replaces `${index()}`. The `match`
+                // is kept so a variant missing from the list is still a compile error.
+                b[0] = 'encode: {
+                    let mut code: u8 = 0;
+                    $(
+                        if let $($pat)* = self {
+                            break 'encode code;
+                        }
+                        code += 1;
+                    )*
+                    let _ = code;
+                    match self {
+                        $($($pat)* => unreachable!(),)*
+                        $($($($upat)*)|+ => unreachable!(),)?
+                    }
                 };
                 debug_assert_ne!(b[0], 0);
             }

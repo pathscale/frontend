@@ -45,7 +45,7 @@ where
     type Output = R;
     /// We can't do any custom error reporting for `CustomTypeOp`, so
     /// we can use `!` to enforce that the implementation never provides it.
-    type ErrorInfo = !;
+    type ErrorInfo = crate::Never;
 
     /// Processes the operation and all resulting obligations,
     /// returning the final result along with any region constraints

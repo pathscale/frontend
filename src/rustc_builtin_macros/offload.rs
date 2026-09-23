@@ -33,7 +33,8 @@ fn extract_fn(
 ) -> Option<(ast::Visibility, ast::FnSig, Ident, ast::Generics, Option<Box<ast::Block>>)> {
     match item {
         Annotatable::Item(iitem) => match &iitem.kind {
-            ast::ItemKind::Fn(ast::Fn { sig, ident, generics, body, .. }) => {
+            ast::ItemKind::Fn(f) => {
+                let ast::Fn { sig, ident, generics, body, .. } = &**f;
                 Some((iitem.vis.clone(), sig.clone(), *ident, generics.clone(), body.clone()))
             }
             _ => None,

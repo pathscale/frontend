@@ -175,6 +175,8 @@ struct DanglingPointerReturnSearcher<'lcx, 'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for DanglingPointerReturnSearcher<'_, 'tcx> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) -> Self::Result {
         if let ExprKind::Ret(Some(expr)) = expr.kind {
             lint_addr_of_local(self.cx, self.dcx, expr);
@@ -241,6 +243,8 @@ struct DanglingPointerSearcher<'lcx, 'tcx> {
 }
 
 impl Visitor<'_> for DanglingPointerSearcher<'_, '_> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, expr: &Expr<'_>) -> Self::Result {
         if !self.inside_call_args {
             lint_expr(self.cx, expr)

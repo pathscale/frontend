@@ -19,7 +19,6 @@ use crate::rustc_abi as abi;
 use crate::rustc_ast::BindingMode;
 use crate::rustc_ast::util::parser::ExprPrecedence;
 use crate::rustc_data_structures::fx::FxIndexMap;
-use crate::rustc_data_structures::sync;
 use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_errors::{Diagnostic, LintBuffer, MultiSpan};
 use crate::rustc_feature::Features;
@@ -49,10 +48,10 @@ use self::TargetLint::*;
 use crate::rustc_lint::levels::LintLevelsBuilder;
 use crate::rustc_lint::passes::{EarlyLintPassObject, LateLintPassObject};
 
-pub(crate) type EarlyLintPassFactory =
-    Box<dyn Fn() -> EarlyLintPassObject + sync::DynSend + sync::DynSync>;
-type LateLintPassFactory =
-    Box<dyn for<'tcx> Fn(TyCtxt<'tcx>) -> LateLintPassObject<'tcx> + sync::DynSend + sync::DynSync>;
+// `+ DynSend + DynSync` dropped from both: no longer auto traits, so a trait object cannot
+// name them (see `rustc_data_structures/marker.rs`).
+pub(crate) type EarlyLintPassFactory = Box<dyn Fn() -> EarlyLintPassObject>;
+type LateLintPassFactory = Box<dyn for<'tcx> Fn(TyCtxt<'tcx>) -> LateLintPassObject<'tcx>>;
 
 /// Information about the registered lints.
 //
@@ -439,7 +438,6 @@ impl LintStore {
         // To ensure deterministic output, sort elements of the lint_groups hash map.
         // Also, never suggest deprecated lint groups.
         // We will soon sort, so the initial order does not matter.
-        #[allow(rustc::potential_query_instability)]
         let mut groups: Vec<_> = self
             .lint_groups
             .iter()

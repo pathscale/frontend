@@ -233,7 +233,6 @@ pub(crate) fn default_configuration(sess: &Session) -> Cfg {
     }
 
     // JUSTIFICATION: before wrapper fn is available
-    #[allow(rustc::bad_opt_access)]
     if sess.opts.crate_types.contains(&CrateType::ProcMacro) {
         ins_none!(sym::proc_macro);
     }

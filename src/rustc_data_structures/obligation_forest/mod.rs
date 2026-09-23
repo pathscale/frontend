@@ -322,16 +322,19 @@ pub struct Error<O, E> {
 
 mod helper {
     use super::*;
-    pub(super) type ObligationTreeIdGenerator = impl Iterator<Item = ObligationTreeId>;
+    // Upstream is `impl Iterator` (`type_alias_impl_trait`, unstable). The concrete type is
+    // nameable once the constructor is coerced to a fn pointer.
+    pub(super) type ObligationTreeIdGenerator =
+        core::iter::Map<core::ops::RangeFrom<usize>, fn(usize) -> ObligationTreeId>;
     impl<O: ForestObligation> ObligationForest<O> {
-        #[define_opaque(ObligationTreeIdGenerator)]
         pub fn new() -> ObligationForest<O> {
             ObligationForest {
                 nodes: vec![],
                 done_cache: Default::default(),
                 active_cache: Default::default(),
                 reused_node_vec: vec![],
-                obligation_tree_id_generator: (0..).map(ObligationTreeId),
+                obligation_tree_id_generator: (0..)
+                    .map(ObligationTreeId as fn(usize) -> ObligationTreeId),
                 error_cache: Default::default(),
             }
         }

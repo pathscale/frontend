@@ -12,7 +12,8 @@ use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 use eko::path::PathBuf;
-use core::{debug_assert_matches, iter};
+use core::iter;
+use crate::debug_assert_matches;
 
 use itertools::{EitherOrBoth, Itertools};
 use crate::rustc_abi::ExternAbi;
@@ -304,7 +305,6 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
 
         // we will sort immediately by source order before emitting any diagnostics
-        #[allow(rustc::potential_query_instability)]
         let mut hir_ids: Vec<_> = hir_ids.into_iter().collect();
         let source_map = self.tcx.sess.source_map();
         hir_ids.sort_by_cached_key(|hir_id| {
@@ -497,7 +497,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             _ => (false, None),
         };
 
-        let mut finder = ParamFinder { .. };
+        let mut finder = ParamFinder { params: Vec::new() };
         finder.visit_binder(&trait_pred);
 
         // FIXME: Add check for trait bound that is already present, particularly `?Sized` so we
@@ -6419,7 +6419,11 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         // Suggesting `T: ?Sized` is only valid in an ADT if `T` is only used in a
         // borrow. `struct S<'a, T: ?Sized>(&'a T);` is valid, `struct S<T: ?Sized>(T);`
         // is not. Look for invalid "bare" parameter uses, and suggest using indirection.
-        let mut visitor = FindTypeParam { param: param.name.ident().name, .. };
+        let mut visitor = FindTypeParam {
+            param: param.name.ident().name,
+            invalid_spans: Vec::new(),
+            nested: false,
+        };
         visitor.visit_item(item);
         if visitor.invalid_spans.is_empty() {
             return false;
@@ -6659,11 +6663,13 @@ fn hint_missing_borrow<'tcx>(
 /// Used to suggest replacing associated types with an explicit type in `where` clauses.
 #[derive(Debug)]
 pub struct SelfVisitor<'v> {
-    pub paths: Vec<&'v hir::Ty<'v>> = Vec::new(),
+    pub paths: Vec<&'v hir::Ty<'v>>,
     pub name: Option<Symbol>,
 }
 
 impl<'v> Visitor<'v> for SelfVisitor<'v> {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_ty(&mut self, ty: &'v hir::Ty<'v, AmbigArg>) {
         if let hir::TyKind::Path(path) = ty.kind
             && let hir::QPath::TypeRelative(inner_ty, segment) = path
@@ -6687,6 +6693,8 @@ pub struct ReturnsVisitor<'v> {
 }
 
 impl<'v> Visitor<'v> for ReturnsVisitor<'v> {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) {
         // Visit every expression to detect `return` paths, either through the function's tail
         // expression or `return` statements. We walk all nodes to find `return` statements, but
@@ -6737,6 +6745,8 @@ struct AwaitsVisitor {
 }
 
 impl<'v> Visitor<'v> for AwaitsVisitor {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) {
         if let hir::ExprKind::Yield(_, hir::YieldSource::Await { expr: Some(id) }) = ex.kind {
             self.awaits.push(id)
@@ -6786,6 +6796,8 @@ struct ReplaceImplTraitVisitor<'a> {
 }
 
 impl<'a, 'hir> hir::intravisit::Visitor<'hir> for ReplaceImplTraitVisitor<'a> {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_ty(&mut self, t: &'hir hir::Ty<'hir, AmbigArg>) {
         if let hir::TyKind::Path(hir::QPath::Resolved(
             None,
@@ -6832,7 +6844,7 @@ pub(super) fn get_explanation_based_on_obligation<'tcx>(
             // not explicitly marked stable is considered unstable, so the extra text is
             // unhelpful noise. See <https://github.com/rust-lang/rust/issues/152692>.
             let mention_unstable = !tcx.sess.opts.unstable_opts.force_unstable_if_unmarked
-                && try { tcx.lookup_stability(trait_predicate.def_id())?.level.is_stable() }
+                && tcx.lookup_stability(trait_predicate.def_id()).map(|stab| stab.level.is_stable())
                     == Some(false);
             let unstable = if mention_unstable { "nightly-only, unstable " } else { "" };
 
@@ -7048,7 +7060,7 @@ fn point_at_assoc_type_restriction<G: EmissionGuarantee>(
                 );
                 // Search for the associated type `Self::{name}`, get
                 // its type and suggest replacing the bound with it.
-                let mut visitor = SelfVisitor { name: Some(name), .. };
+                let mut visitor = SelfVisitor { paths: Vec::new(), name: Some(name) };
                 visitor.visit_trait_ref(trait_ref);
                 for path in visitor.paths {
                     err.span_suggestion_verbose(
@@ -7059,7 +7071,7 @@ fn point_at_assoc_type_restriction<G: EmissionGuarantee>(
                     );
                 }
             } else {
-                let mut visitor = SelfVisitor { name: None, .. };
+                let mut visitor = SelfVisitor { paths: Vec::new(), name: None };
                 visitor.visit_trait_ref(trait_ref);
                 let span: MultiSpan =
                     visitor.paths.iter().map(|p| p.span).collect::<Vec<Span>>().into();
@@ -7089,11 +7101,13 @@ fn get_deref_type_and_refs(mut ty: Ty<'_>) -> (Ty<'_>, Vec<hir::Mutability>) {
 /// `param: ?Sized` would be a valid constraint.
 struct FindTypeParam {
     param: crate::rustc_span::Symbol,
-    invalid_spans: Vec<Span> = Vec::new(),
-    nested: bool = false,
+    invalid_spans: Vec<Span>,
+    nested: bool,
 }
 
 impl<'v> Visitor<'v> for FindTypeParam {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_where_predicate(&mut self, _: &'v hir::WherePredicate<'v>) {
         // Skip where-clauses, to avoid suggesting indirection for type parameters found there.
     }
@@ -7132,10 +7146,12 @@ impl<'v> Visitor<'v> for FindTypeParam {
 /// Look for type parameters in predicates. We use this to identify whether a bound is suitable in
 /// on a given item.
 struct ParamFinder {
-    params: Vec<Symbol> = Vec::new(),
+    params: Vec<Symbol>,
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ParamFinder {
+    type Result = ();
+
     fn visit_ty(&mut self, t: Ty<'tcx>) -> Self::Result {
         match t.kind() {
             ty::Param(p) => self.params.push(p.name),

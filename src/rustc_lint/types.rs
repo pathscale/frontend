@@ -772,8 +772,9 @@ fn pat_ty_is_known_nonnull<'tcx>(
     typing_env: ty::TypingEnv<'tcx>,
     pat: ty::Pattern<'tcx>,
 ) -> bool {
-    try {
-        match *pat {
+    // Immediately called closure in place of an unstable `try {}` block.
+    (|| -> Option<bool> {
+        Some(match *pat {
             ty::PatternKind::Range { start, end } => {
                 let start = start.try_to_value()?.try_to_bits(tcx, typing_env)?;
                 let end = end.try_to_value()?.try_to_bits(tcx, typing_env)?;
@@ -786,8 +787,8 @@ fn pat_ty_is_known_nonnull<'tcx>(
             ty::PatternKind::Or(patterns) => {
                 patterns.iter().all(|pat| pat_ty_is_known_nonnull(tcx, typing_env, pat))
             }
-        }
-    }
+        })
+    })()
     .unwrap_or_default()
 }
 

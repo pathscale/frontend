@@ -2,6 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -433,7 +435,9 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                             }
                             Endian::Big => {
                                 // Fill the last N bytes.
-                                let i = mask_arr.len().strict_sub(mask_size);
+                                // `checked_*(..).unwrap()` throughout this file is the
+                                // `strict_*` family without the `strict_overflow_ops` gate.
+                                let i = mask_arr.len().checked_sub(mask_size).unwrap();
                                 mask_arr[i..].copy_from_slice(mask_bytes);
                                 u64::from_be_bytes(mask_arr)
                             }
@@ -445,7 +449,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 let dest_len = u32::try_from(dest_len).unwrap();
                 for i in 0..dest_len {
                     let bit_i = simd_bitmask_index(i, dest_len, self.tcx.data_layout.endian);
-                    let mask = mask & 1u64.strict_shl(bit_i);
+                    let mask = mask & 1u64.checked_shl(bit_i).unwrap();
                     let yes = self.read_immediate(&self.project_index(&yes, i.into())?)?;
                     let no = self.read_immediate(&self.project_index(&no, i.into())?)?;
                     let dest = self.project_index(&dest, i.into())?;
@@ -471,7 +475,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                     let op = self.read_immediate(&self.project_index(&op, i.into())?)?;
                     if simd_element_to_bool(op)? {
                         let bit_i = simd_bitmask_index(i, op_len, self.tcx.data_layout.endian);
-                        res |= 1u64.strict_shl(bit_i);
+                        res |= 1u64.checked_shl(bit_i).unwrap();
                     }
                 }
                 // Write the result, depending on the `dest` type.
@@ -495,7 +499,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                             }
                             Endian::Big => {
                                 res_bytes = res.to_be_bytes();
-                                &res_bytes[res_bytes.len().strict_sub(res_size)..] // take the last N bytes
+                                &res_bytes[res_bytes.len().checked_sub(res_size).unwrap()..] // take the last N bytes
                             }
                         };
                         self.write_bytes_ptr(dest.ptr(), res_bytes_slice.iter().cloned())?;
@@ -577,8 +581,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
 
                     let val = if src_index < left_len {
                         self.read_immediate(&self.project_index(&left, src_index)?)?
-                    } else if src_index < left_len.strict_add(right_len) {
-                        let right_idx = src_index.strict_sub(left_len);
+                    } else if src_index < left_len.checked_add(right_len).unwrap() {
+                        let right_idx = src_index.checked_sub(left_len).unwrap();
                         self.read_immediate(&self.project_index(&right, right_idx)?)?
                     } else {
                         throw_ub_format!(
@@ -607,8 +611,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
 
                     let val = if src_index < left_len {
                         self.read_immediate(&self.project_index(&left, src_index)?)?
-                    } else if src_index < left_len.strict_add(right_len) {
-                        let right_idx = src_index.strict_sub(left_len);
+                    } else if src_index < left_len.checked_add(right_len).unwrap() {
+                        let right_idx = src_index.checked_sub(left_len).unwrap();
                         self.read_immediate(&self.project_index(&right, right_idx)?)?
                     } else {
                         throw_ub_format!(

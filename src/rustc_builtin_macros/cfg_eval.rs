@@ -117,8 +117,9 @@ impl CfgEval<'_> {
         // our attribute target will correctly configure the tokens as well.
         let mut parser = Parser::new(&self.0.sess.psess, orig_tokens, None);
         parser.capture_cfg = true;
-        let res: PResult<'_, Option<Annotatable>> = try {
-            match &annotatable {
+        // Immediately called closure in place of an unstable `try {}` block.
+        let res: PResult<'_, Option<Annotatable>> = (|| {
+            Ok(match &annotatable {
                 Annotatable::Item(_) => parser
                     .parse_item(ForceCollect::Yes, AllowConstBlockItems::Yes)?
                     .and_then(|item| self.flat_map_item(item).pop().map(Annotatable::Item)),
@@ -145,8 +146,8 @@ impl CfgEval<'_> {
                     Some(Annotatable::Expr(expr))
                 }
                 _ => unreachable!(),
-            }
-        };
+            })
+        })();
 
         match res {
             Ok(Some(ann)) => ann,

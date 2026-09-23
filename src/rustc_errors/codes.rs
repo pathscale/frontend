@@ -42,10 +42,10 @@ crate::into_diag_arg_using_display!(ErrCode);
 // client that wants prose for E0308 can carry its own table keyed on the number. The identifier
 // is the machine-readable half; the English is the renderer's problem.
 macro_rules! define_error_code_constants_and_diagnostics_table {
+    // The constant names used to come from `${concat(E, $num)}` (unstable); the proc macro
+    // builds the same `ENNNN` identifiers from the literals.
     ($($num:literal,)*) => (
-        $(
-            pub const ${concat(E, $num)}: $crate::rustc_errors::ErrCode = $crate::rustc_errors::ErrCode::from_u32($num);
-        )*
+        rustc_macros::error_code_constants!($($num,)*);
     )
 }
 

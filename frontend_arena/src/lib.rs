@@ -11,15 +11,8 @@
 // tidy-alphabetical-end
 
 #![allow(clippy::mut_from_ref)] // Arena allocators are one place where this pattern is fine.
-#![allow(internal_features)]
-#![cfg_attr(bootstrap, feature(never_type))]
-#![cfg_attr(test, feature(test))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![doc(test(no_crate_inject, attr(deny(warnings))))]
-#![feature(decl_macro)]
-#![feature(dropck_eyepatch)]
-#![feature(rustc_attrs)]
-#![feature(unwrap_infallible)]
 #![no_std]
 
 // ---------------------------------------------------------------------------------------------
@@ -41,7 +34,6 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::cell::{Cell, RefCell};
-use core::marker::PhantomData;
 use core::mem::{self, MaybeUninit};
 use core::ptr::{self, NonNull};
 use core::{cmp, hint, slice};
@@ -55,64 +47,39 @@ fn outline<F: FnOnce() -> R, R>(f: F) -> R {
     f()
 }
 
-struct ArenaChunk<T = u8> {
+/// A chunk of raw bytes for `DroplessArena`.
+///
+/// Only `DroplessArena` uses this now, so it is bytes only and its `Drop` is not generic:
+/// it frees memory and runs no element destructors, which dropck has nothing to object to.
+/// `TypedArena` keeps its elements in `Vec`s instead (see there).
+struct ArenaChunk {
     /// The raw storage for the arena chunk.
-    storage: NonNull<[MaybeUninit<T>]>,
-    /// The number of valid entries in the chunk.
-    entries: usize,
+    storage: NonNull<[MaybeUninit<u8>]>,
 }
 
-unsafe impl<#[may_dangle] T> Drop for ArenaChunk<T> {
+impl Drop for ArenaChunk {
     fn drop(&mut self) {
         unsafe { drop(Box::from_raw(self.storage.as_mut())) }
     }
 }
 
-impl<T> ArenaChunk<T> {
+impl ArenaChunk {
     #[inline]
-    unsafe fn new(capacity: usize) -> ArenaChunk<T> {
-        ArenaChunk {
-            storage: NonNull::from(Box::leak(Box::new_uninit_slice(capacity))),
-            entries: 0,
-        }
+    fn new(capacity: usize) -> ArenaChunk {
+        ArenaChunk { storage: NonNull::from(Box::leak(Box::new_uninit_slice(capacity))) }
     }
 
-    /// Destroys this arena chunk.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `len` elements of this chunk have been initialized.
+    // Returns a pointer to the first allocated byte.
     #[inline]
-    unsafe fn destroy(&mut self, len: usize) {
-        // The branch on needs_drop() is an -O1 performance optimization.
-        // Without the branch, dropping TypedArena<T> takes linear time.
-        if mem::needs_drop::<T>() {
-            // SAFETY: The caller must ensure that `len` elements of this chunk have
-            // been initialized.
-            unsafe {
-                let slice = self.storage.as_mut();
-                slice[..len].assume_init_drop();
-            }
-        }
-    }
-
-    // Returns a pointer to the first allocated object.
-    #[inline]
-    fn start(&mut self) -> *mut T {
-        self.storage.as_ptr() as *mut T
+    fn start(&mut self) -> *mut u8 {
+        self.storage.as_ptr() as *mut u8
     }
 
     // Returns a pointer to the end of the allocated space.
     #[inline]
-    fn end(&mut self) -> *mut T {
-        unsafe {
-            if size_of::<T>() == 0 {
-                // A pointer as large as possible for zero-sized elements.
-                ptr::without_provenance_mut(!0)
-            } else {
-                self.start().add(self.storage.len())
-            }
-        }
+    fn end(&mut self) -> *mut u8 {
+        // SAFETY: `storage.len()` bytes are allocated from `start`.
+        unsafe { self.start().add(self.storage.len()) }
     }
 }
 
@@ -125,33 +92,28 @@ const PAGE: usize = 4096;
 const HUGE_PAGE: usize = 2 * 1024 * 1024;
 
 /// An arena that can hold objects of only one type.
+///
+/// # Why the chunks are `Vec`s
+///
+/// Upstream stores raw chunks and drops the elements in `impl<#[may_dangle] T> Drop`. The
+/// compiler's arena is borrowed for the same `'tcx` its element types carry
+/// (`WorkerLocal<Arena<'tcx>>` behind `&'tcx`), and dropck accepts that only if the arena's
+/// destructor is known not to touch those borrows. `#[may_dangle]` (dropck_eyepatch) is
+/// unstable, so this type has no `Drop` impl at all, the way the `typed-arena` crate does it:
+/// each chunk is a `Vec<T>` whose capacity is reserved up front and which is only ever pushed to
+/// within that capacity, so its buffer never reallocates and element addresses never move.
+/// Dropping the arena drops the `Vec`s, and `alloc::vec::Vec` carries the eyepatch, so dropck
+/// reasons about `T` exactly as it would for a `Vec<T>` local.
 pub struct TypedArena<T> {
-    /// A pointer to the next object to be allocated.
-    ptr: Cell<*mut T>,
-
-    /// A pointer to the end of the allocated area. When this pointer is
-    /// reached, a new chunk is allocated.
-    end: Cell<*mut T>,
-
-    /// A vector of arena chunks.
-    chunks: RefCell<Vec<ArenaChunk<T>>>,
-
-    /// Marker indicating that dropping the arena causes its owned
-    /// instances of `T` to be dropped.
-    _own: PhantomData<T>,
+    /// The chunks, oldest first. Only the last one has spare capacity.
+    chunks: RefCell<Vec<Vec<T>>>,
 }
 
 impl<T> Default for TypedArena<T> {
     /// Creates a new `TypedArena`.
     fn default() -> TypedArena<T> {
-        TypedArena {
-            // We set both `ptr` and `end` to 0 so that the first call to
-            // alloc() will trigger a grow().
-            ptr: Cell::new(ptr::null_mut()),
-            end: Cell::new(ptr::null_mut()),
-            chunks: Default::default(),
-            _own: PhantomData,
-        }
+        // No chunk yet: the first allocation grows.
+        TypedArena { chunks: RefCell::new(Vec::new()) }
     }
 }
 
@@ -161,59 +123,26 @@ impl<T> TypedArena<T> {
     pub fn alloc(&self, object: T) -> &mut T {
         assert!(size_of::<T>() != 0);
 
-        if self.ptr == self.end {
-            self.grow(1)
+        let mut chunks = self.chunks.borrow_mut();
+        if !Self::has_room(&chunks, 1) {
+            Self::grow(&mut chunks, 1);
         }
-
-        unsafe {
-            let ptr = self.ptr.get();
-            // Advance the pointer.
-            self.ptr.set(self.ptr.get().add(1));
-            // Write into uninitialized memory.
-            ptr::write(ptr, object);
-            &mut *ptr
-        }
+        let chunk = chunks.last_mut().unwrap();
+        // Within capacity (checked above), so this never reallocates and earlier elements stay
+        // where they are.
+        chunk.push(object);
+        let len = chunk.len();
+        // SAFETY: the element at `len - 1` was just written. The buffer is never reallocated
+        // (pushes stay within capacity) and never freed before the arena, and no other
+        // reference to this slot is ever handed out, so the `&mut` is unique for `&self`'s
+        // lifetime.
+        unsafe { &mut *chunk.as_mut_ptr().add(len - 1) }
     }
 
+    /// Whether the last chunk can take `additional` more elements without reallocating.
     #[inline]
-    fn can_allocate(&self, additional: usize) -> bool {
-        // FIXME: this should *likely* use `offset_from`, but more
-        // investigation is needed (including running tests in miri).
-        let available_bytes = self.end.get().addr() - self.ptr.get().addr();
-        let additional_bytes = additional.checked_mul(size_of::<T>()).unwrap();
-        available_bytes >= additional_bytes
-    }
-
-    /// Allocates storage for `len >= 1` values in this arena, and returns a
-    /// raw pointer to the first value's storage.
-    ///
-    /// # Safety
-    ///
-    /// Caller must initialize each of the `len` slots to a droppable value
-    /// before the arena is dropped.
-    ///
-    /// In practice, this typically means that the caller must be able to
-    /// raw-copy `len` already-initialized values into the slice without any
-    /// possibility of panicking.
-    ///
-    /// FIXME(Zalathar): This is *very* fragile; perhaps we need a different
-    /// approach to arena-allocating slices of droppable values.
-    #[inline]
-    unsafe fn alloc_raw_slice(&self, len: usize) -> *mut T {
-        assert!(size_of::<T>() != 0);
-        assert!(len != 0);
-
-        // Ensure the current chunk can fit `len` objects.
-        if !self.can_allocate(len) {
-            self.grow(len);
-            debug_assert!(self.can_allocate(len));
-        }
-
-        let start_ptr = self.ptr.get();
-        // SAFETY: `can_allocate`/`grow` ensures that there is enough space for
-        // `len` elements.
-        unsafe { self.ptr.set(start_ptr.add(len)) };
-        start_ptr
+    fn has_room(chunks: &[Vec<T>], additional: usize) -> bool {
+        chunks.last().is_some_and(|chunk| chunk.capacity() - chunk.len() >= additional)
     }
 
     /// Allocates the elements of this iterator into a contiguous slice in the `TypedArena`.
@@ -222,7 +151,8 @@ impl<T> TypedArena<T> {
     /// storing the elements in the arena.
     #[inline]
     pub fn alloc_from_iter<I: IntoIterator<Item = T>>(&self, iter: I) -> &mut [T] {
-        self.try_alloc_from_iter(iter.into_iter().map(Ok::<T, !>)).into_ok()
+        self.try_alloc_from_iter(iter.into_iter().map(Ok::<T, core::convert::Infallible>))
+            .unwrap_or_else(|never| match never {})
     }
 
     /// Allocates the elements of this iterator into a contiguous slice in the `TypedArena`.
@@ -234,119 +164,58 @@ impl<T> TypedArena<T> {
         &self,
         iter: impl IntoIterator<Item = Result<T, E>>,
     ) -> Result<&mut [T], E> {
-        // Despite the similarity with `DroplessArena`, we cannot reuse their fast case. The reason
-        // is subtle: these arenas are reentrant. In other words, `iter` may very well be holding a
-        // reference to `self` and adding elements to the arena during iteration.
-        //
-        // For this reason, if we pre-allocated any space for the elements of this iterator, we'd
-        // have to track that some uninitialized elements are followed by some initialized elements,
-        // else we might accidentally drop uninitialized memory if something panics or if the
-        // iterator doesn't fill all the length we expected.
-        //
-        // So we collect all the elements beforehand, which takes care of reentrancy and panic
-        // safety. This function is much less hot than `DroplessArena::alloc_from_iter`, so it
-        // doesn't need to be hyper-optimized.
+        // These arenas are reentrant: `iter` may hold a reference to `self` and allocate in it
+        // while it runs. So the elements are collected first, before the chunks are borrowed,
+        // which also means nothing is half-initialized if the iterator panics.
         assert!(size_of::<T>() != 0);
 
         let vec: Result<SmallVec<[T; 8]>, E> = iter.into_iter().collect();
-        let mut vec = vec?;
+        let vec = vec?;
         if vec.is_empty() {
             return Ok(&mut []);
         }
-        // Move the content to the arena by copying and then forgetting it.
         let len = vec.len();
 
-        // SAFETY: After allocating raw storage for exactly `len` values, we
-        // must fully initialize the storage without panicking, and we must
-        // also prevent the stale values in the vec from being dropped.
-        Ok(unsafe {
-            let start_ptr = self.alloc_raw_slice(len);
-            // Initialize the newly-allocated storage without panicking.
-            vec.as_ptr().copy_to_nonoverlapping(start_ptr, len);
-            // Prevent the stale values in the vec from being dropped.
-            vec.set_len(0);
-            slice::from_raw_parts_mut(start_ptr, len)
-        })
+        let mut chunks = self.chunks.borrow_mut();
+        // The slice must be contiguous, so if the current chunk lacks the room, start a new one
+        // sized to fit; `grow` guarantees at least `len`.
+        if !Self::has_room(&chunks, len) {
+            Self::grow(&mut chunks, len);
+        }
+        let chunk = chunks.last_mut().unwrap();
+        let start = chunk.len();
+        // Within capacity (checked above), so `extend` never reallocates.
+        chunk.extend(vec);
+        // SAFETY: `start..start + len` was just written, in one buffer that is never reallocated
+        // or freed before the arena, and no other reference to these slots is handed out.
+        Ok(unsafe { slice::from_raw_parts_mut(chunk.as_mut_ptr().add(start), len) })
     }
 
-    /// Grows the arena.
+    /// Starts a new chunk that can hold at least `additional` elements.
     #[inline(never)]
     #[cold]
-    fn grow(&self, additional: usize) {
-        unsafe {
-            // We need the element size to convert chunk sizes (ranging from
-            // PAGE to HUGE_PAGE bytes) to element counts.
-            let elem_size = cmp::max(1, size_of::<T>());
-            let mut chunks = self.chunks.borrow_mut();
-            let mut new_cap;
-            if let Some(last_chunk) = chunks.last_mut() {
-                // If a type is `!needs_drop`, we don't need to keep track of how many elements
-                // the chunk stores - the field will be ignored anyway.
-                if mem::needs_drop::<T>() {
-                    // FIXME: this should *likely* use `offset_from`, but more
-                    // investigation is needed (including running tests in miri).
-                    let used_bytes = self.ptr.get().addr() - last_chunk.start().addr();
-                    last_chunk.entries = used_bytes / size_of::<T>();
-                }
-
-                // If the previous chunk's len is less than HUGE_PAGE
-                // bytes, then this chunk will be least double the previous
-                // chunk's size.
-                new_cap = last_chunk.storage.len().min(HUGE_PAGE / elem_size / 2);
-                new_cap *= 2;
-            } else {
-                new_cap = PAGE / elem_size;
-            }
-            // Also ensure that this chunk can fit `additional`.
-            new_cap = cmp::max(additional, new_cap);
-
-            let chunk = chunks.push_mut(ArenaChunk::<T>::new(new_cap));
-            self.ptr.set(chunk.start());
-            self.end.set(chunk.end());
+    fn grow(chunks: &mut Vec<Vec<T>>, additional: usize) {
+        // We need the element size to convert chunk sizes (ranging from
+        // PAGE to HUGE_PAGE bytes) to element counts.
+        let elem_size = cmp::max(1, size_of::<T>());
+        let mut new_cap;
+        if let Some(last_chunk) = chunks.last() {
+            // If the previous chunk's len is less than HUGE_PAGE
+            // bytes, then this chunk will be least double the previous
+            // chunk's size.
+            new_cap = last_chunk.capacity().min(HUGE_PAGE / elem_size / 2);
+            new_cap *= 2;
+        } else {
+            new_cap = PAGE / elem_size;
         }
-    }
+        // Also ensure that this chunk can fit `additional`.
+        new_cap = cmp::max(additional, new_cap);
 
-    // Drops the contents of the last chunk. The last chunk is partially empty, unlike all other
-    // chunks.
-    fn clear_last_chunk(&self, last_chunk: &mut ArenaChunk<T>) {
-        // Determine how much was filled.
-        let start = last_chunk.start().addr();
-        // We obtain the value of the pointer to the first uninitialized element.
-        let end = self.ptr.get().addr();
-        // We then calculate the number of elements to be dropped in the last chunk,
-        // which is the filled area's length.
-        assert_ne!(size_of::<T>(), 0);
-        // FIXME: this should *likely* use `offset_from`, but more
-        // investigation is needed (including running tests in miri).
-        let diff = (end - start) / size_of::<T>();
-        // Pass that to the `destroy` method.
-        unsafe {
-            last_chunk.destroy(diff);
-        }
-        // Reset the chunk.
-        self.ptr.set(last_chunk.start());
+        // A new chunk rather than a `reserve` on the old one: reallocating would move elements
+        // that references already point at.
+        chunks.push(Vec::with_capacity(new_cap));
     }
 }
-
-unsafe impl<#[may_dangle] T> Drop for TypedArena<T> {
-    fn drop(&mut self) {
-        unsafe {
-            // Determine how much was filled.
-            let mut chunks_borrow = self.chunks.borrow_mut();
-            if let Some(mut last_chunk) = chunks_borrow.pop() {
-                // Drop the contents of the last chunk.
-                self.clear_last_chunk(&mut last_chunk);
-                // The last chunk will be dropped. Destroy all other chunks.
-                for chunk in chunks_borrow.iter_mut() {
-                    chunk.destroy(chunk.entries);
-                }
-            }
-            // Box handles deallocation of `last_chunk` and `self.chunks`.
-        }
-    }
-}
-
-unsafe impl<T: Send> Send for TypedArena<T> {}
 
 #[inline(always)]
 fn align_down(val: usize, align: usize) -> usize {
@@ -407,36 +276,33 @@ impl DroplessArena {
         // still fitting in a `layout` allocation.
         let additional = layout.size() + cmp::max(DROPLESS_ALIGNMENT, layout.align()) - 1;
 
-        unsafe {
-            let mut chunks = self.chunks.borrow_mut();
-            let mut new_cap;
-            if let Some(last_chunk) = chunks.last_mut() {
-                // There is no need to update `last_chunk.entries` because that
-                // field isn't used by `DroplessArena`.
-
-                // If the previous chunk's len is less than HUGE_PAGE
-                // bytes, then this chunk will be least double the previous
-                // chunk's size.
-                new_cap = last_chunk.storage.len().min(HUGE_PAGE / 2);
-                new_cap *= 2;
-            } else {
-                new_cap = PAGE;
-            }
-            // Also ensure that this chunk can fit `additional`.
-            new_cap = cmp::max(additional, new_cap);
-
-            let chunk = chunks.push_mut(ArenaChunk::new(align_up(new_cap, PAGE)));
-            self.start.set(chunk.start());
-
-            // Align the end to DROPLESS_ALIGNMENT.
-            let end = align_down(chunk.end().addr(), DROPLESS_ALIGNMENT);
-
-            // Make sure we don't go past `start`. This should not happen since the allocation
-            // should be at least DROPLESS_ALIGNMENT - 1 bytes.
-            debug_assert!(chunk.start().addr() <= end);
-
-            self.end.set(chunk.end().with_addr(end));
+        let mut chunks = self.chunks.borrow_mut();
+        let mut new_cap;
+        if let Some(last_chunk) = chunks.last_mut() {
+            // If the previous chunk's len is less than HUGE_PAGE
+            // bytes, then this chunk will be least double the previous
+            // chunk's size.
+            new_cap = last_chunk.storage.len().min(HUGE_PAGE / 2);
+            new_cap *= 2;
+        } else {
+            new_cap = PAGE;
         }
+        // Also ensure that this chunk can fit `additional`.
+        new_cap = cmp::max(additional, new_cap);
+
+        // `push` then `last_mut` rather than `Vec::push_mut`, which is unstable.
+        chunks.push(ArenaChunk::new(align_up(new_cap, PAGE)));
+        let chunk = chunks.last_mut().unwrap();
+        self.start.set(chunk.start());
+
+        // Align the end to DROPLESS_ALIGNMENT.
+        let end = align_down(chunk.end().addr(), DROPLESS_ALIGNMENT);
+
+        // Make sure we don't go past `start`. This should not happen since the allocation
+        // should be at least DROPLESS_ALIGNMENT - 1 bytes.
+        debug_assert!(chunk.start().addr() <= end);
+
+        self.end.set(chunk.end().with_addr(end));
     }
 
     #[inline]
@@ -586,7 +452,7 @@ impl DroplessArena {
                 // `drop`.
                 unsafe { self.write_from_iter(iter, len, mem) }
             }
-            (_, _) => outline(move || self.try_alloc_from_iter(iter.map(Ok::<T, !>)).into_ok()),
+            (_, _) => outline(move || self.try_alloc_from_iter(iter.map(Ok::<T, core::convert::Infallible>)).unwrap_or_else(|never| match never {})),
         }
     }
 
@@ -634,15 +500,16 @@ impl DroplessArena {
 /// [`DroplessArena`], and the corresponding [`TypedArena`] will remain empty. This makes
 /// better use of the dropless arena's storage blocks, while the overhead of having a few
 /// unused typed-arenas is negligible.
-#[rustc_macro_transparency = "semiopaque"]
-pub macro declare_arena(
+#[macro_export]
+macro_rules! declare_arena {
+    (
     // Each of these entries becomes a `$name: TypedArena<$ty>` field in the arena.
     // This allows values of non-copy type $ty to be allocated in the arena.
     // The field names must be distinct, but have no further significance.
     $(
         $name:ident: $ty:ty,
     )*
-) {
+) => {
     #[derive(Default)]
     pub struct Arena<'tcx> {
         pub dropless: $crate::DroplessArena,
@@ -738,6 +605,7 @@ pub macro declare_arena(
             T::allocate_from_iter(self, iter)
         }
     }
+}
 }
 
 // Marker types that let us give different behaviour for arenas allocating

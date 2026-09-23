@@ -10,8 +10,9 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::rustc_abi::Variants;
+use crate::rustc_abi::{VariantIdx, Variants};
 use crate::rustc_data_structures::fx::FxHashSet;
+use crate::rustc_index::Idx;
 use crate::bug;
 use crate::rustc_middle::mir::{
     BasicBlockData, Body, Local, Operand, Rvalue, StatementKind, TerminatorKind,
@@ -47,7 +48,8 @@ fn get_switched_on_type<'tcx>(
 
     let stmt_before_term = block_data.statements.last()?;
 
-    if let StatementKind::Assign((l, Rvalue::Discriminant(place))) = stmt_before_term.kind
+    if let StatementKind::Assign(ref assign) = stmt_before_term.kind
+        && let (l, Rvalue::Discriminant(place)) = **assign
         && l.as_local() == Some(local)
     {
         let ty = place.ty(body, tcx).ty;
@@ -114,7 +116,8 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for UnreachableEnumBranchin
                 variant_discriminants(&layout, discriminant_ty, tcx)
             } else if let Some(variant_range) = discriminant_ty.variant_range(tcx) {
                 // If there are some generics, we can still get the allowed variants.
-                variant_range
+                (variant_range.start.index()..variant_range.end.index())
+                    .map(VariantIdx::new)
                     .map(|variant| {
                         discriminant_ty.discriminant_for_variant(tcx, variant).unwrap().val
                     })
@@ -166,7 +169,6 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for UnreachableEnumBranchin
                 let otherwise_is_last_variant = allowed_variants.len() == 1;
                 if otherwise_is_last_variant {
                     // We have checked that `allowed_variants` has only one element.
-                    #[allow(rustc::potential_query_instability)]
                     let last_variant = *allowed_variants.iter().next().unwrap();
                     targets.add_target(last_variant, targets.otherwise());
                 }

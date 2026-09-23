@@ -139,7 +139,6 @@ impl IsRigid {
 ///
 /// Types written by the user start out as `hir::TyKind` and get
 /// converted to this representation using `<dyn HirTyLowerer>::lower_ty`.
-#[cfg_attr(feature = "nightly", rustc_diagnostic_item = "IrTyKind")]
 #[derive_where(Clone, Copy, Hash, PartialEq; I: Interner)]
 #[derive(GenericTypeVisitable)]
 #[cfg_attr(

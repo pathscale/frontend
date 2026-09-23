@@ -16,7 +16,7 @@ impl AttributeParser for OnConstParser {
         template!(List: &[r#"/*opt*/ message = "...", /*opt*/ label = "...", /*opt*/ note = "...""#]),
         AttributeStability::Stable, // Unstable, stability checked manually below
         |this, cx, args| {
-            gate_diagnostic_attr!(diagnostic_on_const);
+            gate_diagnostic_attr!(cx, args, diagnostic_on_const);
 
             let path_span = cx.attr_path.span;
             this.path_span = Some(path_span);

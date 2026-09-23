@@ -54,13 +54,9 @@ impl<'tcx> Extend<ty::Predicate<'tcx>> for PredicateSet<'tcx> {
         }
     }
 
-    fn extend_one(&mut self, pred: ty::Predicate<'tcx>) {
-        self.insert(pred);
-    }
-
-    fn extend_reserve(&mut self, additional: usize) {
-        Extend::<ty::Predicate<'tcx>>::extend_reserve(&mut self.set, additional);
-    }
+    // No `extend_one` or `extend_reserve`: overriding them is the unstable `extend_one`. The
+    // provided `extend_one` goes through `extend` and ends in the same `insert`; the reserve was
+    // only a capacity hint.
 }
 
 /// For [`Obligation`], a sub-obligation is combined with the current obligation's

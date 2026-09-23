@@ -11,7 +11,10 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{fmt, hint};
+use core::fmt;
+
+// A call to a `#[cold]` function marks its path cold, as the unstable `hint::cold_path` would.
+use crate::rustc_data_structures::outline;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -27,7 +30,7 @@ use core::ops::{Deref, DerefMut};
 use parking_lot::RawMutex;
 use parking_lot::lock_api::RawMutex as _;
 
-use crate::rustc_data_structures::sync::{DynSend, DynSync, mode};
+use crate::rustc_data_structures::sync::mode;
 
 /// A guard holding mutable access to a `Lock` which is in a locked state.
 #[must_use = "if unused the Lock will immediately unlock"]
@@ -102,7 +105,7 @@ impl<T> Lock<T> {
     #[inline(always)]
     pub fn new(inner: T) -> Self {
         let (mode, mode_union) = if mode::might_be_dyn_thread_safe() {
-            hint::cold_path();
+            outline(|| ());
             // Create the lock with synchronization enabled using the `RawMutex` type.
             (Mode::Sync, ModeUnion { sync: ManuallyDrop::new(RawMutex::INIT) })
         } else {
@@ -161,7 +164,7 @@ impl<T> Lock<T> {
             match mode {
                 Mode::NoSync => {
                     if self.mode_union.no_sync.replace(LOCKED) == LOCKED {
-                        hint::cold_path();
+                        outline(|| ());
                         lock_held()
                     }
                 }
@@ -178,8 +181,8 @@ impl<T> Lock<T> {
     }
 }
 
-unsafe impl<T: DynSend> DynSend for Lock<T> {}
-unsafe impl<T: DynSend> DynSync for Lock<T> {}
+// The `DynSend`/`DynSync` impls that were here now come from the blanket impls in
+// `marker.rs` (auto traits are unstable); a second impl would conflict.
 
 impl<T> Lock<T> {
     #[inline(always)]

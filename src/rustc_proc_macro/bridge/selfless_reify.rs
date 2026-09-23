@@ -54,8 +54,10 @@ pub(super) const fn reify_to_extern_c_fn_hrt_bridge<
     ) -> R {
         let f = unsafe {
             // SAFETY: `F` satisfies all criteria for "out of thin air"
-            // reconstructability (see module-level doc comment).
-            mem::conjure_zst::<F>()
+            // reconstructability (see module-level doc comment). This is the body of the
+            // unstable `mem::conjure_zst`: a zero-sized value has no bytes to be uninitialised,
+            // and the `const` block above has already proved `F` is zero-sized.
+            mem::MaybeUninit::<F>::uninit().assume_init()
         };
         f(bridge)
     }

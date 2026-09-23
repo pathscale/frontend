@@ -467,7 +467,8 @@ impl<'a> State<'a> {
             ast::ExprKind::Call(func, args) => {
                 self.print_expr_call(func, args, fixup);
             }
-            ast::ExprKind::MethodCall(ast::MethodCall { seg, receiver, args, .. }) => {
+            ast::ExprKind::MethodCall(mc) => {
+                let ast::MethodCall { seg, receiver, args, .. } = &**mc;
                 self.print_expr_method_call(seg, receiver, args, fixup);
             }
             ast::ExprKind::Binary(op, lhs, rhs) => {
@@ -529,7 +530,8 @@ impl<'a> State<'a> {
                 self.space();
                 self.print_block_with_attrs(blk, attrs, cb, ib);
             }
-            ast::ExprKind::ForLoop(ast::ForLoop { pat, iter, body, label, kind }) => {
+            ast::ExprKind::ForLoop(fl) => {
+                let ast::ForLoop { pat, iter, body, label, kind } = &**fl;
                 if let Some(label) = label {
                     self.print_ident(label.ident);
                     self.word_space(":");
@@ -585,17 +587,18 @@ impl<'a> State<'a> {
                 let empty = attrs.is_empty() && arms.is_empty();
                 self.bclose(expr.span, empty, cb);
             }
-            ast::ExprKind::Closure(ast::Closure {
-                binder,
-                capture_clause,
-                constness,
-                coroutine_marker,
-                movability,
-                fn_decl,
-                body,
-                fn_decl_span: _,
-                fn_arg_span: _,
-            }) => {
+            ast::ExprKind::Closure(cl) => {
+                let ast::Closure {
+                    binder,
+                    capture_clause,
+                    constness,
+                    coroutine_marker,
+                    movability,
+                    fn_decl,
+                    body,
+                    fn_decl_span: _,
+                    fn_arg_span: _,
+                } = &**cl;
                 self.print_closure_binder(binder);
                 self.print_constness(*constness);
                 self.print_movability(*movability);

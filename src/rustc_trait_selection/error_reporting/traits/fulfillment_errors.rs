@@ -750,21 +750,21 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 }
             }
 
-            SelectionError::SignatureMismatch(SignatureMismatchData {
-                found_trait_ref,
-                expected_trait_ref,
-                terr: terr @ TypeError::CyclicTy(_),
-            }) => self.report_cyclic_signature_error(
-                &obligation,
-                found_trait_ref,
-                expected_trait_ref,
-                terr,
-            ),
-            SelectionError::SignatureMismatch(SignatureMismatchData {
-                found_trait_ref,
-                expected_trait_ref,
-                terr: _,
-            }) => {
+            SelectionError::SignatureMismatch(ref mismatch_data)
+                if matches!(mismatch_data.terr, TypeError::CyclicTy(_)) =>
+            {
+                let SignatureMismatchData { found_trait_ref, expected_trait_ref, terr } =
+                    **mismatch_data;
+                self.report_cyclic_signature_error(
+                    &obligation,
+                    found_trait_ref,
+                    expected_trait_ref,
+                    terr,
+                )
+            }
+            SelectionError::SignatureMismatch(ref mismatch_data) => {
+                let SignatureMismatchData { found_trait_ref, expected_trait_ref, terr: _ } =
+                    **mismatch_data;
                 match self.report_signature_mismatch_error(
                     &obligation,
                     span,
@@ -1151,6 +1151,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             search_span: Span,
         }
         impl<'v> Visitor<'v> for FindMethodSubexprOfTry {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
             type Result = ControlFlow<&'v hir::Expr<'v>>;
             fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) -> Self::Result {
                 if let hir::ExprKind::Match(expr, _arms, hir::MatchSource::TryDesugar(_)) = ex.kind

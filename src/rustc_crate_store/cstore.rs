@@ -9,7 +9,7 @@ use eko::path::PathBuf;
 
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_attr_ir::{CfgEntry, PeImportNameType};
-use crate::rustc_data_structures::sync::{self, AppendOnlyIndexVec, FreezeLock};
+use crate::rustc_data_structures::sync::{AppendOnlyIndexVec, FreezeLock};
 use crate::rustc_hir_id::definitions::{DefKey, DefPath, Definitions};
 use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use crate::rustc_span::def_id::{
@@ -213,7 +213,9 @@ pub trait CrateStore: core::fmt::Debug {
     fn stable_crate_id(&self, cnum: CrateNum) -> StableCrateId;
 }
 
-pub type CrateStoreDyn = dyn CrateStore + sync::DynSync + sync::DynSend;
+// `+ DynSync + DynSend` dropped: no longer auto traits, so a trait object cannot name them
+// (see `rustc_data_structures/marker.rs`).
+pub type CrateStoreDyn = dyn CrateStore;
 
 pub struct Untracked {
     pub cstore: FreezeLock<Box<CrateStoreDyn>>,

@@ -346,7 +346,12 @@ impl<'tcx, 'll> MutVisitor<'tcx> for ReplacementVisitor<'tcx, 'll> {
             // a_1 = y
             // ...
             // ```
-            StatementKind::Assign((place, Rvalue::Aggregate(_, ref mut operands))) => {
+            StatementKind::Assign(ref mut assign)
+                if matches!(**assign, (_, Rvalue::Aggregate(..))) =>
+            {
+                let (place, Rvalue::Aggregate(_, ref mut operands)) = **assign else {
+                    unreachable!()
+                };
                 if let Some(local) = place.as_local()
                     && let Some(final_locals) = &self.replacements.fragments[local]
                 {
@@ -377,7 +382,10 @@ impl<'tcx, 'll> MutVisitor<'tcx> for ReplacementVisitor<'tcx, 'll> {
             // ...
             // ```
             // ConstProp will pick up the pieces and replace them by actual constants.
-            StatementKind::Assign((place, Rvalue::Use(Operand::Constant(_), retag))) => {
+            StatementKind::Assign(ref assign)
+                if matches!(**assign, (_, Rvalue::Use(Operand::Constant(_), _))) =>
+            {
+                let (place, Rvalue::Use(_, retag)) = **assign else { unreachable!() };
                 if let Some(final_locals) = self.replacements.place_fragments(place) {
                     // Put the deaggregated statements *after* the original one.
                     let location = location.successor_within_block();
@@ -401,10 +409,16 @@ impl<'tcx, 'll> MutVisitor<'tcx> for ReplacementVisitor<'tcx, 'll> {
             // a_1 = move? place.1
             // ...
             // ```
-            StatementKind::Assign((
-                lhs,
-                Rvalue::Use(ref op @ (Operand::Copy(rplace) | Operand::Move(rplace)), retag),
-            )) => {
+            StatementKind::Assign(ref assign)
+                if matches!(**assign, (_, Rvalue::Use(Operand::Copy(_) | Operand::Move(_), _))) =>
+            {
+                let (
+                    lhs,
+                    Rvalue::Use(ref op @ (Operand::Copy(rplace) | Operand::Move(rplace)), retag),
+                ) = **assign
+                else {
+                    unreachable!()
+                };
                 let copy = match *op {
                     Operand::Copy(_) => true,
                     Operand::Move(_) => false,

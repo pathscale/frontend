@@ -75,6 +75,8 @@ impl<'tcx> OpaqueTypeCollector<'tcx> {
             collector: &'a mut OpaqueTypeCollector<'tcx>,
         }
         impl<'v> intravisit::Visitor<'v> for TaitInBodyFinder<'_, '_> {
+            type NestedFilter = intravisit::IgnoreNested;
+            type Result = ();
             #[instrument(level = "trace", skip(self))]
             fn visit_nested_item(&mut self, id: crate::rustc_hir::ItemId) {
                 let id = id.owner_id.def_id;
@@ -200,6 +202,8 @@ impl<'tcx> OpaqueTypeCollector<'tcx> {
 }
 
 impl<'tcx> crate::rustc_ty_walk::SpannedTypeVisitor<'tcx> for OpaqueTypeCollector<'tcx> {
+    type Result = ();
+
     #[instrument(skip(self), ret, level = "trace")]
     fn visit(&mut self, span: Span, value: impl TypeVisitable<TyCtxt<'tcx>>) {
         self.visit_spanned(span, value);
@@ -207,6 +211,8 @@ impl<'tcx> crate::rustc_ty_walk::SpannedTypeVisitor<'tcx> for OpaqueTypeCollecto
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for OpaqueTypeCollector<'tcx> {
+    type Result = ();
+
     #[instrument(skip(self), ret, level = "trace")]
     fn visit_ty(&mut self, t: Ty<'tcx>) {
         t.super_visit_with(self);
