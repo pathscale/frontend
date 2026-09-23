@@ -78,12 +78,80 @@ pub enum FactKind {
 }
 
 /// One named definition rustc can prove.
+///
+/// The shape fields are read from the HIR and the source map, never from inference, so they
+/// are present for a definition whose bodies do not type check. Each is filled only for the
+/// kinds it describes and is empty for every other kind.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Definition {
     pub def_path: String,
     pub name: String,
     pub kind: FactKind,
     pub span: ByteSpan,
+    /// For `Fn` and `AssocFn`: the signature as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<FnSignature>,
+    /// For `Struct` and `Union`: each field in declaration order. A tuple struct's fields are
+    /// named `0`, `1` and so on, which is how a field access names them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldSignature>,
+    /// For `Enum`: each variant's name in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+}
+
+/// A function's signature, as source text rather than as types.
+///
+/// Text is what a reader of the signature sees, and it exists before and without type
+/// checking: an unresolved parameter type still has a spelling. Types that no source text
+/// covers, such as one a macro assembled, are printed from the HIR instead.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FnSignature {
+    /// The `self` parameter, when there is one. It is not repeated in `params`.
+    pub receiver: Option<Receiver>,
+    /// Every parameter after the receiver, in order.
+    pub params: Vec<FnParam>,
+    /// The written return type. `None` for a function that writes none, which returns `()`.
+    pub ret: Option<String>,
+}
+
+/// One non-receiver parameter.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FnParam {
+    /// The pattern as written, `x` or `(a, b)` or `mut n`. A declaration with no body (a
+    /// required trait method, a foreign function) has only a name, or `_` when it has none.
+    pub pat: String,
+    pub ty: String,
+}
+
+/// How a method takes `self`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiverKind {
+    /// `self` or `mut self`.
+    Value,
+    /// `&self`, with or without a lifetime.
+    Ref,
+    /// `&mut self`, with or without a lifetime.
+    RefMut,
+    /// `self: T`, with the type written out. `Receiver::ty` says what `T` is.
+    Typed,
+}
+
+/// A method's `self` parameter.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Receiver {
+    pub kind: ReceiverKind,
+    /// The written type for [`ReceiverKind::Typed`], such as `Box<Self>`; `None` for the three
+    /// shorthand forms, whose type the kind already says.
+    pub ty: Option<String>,
+}
+
+/// One field of a struct or union.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FieldSignature {
+    pub name: String,
+    pub ty: String,
 }
 
 /// One `use` / `pub use`.
@@ -227,12 +295,17 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
         let Some(name) = tcx.opt_item_name(def_id) else {
             continue;
         };
-        facts.definitions.push(Definition {
+        let mut definition = Definition {
             def_path: tcx.def_path_str(def_id),
             name: name.to_string(),
             kind,
             span: byte_span(tcx, tcx.def_span(def_id)),
-        });
+            signature: None,
+            fields: Vec::new(),
+            variants: Vec::new(),
+        };
+        describe_shape(tcx, local, &mut definition);
+        facts.definitions.push(definition);
     }
 
     for item_id in tcx.hir_free_items() {
@@ -318,6 +391,113 @@ fn impl_fact(tcx: TyCtxt<'_>, local: LocalDefId) -> Impl {
         trait_def_path,
         span: byte_span(tcx, tcx.def_span(def_id)),
     }
+}
+
+/// Fill a definition's signature, fields or variants from its HIR node.
+fn describe_shape(tcx: TyCtxt<'_>, local: LocalDefId, definition: &mut Definition) {
+    match definition.kind {
+        FactKind::Fn | FactKind::AssocFn => {
+            definition.signature = fn_signature(tcx, tcx.hir_node_by_def_id(local));
+        }
+        FactKind::Struct | FactKind::Union => {
+            if let Node::Item(hir::Item {
+                kind: ItemKind::Struct(_, _, data) | ItemKind::Union(_, _, data),
+                ..
+            }) = tcx.hir_node_by_def_id(local)
+            {
+                definition.fields = data
+                    .fields()
+                    .iter()
+                    .map(|field| FieldSignature {
+                        name: field.ident.as_str().to_string(),
+                        ty: type_text(tcx, field.ty),
+                    })
+                    .collect();
+            }
+        }
+        FactKind::Enum => {
+            if let Node::Item(hir::Item { kind: ItemKind::Enum(_, _, def), .. }) =
+                tcx.hir_node_by_def_id(local)
+            {
+                definition.variants =
+                    def.variants.iter().map(|variant| variant.ident.as_str().to_string()).collect();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A function's signature from its HIR node: a free or foreign `fn`, or a method in an impl
+/// or a trait. `None` for any other node.
+///
+/// Parameter patterns come from the body when there is one, because only the body keeps them
+/// whole; a declaration without a body (a required trait method, a foreign function) records
+/// just a name per parameter.
+fn fn_signature<'tcx>(tcx: TyCtxt<'tcx>, node: Node<'tcx>) -> Option<FnSignature> {
+    let sig = node.fn_sig()?;
+    let (body, names): (Option<&hir::Body<'_>>, &[Option<crate::rustc_span::Ident>]) = match node {
+        Node::Item(hir::Item { kind: ItemKind::Fn { body, .. }, .. })
+        | Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Fn(_, body), .. })
+        | Node::TraitItem(hir::TraitItem {
+            kind: hir::TraitItemKind::Fn(_, hir::TraitFn::Provided(body)),
+            ..
+        }) => (Some(tcx.hir_body(*body)), &[][..]),
+        Node::TraitItem(hir::TraitItem {
+            kind: hir::TraitItemKind::Fn(_, hir::TraitFn::Required(names)),
+            ..
+        })
+        | Node::ForeignItem(hir::ForeignItem {
+            kind: hir::ForeignItemKind::Fn(_, names, _), ..
+        }) => (None, *names),
+        _ => return None,
+    };
+    // The name a parameter binds, when its pattern is a plain name.
+    let ident = |index: usize| match body {
+        Some(body) => body.params.get(index).and_then(|param| match param.pat.kind {
+            hir::PatKind::Binding(_, _, ident, None) => Some(ident),
+            _ => None,
+        }),
+        None => names.get(index).copied().flatten(),
+    };
+    let pat = |index: usize| match body.and_then(|body| body.params.get(index)) {
+        Some(param) => source_text(tcx, param.pat.span).unwrap_or_else(|| {
+            let ann: &dyn crate::rustc_hir::intravisit::HirTyCtxt<'_> = &tcx;
+            crate::rustc_hir_pretty::pat_to_string(&ann, param.pat)
+        }),
+        None => ident(index).map_or_else(|| "_".to_string(), |ident| ident.as_str().to_string()),
+    };
+
+    let decl = sig.decl;
+    let receiver = match decl.implicit_self() {
+        hir::ImplicitSelfKind::Imm | hir::ImplicitSelfKind::Mut => {
+            Some(Receiver { kind: ReceiverKind::Value, ty: None })
+        }
+        hir::ImplicitSelfKind::RefImm => Some(Receiver { kind: ReceiverKind::Ref, ty: None }),
+        hir::ImplicitSelfKind::RefMut => Some(Receiver { kind: ReceiverKind::RefMut, ty: None }),
+        // Lowering records only the shorthand forms. `self: T` is a first parameter named
+        // `self` with a type of its own, and a free function cannot have one.
+        hir::ImplicitSelfKind::None => match (ident(0), decl.inputs.first()) {
+            (Some(ident), Some(ty)) if ident.name == crate::rustc_span::kw::SelfLower => {
+                Some(Receiver { kind: ReceiverKind::Typed, ty: Some(type_text(tcx, ty)) })
+            }
+            _ => None,
+        },
+    };
+    let skip = usize::from(receiver.is_some());
+    let params = decl
+        .inputs
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .map(|(index, ty)| FnParam { pat: pat(index), ty: type_text(tcx, ty) })
+        .collect();
+    // An `async fn` that writes no return type is lowered to a `Return` of an opaque type
+    // whose span is the empty point where the type would go, so empty text means none written.
+    let ret = match decl.output {
+        hir::FnRetTy::Return(ty) => Some(type_text(tcx, ty)).filter(|text| !text.is_empty()),
+        hir::FnRetTy::DefaultReturn(_) => None,
+    };
+    Some(FnSignature { receiver, params, ret })
 }
 
 /// The source text a span covers, or `None` when the source map has none for it.
@@ -649,6 +829,10 @@ impl<'a, 'tcx> RefVisitor<'a, 'tcx> {
     }
 }
 
+// Nothing here runs a session. What `extract` reads out of the HIR (signatures, fields,
+// variants, impl items) and how it survives a body that stops on an error are not tested in
+// this module: exercising them means compiling source, and no_core source that type checks
+// has to declare its own lang items, which is a fixture rather than a case anyone has.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,6 +856,24 @@ mod tests {
         assert!(facts.complete);
         assert!(facts.diagnostics.is_empty());
         assert!(facts.unanalyzed_bodies.is_empty());
+    }
+
+    // A definition serialized before the shape fields existed still reads, with them empty,
+    // and one with no shape writes no shape fields, so the older form round-trips unchanged.
+    #[test]
+    fn definitions_without_shape_fields_round_trip() {
+        let json = r#"{"def_path":"m::f","name":"f","kind":"fn","span":{"file":"lib.rs","start":0,"end":9}}"#;
+        let definition: Definition = serde_json::from_str(json).unwrap();
+        assert_eq!(definition.signature, None);
+        assert!(definition.fields.is_empty());
+        assert!(definition.variants.is_empty());
+        assert_eq!(serde_json::to_string(&definition).unwrap(), json);
+    }
+
+    #[test]
+    fn receiver_kinds_serialize_in_snake_case() {
+        let receiver = Receiver { kind: ReceiverKind::RefMut, ty: None };
+        assert_eq!(serde_json::to_string(&receiver).unwrap(), r#"{"kind":"ref_mut","ty":null}"#);
     }
 
     // Emitter output is written by hand here: producing it for real means running a session,
