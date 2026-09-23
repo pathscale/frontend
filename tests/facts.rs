@@ -58,12 +58,15 @@ fn diagnostics_refuse_only_what_the_file_decides() {
     ready();
     let clean = diagnose_with(SOURCE, &Options::default()).expect("parses");
     assert!(
-        !clean.iter().any(|d| d.code == "unresolved-ident" || d.code == "E0425"),
+        !clean.iter().any(|d| d.code == "unresolved-ident"),
         "library calls must not read as unresolved: {clean:?}"
     );
     let broken = "fn f(a: u8) -> u8 { a }\nfn g() -> u8 { f(1, 2) + missing }\n";
     let found = diagnose_with(broken, &Options::default()).expect("parses");
     let codes: Vec<&str> = found.iter().map(|d| d.code.as_str()).collect();
-    assert!(codes.iter().any(|c| *c == "E0061" || *c == "mismatched-arg-count"), "{found:?}");
-    assert!(codes.iter().any(|c| *c == "E0425" || *c == "unresolved-ident"), "{found:?}");
+    assert!(codes.contains(&"mismatched-arg-count"), "one spelling on the way out: {found:?}");
+    assert!(codes.contains(&"unresolved-ident"), "one spelling on the way out: {found:?}");
+    let by_number = Options { codes: Some(vec!["E0425".into()]), ..Options::default() };
+    let picked = diagnose_with(broken, &by_number).expect("parses");
+    assert!(picked.iter().all(|d| d.code == "unresolved-ident") && !picked.is_empty(), "{picked:?}");
 }
