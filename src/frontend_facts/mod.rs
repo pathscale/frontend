@@ -46,6 +46,7 @@ use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::{FileName, Span};
 use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
+pub mod site;
 
 /// Byte range inside one source file, relative to that file's start.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
