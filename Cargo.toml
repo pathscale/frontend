@@ -97,7 +97,11 @@ smallvec = { version = "1.8.1", features = ["union"] }
 thin-vec = { version = "0.2.19", default-features = false }
 tracing = { version = "^0.1.44", default-features = false, features = ["attributes"] }
 tracing-core = { version = "0.1.34", default-features = false }
-unicode-ident = "1.0.22"
+# Held below 1.0.25, which moved to Unicode 18 while `unicode-properties` 0.1.4 and
+# `unicode-width` 0.2.2 are still on 17. `rustc_lexer` and `rustc_parse` assert the versions
+# agree at compile time, so an unbounded `1.0.22` let every fresh resolution fail to build.
+# Lift the bound when the other two move to 18.
+unicode-ident = ">=1.0.22, <1.0.25"
 unicode-normalization = { version = "0.1.25", default-features = false }
 unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"] }
 unicode-security = "0.1.0"
