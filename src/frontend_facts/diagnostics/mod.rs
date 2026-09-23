@@ -156,6 +156,31 @@ pub fn diagnose_with(source: &str, opts: &Options) -> Result<Vec<Diagnostic>, Ve
     })
 }
 
+/// [`diagnose_with`] for each of `inputs`, in order, with the session setup shared.
+///
+/// One result per input, in input order, each exactly what [`diagnose_with`] returns for that
+/// source and `opts` on its own; every offset is into that input's own source. The calls run on
+/// the caller's thread under one set of session globals, rebuilt every
+/// [`super::session::RECYCLE_EVERY`] calls, rather than one set per call. Spawns nothing. See
+/// [`super::session`] for why sharing the globals cannot change an answer.
+///
+/// Needs the same catcher as [`diagnose_with`], asserted up front.
+pub fn diagnose_many<'a, I>(
+    inputs: I,
+    opts: &Options,
+) -> Vec<Result<Vec<Diagnostic>, Vec<String>>>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "diagnose_many needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    super::session::run_batch(inputs, super::session::RECYCLE_EVERY, |source| {
+        diagnose_with(source, opts)
+    })
+}
+
 /// One parse, then `passes`. Split out so the unit tests can run one pass on its own.
 fn run(
     source: &str,

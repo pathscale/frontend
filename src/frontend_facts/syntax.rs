@@ -76,7 +76,9 @@ pub enum Fragment {
 /// instead: a thread holds one set of session globals at a time.
 ///
 /// Callable any number of times on one thread; each call builds its own parse session and
-/// shares nothing with the last. Needs a catcher installed through
+/// shares nothing with the last. For many calls in a row, [`parses_as_many`] or
+/// [`super::session::with_session`] also shares the session globals, which is most of the cost
+/// of a small fragment, without changing any answer. Needs a catcher installed through
 /// [`crate::unwind_janky::install_catcher`], like [`super::analyze_source`]: some parser paths
 /// end in `FatalError::raise`, which unwinds, and without a catcher that ends the process
 /// instead of coming back as `Err`.
@@ -86,6 +88,28 @@ pub fn parses_as(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
         "parses_as needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
     create_session_if_not_set_then(Edition::Edition2024, |_| parse_in_session(source, kind))
+}
+
+/// [`parses_as`] for each of `inputs`, in order, with the session setup shared.
+///
+/// One result per input, in input order, each exactly what [`parses_as`] returns for that
+/// input on its own. The difference is cost: the calls run on the caller's thread under one set
+/// of session globals, rebuilt every [`super::session::RECYCLE_EVERY`] calls, rather than one
+/// set per call, which is most of the price of a small fragment. Spawns nothing. See
+/// [`super::session`] for why sharing the globals cannot change an answer.
+///
+/// Needs the same catcher as [`parses_as`], asserted up front.
+pub fn parses_as_many<'a, I>(inputs: I) -> Vec<Result<(), Vec<String>>>
+where
+    I: IntoIterator<Item = (&'a str, Fragment)>,
+{
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "parses_as_many needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    super::session::run_batch(inputs, super::session::RECYCLE_EVERY, |(source, kind)| {
+        parses_as(source, kind)
+    })
 }
 
 /// Whether `source` is an entire file or module body. Shorthand for [`Fragment::Items`].

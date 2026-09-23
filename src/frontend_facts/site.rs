@@ -227,6 +227,30 @@ pub fn site_at(source: &str, offset: u32) -> Result<Site, Vec<String>> {
     }
 }
 
+/// [`site_at`] for each `(source, offset)` of `inputs`, in order, with the session setup shared.
+///
+/// One result per input, in input order, each exactly what [`site_at`] returns for that pair on
+/// its own: every offset in a [`Site`] is into that input's own source, because each call still
+/// parses into a source map of its own. The calls run on the caller's thread under one set of
+/// session globals, rebuilt every [`super::session::RECYCLE_EVERY`] calls. Spawns nothing. See
+/// [`super::session`] for why sharing the globals cannot change an answer.
+///
+/// Many offsets into one source are many parses of it; this shares the setup, not the parse.
+///
+/// Needs the same catcher as [`site_at`], asserted up front.
+pub fn site_at_many<'a, I>(inputs: I) -> Vec<Result<Site, Vec<String>>>
+where
+    I: IntoIterator<Item = (&'a str, u32)>,
+{
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "site_at_many needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    super::session::run_batch(inputs, super::session::RECYCLE_EVERY, |(source, offset)| {
+        site_at(source, offset)
+    })
+}
+
 /// [`site_at`] without the fatal-error catch. Diagnostics go into `captured`, so that a caller
 /// that catches an unwind out of here can still say what the parser objected to.
 fn locate(
