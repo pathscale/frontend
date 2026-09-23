@@ -232,26 +232,5 @@ fn run(
 /// no leading space; its location lines follow, indented. Warnings are left out: they do not
 /// stop a parse.
 fn parse_errors(captured: &str) -> Vec<String> {
-    let mut errors = Vec::new();
-    let mut current: Option<String> = None;
-    let mut flush = |entry: Option<String>, errors: &mut Vec<String>| {
-        if let Some(entry) = entry
-            && entry.starts_with("error")
-        {
-            errors.push(entry);
-        }
-    };
-    for line in captured.lines() {
-        if line.starts_with(' ') {
-            if let Some(entry) = current.as_mut() {
-                entry.push('\n');
-                entry.push_str(line);
-            }
-        } else {
-            flush(current.take(), &mut errors);
-            current = Some(line.to_string());
-        }
-    }
-    flush(current.take(), &mut errors);
-    errors
+    super::split_diagnostics(captured).0
 }
