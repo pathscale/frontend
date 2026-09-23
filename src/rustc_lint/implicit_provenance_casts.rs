@@ -23,21 +23,6 @@ declare_lint! {
     /// The `implicit_provenance_casts` lint detects integer-to-pointer and pointer-to-integer
     /// casts.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(strict_provenance_lints)]
-    /// #![warn(implicit_provenance_casts)]
-    ///
-    /// fn main() {
-    ///     let x: u8 = 37;
-    ///     let addr: usize = &x as *const u8 as usize;
-    ///     let _ptr = addr as *const u8;
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// This lint exists to help migrate code to [*Strict Provenance* APIs][strict-provenance] where

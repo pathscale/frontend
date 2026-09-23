@@ -46,30 +46,10 @@ fn extract_fn(
 /// The `offload_kernel` macro expands the function into two separate definitions:
 /// one on the host to handle the call, and one on the device for executing the kernel.
 ///
-/// ```text
-/// #[offload_kernel]
-/// fn foo(a: &[f32], b: &[f32], c: *mut f32) {
-///     *c = a[0] + b[0];
-/// }
-/// ```
-///
 /// This expands to the host-side function:
-///
-/// ```text
-/// #[inline(never)]
-/// fn foo(_: &[f32], _: &[f32], _: *mut f32) {
-///     ::core::panicking::panic("not implemented")
-/// }
-/// ```
 ///
 /// And the device-side kernel:
 ///
-/// ```text
-/// #[rustc_offload_kernel]
-/// unsafe extern "gpu-kernel" fn foo(a: &[f32], b: &[f32], c: *mut f32) {
-///     *c = a[0] + b[0];
-/// }
-/// ```
 pub(crate) fn expand_kernel(
     ecx: &mut ExtCtxt<'_>,
     expand_span: Span,

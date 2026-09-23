@@ -196,21 +196,6 @@ pub struct LeafDef {
     /// The "top-most" (i.e. least specialized) specialization graph node that finalized the
     /// definition of `item`.
     ///
-    /// Example:
-    ///
-    /// ```text
-    /// #![feature(specialization)]
-    /// trait Tr {
-    ///     fn assoc(&self);
-    /// }
-    ///
-    /// impl<T> Tr for T {
-    ///     default fn assoc(&self) {}
-    /// }
-    ///
-    /// impl Tr for u8 {}
-    /// ```
-    ///
     /// If we start the leaf definition search at `impl Tr for u8`, that impl will be the
     /// `finalizing_node`, while `defining_node` will be the generic impl.
     ///

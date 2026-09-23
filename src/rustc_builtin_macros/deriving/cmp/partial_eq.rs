@@ -107,21 +107,6 @@ pub(crate) fn expand_deriving_partial_eq(
 /// ```
 ///
 /// ### Example 2
-/// ```text
-/// mod ty {
-///     pub type i32 = i32;
-/// }
-///
-/// // Here, `field_2` is of type `ty::i32`, which is a type alias for `i32`.
-/// // However, the function will not reorder the fields because the symbol for
-/// // `ty::i32` does not match the symbol for the primitive `i32`
-/// // ("ty::i32" != "i32").
-/// #[derive(PartialEq)]
-/// struct Struct {
-///     field_1: &'static str,
-///     field_2: ty::i32,
-/// }
-/// ```
 ///
 /// For enums, the discriminant is compared first, then the rest of the fields.
 ///

@@ -19,19 +19,6 @@ declare_lint! {
     /// The `multiple_supertrait_upcastable` lint detects when a dyn-compatible trait has multiple
     /// supertraits.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(multiple_supertrait_upcastable)]
-    /// trait A {}
-    /// trait B {}
-    ///
-    /// #[warn(multiple_supertrait_upcastable)]
-    /// trait C: A + B {}
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// To support upcasting with multiple supertraits, we need to store multiple vtables and this

@@ -2612,15 +2612,6 @@ pub(super) fn check_type_bounds<'tcx>(
 ///
 /// A note regarding the use of bound vars here:
 /// Imagine as an example
-/// ```text
-/// trait Family {
-///     type Member<C: Eq>;
-/// }
-///
-/// impl Family for VecFamily {
-///     type Member<C: Eq> = i32;
-/// }
-/// ```
 /// Here, we would generate
 /// ```ignore (pseudo-rust)
 /// forall<C> { Normalize(<VecFamily as Family>::Member<C> => i32) }

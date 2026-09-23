@@ -252,14 +252,6 @@ enum ParentSegmentArgs<'a> {
     NotSpecified,
     /// Parent segment does not exist (`reuse foo`) or we can not
     /// add generics to it:
-    /// ```text
-    /// mod to_reuse {
-    ///     fn foo() {}
-    /// }
-    ///
-    /// // Can't add generic args to module.
-    /// reuse to_reuse::foo;
-    /// ```
     Invalid,
 }
 

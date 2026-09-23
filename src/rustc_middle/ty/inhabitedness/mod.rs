@@ -3,30 +3,6 @@
 //! information needed to determine whether a type is inhabited given a
 //! `ParamEnv` and module ID.
 //!
-//! # Example
-//! ```text
-//! mod a {
-//!     pub mod b {
-//!         pub struct SecretlyUninhabited {
-//!             _priv: !,
-//!         }
-//!     }
-//! }
-//!
-//! mod c {
-//!     enum Void {}
-//!     pub struct AlsoSecretlyUninhabited {
-//!         _priv: Void,
-//!     }
-//!     mod d {
-//!     }
-//! }
-//!
-//! struct Foo {
-//!     x: a::b::SecretlyUninhabited,
-//!     y: c::AlsoSecretlyUninhabited,
-//! }
-//! ```
 //! In this code, the type `Foo` will only be visibly uninhabited inside the
 //! modules `b`, `c` and `d`. Calling `inhabited_predicate` on `Foo` will
 //! return `NotInModule(b) AND NotInModule(c)`.
@@ -162,33 +138,6 @@ impl<'tcx> Ty<'tcx> {
 
     /// Checks whether a type is visibly uninhabited from a particular module.
     ///
-    /// # Example
-    /// ```text
-    #[cfg_attr(bootstrap, doc = "#![feature(never_type)]")]
-    /// # fn main() {}
-    /// enum Void {}
-    /// mod a {
-    ///     pub mod b {
-    ///         pub struct SecretlyUninhabited {
-    ///             _priv: !,
-    ///         }
-    ///     }
-    /// }
-    ///
-    /// mod c {
-    ///     use super::Void;
-    ///     pub struct AlsoSecretlyUninhabited {
-    ///         _priv: Void,
-    ///     }
-    ///     mod d {
-    ///     }
-    /// }
-    ///
-    /// struct Foo {
-    ///     x: a::b::SecretlyUninhabited,
-    ///     y: c::AlsoSecretlyUninhabited,
-    /// }
-    /// ```
     /// In this code, the type `Foo` will only be visibly uninhabited inside the
     /// modules b, c and d. This effects pattern-matching on `Foo` or types that
     /// contain `Foo`.

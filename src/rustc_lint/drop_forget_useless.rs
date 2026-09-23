@@ -26,19 +26,6 @@ declare_lint! {
     /// and `core::ptr::drop_in_place` where the dropped type is a reference instead of
     /// an owned value.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// # fn operation_that_requires_mutex_to_be_unlocked() {} // just to make it compile
-    /// # let mutex = alloc::sync::Mutex::new(1); // just to make it compile
-    /// let mut lock_guard = mutex.lock();
-    /// core::mem::drop(&lock_guard); // Should have been drop(lock_guard), mutex
-    /// // still locked
-    /// operation_that_requires_mutex_to_be_unlocked();
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// Calling `drop` on a reference will only drop the

@@ -112,14 +112,6 @@
 //!
 //! Moreover, take the following:
 //!
-//! ```text
-//! # #![feature(exhaustive_patterns)]
-//! # let x = None::<!>;
-//! match x {
-//!   None => {}
-//! }
-//! ```
-//!
 //! On a normal type, we would identify `Some` as missing and tell the user. If `x: Option<!>`
 //! however (and `exhaustive_patterns` is on), it's ok to omit `Some`. When listing the constructors
 //! of a type, we must therefore track which can be omitted.

@@ -57,16 +57,6 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// We tweak the handling of parameters of unsized type slightly to avoid the need to create a
     /// local variable of unsized type. For example, consider this program:
     ///
-    /// ```text
-    /// #![feature(unsized_fn_params)]
-    /// # use core::fmt::Debug;
-    /// fn foo(_p: dyn Debug) {
-    ///     /* ... */
-    /// }
-    ///
-    /// fn bar(box_p: Box<dyn Debug>) { foo(*box_p); }
-    /// ```
-    ///
     /// Ordinarily, for sized types, we would compile the call `foo(*p)` like so:
     ///
     /// ```ignore (illustrative)

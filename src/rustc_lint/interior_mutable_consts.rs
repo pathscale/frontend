@@ -22,27 +22,6 @@ declare_lint! {
     /// The `const_item_interior_mutations` lint checks for calls which
     /// mutates an interior mutable const-item.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// use alloc::sync::Once;
-    ///
-    /// const INIT: Once = Once::new(); // using `INIT` will always create a temporary and
-    ///                                 // never modify it-self on use, should be a `static`
-    ///                                 // instead for shared use
-    ///
-    /// fn init() {
-    ///     INIT.call_once(|| {
-    ///         println!("Once::call_once first call");
-    ///     });
-    ///     INIT.call_once(|| {                          // this second will also print
-    ///         println!("Once::call_once second call"); // as each call to `INIT` creates
-    ///     });                                          // new temporary
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// Calling a method which mutates an interior mutable type has no effect as const-item

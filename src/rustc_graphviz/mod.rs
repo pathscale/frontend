@@ -34,67 +34,6 @@
 //! forming a diamond-shaped acyclic graph and then pointing to the fifth
 //! which is cyclic.
 //!
-//! ```text
-//! #![feature(rustc_private)]
-//!
-//! //! use crate::rustc_graphviz as dot;
-//!
-//! type Nd = isize;
-//! type Ed = (isize,isize);
-//! struct Edges(Vec<Ed>);
-//!
-//! pub fn render_to<W: Write>(output: &mut W) {
-//!     let edges = Edges(vec![(0,1), (0,2), (1,3), (2,3), (3,4), (4,4)]);
-//!     dot::render(&edges, output).unwrap()
-//! }
-//!
-//! impl<'a> dot::Labeller<'a> for Edges {
-//!     type Node = Nd;
-//!     type Edge = Ed;
-//!     fn graph_id(&'a self) -> dot::Id<'a> { dot::Id::new("example1").unwrap() }
-//!
-//!     fn node_id(&'a self, n: &Nd) -> dot::Id<'a> {
-//!         dot::Id::new(format!("N{}", *n)).unwrap()
-//!     }
-//! }
-//!
-//! impl<'a> dot::GraphWalk<'a> for Edges {
-//!     type Node = Nd;
-//!     type Edge = Ed;
-//!     fn nodes(&self) -> dot::Nodes<'a,Nd> {
-//!         // (assumes that |N| \approxeq |E|)
-//!         let &Edges(ref v) = self;
-//!         let mut nodes = Vec::with_capacity(v.len());
-//!         for &(s,t) in v {
-//!             nodes.push(s); nodes.push(t);
-//!         }
-//!         nodes.sort();
-//!         nodes.dedup();
-//!         nodes.into()
-//!     }
-//!
-//!     fn edges(&'a self) -> dot::Edges<'a,Ed> {
-//!         let &Edges(ref edges) = self;
-//!         (&edges[..]).into()
-//!     }
-//!
-//!     fn source(&self, e: &Ed) -> Nd { let &(s,_) = e; s }
-//!
-//!     fn target(&self, e: &Ed) -> Nd { let &(_,t) = e; t }
-//! }
-//!
-//! # pub fn main() { render_to(&mut Vec::new()) }
-//! ```
-//!
-//! ```text
-//! # pub fn render_to<W:std::io::Write>(output: &mut W) { unimplemented!() }
-//! pub fn main() {
-//!     use eko::file::File;
-//!     let mut f = File::create("example1.dot").unwrap();
-//!     render_to(&mut f)
-//! }
-//! ```
-//!
 //! Output from first example (in `example1.dot`):
 //!
 //! ```dot
@@ -138,59 +77,6 @@
 //! labeled with the &sube; character (specified using the HTML character
 //! entity `&sube`).
 //!
-//! ```text
-//! #![feature(rustc_private)]
-//!
-//! //! use crate::rustc_graphviz as dot;
-//!
-//! type Nd = usize;
-//! type Ed<'a> = &'a (usize, usize);
-//! struct Graph { nodes: Vec<&'static str>, edges: Vec<(usize,usize)> }
-//!
-//! pub fn render_to<W: Write>(output: &mut W) {
-//!     let nodes = vec!["{x,y}","{x}","{y}","{}"];
-//!     let edges = vec![(0,1), (0,2), (1,3), (2,3)];
-//!     let graph = Graph { nodes: nodes, edges: edges };
-//!
-//!     dot::render(&graph, output).unwrap()
-//! }
-//!
-//! impl<'a> dot::Labeller<'a> for Graph {
-//!     type Node = Nd;
-//!     type Edge = Ed<'a>;
-//!     fn graph_id(&'a self) -> dot::Id<'a> { dot::Id::new("example2").unwrap() }
-//!     fn node_id(&'a self, n: &Nd) -> dot::Id<'a> {
-//!         dot::Id::new(format!("N{}", n)).unwrap()
-//!     }
-//!     fn node_label(&self, n: &Nd) -> dot::LabelText<'_> {
-//!         dot::LabelText::LabelStr(self.nodes[*n].into())
-//!     }
-//!     fn edge_label(&self, _: &Ed<'_>) -> dot::LabelText<'_> {
-//!         dot::LabelText::LabelStr("&sube;".into())
-//!     }
-//! }
-//!
-//! impl<'a> dot::GraphWalk<'a> for Graph {
-//!     type Node = Nd;
-//!     type Edge = Ed<'a>;
-//!     fn nodes(&self) -> dot::Nodes<'a,Nd> { (0..self.nodes.len()).collect() }
-//!     fn edges(&'a self) -> dot::Edges<'a,Ed<'a>> { self.edges.iter().collect() }
-//!     fn source(&self, e: &Ed<'_>) -> Nd { let & &(s,_) = e; s }
-//!     fn target(&self, e: &Ed<'_>) -> Nd { let & &(_,t) = e; t }
-//! }
-//!
-//! # pub fn main() { render_to(&mut Vec::new()) }
-//! ```
-//!
-//! ```text
-//! # pub fn render_to<W:std::io::Write>(output: &mut W) { unimplemented!() }
-//! pub fn main() {
-//!     use eko::file::File;
-//!     let mut f = File::create("example2.dot").unwrap();
-//!     render_to(&mut f)
-//! }
-//! ```
-//!
 //! The third example is similar to the second, except now each node and
 //! edge now carries a reference to the string label for each node as well
 //! as that node's index. (This is another illustration of how to share
@@ -198,67 +84,6 @@
 //!
 //! The output from this example is the same as the second example: the
 //! Hasse-diagram for the subsets of the set `{x, y}`.
-//!
-//! ```text
-//! #![feature(rustc_private)]
-//!
-//! //! use crate::rustc_graphviz as dot;
-//!
-//! type Nd<'a> = (usize, &'a str);
-//! type Ed<'a> = (Nd<'a>, Nd<'a>);
-//! struct Graph { nodes: Vec<&'static str>, edges: Vec<(usize,usize)> }
-//!
-//! pub fn render_to<W: Write>(output: &mut W) {
-//!     let nodes = vec!["{x,y}","{x}","{y}","{}"];
-//!     let edges = vec![(0,1), (0,2), (1,3), (2,3)];
-//!     let graph = Graph { nodes: nodes, edges: edges };
-//!
-//!     dot::render(&graph, output).unwrap()
-//! }
-//!
-//! impl<'a> dot::Labeller<'a> for Graph {
-//!     type Node = Nd<'a>;
-//!     type Edge = Ed<'a>;
-//!     fn graph_id(&'a self) -> dot::Id<'a> { dot::Id::new("example3").unwrap() }
-//!     fn node_id(&'a self, n: &Nd<'a>) -> dot::Id<'a> {
-//!         dot::Id::new(format!("N{}", n.0)).unwrap()
-//!     }
-//!     fn node_label(&self, n: &Nd<'_>) -> dot::LabelText<'_> {
-//!         let &(i, _) = n;
-//!         dot::LabelText::LabelStr(self.nodes[i].into())
-//!     }
-//!     fn edge_label(&self, _: &Ed<'_>) -> dot::LabelText<'_> {
-//!         dot::LabelText::LabelStr("&sube;".into())
-//!     }
-//! }
-//!
-//! impl<'a> dot::GraphWalk<'a> for Graph {
-//!     type Node = Nd<'a>;
-//!     type Edge = Ed<'a>;
-//!     fn nodes(&'a self) -> dot::Nodes<'a,Nd<'a>> {
-//!         self.nodes.iter().map(|s| &s[..]).enumerate().collect()
-//!     }
-//!     fn edges(&'a self) -> dot::Edges<'a,Ed<'a>> {
-//!         self.edges.iter()
-//!             .map(|&(i,j)|((i, &self.nodes[i][..]),
-//!                           (j, &self.nodes[j][..])))
-//!             .collect()
-//!     }
-//!     fn source(&self, e: &Ed<'a>) -> Nd<'a> { let &(s,_) = e; s }
-//!     fn target(&self, e: &Ed<'a>) -> Nd<'a> { let &(_,t) = e; t }
-//! }
-//!
-//! # pub fn main() { render_to(&mut Vec::new()) }
-//! ```
-//!
-//! ```text
-//! # pub fn render_to<W:std::io::Write>(output: &mut W) { unimplemented!() }
-//! pub fn main() {
-//!     use eko::file::File;
-//!     let mut f = File::create("example3.dot").unwrap();
-//!     render_to(&mut f)
-//! }
-//! ```
 //!
 //! # References
 //!
