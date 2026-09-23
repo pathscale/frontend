@@ -173,6 +173,19 @@ pub struct Impl {
     pub self_type: String,
     pub trait_def_path: Option<String>,
     pub span: ByteSpan,
+    /// The associated items this block defines, in source order. Items a trait impl inherits
+    /// from the trait's defaults are not here: this block does not define them.
+    #[serde(default)]
+    pub items: Vec<ImplItem>,
+}
+
+/// One associated item an `impl` block defines. Its full [`Definition`] is in
+/// [`CrateFacts::definitions`] under the same `def_path`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ImplItem {
+    pub name: String,
+    pub kind: FactKind,
+    pub def_path: String,
 }
 
 /// Kind of a resolved use of a definition.
@@ -385,11 +398,28 @@ fn impl_fact(tcx: TyCtxt<'_>, local: LocalDefId) -> Impl {
         .ok()
         .flatten()
         .map(|trait_id| tcx.def_path_str(trait_id));
+    let items = hir_impl
+        .map(|hir_impl| {
+            hir_impl
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let item_id = item.owner_id.to_def_id();
+                    Some(ImplItem {
+                        name: tcx.opt_item_name(item_id)?.to_string(),
+                        kind: fact_kind(tcx.def_kind(item_id))?,
+                        def_path: tcx.def_path_str(item_id),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Impl {
         def_path: tcx.def_path_str(def_id),
         self_type,
         trait_def_path,
         span: byte_span(tcx, tcx.def_span(def_id)),
+        items,
     }
 }
 
@@ -868,6 +898,13 @@ mod tests {
         assert!(definition.fields.is_empty());
         assert!(definition.variants.is_empty());
         assert_eq!(serde_json::to_string(&definition).unwrap(), json);
+    }
+
+    #[test]
+    fn impls_serialized_without_items_read_with_none() {
+        let json = r#"{"def_path":"m::<impl S>","self_type":"S","trait_def_path":null,"span":{"file":"lib.rs","start":0,"end":9}}"#;
+        let fact: Impl = serde_json::from_str(json).unwrap();
+        assert!(fact.items.is_empty());
     }
 
     #[test]
