@@ -230,7 +230,7 @@ pub struct CrateFacts {
     #[serde(default)]
     pub unanalyzed_bodies: Vec<String>,
     /// No error was emitted and every body was type checked. When false, `references` is a
-    /// lower bound and the definitions, imports and impls are still whole.
+    /// lower bound and the definitions, imports and impls are unaffected.
     ///
     /// Serialized facts from before this field existed came only from runs with no error, so
     /// a missing field reads as true. [`Default`] is false: an empty value nobody filled in is
@@ -461,7 +461,7 @@ fn describe_shape(tcx: TyCtxt<'_>, local: LocalDefId, definition: &mut Definitio
 /// or a trait. `None` for any other node.
 ///
 /// Parameter patterns come from the body when there is one, because only the body keeps them
-/// whole; a declaration without a body (a required trait method, a foreign function) records
+/// intact; a declaration without a body (a required trait method, a foreign function) records
 /// just a name per parameter.
 fn fn_signature<'tcx>(tcx: TyCtxt<'tcx>, node: Node<'tcx>) -> Option<FnSignature> {
     let sig = node.fn_sig()?;
