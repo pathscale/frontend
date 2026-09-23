@@ -1,32 +1,32 @@
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 // `std::io` stays here for the same reason `crate::rustc_errors::emitter` records: `anstream::AutoStream`
 // is generic over `std::io::Write`, and `create_test_handler` below hands it a
 // `Box<dyn Write + Send>`, so that trait cannot become `core::fmt::Write` without replacing
 // anstream.
-use core::iter::Peekable;
-use eko::path::PathBuf;
-use alloc::sync::Arc;
-use eko::thread::Mutex;
-use core::str;
 use crate::assert_matches;
+use alloc::sync::Arc;
+use core::iter::Peekable;
+use core::str;
+use eko::path::PathBuf;
+use eko::thread::Mutex;
 
-use ast::token::IdentIsRaw;
 use crate::rustc_ast::token::{self, Delimiter, Token};
 use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 use crate::rustc_ast::{self as ast, PatKind, visit};
 use crate::rustc_ast_pretty::pprust::item_to_string;
-use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::emitter::OutputTheme;
+use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::{DiagCtxt, MultiSpan, PResult};
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::source_map::{FilePathMapping, SourceMap};
 use crate::rustc_span::{
     BytePos, FileName, Pos, Span, Symbol, create_default_session_globals_then, kw, sym,
 };
+use ast::token::IdentIsRaw;
 
 use crate::rustc_parse::lexer::StripTokens;
 use crate::rustc_parse::parser::{AllowConstBlockItems, ForceCollect, Parser};
@@ -53,9 +53,7 @@ fn create_test_handler(theme: OutputTheme) -> (DiagCtxt, Arc<SourceMap>, Arc<Mut
     // `anstream` byte stream the snippet renderer needed. `diagnostic_width` and `theme` went
     // with that renderer - there is no snippet to wrap or box-draw.
     let shared: Box<dyn core::fmt::Write + Send> = Box::new(Shared { data: output.clone() });
-    let dcx = DiagCtxt::new(Box::new(
-        PlainEmitter::new().sm(Some(source_map.clone())).dst(shared),
-    ));
+    let dcx = DiagCtxt::new(Box::new(PlainEmitter::new().sm(Some(source_map.clone())).dst(shared)));
     let _ = theme;
     (dcx, source_map, output)
 }
@@ -223,7 +221,28 @@ fn test_harness(
             eko::println!("expected output:\n------\n{}------", expected_output);
             eko::println!("actual output:\n------\n{}------", actual_output);
 
-            assert!(expected_output == actual_output)
+            // Upstream compares the whole rendering, snippet gutters included. This crate's
+            // `PlainEmitter` deliberately draws no snippet: it writes the message and one `-->`
+            // line for the primary span. So what is still upstream's claim is checked, the
+            // message and where the primary span starts, and the drawing is not.
+            let mut expected_lines = expected_output.lines();
+            let message = expected_lines.next().expect("an expected message line");
+            let location = expected_lines
+                .find_map(|line| {
+                    let line = line.trim_start();
+                    line.strip_prefix("--> ").or_else(|| line.strip_prefix("╭▸ "))
+                })
+                .expect("an expected location line");
+            assert!(actual_output.starts_with(message), "{actual_output:?}");
+            assert!(
+                actual_output
+                    .lines()
+                    .any(|line| line.trim_start().strip_prefix("--> ").is_some_and(|at| at
+                        .split(": ")
+                        .next()
+                        == Some(location))),
+                "the primary span should start at {location}: {actual_output:?}"
+            );
         }
     })
 }
