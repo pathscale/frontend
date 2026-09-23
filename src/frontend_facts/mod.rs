@@ -47,6 +47,7 @@ use crate::rustc_span::{FileName, Span};
 use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
 pub mod site;
+pub mod session;
 
 #[cfg(feature = "diagnostics")]
 pub mod diagnostics;
