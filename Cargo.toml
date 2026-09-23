@@ -36,7 +36,7 @@ required-features = ["diagnostics"]
 # resolver of 2 or later keeps the two graphs apart.
 resolver = "3"
 members = ["frontend_macros", "frontend_diag_template", "frontend_arena"]
-exclude = ["link-probe"]
+exclude = ["link-probe", "speed-fanout"]
 
 [features]
 # `nightly` gates the derives that come from the proc-macro crate. Upstream keeps it optional so
