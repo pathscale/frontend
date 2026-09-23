@@ -923,6 +923,23 @@ pub fn write_interface<'tcx>(tcx: TyCtxt<'tcx>) {
     }
 }
 
+/// Every item in the crate, with every HIR owner lowered first, as one stage.
+///
+/// `hir_crate_items` is the query every HIR consumer passes through before it reads an owner:
+/// `analysis` forces it before its first stage, and the facts extractor forces it first thing.
+/// Its walk (`rustc_middle::hir::map::hir_crate_items`) visits every owner from the crate root
+/// and used to lower each one, serially, the first time it touched it. Lowering is per owner
+/// (`lower_to_hir` is a query per `LocalDefId`) and one owner's lowering writes nothing another
+/// reads except through queries, so it is done up front instead, as a stage over the AST index
+/// (`rustc_ast_lowering::lower_every_owner`, whose header has the checks), and the walk then
+/// reads finished results. In a serial session the stage is a loop in index order on this
+/// thread, which is the same lowering in a slightly different order: index order is the def
+/// collector's pre-order walk, the old order was the HIR walk's.
+fn hir_crate_items(tcx: TyCtxt<'_>, (): ()) -> crate::rustc_middle::hir::ModuleItems {
+    crate::rustc_ast_lowering::lower_every_owner(tcx);
+    crate::rustc_middle::hir::map::hir_crate_items(tcx, ())
+}
+
 pub static DEFAULT_QUERY_PROVIDERS: LazyLock<Providers> = LazyLock::new(|| {
     let providers = &mut Providers::default();
     providers.queries.analysis = analysis;
@@ -937,6 +954,8 @@ pub static DEFAULT_QUERY_PROVIDERS: LazyLock<Providers> = LazyLock::new(|| {
     crate::rustc_expand::provide(&mut providers.queries);
     crate::rustc_const_eval::provide(providers);
     crate::rustc_middle::hir::provide(&mut providers.queries);
+    // After `rustc_middle::hir::provide`, which sets the plain one. See `hir_crate_items` below.
+    providers.queries.hir_crate_items = hir_crate_items;
     crate::rustc_borrowck::provide(&mut providers.queries);
     // The dependency graph is disabled, so there is nothing to serialise at session teardown.
     // Saving it would write an empty graph and then read it back as a cache miss on every query.

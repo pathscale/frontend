@@ -727,6 +727,87 @@ fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
     item
 }
 
+/// Lower every HIR owner in the AST index, as one stage, so that the reads which follow find
+/// finished results instead of lowering one owner at a time as they first touch it.
+///
+/// **Where it runs.** `rustc_interface::passes` calls this at the top of the `hir_crate_items`
+/// provider, which is the gateway every HIR consumer passes: `analysis` reaches it through
+/// `hir_module_ids` (the HIR id validator) or its own `ensure_done`, and the facts extractor
+/// forces it first thing. Before this, lowering happened inside that same query, serially, in
+/// the order its walk from the crate root first touched each owner. It still happens inside
+/// that query; it has only moved to the front of it and spread out.
+///
+/// **The input is the index itself, read by position.** Item `i` is `LocalDefId` `i`. Nothing
+/// is copied out of the index and no list of owners is built: the stage's input is `()` and
+/// its length is the index's, the same shape `frontend_facts::extract` uses over the
+/// definitions table.
+///
+/// **Which items lower, decided without touching the index.** An index entry is a `Steal`, and
+/// a `Steal` cannot be looked at safely while another thread may steal it: `Steal::steal`
+/// takes the write lock with `try_write` and panics if anyone holds a read. So the entry's
+/// `AstOwner` is never read here. The item asks `def_kind` instead, which the resolver fed when
+/// it created the definition (`TyCtxt::create_def`), before this query could run, and which any
+/// thread may read. Definitions whose kind is never a HIR owner (fields, variants, constructors,
+/// generic parameters, anonymous constants, closures, opaque types, synthetic coroutine bodies)
+/// are skipped: `lower_to_hir` on one of those only falls back to its parent owner, which has
+/// an item of its own. What is left is exactly the index's `Crate`, `Item`, `TraitItem`,
+/// `ImplItem` and `ForeignItem` entries, plus the `NestedUseTree` entries, which are `use`
+/// definitions like their parent and are lowered by it (see below). One kind of definition is
+/// in neither group: an item written inside an attribute's value expression. The def collector
+/// walks attributes and gives it a definition, the indexer does not (`visit_attribute`), so its
+/// entry is `NonOwner` and its query falls back to a parent whose HIR does not list it, and
+/// panics. The serial walk never asks for it; this stage does. The parser has already refused
+/// such an attribute with an error ("attribute value must be a literal"), and the facts
+/// extractor, which reads `def_span` for every definition, asked for it before this stage
+/// existed, so it is not a new failure for that entry point, but it is one for `check_source`.
+///
+/// **Owners do not depend on each other's lowering, with two exceptions, and neither forces an
+/// order.** Each owner's query steals only its own index entry and only its own disambiguator
+/// (`LoweringContext::new`), builds its HIR in a context of its own (`next_node_id`,
+/// `node_id_to_def_id`, `children`, `delayed_lints`, `bodies`, `attrs` are all fields of that
+/// context), allocates in the thread's own `hir_arena` (a `WorkerLocal`), and reads the resolver
+/// only through `&`. The exceptions are ordinary query dependencies, which the query system
+/// already orders: a nested `use` tree's query waits for its parent `use` item's
+/// (`fallback_to_ancestor`), and a delegation (`reuse`) item reads the signature and generics of
+/// the item it delegates to, which lowers that item. A thread that needs an owner another
+/// thread is lowering waits for that query; one that needs an owner nobody has started lowers
+/// it itself.
+///
+/// **Diagnostics come out in index order.** What an owner's lowering emits is its item's
+/// output, forwarded in item order by the stage's item hook. The one way an owner's lowering can
+/// land in another item's slot is the dependency above: a nested `use` tree's item, run before
+/// its parent's, lowers the parent. The only definitions between a `use` item and its nested
+/// trees are its other nested trees, which emit nothing of their own, so the order printed is
+/// the same. A delegation lowering its target out of order can move the target's lowering
+/// diagnostics to the delegation's slot; that needs the unstable `fn_delegation` feature and a
+/// target with a lowering error.
+pub fn lower_every_owner(tcx: TyCtxt<'_>) {
+    // Resolution, early lints and the index itself, on this thread, before any item runs: every
+    // item needs them, and the first item to ask would otherwise compute them inside its own
+    // slot. `registered_attr_tools` is read by every `LoweringContext::new`; asked for here so
+    // that whatever it emits is emitted before the stage, not by whichever item gets there first.
+    let len = tcx.index_ast(()).len();
+    let _ = tcx.registered_attr_tools(());
+    crate::rustc_data_structures::sync::run_stage((), len, |_, index| {
+        let def_id = LocalDefId::new(index);
+        match tcx.def_kind(def_id) {
+            DefKind::Variant
+            | DefKind::Field
+            | DefKind::Ctor(..)
+            | DefKind::TyParam
+            | DefKind::ConstParam
+            | DefKind::LifetimeParam
+            | DefKind::AnonConst
+            | DefKind::OpaqueTy
+            | DefKind::Closure
+            | DefKind::SyntheticCoroutineBody => {}
+            _ => {
+                let _ = tcx.lower_to_hir(def_id);
+            }
+        }
+    });
+}
+
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum ParamMode {
     /// Any path in a type context.

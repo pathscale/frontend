@@ -3,6 +3,10 @@
 //! It runs when the crate is fully expanded and its module structure is fully built.
 //! So it just walks through the crate and resolves all the expressions, types, etc.
 //!
+//! The walk is cut into units, one per item at module level, each walked by a visitor of its
+//! own and handing back what it produced; see `LateUnit` and the comment above it, and
+//! `research/late-resolution.md` for what stands between that and running the units as a stage.
+//!
 //! If you wonder why there's no `early.rs`, that's because it's split into three files -
 //! `build_reduced_graph.rs`, `macros.rs` and `imports.rs`.
 
@@ -52,8 +56,9 @@ use tracing::{debug, instrument, trace};
 
 use crate::rustc_resolve::{
     BindingError, BindingKey, Decl, DelegationFnSig, Finalize, IdentKey, LateDecl, LocalModule,
-    Module, ModuleOrUniformRoot, ParentScope, PathResult, Res, ResolutionError, Resolver, Segment,
-    Stage, TyCtxt, UseError, Used, path_names_to_string, rustdoc, with_owner,
+    MacroRulesScopeRef, Module, ModuleOrUniformRoot, ParentScope, PathResult, Res,
+    ResolutionError, Resolver, Segment, Stage, TyCtxt, UseError, Used, path_names_to_string,
+    rustdoc, with_owner,
 };
 
 mod diagnostics;
@@ -851,8 +856,14 @@ struct LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// Count the number of places a lifetime is used.
     lifetime_uses: FxHashMap<LocalDefId, LifetimeUseSet>,
 
-    /// `use` injections are delayed for better placement and deduplication.
-    use_injections: Vec<UseError<'tcx>>,
+    /// What this visitor's unit writes that is not read back while the crate is walked: owned
+    /// here, handed back by `into_output`, and merged into the resolver in unit order by
+    /// `Resolver::merge_late_units`. See `LateUnitOutput`.
+    out: LateUnitOutput<'ra, 'tcx>,
+
+    /// The `mod` item this visitor's unit is, when it is one. Its items are units of their own
+    /// (see `LateUnit`), so resolving it stops at its items instead of walking into them.
+    defer_children_of: Option<NodeId>,
 }
 
 impl<'ra, 'tcx> AsRef<Resolver<'ra, 'tcx>> for LateResolutionVisitor<'_, '_, 'ra, 'tcx> {
@@ -866,7 +877,8 @@ impl<'ra, 'tcx> AsMut<Resolver<'ra, 'tcx>> for LateResolutionVisitor<'_, '_, 'ra
     }
 }
 
-/// Walks the whole crate in DFS order, visiting each item, resolving names as it goes.
+/// Walks one unit of the crate (see `LateUnit`) in DFS order, visiting each item, resolving names
+/// as it goes.
 impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
     type Result = ();
 
@@ -1544,11 +1556,15 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
 }
 
 impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
-    fn new(resolver: &'a mut Resolver<'ra, 'tcx>) -> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
+    /// A visitor standing at `parent_scope`, with only the crate root's ribs pushed. The unit
+    /// driver (`Resolver::resolve_late_unit`) pushes the ribs of the modules a unit sits in.
+    fn new(
+        resolver: &'a mut Resolver<'ra, 'tcx>,
+        parent_scope: ParentScope<'ra>,
+    ) -> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         // During late resolution we only track the module component of the parent scope,
         // although it may be useful to track other components as well for diagnostics.
         let graph_root = resolver.graph_root;
-        let parent_scope = ParentScope::module(graph_root, resolver.arenas);
         let start_rib_kind = RibKind::Module(graph_root);
         LateResolutionVisitor {
             r: resolver,
@@ -1567,8 +1583,17 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             // errors at module scope should always be reported
             in_func_body: false,
             lifetime_uses: Default::default(),
-            use_injections: Vec::new(),
+            out: Default::default(),
+            defer_children_of: None,
         }
+    }
+
+    /// Everything this visitor's unit produced, moved out.
+    fn into_output(self) -> LateUnitOutput<'ra, 'tcx> {
+        let LateResolutionVisitor { mut out, diag_metadata, .. } = self;
+        let DiagMetadata { unused_labels, .. } = *diag_metadata;
+        out.unused_labels = unused_labels;
+        out
     }
 
     fn maybe_resolve_ident_in_lexical_scope(
@@ -2961,13 +2986,21 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         if mod_inner_docs {
                             this.resolve_doc_links(&item.attrs, MaybeExported::Ok(item.id));
                         }
+                        if this.defer_children_of == Some(item.id) {
+                            // This `mod` is a unit, and its items are the units after it, which
+                            // stand inside it on their own (`LateUnit`). What `walk_item` would
+                            // visit of the `mod` itself, short of its items, is its visibility
+                            // (its id, attributes, safety, name and spans resolve nothing), and
+                            // the `macro_rules` scope it leaves behind is worked out by
+                            // `collect_late_units`, with the same rule as below.
+                            this.visit_vis(&item.vis);
+                            return;
+                        }
                         let old_macro_rules = this.parent_scope.macro_rules;
                         visit::walk_item(this, item);
                         // Maintain macro_rules scopes in the same way as during early resolution
                         // for diagnostics and doc links.
-                        if item.attrs.iter().all(|attr| {
-                            !attr.has_name(sym::macro_use) && !attr.has_name(sym::macro_escape)
-                        }) {
+                        if !leaks_macro_rules(item) {
                             this.parent_scope.macro_rules = old_macro_rules;
                         }
                     })
@@ -3981,7 +4014,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         });
 
         let info = DelegationInfo { resolution_id };
-        self.r.delegation_infos.insert(self.r.current_owner.def_id, info);
+        // Keyed by this owner, so no other unit writes the entry; merged after the walk.
+        self.out.delegation_infos.push((self.r.current_owner.def_id, info));
 
         let Some(body) = &delegation.body else { return };
         self.with_rib(ValueNS, RibKind::FnOrCoroutine, |this| {
@@ -4642,7 +4676,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     is_call: source.is_call(),
                 };
 
-                this.use_injections.push(ue);
+                this.out.use_injections.push(ue);
             }
 
             PartialRes::new(Res::Err)
@@ -4746,7 +4780,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         }
                     } else {
                         // If there are suggested imports, the error reporting is delayed
-                        this.use_injections.push(UseError {
+                        this.out.use_injections.push(UseError {
                             err,
                             candidates,
                             node_id,
@@ -4824,8 +4858,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         // Check if we wrote `str::from_utf8` instead of `core::str::from_utf8`
                         let item_span = path.last().map_or(path_span, |segment| segment.ident.span);
 
-                        self.r.confused_type_with_std_module.insert(item_span, path_span);
-                        self.r.confused_type_with_std_module.insert(path_span, path_span);
+                        // Only read once resolution is over, so the unit keeps its inserts
+                        // and the merge replays them in unit order.
+                        self.out.confused_type_with_std_module.push((item_span, path_span));
+                        self.out.confused_type_with_std_module.push((path_span, path_span));
                     }
                 }
 
@@ -5580,7 +5616,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         });
 
         if let Some((seg, decl)) = unqualified {
-            self.r.potentially_unnecessary_qualifications.push(UnnecessaryQualification {
+            self.out.potentially_unnecessary_qualifications.push(UnnecessaryQualification {
                 decl,
                 node_id: finalize.node_id,
                 path_span: finalize.path_span,
@@ -5726,6 +5762,92 @@ impl<'ast> Visitor<'ast> for ItemInfoCollector<'_, 'ast, '_, '_> {
     }
 }
 
+// ---- late resolution, one unit at a time ----------------------------------------------------
+//
+// Late resolution used to be one `LateResolutionVisitor` walking the whole crate. It is now one
+// visitor per *unit*, an item at module level, each started from state rebuilt out of the
+// module graph rather than inherited from the unit before it, and each handing back what it
+// produced as an owned `LateUnitOutput` that is merged in unit order afterwards.
+//
+// That is the shape of a stage (`rustc_data_structures::sync::stages`): a function of the frozen
+// input and an index, one owned output per index. It is not a stage yet, and runs as a plain
+// loop, because a unit still resolves through `&mut Resolver`: the name lookups it calls
+// (`ident.rs`) record uses, privacy and ambiguity errors, lints and partial resolutions straight
+// into the resolver, lazily fill caches inside the module graph, and count `RefCell` borrows
+// that every unit shares. `research/late-resolution.md` lists every one of those writes and what
+// each has to become before the loop can be a stage. What this part settles is the unit
+// boundary itself: that every unit can start from rebuilt state, and that the writes already
+// moved into `LateUnitOutput` merge back to exactly what one walk wrote.
+
+/// Whether a `mod` item leaves the `macro_rules!` definitions made inside it in scope after it:
+/// `#[macro_use]`, or the old `#[macro_escape]`, on the module. Early resolution's rule, which
+/// late resolution follows for diagnostics and doc links.
+fn leaks_macro_rules(item: &Item) -> bool {
+    item.attrs.iter().any(|attr| attr.has_name(sym::macro_use) || attr.has_name(sym::macro_escape))
+}
+
+/// One unit of late resolution: an item at module level, or the crate root's own attributes.
+///
+/// # The granularity
+///
+/// A unit is every item directly in a module, the crate root's and every `mod` item's, found by
+/// descending through `mod` items and through nothing else. So:
+///
+/// - A `mod` item is a unit of its own, for what it resolves itself (its doc links and its
+///   visibility), and each of its items is a unit after it. Modules are only containers, and
+///   this crate's own source is a tree of them, so stopping at the root's items would leave a
+///   handful of huge units.
+/// - An `impl` or a `trait` is one unit with all of its associated items: they sit inside its
+///   generic parameter ribs, its `Self`, and its trait reference, which are state the unit would
+///   otherwise have to rebuild per associated item.
+/// - A function is one unit with its body, and with every item nested in the body, which sit in
+///   the body's anonymous block modules and ribs.
+///
+/// That is the finest cut whose starting state is nothing but the module graph: inside a module,
+/// between two of its items, the visitor holds only the ribs of the enclosing modules, the
+/// module, and the `macro_rules` scope, and all of those are rebuilt here.
+#[derive(Clone, Copy)]
+struct LateUnit<'ast, 'ra> {
+    /// The item, or `None` for unit 0, the crate root's inner attributes (their doc links).
+    item: Option<&'ast Item>,
+    /// The unit of the `mod` item this one sits directly in; `None` for the crate root's items.
+    parent: Option<usize>,
+    /// For a `mod` unit, the module it opens, which its items' units sit in.
+    opens: Option<LocalModule<'ra>>,
+    /// The `macro_rules` scope in force where the item is, which is the one piece of a walk's
+    /// state that depends on the items before it: every `macro_rules!` item before it in its
+    /// module moves the scope on, and so does a `#[macro_use]` module before it, by everything
+    /// defined inside that module (see `collect_late_units_in`).
+    macro_rules: MacroRulesScopeRef<'ra>,
+}
+
+/// What one unit of late resolution produces into resolver tables that nothing reads until
+/// resolution is over, owned by the unit and merged by `Resolver::merge_late_units`, in unit
+/// order.
+///
+/// Every entry is kept as the unit made it, in the order it made it, so that replaying the units
+/// in order performs exactly the inserts one crate walk performed, in the same order. That keeps
+/// every `IndexMap` here in the order the walk gave it, and it keeps the one table whose later
+/// insert overwrites an earlier one (`confused_type_with_std_module`, a `Span` to `Span` map two
+/// units can both write) ending on the value the walk ended on.
+#[derive(Default)]
+struct LateUnitOutput<'ra, 'tcx> {
+    /// Errors whose `use` suggestions are placed and deduplicated across the whole crate, in
+    /// `report_with_use_injections`. Concatenated.
+    use_injections: Vec<UseError<'tcx>>,
+    /// Labels the unit declared and never used, which become `UNUSED_LABELS` lints. A label is
+    /// declared and used inside one function body, so one unit, and the lint buffer keeps lints
+    /// by node, so the order units buffer them in does not reach the output.
+    unused_labels: FxIndexMap<NodeId, Span>,
+    /// Inserts into `Resolver::confused_type_with_std_module`, in order.
+    confused_type_with_std_module: Vec<(Span, Span)>,
+    /// Pushes onto `Resolver::potentially_unnecessary_qualifications`, read by `check_unused`.
+    potentially_unnecessary_qualifications: Vec<UnnecessaryQualification<'ra>>,
+    /// Inserts into `Resolver::delegation_infos`, keyed by the delegation item's own owner, so
+    /// no two units write one key.
+    delegation_infos: Vec<(LocalDefId, DelegationInfo)>,
+}
+
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Returns the `use` and `extern crate` items of the crate, for use by `check_unused`.
     pub(crate) fn late_resolve_crate<'ast>(
@@ -5733,25 +5855,179 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         krate: &'ast Crate,
     ) -> (Vec<&'ast Item>, Vec<UseError<'tcx>>) {
         with_owner(self, CRATE_NODE_ID, |this| {
+            // Serial, and before any unit: it writes what the units read (lifetime counts,
+            // delegation signatures, generic argument suggestions), for every item.
             let mut info_collector = ItemInfoCollector { r: this, use_items: Vec::new() };
             visit::walk_crate(&mut info_collector, krate);
             let use_items = info_collector.use_items;
-            let mut late_resolution_visitor = LateResolutionVisitor::new(this);
-            late_resolution_visitor
-                .resolve_doc_links(&krate.attrs, MaybeExported::Ok(CRATE_NODE_ID));
-            visit::walk_crate(&mut late_resolution_visitor, krate);
-            let LateResolutionVisitor { use_injections, diag_metadata, .. } =
-                late_resolution_visitor;
-            for (id, span) in diag_metadata.unused_labels.iter() {
-                this.lint_buffer.buffer_lint(
+
+            // The one `ParentScope` every unit's scope is made from: the crate root, and the
+            // empty `macro_rules` scope allocated once, as the single visitor allocated it.
+            let root_scope = ParentScope::module(this.graph_root, this.arenas);
+            let units = this.collect_late_units(krate, root_scope.macro_rules);
+
+            // One unit after another, in the order the crate walk visited them. See the comment
+            // above `leaks_macro_rules` for why this is a loop and not a stage.
+            let mut outputs = Vec::with_capacity(units.len());
+            for index in 0..units.len() {
+                outputs.push(this.resolve_late_unit(krate, root_scope, &units, index));
+            }
+            let use_injections = this.merge_late_units(outputs);
+            (use_items, use_injections)
+        })
+    }
+
+    /// Every unit of the crate, in the order a walk of the crate reaches them: unit 0 for the
+    /// crate root's attributes, then its items, each `mod` item followed by its own items.
+    fn collect_late_units<'ast>(
+        &self,
+        krate: &'ast Crate,
+        root_macro_rules: MacroRulesScopeRef<'ra>,
+    ) -> Vec<LateUnit<'ast, 'ra>> {
+        let mut units =
+            vec![LateUnit { item: None, parent: None, opens: None, macro_rules: root_macro_rules }];
+        let mut macro_rules = root_macro_rules;
+        self.collect_late_units_in(&krate.items, None, &mut macro_rules, &mut units);
+        units
+    }
+
+    /// The units for `items`, the items of the module opened by unit `parent`, and the
+    /// `macro_rules` scope each one starts in.
+    ///
+    /// `macro_rules` is the scope in force before the first of `items` and is left at the scope
+    /// in force after the last, by the rules `resolve_item` applies as it walks: a `macro_rules!`
+    /// item moves it to the scope that item's definition produced, and a module puts it back to
+    /// what it was before the module unless the module is `#[macro_use]`. Those rules read only
+    /// the items and tables early resolution finished writing, so the whole sequence is known
+    /// before any unit runs.
+    fn collect_late_units_in<'ast>(
+        &self,
+        items: &'ast [Box<Item>],
+        parent: Option<usize>,
+        macro_rules: &mut MacroRulesScopeRef<'ra>,
+        units: &mut Vec<LateUnit<'ast, 'ra>>,
+    ) {
+        for item in items {
+            let item: &'ast Item = item;
+            let index = units.len();
+            // The module a `mod` item opens, found the way `resolve_item` finds it.
+            let opens = match item.kind {
+                ItemKind::Mod(..) => {
+                    let def_id = self.owner_def_id(item.id).to_def_id();
+                    Some(self.expect_module(def_id).expect_local())
+                }
+                _ => None,
+            };
+            units.push(LateUnit { item: Some(item), parent, opens, macro_rules: *macro_rules });
+            match &item.kind {
+                ItemKind::MacroDef(_, macro_def) if macro_def.macro_rules => {
+                    *macro_rules = self.macro_rules_scopes[&self.owner_def_id(item.id)];
+                }
+                ItemKind::Mod(_, _, mod_kind) => {
+                    let before = *macro_rules;
+                    if let ModKind::Loaded(items, ..) = mod_kind {
+                        self.collect_late_units_in(items, Some(index), macro_rules, units);
+                    }
+                    if !leaks_macro_rules(item) {
+                        *macro_rules = before;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Resolve unit `index` of `units` with a visitor of its own, and hand back what it
+    /// produced.
+    ///
+    /// The visitor starts where the crate walk stood when it reached the unit's item: inside the
+    /// ribs of every enclosing module (a module's value and type ribs, and the item lifetime
+    /// rib its `mod` item pushed), with that module as the scope's module and the unit's
+    /// `macro_rules` scope. Everything else a walk holds between two items of a module is empty
+    /// there (label ribs, the trait reference, elision candidates, the diagnostic metadata the
+    /// items before it set and restored), so a fresh visitor has it already.
+    ///
+    /// One piece of state is *not* carried over from the unit before, on purpose:
+    /// `last_block_rib`, the last block a walk left, which diagnostics consult for "the binding
+    /// is available in a different scope in the same function". A function resets it on entry to
+    /// its body, but nothing else did, so an unresolved name in a later `const`, `static` or
+    /// type could be pointed at a block of an earlier item, in a message that calls it the same
+    /// function. Each unit starts without one.
+    fn resolve_late_unit<'ast>(
+        &mut self,
+        krate: &'ast Crate,
+        root_scope: ParentScope<'ra>,
+        units: &[LateUnit<'ast, 'ra>],
+        index: usize,
+    ) -> LateUnitOutput<'ra, 'tcx> {
+        let unit = units[index];
+        // The modules the unit sits in, outermost first, from its chain of `mod` units.
+        let mut enclosing: SmallVec<[LocalModule<'ra>; 8]> = SmallVec::new();
+        let mut up = unit.parent;
+        while let Some(parent) = up {
+            let parent = &units[parent];
+            enclosing.push(parent.opens.expect("a late unit's parent is a `mod` unit"));
+            up = parent.parent;
+        }
+        enclosing.reverse();
+        let module = enclosing.last().map_or(root_scope.module, |module| module.to_module());
+        let parent_scope = ParentScope { module, macro_rules: unit.macro_rules, ..root_scope };
+
+        let mut visitor = LateResolutionVisitor::new(self, parent_scope);
+        for &module in &enclosing {
+            visitor.ribs[ValueNS].push(Rib::new(RibKind::Module(module)));
+            visitor.ribs[TypeNS].push(Rib::new(RibKind::Module(module)));
+            visitor.lifetime_ribs.push(LifetimeRib::new(LifetimeRibKind::Item));
+        }
+        match unit.item {
+            None => visitor.resolve_doc_links(&krate.attrs, MaybeExported::Ok(CRATE_NODE_ID)),
+            Some(item) => {
+                if unit.opens.is_some() {
+                    visitor.defer_children_of = Some(item.id);
+                }
+                visitor.visit_item(item);
+            }
+        }
+        visitor.into_output()
+    }
+
+    /// Merge every unit's output into the resolver, in unit order, and hand back the `use`
+    /// injections for `report_errors`.
+    ///
+    /// Runs after every unit, so the `UNUSED_LABELS` lints land after every lint a unit buffered
+    /// on the same node, where the single walk put them.
+    fn merge_late_units(
+        &mut self,
+        outputs: Vec<LateUnitOutput<'ra, 'tcx>>,
+    ) -> Vec<UseError<'tcx>> {
+        let mut use_injections = Vec::new();
+        for output in outputs {
+            let LateUnitOutput {
+                use_injections: unit_use_injections,
+                unused_labels,
+                confused_type_with_std_module,
+                potentially_unnecessary_qualifications,
+                delegation_infos,
+            } = output;
+            use_injections.extend(unit_use_injections);
+            for (id, span) in unused_labels {
+                self.lint_buffer.buffer_lint(
                     UNUSED_LABELS,
-                    *id,
-                    *span,
+                    id,
+                    span,
                     crate::rustc_resolve::diagnostics::UnusedLabel,
                 );
             }
-            (use_items, use_injections)
-        })
+            for (item_span, path_span) in confused_type_with_std_module {
+                self.confused_type_with_std_module.insert(item_span, path_span);
+            }
+            self.potentially_unnecessary_qualifications
+                .extend(potentially_unnecessary_qualifications);
+            for (def_id, info) in delegation_infos {
+                self.delegation_infos.insert(def_id, info);
+            }
+        }
+        use_injections
     }
 }
 
