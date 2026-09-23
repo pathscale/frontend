@@ -30,7 +30,7 @@ quote = "^1.0.47"
 # `version` alongside `path` is what makes this publishable: crates.io rejects a path dependency
 # that carries no version, because a path means nothing to anyone downloading the package. The
 # path is still what a local build uses.
-frontend_diag_template = { path = "../frontend_diag_template", version = "0.1.0" }
+frontend_diag_template = { path = "../frontend_diag_template", version = "0.1.1" }
 # `visit-mut` as well as `full`: `type_ir_derives` uses `syn::visit_mut::VisitMut`. In a workspace
 # build another crate happened to turn that feature on and it was never declared here; packaged on
 # its own there is nobody else to turn it on, and the build fails with "could not find `visit_mut`
