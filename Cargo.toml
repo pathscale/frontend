@@ -27,12 +27,12 @@ path = "src/bin/frontend_facts.rs"
 # **Load-bearing for `no_std`.** Without it cargo unifies features across the host and target
 # graphs, so `frontend_macros` - a proc macro, which may perfectly well use `std` - pulled
 # `indexmap`'s default features, and `indexmap/std` arrived in `frontend`'s own build. The symptom
-# is not a feature complaint: it is `E0152, found duplicate lang item eh_personality ... first
-# defined in crate std (which indexmap depends on)` in `frontend_panic_runtime`, which is the one
-# crate whose lang items collide with std's. A resolver of 2 or later keeps the two graphs apart.
+# is not a feature complaint: it is a duplicate lang item first defined in crate std (which
+# indexmap depends on) in a `no_std` binary, whose own `#[panic_handler]` collides with std's. A
+# resolver of 2 or later keeps the two graphs apart.
 resolver = "3"
 members = ["frontend_macros", "frontend_diag_template", "frontend_arena"]
-exclude = ["frontend_panic_runtime"]
+exclude = ["link-probe"]
 
 [features]
 # `nightly` gates the derives that come from the proc-macro crate. Upstream keeps it optional so

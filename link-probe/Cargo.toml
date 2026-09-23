@@ -1,0 +1,29 @@
+[package]
+name = "link-probe"
+version = "0.0.0"
+edition = "2024"
+description = "the smallest no_std binary that links frontend, so its link line can be read"
+publish = false
+
+# Outside the workspace on purpose: `panic = "abort"` below is a profile setting, and profiles
+# apply to a whole build. Inside the workspace it would also abort frontend's own tests and
+# builds, which unwind to recover from a fatal error. Out here it covers only this binary.
+[[bin]]
+name = "link-probe"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+frontend = { path = ".." }
+# The probe's `#[global_allocator]`. A `no_std` binary has none until it names one, and
+# `frontend` allocates on every path.
+ekostd = { version = "0.2.2" }
+
+# Stable Rust gives a `no_std` binary no way to unwind: the personality routine is a nightly-only
+# lang item. So the probe aborts, which needs nothing but the stable `#[panic_handler]`.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

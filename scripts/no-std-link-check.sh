@@ -11,9 +11,9 @@
 # # Why there is a binary in a library repository
 #
 # A library has no link line. It is objects and metadata, and whether `libstd` ends up beside it is
-# decided later by whoever links it. `frontend_panic_runtime` carries `src/bin/link-probe.rs` for
-# exactly this: the smallest binary that links `frontend` and the two lang items a `no_std` binary
-# needs. It does nothing when run. Its whole purpose is to have a link line.
+# decided later by whoever links it. `link-probe/` is for exactly this: the smallest `no_std`
+# binary that links `frontend`, built on stable with `panic = "abort"`. It does nothing when run.
+# Its whole purpose is to have a link line.
 #
 # **It builds.** That is the cost: minutes, against seconds for the source check. Run it before
 # believing anything about what this crate links.
@@ -28,7 +28,7 @@ trap 'rm -f "$err"' EXIT INT TERM
 # Keep cargo's exit status and its stderr, and treat them separately from an empty result. Those
 # are different failures: a build that broke has a message worth printing, and a tree that was
 # already built prints no link args at all because cargo never re-invokes rustc.
-args=$(cargo rustc -p frontend_panic_runtime --bin link-probe -- --print=link-args 2>"$err") || {
+args=$(cargo rustc --manifest-path link-probe/Cargo.toml --bin link-probe -- --print=link-args 2>"$err") || {
     echo "no-std-link-check: the build failed, so there is no link line to read." >&2
     echo "cargo said:" >&2
     tail -30 "$err" >&2
@@ -37,8 +37,8 @@ args=$(cargo rustc -p frontend_panic_runtime --bin link-probe -- --print=link-ar
 
 if [ -z "$args" ]; then
     # Nothing to rebuild. Dirty just the probe and ask again; it is one small file.
-    touch frontend_panic_runtime/src/bin/link-probe.rs
-    args=$(cargo rustc -p frontend_panic_runtime --bin link-probe -- --print=link-args 2>"$err") || {
+    touch link-probe/src/main.rs
+    args=$(cargo rustc --manifest-path link-probe/Cargo.toml --bin link-probe -- --print=link-args 2>"$err") || {
         echo "no-std-link-check: the build failed on the forced relink." >&2
         tail -30 "$err" >&2
         exit 2
