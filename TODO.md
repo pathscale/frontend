@@ -13,8 +13,11 @@ to make an error go away: port the code.
 - The global context and both arenas are freed, not leaked. `FreeOnDrop` in
   `rustc_interface/passes.rs` makes upstream's `Anchor` promise on stable (see the
   comment there).
-- `frontend_panic_runtime` is excluded from the workspace. A library does not define a
-  panic runtime; delete the crate once nothing names it.
+- `frontend_panic_runtime` is deleted. It needed nightly (the `eh_personality` lang item and
+  `alloc::panicking`), and stable gives a `no_std` binary no way to unwind. A binary on stable
+  links `std`, which brings unwinding and `catch_unwind`, or sets `panic = "abort"` and supplies
+  a `#[panic_handler]`, as `link-probe/` does. The published 0.1.0 stays on crates.io for
+  EKOPathRS, which is still on a nightly toolchain.
 - About 3,700 warnings remain, nearly all unused imports. The one real defect they
   pointed at, `Allocation::as_mut_ptr` recursing, is fixed. Treat
   `unconditional_recursion` and `unreachable` warnings as bugs.
