@@ -1,57 +1,19 @@
-#[allow(unused_imports)]
-use {alloc::vec::Vec};
-// Allows the macro invocation below to work
-use crate as rustc_index;
-
 crate::rustc_index::newtype_index! {
     #[orderable]
     #[max = 0xFFFF_FFFA]
     struct MyIdx {}
 }
 
+// Upstream asserts that `Option<MyIdx>` nests five deep in four bytes, using the values above
+// `MAX` as niches. That needs a pattern type, which is nightly-only, so here the index is a plain
+// `u32` with no niche and the first `Option` is what adds a tag (see `index_newtype.rs` in
+// `frontend_macros`). The test pins that layout instead.
 #[test]
 fn index_size_is_optimized() {
     assert_eq!(size_of::<MyIdx>(), 4);
-    // Uses 0xFFFF_FFFB
-    assert_eq!(size_of::<Option<MyIdx>>(), 4);
-    // Uses 0xFFFF_FFFC
-    assert_eq!(size_of::<Option<Option<MyIdx>>>(), 4);
-    // Uses 0xFFFF_FFFD
-    assert_eq!(size_of::<Option<Option<Option<MyIdx>>>>(), 4);
-    // Uses 0xFFFF_FFFE
-    assert_eq!(size_of::<Option<Option<Option<Option<MyIdx>>>>>(), 4);
-    // Uses 0xFFFF_FFFF
-    assert_eq!(size_of::<Option<Option<Option<Option<Option<MyIdx>>>>>>(), 4);
-    // Uses a tag
-    assert_eq!(size_of::<Option<Option<Option<Option<Option<Option<MyIdx>>>>>>>(), 8);
+    assert_eq!(size_of::<Option<MyIdx>>(), 8);
 }
 
-#[test]
-fn range_iterator_iterates_forwards() {
-    let range = MyIdx::from_u32(1)..MyIdx::from_u32(4);
-    assert_eq!(
-        range.collect::<Vec<_>>(),
-        [MyIdx::from_u32(1), MyIdx::from_u32(2), MyIdx::from_u32(3)]
-    );
-}
-
-#[test]
-fn range_iterator_iterates_backwards() {
-    let range = MyIdx::from_u32(1)..MyIdx::from_u32(4);
-    assert_eq!(
-        range.rev().collect::<Vec<_>>(),
-        [MyIdx::from_u32(3), MyIdx::from_u32(2), MyIdx::from_u32(1)]
-    );
-}
-
-#[test]
-fn range_count_is_correct() {
-    let range = MyIdx::from_u32(1)..MyIdx::from_u32(4);
-    assert_eq!(range.count(), 3);
-}
-
-#[test]
-fn range_size_hint_is_correct() {
-    let range = MyIdx::from_u32(1)..MyIdx::from_u32(4);
-    assert_eq!(range.size_hint(), (3, Some(3)));
-}
+// Upstream's four `range_*` tests iterated `MyIdx..MyIdx`, which needs `impl Step`, which is
+// nightly-only (`step_trait`). The macro does not emit it, so those tests are gone rather than
+// ported; iterate `(a.index()..b.index()).map(MyIdx::from_usize)` instead.

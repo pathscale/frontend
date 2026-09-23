@@ -86,7 +86,8 @@ where
     assert!(result.is_ok());
 
     let bytes = output.lock();
-    let actual_output = str::from_utf8(&bytes).unwrap();
+    // The capture is a `String` here, not upstream's `Vec<u8>`, so there is nothing to decode.
+    let actual_output = bytes.as_str();
     eko::println!("expected output:\n------\n{}------", expected_output);
     eko::println!("actual output:\n------\n{}------", actual_output);
 
@@ -218,7 +219,7 @@ fn test_harness(
             let expected_output = &expected_output[1..];
 
             let bytes = output.lock();
-            let actual_output = str::from_utf8(&bytes).unwrap();
+            let actual_output = bytes.as_str();
             eko::println!("expected output:\n------\n{}------", expected_output);
             eko::println!("actual output:\n------\n{}------", actual_output);
 

@@ -518,6 +518,8 @@ impl<const LEN: usize> ByteArray for [u8; LEN] {
 #[cfg(test)]
 #[rustfmt::skip]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::odht::FxHashFn;
 

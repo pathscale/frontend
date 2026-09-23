@@ -1,5 +1,6 @@
 //! A test for the logic that updates the state in a `ResultsCursor` during seek.
 
+use alloc::boxed::Box;
 use core::marker::PhantomData;
 
 use crate::rustc_data_structures::thin_vec::ThinVec;
@@ -265,7 +266,11 @@ fn test_cursor<D: Direction>(analysis: MockAnalysis<'_, D>) {
             After(loc) => cursor.seek_after_primary_effect(loc),
         }
 
-        assert_eq!(cursor.get(), &cursor.analysis().expected_state_at_target(targ));
+        assert_eq!(
+            cursor.get(),
+            &cursor.analysis().expected_state_at_target(targ),
+            "seeking to {targ:?}",
+        );
     };
 
     // Seek *to* every possible `SeekTarget` *from* every possible `SeekTarget`.
@@ -276,27 +281,29 @@ fn test_cursor<D: Direction>(analysis: MockAnalysis<'_, D>) {
     for from in every_target() {
         seek_to_target(from);
 
+        // Upstream printed `from` and `to` with `dbg!` on every pair, which `no_std` has no
+        // `std::io::stderr` for. The target that failed is in the assertion message instead.
         for to in every_target() {
-            dbg!(from);
-            dbg!(to);
             seek_to_target(to);
             seek_to_target(from);
         }
     }
 }
 
+// `MockAnalysis` borrows the body for the same `'tcx` the body is generic over, so the borrow
+// has to outlive the body's destructor, and dropck rejects that for a stack local (E0597) here,
+// where `#[may_dangle]` is not available to the `Drop` impls inside `Body`. So the body is leaked
+// instead. It is a few blocks, once per test.
 #[test]
 fn backward_cursor() {
-    let body = mock_body();
-    let body = &body;
+    let body: &_ = Box::leak(Box::new(mock_body()));
     let analysis = MockAnalysis { body, dir: PhantomData::<Backward> };
     test_cursor(analysis)
 }
 
 #[test]
 fn forward_cursor() {
-    let body = mock_body();
-    let body = &body;
+    let body: &_ = Box::leak(Box::new(mock_body()));
     let analysis = MockAnalysis { body, dir: PhantomData::<Forward> };
     test_cursor(analysis)
 }

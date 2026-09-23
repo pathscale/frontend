@@ -4,6 +4,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 use core::fmt::Debug;
 use eko::file as fs;
+use eko::file::TempDir;
 
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext};
 
@@ -36,8 +37,10 @@ fn check_round_trip<
 >(
     values: Vec<T>,
 ) {
-    let tmpfile = tempfile::NamedTempFile::new().unwrap();
-    let tmpfile = tmpfile.path();
+    // `eko::file::TempDir` in place of `tempfile::NamedTempFile`: the encoder takes an
+    // `eko::path::Path`, and the directory removes the file with itself on drop.
+    let tmpdir = TempDir::new("opaque-round-trip-", "").unwrap();
+    let tmpfile = tmpdir.path().join("encoded");
 
     let mut encoder = FileEncoder::new(&tmpfile).unwrap();
     for value in &values {
@@ -300,8 +303,8 @@ fn test_cell() {
 
 #[test]
 fn test_flush_strategy() {
-    let tmpfile = tempfile::NamedTempFile::new().unwrap();
-    let tmpfile = tmpfile.path();
+    let tmpdir = TempDir::new("opaque-flush-", "").unwrap();
+    let tmpfile = tmpdir.path().join("encoded");
 
     // Small write that is explicitly flushed, and then a chunk larger than BUF_SIZE (64 KiB).
     // to hit `write_all_cold_path`.

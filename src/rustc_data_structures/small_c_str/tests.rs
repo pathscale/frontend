@@ -9,6 +9,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::*;
+// `super::*` brings `core::ffi`, which has `CStr` but not the owned `CString`. `alloc::ffi`
+// has it, under the same name, so `ffi::CString` below reads as it did upstream.
+use alloc::ffi;
 
 #[test]
 fn short() {

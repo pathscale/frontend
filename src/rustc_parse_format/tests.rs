@@ -553,7 +553,7 @@ fn asm_concat() {
     let mut parser = Parser::new(asm, None, Some(asm_pre.into()), false, ParseMode::InlineAsm);
     assert!(!parser.is_source_literal);
     assert_eq!(parser.by_ref().collect::<Vec<Piece<'static>>>(), &[Lit(asm)]);
-    assert_eq!(parser.line_spans, &[]);
+    assert_eq!(parser.line_spans, &[] as &[core::ops::Range<usize>]);
 }
 
 #[test]
@@ -573,7 +573,7 @@ fn diagnostic_format_flags() {
         }
     );
 
-    assert_eq!(parser.line_spans, &[]);
+    assert_eq!(parser.line_spans, &[] as &[core::ops::Range<usize>]);
     assert!(parser.errors.is_empty());
 }
 
@@ -594,7 +594,7 @@ fn diagnostic_format_mod() {
         }
     );
 
-    assert_eq!(parser.line_spans, &[]);
+    assert_eq!(parser.line_spans, &[] as &[core::ops::Range<usize>]);
     assert!(parser.errors.is_empty());
 }
 #[test]

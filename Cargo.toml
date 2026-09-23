@@ -107,6 +107,18 @@ unicode-properties = { version = "0.1.4", default-features = false, features = [
 unicode-security = "0.1.0"
 unicode-width = "0.2.2"
 
+# The vendored upstream unit tests, at the versions upstream tested with. They link only into the
+# `cargo test` harness, which brings `std` itself; the library build never sees them.
+[dev-dependencies]
+# `rustc_lexer`'s snapshot tests.
+expect-test = "1.4.0"
+# `odht`'s property tests.
+quickcheck = "1"
+# `odht`'s property tests compare against an `FxHashMap`, which quickcheck can only generate as a
+# `std` `HashMap`. The `rustc-hash` above is built without `std` and so has no such alias; this
+# is the 1.1 that upstream odht used, renamed so it cannot be mistaken for the real dependency.
+rustc_hash_std = { package = "rustc-hash", version = "1.1.0" }
+
 [profile.release]
 debug = false
 incremental = false
