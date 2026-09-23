@@ -48,6 +48,8 @@ use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
 pub mod site;
 
+#[cfg(feature = "diagnostics")] pub mod diagnostics;
+
 /// Byte range inside one source file, relative to that file's start.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ByteSpan {

@@ -62,3 +62,28 @@ crate can read as clean and stop compiling the moment the attribute lands.
 
 Whatever you rebase onto, rebuild the sysroot from the same commit and update `CFG_VERSION`
 together with it. They are one decision in two files.
+
+## rust-analyzer
+
+```
+rust-lang/rust-analyzer
+commit e8f7e90aa3
+licence MIT OR Apache-2.0
+```
+
+`src/frontend_facts/diagnostics/structure.rs` ports the syntax-level checks of
+rust-analyzer's `ide-diagnostics` onto `rustc_ast`, with their codes, severities, messages and
+tests. From `crates/ide-diagnostics/src/handlers`: `break_outside_of_loop.rs`,
+`return_outside_function.rs`, `await_outside_of_async.rs`, `undeclared_label.rs`,
+`unreachable_label.rs`, `incorrect_case.rs`, `useless_braces.rs`, `remove_trailing_return.rs`,
+`remove_unnecessary_else.rs`, `field_shorthand.rs`, `missing_body.rs`, `duplicate_field.rs` and
+`union_expr_must_have_exactly_one_field.rs`. The detection logic behind them comes from
+`crates/hir-def/src/expr_store/lower.rs` (label ribs and `await` contexts), `crates/hir-ty/src/infer`
+(breakable contexts, `return` outside a body, duplicate and union fields),
+`crates/hir-ty/src/diagnostics/expr.rs` (trailing `return`, unnecessary `else`),
+`crates/hir-ty/src/diagnostics/decl_check.rs` and `decl_check/case_conv.rs` (naming rules and case
+conversion), and `crates/ide-diagnostics/src/lib.rs` (lint levels and groups). The annotation
+reader in its tests follows `crates/test-utils/src/lib.rs`.
+
+Where a check needs name resolution or types in rust-analyzer, the port keeps the part the syntax
+decides; the module header of `structure.rs` lists each narrowing.
