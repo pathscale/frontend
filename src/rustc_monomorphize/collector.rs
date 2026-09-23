@@ -212,7 +212,7 @@ use core::cell::OnceCell;
 use core::ops::ControlFlow;
 
 use crate::rustc_data_structures::fx::FxIndexMap;
-use crate::rustc_data_structures::sync::{Lock, par_for_each_in};
+use crate::rustc_data_structures::sync::Lock;
 use crate::rustc_data_structures::unord::{UnordMap, UnordSet};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::InlineAttr;
@@ -1941,14 +1941,16 @@ pub(crate) fn collect_crate_mono_items<'tcx>(
     };
     let recursion_limit = tcx.recursion_limit();
 
+    // A plain loop: monomorphization collection is not on this crate's analysis path, so it is
+    // not worth a stage. It was a `par_for_each_in` over the roots.
     tcx.sess.time("monomorphization_collector_graph_walk", || {
-        par_for_each_in(roots, |root| {
+        for root in &roots {
             collect_items_root(tcx, dummy_spanned(*root), &state, recursion_limit);
-        });
+        }
     });
 
-    // The set of MonoItems was created in an inherently indeterministic order because
-    // of parallelism. We sort it here to ensure that the output is deterministic.
+    // The set of MonoItems is sorted here so the output does not depend on the order the walk
+    // visited them in (upstream's walk was parallel, and the sort stays as the guarantee).
     let mono_items = tcx.with_stable_hashing_context(move |mut hcx| {
         state.visited.into_inner().into_sorted(&mut hcx, true)
     });

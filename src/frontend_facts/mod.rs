@@ -30,11 +30,13 @@ pub mod syntax;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crate::rustc_data_structures::fx::FxHashMap;
+use crate::rustc_data_structures::sync::{Lock, run_stage};
 use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_hir::def::DefKind;
-use crate::rustc_hir::def_id::{LOCAL_CRATE, LocalDefId};
+use crate::rustc_hir::def_id::{DefId, LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 #[cfg(not(feature = "force_pinned_sysroot"))]
@@ -288,6 +290,72 @@ pub fn fact_kind(kind: DefKind) -> Option<FactKind> {
     })
 }
 
+/// How many workers one analysis may spread its own work over. `0` means nobody asked.
+///
+/// Read once per session, when [`analyze_source_with_sysroot`] and [`check_source`] build their
+/// `Options`, and by the diagnostics passes. See [`set_parallelism`].
+static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
+
+/// Let one analysis spread its own work over `threads` workers.
+///
+/// **For editor and tooling throughput on large files.** A single [`analyze_source`] or
+/// [`check_source`] call is otherwise serial from end to end: one body is type checked, then
+/// the next. With this set, the work inside one call that does not depend on other work in the
+/// same call (per-definition facts, per-body type checks and reference walks, the two syntax
+/// diagnostics passes) is run as stages (`rustc_data_structures::sync::run_stage`), whose items
+/// run on nagoya's pool. This crate still spawns nothing: the workers belong to nagoya, or to the
+/// pool the caller handed over with `sync::set_parallel_executor`.
+///
+/// **Opt-in, and every existing call keeps its behaviour.** Until this is called, every entry
+/// point runs exactly as it always has, serial, with `jobs.frontend` unset. The answers never
+/// depend on the setting: results are reassembled in the order the serial walk produces them,
+/// and `tests/parallel.rs` holds every entry point to that across 1, 4 and 8 workers.
+///
+/// **Can change between analyses.** Each analysis session latches its own mode from its
+/// `jobs.frontend` and builds its locks and worker registry to match
+/// (`sync::enter_session_width`), so serial and parallel analyses can follow each other, or run
+/// side by side on different threads, in one process. `1` (and `0`, read as `1`) is serial.
+///
+/// What this does fix for the process: it turns on the thread-safe fallback that code outside
+/// any analysis session uses (the parse-only diagnostics path), and that stays on once on; and
+/// it registers what a pool thread needs installed to run an item of such code
+/// (`rustc_interface::util::install_parallel_context`), which `run_compiler` otherwise does.
+///
+/// Without the `parallel` cargo feature this does nothing and [`parallelism`] stays `1`.
+pub fn set_parallelism(threads: usize) {
+    #[cfg(feature = "parallel")]
+    {
+        if threads > 1 {
+            crate::rustc_data_structures::sync::set_dyn_thread_safe_mode(true);
+            crate::rustc_interface::util::install_parallel_context();
+        }
+        PARALLELISM.store(threads.max(1), Ordering::Relaxed);
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = threads;
+    }
+}
+
+/// The number of workers one analysis may use: what [`set_parallelism`] last set, or `1` when
+/// nothing was set or the `parallel` feature is off.
+pub fn parallelism() -> usize {
+    if cfg!(feature = "parallel") { PARALLELISM.load(Ordering::Relaxed).max(1) } else { 1 }
+}
+
+/// Carry [`set_parallelism`] into one session's options.
+///
+/// Nothing asked leaves `jobs.frontend` at `None`, which is the serial compiler exactly as it
+/// was. Anything asked sets it, which `run_compiler` reads twice: to latch the session's mode
+/// (parallel from two up), and to size the session's worker registry, whose slots are the
+/// session's thread budget on the pool. `-Z threads` is not
+/// touched: in this tree it is a deprecated string that nothing reads, and `jobs.frontend` is
+/// what replaced it.
+fn apply_parallelism(opts: &mut Options) {
+    let asked = if cfg!(feature = "parallel") { PARALLELISM.load(Ordering::Relaxed) } else { 0 };
+    opts.jobs.frontend = core::num::NonZero::new(asked);
+}
+
 /// Extract facts from an already-built `TyCtxt`. Runs type checking, one body at a time.
 ///
 /// Resolution and HIR facts are taken first and do not depend on any body. Each body's type
@@ -298,9 +366,26 @@ pub fn fact_kind(kind: DefKind) -> Option<FactKind> {
 ///
 /// `diagnostics` is left empty here: the emitter belongs to whoever built the session, and
 /// only [`analyze_source`] installed one it can read back.
+///
+/// **Three independent walks, each spread over workers when [`set_parallelism`] asked.** The
+/// definitions, the imports and the bodies are each a list whose items do not read one
+/// another's results: every item asks `tcx` its own questions and returns owned data. Each list
+/// is one stage (`sync::run_stage`) over its frozen input, read in place, which runs serially
+/// when the session is serial and on the pool otherwise, and which returns one output per item,
+/// in input order, either way. The lists are then
+/// assembled exactly as the serial loops assembled them, so a fact's position, ties in the final
+/// sorts included, is the same at any worker count.
+///
+/// What makes the items safe to run side by side is the query system, not anything here: every
+/// `tcx` call is a query, a query's result is memoised behind the session's locks, and those
+/// locks synchronise because `jobs.frontend` turned the thread-safe mode on for this session.
+/// Two workers that want the same result either find it done or wait for the one computing it.
+/// A query that unwound is poisoned for both, which is how the serial walk already behaved.
 pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
+    // Printed paths, one per `DefId`, for this extraction only. Shared by every worker.
+    let paths = DefPaths::new(tcx);
 
     // Not `tcx.iter_local_def_id()`: that depends on the `analysis` query so that it lists the
     // definitions of a finished compilation, and `analysis` runs well-formedness checking over
@@ -315,76 +400,48 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // `def_kind` below is an unprovided query and an internal compiler error.
     let _ = tcx.hir_crate_items(());
     let count = tcx.untracked().definitions.read().num_definitions();
-    for local in (0..count).map(|i| LocalDefId {
-        local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i),
-    }) {
-        let def_id = local.to_def_id();
-        let kind = tcx.def_kind(def_id);
-        if let DefKind::Impl { .. } = kind {
-            facts.impls.push(impl_fact(tcx, local));
-            continue;
+
+    // **Definitions and impls, one item per local definition.** Each index is read on its own:
+    // its kind, its name, its span and its HIR shape, or for an impl its self type, trait and
+    // items. Nothing one index computes is read by another, so the walk is a stage whose input
+    // is the index itself, and it hands back one `DefFact` per index in index order. Pushing
+    // them in that order below is the serial loop's order exactly, impls and definitions each
+    // keeping their own sequence.
+    let def_facts: Vec<DefFact> = run_stage((), count, |_, i| {
+        let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
+        def_fact(tcx, &paths, LocalDefId { local_def_index })
+    });
+    for fact in def_facts {
+        match fact {
+            DefFact::Impl(fact) => facts.impls.push(fact),
+            DefFact::Definition(definition) => facts.definitions.push(definition),
+            DefFact::Skipped => {}
         }
-        let Some(kind) = fact_kind(kind) else {
-            continue;
-        };
-        let Some(name) = tcx.opt_item_name(def_id) else {
-            continue;
-        };
-        let mut definition = Definition {
-            def_path: tcx.def_path_str(def_id),
-            name: name.to_string(),
-            kind,
-            span: byte_span(tcx, tcx.def_span(def_id)),
-            signature: None,
-            fields: Vec::new(),
-            variants: Vec::new(),
-        };
-        describe_shape(tcx, local, &mut definition);
-        facts.definitions.push(definition);
     }
 
-    for item_id in tcx.hir_free_items() {
-        let item = tcx.hir_item(item_id);
-        let ItemKind::Use(path, use_kind) = item.kind else {
-            continue;
-        };
-        let path_str = path
-            .segments
-            .iter()
-            .map(|seg| seg.ident.as_str())
-            .filter(|s| *s != "{{root}}")
-            .collect::<Vec<_>>()
-            .join("::");
-        // Degenerate `use foo::{}` exists so rustc can gate features. It binds nothing.
-        let (path_str, bindings) = match use_kind {
-            UseKind::Glob => (format!("{path_str}::*"), Vec::new()),
-            UseKind::Single(ident) => (path_str, vec![ident.as_str().to_string()]),
-            UseKind::ListStem => continue,
-        };
-        let module = tcx.parent_module_from_def_id(item.owner_id.def_id);
-        facts.imports.push(Import {
-            module_def_path: tcx.def_path_str(module.to_def_id()),
-            path: path_str,
-            span: byte_span(tcx, item.span),
-            reexport: tcx.local_visibility(item.owner_id.def_id).is_public(),
-            bindings,
-        });
-    }
+    // **Imports, one item per free item**, read in place from the crate's frozen id list. Each
+    // `use` reads only its own item, its parent module and its visibility; `None` is anything
+    // that is not a binding `use`, dropped here exactly where the serial loop's `continue`
+    // dropped it.
+    let free_items = tcx.hir_crate_items(()).free_item_ids();
+    let imports: Vec<Option<Import>> =
+        run_stage(free_items, free_items.len(), |ids, i| import_fact(tcx, &paths, ids[i]));
+    facts.imports.extend(imports.into_iter().flatten());
 
-    for owner in tcx.hir_body_owners() {
-        let Some(body) = tcx.hir_maybe_body_owned_by(owner) else {
-            continue;
-        };
-        let from = tcx.def_path_str(owner.to_def_id());
-        // Results tainted by an error are still read: a path that resolved is a fact whether
-        // or not some other expression in the body failed, and one that did not resolve is
-        // `Res::Err`, which `RefVisitor` already skips.
-        let Ok(typeck) = catch_fatal_errors(|| tcx.typeck(owner)) else {
-            facts.unanalyzed_bodies.push(from);
-            continue;
-        };
-        let mut visitor = RefVisitor { tcx, typeck, from: &from, refs: &mut facts.references };
-        visitor.visit_expr(body.value);
+    // **Bodies, one item per body owner: the expensive walk.** Each owner's type check runs in
+    // its own `catch_fatal_errors` on whichever worker takes it, and its references are
+    // collected into a list of its own rather than pushed into a shared one. A body that
+    // stopped on a fatal error comes back as its printed path instead. The results come back in
+    // owner order and are appended in that order, so `references` before the sort and
+    // `unanalyzed_bodies`, which is never sorted, are the serial walk's sequences exactly.
+    let owners = tcx.hir_body_owner_ids();
+    let bodies: Vec<Option<BodyFact>> =
+        run_stage(owners, owners.len(), |owners, i| body_fact(tcx, &paths, owners[i]));
+    for body in bodies.into_iter().flatten() {
+        match body {
+            BodyFact::Checked(references) => facts.references.extend(references),
+            BodyFact::Unanalyzed(from) => facts.unanalyzed_bodies.push(from),
+        }
     }
     facts.complete = tcx.dcx().has_errors().is_none() && facts.unanalyzed_bodies.is_empty();
 
@@ -399,12 +456,125 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     facts
 }
 
+/// How [`extract`] prints a def path. No cache: a map shared by every worker is mutable state a
+/// parallel stage would have to lock, and the path is printed from the `TyCtxt` each time.
+struct DefPaths<'tcx> {
+    tcx: TyCtxt<'tcx>,
+}
+
+impl<'tcx> DefPaths<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>) -> Self {
+        DefPaths { tcx }
+    }
+
+    fn get(&self, def_id: DefId) -> String {
+        self.tcx.def_path_str(def_id)
+    }
+}
+
+/// What one local definition contributes to [`CrateFacts`]: an impl, a named definition, or
+/// nothing (a `use`, an anonymous item, a definition with no name).
+enum DefFact {
+    Impl(Impl),
+    Definition(Definition),
+    Skipped,
+}
+
+/// One local definition's fact. The body of the serial loop that used to sit in [`extract`],
+/// moved out unchanged so each index can run on its own worker.
+fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId) -> DefFact {
+    let def_id = local.to_def_id();
+    let kind = tcx.def_kind(def_id);
+    if let DefKind::Impl { .. } = kind {
+        return DefFact::Impl(impl_fact(tcx, paths, local));
+    }
+    let Some(kind) = fact_kind(kind) else {
+        return DefFact::Skipped;
+    };
+    let Some(name) = tcx.opt_item_name(def_id) else {
+        return DefFact::Skipped;
+    };
+    let mut definition = Definition {
+        def_path: paths.get(def_id),
+        name: name.to_string(),
+        kind,
+        span: byte_span(tcx, tcx.def_span(def_id)),
+        signature: None,
+        fields: Vec::new(),
+        variants: Vec::new(),
+    };
+    describe_shape(tcx, local, &mut definition);
+    DefFact::Definition(definition)
+}
+
+/// One free item's import, or `None` when it is not a `use` that binds anything. The body of
+/// the serial loop that used to sit in [`extract`], with each `continue` now a `None`.
+fn import_fact<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    paths: &DefPaths<'tcx>,
+    item_id: hir::ItemId,
+) -> Option<Import> {
+    let item = tcx.hir_item(item_id);
+    let ItemKind::Use(path, use_kind) = item.kind else {
+        return None;
+    };
+    let path_str = path
+        .segments
+        .iter()
+        .map(|seg| seg.ident.as_str())
+        .filter(|s| *s != "{{root}}")
+        .collect::<Vec<_>>()
+        .join("::");
+    // Degenerate `use foo::{}` exists so rustc can gate features. It binds nothing.
+    let (path_str, bindings) = match use_kind {
+        UseKind::Glob => (format!("{path_str}::*"), Vec::new()),
+        UseKind::Single(ident) => (path_str, vec![ident.as_str().to_string()]),
+        UseKind::ListStem => return None,
+    };
+    let module = tcx.parent_module_from_def_id(item.owner_id.def_id);
+    Some(Import {
+        module_def_path: paths.get(module.to_def_id()),
+        path: path_str,
+        span: byte_span(tcx, item.span),
+        reexport: tcx.local_visibility(item.owner_id.def_id).is_public(),
+        bindings,
+    })
+}
+
+/// What one body contributes: the references its type check resolved, or, when the type check
+/// stopped on a fatal error, the body's own path for [`CrateFacts::unanalyzed_bodies`].
+enum BodyFact {
+    Checked(Vec<Reference>),
+    Unanalyzed(String),
+}
+
+/// One body owner's fact, or `None` for an owner with no body. The body of the serial loop that
+/// used to sit in [`extract`], collecting into a list of its own instead of a shared one.
+fn body_fact<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    paths: &DefPaths<'tcx>,
+    owner: LocalDefId,
+) -> Option<BodyFact> {
+    let body = tcx.hir_maybe_body_owned_by(owner)?;
+    let from = paths.get(owner.to_def_id());
+    // Results tainted by an error are still read: a path that resolved is a fact whether or not
+    // some other expression in the body failed, and one that did not resolve is `Res::Err`,
+    // which `RefVisitor` already skips.
+    let Ok(typeck) = catch_fatal_errors(|| tcx.typeck(owner)) else {
+        return Some(BodyFact::Unanalyzed(from));
+    };
+    let mut refs = Vec::new();
+    let mut visitor = RefVisitor { tcx, typeck, paths, from: &from, refs: &mut refs };
+    visitor.visit_expr(body.value);
+    Some(BodyFact::Checked(refs))
+}
+
 /// One `impl` block's fact.
 ///
 /// `type_of` is a query that can stop on a fatal error of its own, and an impl whose self type
 /// did not resolve comes back as an error type that prints as nothing useful. Either way the
 /// type is reported as written in the source, so an impl is never dropped for its self type.
-fn impl_fact(tcx: TyCtxt<'_>, local: LocalDefId) -> Impl {
+fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId) -> Impl {
     let def_id = local.to_def_id();
     let hir_impl = match tcx.hir_node_by_def_id(local) {
         Node::Item(hir::Item { kind: ItemKind::Impl(hir_impl), .. }) => Some(hir_impl),
@@ -421,7 +591,7 @@ fn impl_fact(tcx: TyCtxt<'_>, local: LocalDefId) -> Impl {
     let trait_def_path = catch_fatal_errors(|| tcx.impl_opt_trait_id(def_id))
         .ok()
         .flatten()
-        .map(|trait_id| tcx.def_path_str(trait_id));
+        .map(|trait_id| paths.get(trait_id));
     let items = hir_impl
         .map(|hir_impl| {
             hir_impl
@@ -432,14 +602,14 @@ fn impl_fact(tcx: TyCtxt<'_>, local: LocalDefId) -> Impl {
                     Some(ImplItem {
                         name: tcx.opt_item_name(item_id)?.to_string(),
                         kind: fact_kind(tcx.def_kind(item_id))?,
-                        def_path: tcx.def_path_str(item_id),
+                        def_path: paths.get(item_id),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default();
     Impl {
-        def_path: tcx.def_path_str(def_id),
+        def_path: paths.get(def_id),
         self_type,
         trait_def_path,
         span: byte_span(tcx, tcx.def_span(def_id)),
@@ -632,6 +802,8 @@ pub fn analyze_source_with_sysroot(
     // This crate is a nightly frontend; within-crate no_core analysis needs the
     // same gates nightly rustc has.
     opts.unstable_features = UnstableFeatures::Allow;
+    // Serial unless the caller asked for parallelism; see `set_parallelism`.
+    apply_parallelism(&mut opts);
     // **The sysroot is an optional parameter, because this is a parser.**
     //
     // Definitions, imports, impls and within-crate references are read out of
@@ -740,6 +912,16 @@ impl core::fmt::Write for Sink {
 /// A library has no terminal to print to, and a diagnostic written to stderr is one the caller
 /// cannot read back. So the session's emitter is replaced before anything is parsed, and what
 /// it would have printed lands in a buffer the caller still holds.
+///
+/// **The buffer is in serial order in parallel mode too, and nothing here has to do anything
+/// for that.** This is the final sink: a diagnostic is rendered to text once, by this emitter,
+/// when `DiagCtxt` prints it. A diagnostic emitted inside a par item does not get here when it
+/// is emitted; it travels as the item's owned output and is printed when the item's turn comes
+/// in item order (`rustc_errors::item_scope`, which every stage in `rustc_data_structures::sync`
+/// runs every item through, by the hook `run_compiler` installs). So the emitter is only ever
+/// called in
+/// the order a serial run calls it, and always under the `DiagCtxt` lock, which is why `Sink`'s
+/// own lock is never contended by two diagnostics at once.
 fn capture_diagnostics(
     text: &alloc::sync::Arc<eko::thread::Mutex<String>>,
 ) -> alloc::boxed::Box<dyn FnOnce(&mut crate::rustc_session::parse::ParseSess) + Send> {
@@ -810,6 +992,8 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
     opts.unstable_features = UnstableFeatures::Allow;
+    // Serial unless the caller asked for parallelism; see `set_parallelism`.
+    apply_parallelism(&mut opts);
     opts.unstable_opts.crate_attr.push("no_core".to_string());
     opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
 
@@ -856,9 +1040,12 @@ fn byte_span(tcx: TyCtxt<'_>, span: Span) -> ByteSpan {
     }
 }
 
+/// Collects one body's references. Each body gets its own visitor and its own `refs`, so
+/// visitors on different workers share nothing but `paths`, whose sharing [`DefPaths`] covers.
 struct RefVisitor<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     typeck: &'tcx crate::rustc_middle::ty::TypeckResults<'tcx>,
+    paths: &'a DefPaths<'tcx>,
     from: &'a str,
     refs: &'a mut Vec<Reference>,
 }
@@ -888,7 +1075,7 @@ impl<'a, 'tcx> RefVisitor<'a, 'tcx> {
     fn push(&mut self, def_id: crate::rustc_hir::def_id::DefId, kind: RefKind, span: Span) {
         self.refs.push(Reference {
             from_def_path: self.from.to_string(),
-            to_def_path: self.tcx.def_path_str(def_id),
+            to_def_path: self.paths.get(def_id),
             kind,
             span: byte_span(self.tcx, span),
         });

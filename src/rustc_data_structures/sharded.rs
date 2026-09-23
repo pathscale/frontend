@@ -81,14 +81,8 @@ impl<T> Sharded<T> {
     #[track_caller]
     pub fn lock_shard_by_value<K: Hash + ?Sized>(&self, val: &K) -> LockGuard<'_, T> {
         match self {
-            Self::Single(single) => {
-                // Synchronization is disabled so use the `lock_assume_no_sync` method optimized
-                // for that case.
-
-                // SAFETY: We know `is_dyn_thread_safe` was false when creating the lock thus
-                // `might_be_dyn_thread_safe` was also false.
-                unsafe { single.lock_assume(Mode::NoSync) }
-            }
+            // The lock's own recorded mode, not an assumed `NoSync`. See `lock_shard_by_index`.
+            Self::Single(single) => single.lock(),
             Self::Shards(..) => self.lock_shard_by_hash(make_hash(val)),
         }
     }
@@ -103,14 +97,16 @@ impl<T> Sharded<T> {
     #[track_caller]
     pub fn lock_shard_by_index(&self, i: usize) -> LockGuard<'_, T> {
         match self {
-            Self::Single(single) => {
-                // Synchronization is disabled so use the `lock_assume_no_sync` method optimized
-                // for that case.
-
-                // SAFETY: We know `is_dyn_thread_safe` was false when creating the lock thus
-                // `might_be_dyn_thread_safe` was also false.
-                unsafe { single.lock_assume(Mode::NoSync) }
-            }
+            // The lock's own recorded mode, not an assumed `NoSync`.
+            //
+            // `Single` is chosen when `is_dyn_thread_safe` is false, and `Lock::new` then picks
+            // its kind from `might_be_dyn_thread_safe`, a second read. On a thread with a session
+            // latched the two reads agree. On a thread without one they read the process-wide
+            // fallback, which another thread can turn on between them (it only ever goes from
+            // serial to thread-safe), and then the lock is the synchronised kind: assuming
+            // `NoSync` would read the wrong half of its union. `lock` reads the kind the lock
+            // recorded, at the cost of one branch.
+            Self::Single(single) => single.lock(),
             Self::Shards(shards) => {
                 // Synchronization is enabled so use the `lock_assume_sync` method optimized
                 // for that case.

@@ -25,9 +25,7 @@ use crate::rustc_crate_store::Untracked;
 // with `indexmap/std` off the hasher parameter has no default and has to be named.
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::steal::Steal;
-use crate::rustc_data_structures::sync::{
-    AppendOnlyIndexVec, FreezeLock, WorkerLocal, par_fns,
-};
+use crate::rustc_data_structures::sync::{AppendOnlyIndexVec, FreezeLock, WorkerLocal, run_stage};
 use crate::rustc_data_structures::thousands;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
 use crate::rustc_expand::base::{ExtCtxt, LintStoreExpand};
@@ -35,7 +33,7 @@ use crate::rustc_feature::Features;
 use crate::rustc_fs_util::try_canonicalize;
 use crate::rustc_hir::Attribute;
 use crate::rustc_hir::attrs::AttributeKind;
-use crate::rustc_hir::def_id::{LOCAL_CRATE, StableCrateId, StableCrateIdMap};
+use crate::rustc_hir::def_id::{LOCAL_CRATE, LocalModId, StableCrateId, StableCrateIdMap};
 use crate::rustc_hir::definitions::Definitions;
 use crate::rustc_lint::{BufferedEarlyLint, EarlyCheckNode, LintStore, unerased_lint_store};
 use crate::rustc_metadata::creader::CStore;
@@ -1166,8 +1164,10 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
     let sess = tcx.sess;
     sess.time("misc_checking_1", || {
-        par_fns(&mut [
-            &mut || {
+        // Three independent checks, as one stage whose input is the checks themselves: item `i`
+        // runs `checks[i]`. Serially they run in this order, as the `par_fns` they replaced did.
+        let checks: [&dyn Fn(); 3] = [
+            &|| {
                 sess.time("looking_for_entry_point", || tcx.ensure_ok().entry_fn(()));
                 sess.time("check_externally_implementable_items", || {
                     tcx.ensure_ok().check_externally_implementable_items(())
@@ -1179,22 +1179,25 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
                 CStore::from_tcx(tcx).report_unused_deps(tcx);
             },
-            &mut || {
+            &|| {
                 tcx.ensure_ok().exportable_items(LOCAL_CRATE);
                 tcx.ensure_ok().stable_order_of_exportable_impls(LOCAL_CRATE);
-                tcx.par_hir_for_each_module(|module| {
+                let modules = tcx.hir_module_ids();
+                run_stage(modules, modules.len(), |modules, index| {
+                    let module = modules[index];
                     tcx.ensure_ok().check_mod_attrs(module);
                     tcx.ensure_ok().check_mod_unstable_api_usage(module);
                 });
             },
-            &mut || {
+            &|| {
                 // We force these queries to run,
                 // since they might not otherwise get called.
                 // This marks the corresponding crate-level attributes
                 // as used, and ensures that their values are valid.
                 tcx.ensure_ok().limits(());
             },
-        ]);
+        ];
+        run_stage(&checks, checks.len(), |checks, index| checks[index]());
     });
 
     sess.time("emit_ast_lowering_delayed_lints", || {
@@ -1210,7 +1213,9 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
     tcx.untracked().definitions.freeze();
 
     sess.time("MIR_borrow_checking", || {
-        tcx.par_hir_body_owners(|def_id| {
+        let owners = tcx.hir_body_owner_ids();
+        run_stage(owners, owners.len(), |owners, index| {
+            let def_id = owners[index];
             let not_typeck_child = !tcx.is_typeck_child(def_id.to_def_id());
             if not_typeck_child {
                 // Child unsafety and borrowck happens together with the parent
@@ -1273,22 +1278,23 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     }
 
     sess.time("misc_checking_3", || {
-        par_fns(&mut [
-            &mut || {
+        // Two independent groups as one stage over the groups themselves, the first holding a
+        // nested stage of four checks, each of the module-wide ones a stage over the crate's
+        // modules. Serially they run in exactly this order, as the nested `par_fns` they replaced
+        // did; in parallel a group's inner stages run their own items rather than waiting on the
+        // pool.
+        let per_module = |check: &dyn Fn(LocalModId)| {
+            let modules = tcx.hir_module_ids();
+            run_stage(modules, modules.len(), |modules, index| check(modules[index]));
+        };
+        let groups: [&dyn Fn(); 2] = [
+            &|| {
                 tcx.ensure_ok().effective_visibilities(());
 
-                par_fns(&mut [
-                    &mut || {
-                        tcx.par_hir_for_each_module(|module| {
-                            tcx.ensure_ok().check_private_in_public(module)
-                        })
-                    },
-                    &mut || {
-                        tcx.par_hir_for_each_module(|module| {
-                            tcx.ensure_ok().check_mod_deathness(module)
-                        });
-                    },
-                    &mut || {
+                let checks: [&dyn Fn(); 4] = [
+                    &|| per_module(&|module| tcx.ensure_ok().check_private_in_public(module)),
+                    &|| per_module(&|module| tcx.ensure_ok().check_mod_deathness(module)),
+                    &|| {
                         // **Skipped when every lint is capped to `Allow`, which is the consumer's
                         // default.** `check_crate` walks the whole HIR and runs every late and
                         // per-module lint pass, and it never consults the cap: capping changes
@@ -1311,19 +1317,19 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
                             });
                         }
                     },
-                    &mut || {
+                    &|| {
                         tcx.ensure_ok().clashing_extern_declarations(());
                     },
-                ]);
+                ];
+                run_stage(&checks, checks.len(), |checks, index| checks[index]());
             },
-            &mut || {
+            &|| {
                 sess.time("privacy_checking_modules", || {
-                    tcx.par_hir_for_each_module(|module| {
-                        tcx.ensure_ok().check_mod_privacy(module);
-                    });
+                    per_module(&|module| tcx.ensure_ok().check_mod_privacy(module));
                 });
             },
-        ]);
+        ];
+        run_stage(&groups, groups.len(), |groups, index| groups[index]());
 
         // This check has to be run after all lints are done processing. We don't
         // define a lint filter, as all lint checks should have finished at this point.
@@ -1348,7 +1354,9 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     // type-check is very prone to ICEs.
     if tcx.sess.opts.unstable_opts.validate_mir {
         sess.time("ensuring_final_MIR_is_computable", || {
-            tcx.par_hir_body_owners(|def_id| {
+            let owners = tcx.hir_body_owner_ids();
+            run_stage(owners, owners.len(), |owners, index| {
+                let def_id = owners[index];
                 if !tcx.is_trivial_const(def_id) {
                     tcx.instance_mir(ty::InstanceKind::Item(def_id.into()));
                 }

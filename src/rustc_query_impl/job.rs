@@ -2,7 +2,6 @@ use core::fmt::Write as _;
 use alloc::vec::Vec;
 use alloc::string::String;
 use core::ops::ControlFlow;
-use alloc::sync::Arc;
 use core::{iter, mem};
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -12,7 +11,7 @@ use crate::rustc_errors::DiagCtxtHandle;
 use crate::rustc_middle::queries::TaggedQueryKey;
 use crate::rustc_middle::query::{
     ActiveKeyStatus, QueryCache, QueryCycle, QueryJob, QueryJobId, QueryKey, QueryLatch,
-    QueryStackFrame, QueryVTable, QueryWaiter,
+    QueryStackFrame, QueryVTable,
 };
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::{DUMMY_SP, Span};
@@ -37,14 +36,6 @@ impl<'tcx> QueryJobMap<'tcx> {
 
     fn tagged_key_of(&self, id: QueryJobId) -> TaggedQueryKey<'tcx> {
         self.map[&id].tagged_key
-    }
-
-    fn span_of(&self, id: QueryJobId) -> Span {
-        self.map[&id].job.span
-    }
-
-    fn parent_of(&self, id: QueryJobId) -> Option<QueryJobId> {
-        self.map[&id].job.parent
     }
 
     fn latch_of(&self, id: QueryJobId) -> Option<&QueryLatch<'tcx>> {
@@ -202,7 +193,8 @@ pub(crate) fn find_dep_kind_root<'tcx>(
 }
 
 /// The locaton of a resumable waiter. The usize is the index into waiters in the query's latch.
-/// We'll use this to remove the waiter using `QueryLatch::extract_waiter` if we're waking it up.
+/// We'll use this to remove the waiter using `QueryLatch::resume_waiter_with_cycle` if we're
+/// waking it up.
 type ResumableWaiterLocation = (QueryJobId, usize);
 
 /// This abstracts over non-resumable waiters which are found in `QueryJob`'s `parent` field
@@ -217,25 +209,41 @@ struct AbstractedWaiter {
 
 /// Returns all the non-resumable and resumable waiters of a query.
 /// This is used so we can uniformly loop over both non-resumable and resumable waiters.
+///
+/// **A job missing from the map has no waiters.** Upstream only walked the map from the
+/// deadlock handler, when every thread was asleep and the map could not change, so every id it
+/// met was in it. The wait-time check in [`find_cycle_closed_by_wait`] walks a snapshot while
+/// running threads keep starting and finishing jobs, so an id reached through a `parent` link
+/// can be absent: a job that finished after its child was read, or one that started after its
+/// shard was read. Neither can be on a cycle - a job on a cycle belongs to a sleeping thread,
+/// whose stack was in place before the snapshot and cannot change during it - so answering
+/// "nothing waits on it" is exact for the question being asked.
 fn abstracted_waiters_of(job_map: &QueryJobMap<'_>, query: QueryJobId) -> Vec<AbstractedWaiter> {
     let mut result = Vec::new();
 
+    let Some(info) = job_map.map.get(&query) else {
+        return result;
+    };
+
     // Add the parent which is a non-resumable waiter since it's on the same stack
     result.push(AbstractedWaiter {
-        span: job_map.span_of(query),
-        parent: job_map.parent_of(query),
+        span: info.job.span,
+        parent: info.job.parent,
         resumable: None,
     });
 
-    // Add the explicit waiters which use condvars and are resumable
-    if let Some(latch) = job_map.latch_of(query) {
-        for (i, waiter) in latch.waiters.lock().as_ref().unwrap().iter().enumerate() {
-            result.push(AbstractedWaiter {
-                span: waiter.span,
-                parent: waiter.parent,
-                resumable: Some((query, i)),
-            });
-        }
+    // Add the explicit waiters which use condvars and are resumable. A latch that has
+    // completed reads as an empty list rather than panicking, for the same reason as above.
+    if let Some(latch) = info.job.latch.as_ref() {
+        latch.with_waiters(|waiters| {
+            for (i, waiter) in waiters.iter().enumerate() {
+                result.push(AbstractedWaiter {
+                    span: waiter.span,
+                    parent: waiter.parent,
+                    resumable: Some((query, i)),
+                });
+            }
+        });
     }
 
     result
@@ -370,19 +378,28 @@ fn process_cycle<'tcx>(
         .collect::<Vec<EntryPoint>>();
 
     // Pick an entry point, preferring ones with waiters
+    //
+    // `first()` rather than `[0]`: under the deadlock handler some query in a cycle always led
+    // to the root, because the map held every thread's whole stack. The wait-time check sees a
+    // snapshot in which an ancestor on a *running* thread may be missing (see
+    // `abstracted_waiters_of`), and if every path out of the cycle went through one, there is no
+    // entry point. The cycle is no less real; it is reported as found, without a usage frame.
     let entry_point = entry_points
         .iter()
         .find(|entry_point| entry_point.query_waiting_on_cycle.is_some())
-        .unwrap_or(&entry_points[0]);
+        .or(entry_points.first());
 
     // Shift the stack so that our entry point is first
-    let entry_point_pos = stack.iter().position(|(_, query)| *query == entry_point.query_in_cycle);
-    if let Some(pos) = entry_point_pos {
-        stack.rotate_left(pos);
+    if let Some(entry_point) = entry_point {
+        let entry_point_pos =
+            stack.iter().position(|(_, query)| *query == entry_point.query_in_cycle);
+        if let Some(pos) = entry_point_pos {
+            stack.rotate_left(pos);
+        }
     }
 
     let usage = entry_point
-        .query_waiting_on_cycle
+        .and_then(|entry_point| entry_point.query_waiting_on_cycle)
         .map(|(span, job)| QueryStackFrame { span, tagged_key: job_map.tagged_key_of(job) });
 
     // Create the cycle error
@@ -395,12 +412,12 @@ fn process_cycle<'tcx>(
     }
 }
 
-/// Looks for a query cycle starting at `query`.
-/// Returns a waiter to resume if a cycle is found.
-fn find_and_process_cycle<'tcx>(
-    job_map: &QueryJobMap<'tcx>,
-    query: QueryJobId,
-) -> Option<Arc<QueryWaiter<'tcx>>> {
+/// Looks for a query cycle starting at `query`, and if one is found, resumes one waiter on it
+/// with the cycle error.
+///
+/// Returns `None` if there is no cycle through `query`, and otherwise whether the resumed
+/// waiter's thread was asleep (see `QueryLatch::resume_waiter_with_cycle`).
+fn find_and_process_cycle<'tcx>(job_map: &QueryJobMap<'tcx>, query: QueryJobId) -> Option<bool> {
     let mut visited = FxHashSet::default();
     let mut stack = Vec::new();
     if let ControlFlow::Break(resumable) =
@@ -413,14 +430,10 @@ fn find_and_process_cycle<'tcx>(
         // edge which is resumable / waited using a query latch
         let (waitee_query, waiter_idx) = resumable.unwrap();
 
-        // Extract the waiter we want to resume
-        let waiter = job_map.latch_of(waitee_query).unwrap().extract_waiter(waiter_idx);
-
-        // Set the cycle error so it will be picked up when resumed
-        *waiter.cycle.lock() = Some(error);
-
-        // Put the waiter on the list of things to resume
-        Some(waiter)
+        // Take the waiter off its latch, give it the cycle error and wake it. These are one
+        // call so that the three happen under the latch mutex the waiter sleeps with: see
+        // `QueryWaiter::resumed`.
+        Some(job_map.latch_of(waitee_query).unwrap().resume_waiter_with_cycle(waiter_idx, error))
     } else {
         None
     }
@@ -432,17 +445,72 @@ fn find_and_process_cycle<'tcx>(
 ///
 /// There may be multiple cycles involved in a deadlock, but this only breaks one at a time so
 /// there will be multiple rounds through the deadlock handler if multiple cycles are present.
+///
+/// **Nothing calls this now.** It was the deadlock handler's body, run when every thread was
+/// asleep. Cycles are now caught before they form, by [`find_cycle_closed_by_wait`] from
+/// `QueryLatch::wait_on`, so a deadlock handler would never find one. It is kept, working,
+/// for a driver that wants a last-resort check.
 pub fn break_query_cycle<'tcx>(job_map: QueryJobMap<'tcx>) {
     // Look for a cycle starting at each query job
-    let waiter = job_map
+    let woke = job_map
         .map
         .keys()
         .find_map(|query| find_and_process_cycle(&job_map, *query))
         .expect("unable to find a query cycle");
 
-    // Mark the thread we're about to wake up as unblocked.
+    assert!(woke, "unable to wake the waiter");
+}
 
-    assert!(waiter.condvar.notify_one(), "unable to wake the waiter");
+/// Answers, for a thread about to sleep on `waitee`'s latch, whether that sleep would close a
+/// query cycle, and if so returns the cycle to report.
+///
+/// Called only from `QueryLatch::wait_on`, with the session's `QueryWaitGraph` lock held and
+/// the caller's waiter already pushed onto `waitee`'s latch. The new edge is therefore in the
+/// graph, and a cycle through it is a cycle through `waitee`: [`find_cycle`] walks from
+/// `waitee` along "who waits on this" edges (stack parents and latch waiters) and reports
+/// reaching `waitee` again.
+///
+/// # Why a cycle found here is real, and a real one is always found
+///
+/// - Every latch edge the walk sees belongs to a thread that is asleep, because adding and
+///   removing latch edges both need the lock this thread holds. A sleeping thread's stack
+///   cannot change, so every stack edge between two latch edges on a cycle is current too. A
+///   cycle is made of latch edges and the stack edges between them (stack edges alone are a
+///   tree), so everything on a found cycle is current: it is a real deadlock.
+/// - Conversely, every other edge of a real cycle belongs to a thread that went to sleep
+///   earlier, under this same lock, and whose check found nothing. So the graph never holds a
+///   cycle between checks, a new cycle must use the new edge, and all of its other edges are
+///   visible to this snapshot.
+///
+/// Jobs on running threads may be half-seen (see `abstracted_waiters_of`); they cannot be on a
+/// cycle, which is the only thing asked.
+///
+/// # Cost
+///
+/// A full snapshot of every query's active jobs, which is every shard of every query state. It
+/// is paid only when a thread is about to block on another thread's query, which is rare next
+/// to the query calls that hit the cache or run their own provider. The shard locks are taken
+/// one at a time, and no thread holding a shard lock ever waits for the graph lock, so this
+/// cannot deadlock against a thread that is starting or finishing a job.
+pub(crate) fn find_cycle_closed_by_wait<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    waitee: QueryJobId,
+) -> Option<QueryCycle<'tcx>> {
+    // `Full`: wait for contended shards rather than skip them. A skipped shard could hide a
+    // sleeping thread's job and with it the cycle.
+    let job_map = collect_active_query_jobs(tcx, CollectActiveJobsKind::Full);
+
+    let mut visited = FxHashSet::default();
+    let mut stack = Vec::new();
+    match find_cycle(&job_map, waitee, DUMMY_SP, &mut stack, &mut visited) {
+        ControlFlow::Break(_) => {
+            // The graph held no cycle before this edge, so the one found runs through it and
+            // through `waitee`.
+            debug_assert!(stack.iter().any(|&(_, query)| query == waitee));
+            Some(process_cycle(&job_map, stack))
+        }
+        ControlFlow::Continue(()) => None,
+    }
 }
 
 pub fn print_query_stack<'tcx>(

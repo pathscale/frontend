@@ -15,6 +15,7 @@ use hir::intravisit::{self, Visitor};
 use crate::rustc_abi::{ExternAbi, ScalableElt};
 use crate::rustc_ast as ast;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
+use crate::rustc_data_structures::sync::stages;
 use crate::rustc_data_structures::transitive_relation::TransitiveRelationBuilder;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, ErrorGuaranteed, msg, pluralize, struct_span_code_err};
@@ -2500,22 +2501,33 @@ impl<'tcx> WfCheckingCtxt<'_, 'tcx> {
 
 pub(super) fn check_type_wf(tcx: TyCtxt<'_>, (): ()) -> Result<(), ErrorGuaranteed> {
     let items = tcx.hir_crate_items(());
-    let res =
-        items
-            .par_items(|item| tcx.ensure_result().check_well_formed(item.owner_id.def_id))
-            .and(
-                items.par_impl_items(|item| {
-                    tcx.ensure_result().check_well_formed(item.owner_id.def_id)
-                }),
-            )
-            .and(items.par_trait_items(|item| {
-                tcx.ensure_result().check_well_formed(item.owner_id.def_id)
-            }))
-            .and(items.par_foreign_items(|item| {
-                tcx.ensure_result().check_well_formed(item.owner_id.def_id)
-            }))
-            .and(items.par_nested_bodies(|item| tcx.ensure_result().check_well_formed(item)))
-            .and(items.par_opaques(|item| tcx.ensure_result().check_well_formed(item)));
+    let check = |def_id: LocalDefId| tcx.ensure_result().check_well_formed(def_id);
+    // Six stages, one per kind of item, each over the crate's frozen id list, all in one scope and
+    // none waiting for another. Every item is checked, as before, and the result is the first
+    // error in the order the serial pass took them: free items, impl items, trait items, foreign
+    // items, nested bodies, opaques.
+    let checked = stages(|scope| {
+        let free = items.free_item_ids();
+        let impls = items.impl_item_ids();
+        let traits = items.trait_item_ids();
+        let foreign = items.foreign_item_ids();
+        let nested = items.nested_body_ids();
+        let opaques = items.opaque_ids();
+        [
+            scope.stage(free, free.len(), |ids, i| check(ids[i].owner_id.def_id)),
+            scope.stage(impls, impls.len(), |ids, i| check(ids[i].owner_id.def_id)),
+            scope.stage(traits, traits.len(), |ids, i| check(ids[i].owner_id.def_id)),
+            scope.stage(foreign, foreign.len(), |ids, i| check(ids[i].owner_id.def_id)),
+            scope.stage(nested, nested.len(), |ids, i| check(ids[i])),
+            scope.stage(opaques, opaques.len(), |ids, i| check(ids[i])),
+        ]
+    });
+    let res = checked
+        .iter()
+        .flat_map(|slots| {
+            (0..slots.len()).map(move |i| *slots.get(i).expect("a settled stage has every value"))
+        })
+        .fold(Ok(()), Result::and);
 
     super::entry::check_for_entry_fn(tcx)?;
 

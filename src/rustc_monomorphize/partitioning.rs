@@ -100,7 +100,6 @@ use core::cmp;
 use hashbrown::hash_map::Entry;
 use crate::rustc_data_structures::either::Either;
 use crate::rustc_data_structures::fx::FxIndexSet;
-use crate::rustc_data_structures::sync::par_join;
 use crate::rustc_data_structures::unord::{UnordMap, UnordSet};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::attrs::{InlineAttr, Linkage};
@@ -1182,15 +1181,15 @@ fn collect_and_partition_mono_items(tcx: TyCtxt<'_>, (): ()) -> MonoItemPartitio
     // (codegen relies on this and ICEs will happen if this is violated.)
     tcx.dcx().abort_if_errors();
 
+    // Serial, in the order the `par_join` it replaced ran its sides: partitioning is not on this
+    // crate's analysis path, so it is not worth a stage.
     let (codegen_units, _) = tcx.sess.time("partition_and_assert_distinct_symbols", || {
-        par_join(
-            || {
-                let mut codegen_units = partition(tcx, items.iter().copied(), &usage_map);
-                codegen_units[0].make_primary();
-                &*tcx.arena.alloc_from_iter(codegen_units)
-            },
-            || assert_symbols_are_distinct(tcx, items.iter()),
-        )
+        let codegen_units = {
+            let mut codegen_units = partition(tcx, items.iter().copied(), &usage_map);
+            codegen_units[0].make_primary();
+            &*tcx.arena.alloc_from_iter(codegen_units)
+        };
+        (codegen_units, assert_symbols_are_distinct(tcx, items.iter()))
     });
 
     if tcx.prof.enabled() {

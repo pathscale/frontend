@@ -21,7 +21,15 @@ asked for paths to be resolved into a compiled library. It is never a blocker to
 ## House rules
 
 - `std` is banned in this crate. Every module is `#![no_std]`; the operating system arrives
-  through `ekostd`.
-- No threads and no thread pool: a compile runs on the caller's thread.
+  through `ekostd`. The one exception is `src/rustc_data_structures/sync/pool.rs`, compiled only
+  with the `parallel` feature, which takes nagoya's pool and `std`'s `catch_unwind` and
+  `resume_unwind` from there; nothing else names `std` or `nagoya`.
+- frontend creates no threads and owns no pool. A compile runs on the caller's thread. When a
+  session asks for parallelism (`jobs.frontend` of two or more, with the `parallel` cargo
+  feature, which is off by default) its internal stages (`rustc_data_structures::sync::stages`
+  and `run_stage`) also run items on nagoya's pool, whose threads are nagoya's or the embedding
+  program's; otherwise every stage runs serially, in order, on the caller's thread. Never call
+  `eko::thread::spawn`, `std::thread` or anything else that starts a thread from this crate, and
+  never bring back the `par_*` shims: new parallel work is a stage over frozen input.
 - No Python. No em dashes. No AI attribution. Never `git stash`. Stage your own paths only,
   with `git commit --only <paths>`.

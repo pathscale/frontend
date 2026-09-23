@@ -24,6 +24,11 @@ use alloc::vec::Vec;
 //
 // If a thread pool ever comes back, this is the file to revisit: a universal `DynSend`
 // states nothing, and the checks it used to perform would need a real mechanism again.
+//
+// It has come back, behind the `parallel` feature: a parallel session's stages
+// (`sync/stage.rs`) run items on nagoya's pool. Their bounds are still these universal traits,
+// so what crosses threads is not checked by the compiler; `stage.rs` says so where it asserts
+// `Send` and `Sync`, and a new stage's closure has to be read for thread safety by hand.
 
 #[diagnostic::on_unimplemented(message = "`{Self}` doesn't implement `DynSend`. \
             Add it to `crate::rustc_data_structures::marker` or use `IntoDynSyncSend` if it's already `Send`")]

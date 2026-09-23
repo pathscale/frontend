@@ -19,10 +19,10 @@
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
 #[macro_use]
-use crate::rustc_data_structures::sync::{AtomicU64, Lock};
+use crate::rustc_data_structures::sync::AtomicU64;
 use crate::rustc_middle::arena::Arena;
 use crate::rustc_middle::queries::{ExternProviders, Providers};
-use crate::rustc_middle::query::QuerySystem;
+use crate::rustc_middle::query::{QuerySystem, QueryWaitGraph};
 use crate::rustc_middle::query::on_disk_cache::OnDiskCache;
 
 pub use crate::rustc_query_impl::job::{
@@ -55,7 +55,8 @@ pub fn query_system<'tcx>(
         local_providers,
         extern_providers,
         jobs: AtomicU64::new(1),
-        cycle_handler_nesting: Lock::new(0),
+        wait_graph: QueryWaitGraph::new(),
+        diagnostics: Default::default(),
     }
 }
 

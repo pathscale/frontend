@@ -27,6 +27,10 @@ path = "src/bin/frontend_facts.rs"
 name = "corpus_timing"
 required-features = ["diagnostics"]
 
+# Runs with or without the `parallel` feature; without it every setting is the serial path.
+[[example]]
+name = "parallel_timing"
+
 [workspace]
 # **Load-bearing for `no_std`.** Without it cargo unifies features across the host and target
 # graphs, so `frontend_macros` - a proc macro, which may perfectly well use `std` - pulled
@@ -57,8 +61,29 @@ force_pinned_sysroot = []
 # default: nothing else in the crate calls them, and a caller who does not want them does not
 # compile them.
 diagnostics = []
+# Run a parallel session's stages (`rustc_data_structures::sync::stages`) on nagoya's pool. Off
+# by default, and the default build is the serial compiler exactly as it was, with no `nagoya`
+# and no `std` in its graph.
+#
+# **Why it is a feature and not a dependency everyone takes.** nagoya's pool needs `std` (its
+# `Runtime` owns the worker threads, and `std` is what starts them and parks them), and a
+# library that depends on a `std`-using crate puts `std` into every binary that links it. A
+# `no_std` binary with its own `#[panic_handler]` then fails to link with a duplicate lang item,
+# first defined in crate std: the failure the `[workspace]` note below describes for
+# `indexmap/std`. `link-probe` is exactly such a binary and depends on this crate with default
+# features, so it keeps building and keeps proving the default graph has no `std`. The
+# `frontend-facts` binary is a `std` program already and can take the feature.
+#
+# frontend creates no thread with or without it: the pool's threads are nagoya's (or the pool a
+# program hands over through `sync::set_parallel_executor`).
+parallel = ["dep:nagoya"]
 
 [dependencies]
+# nagoya's pool, for `parallel` only. The crates.io release: `runtime::background`,
+# `Executor::{submit, pool}` and `block_on` are what this crate calls, and 0.1.12 has them all
+# (its source is identical to the pathscale/nagoya checkout this was written against). Default
+# features, because `std` is the point: see the `parallel` feature above.
+nagoya = { version = "^0.1.12", optional = true }
 # The two crates that could not be merged. `rustc_macros` is the historical name and the source
 # still says `rustc_macros::`, so it is aliased rather than renamed across ten thousand sites.
 rustc_macros = { package = "frontend_macros", path = "frontend_macros", version = "0.2.0", optional = true }

@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use core::any::Any;
 
-use crate::rustc_data_structures::sync::par_join;
+use crate::rustc_data_structures::sync::{run_stage, stages};
 use crate::rustc_hir::def_id::{LocalDefId, LocalModId};
 use crate::rustc_hir::{self as hir, AmbigArg, HirId, intravisit as hir_visit};
 use crate::rustc_lint_defs::LintPass;
@@ -451,18 +451,24 @@ fn late_lint_crate<'tcx>(tcx: TyCtxt<'tcx>) {
 
 /// Performs lint checking on a crate.
 pub fn check_crate<'tcx>(tcx: TyCtxt<'tcx>) {
-    par_join(
-        || {
+    // Two independent stages in one scope, neither waiting for the other: the whole-crate lints,
+    // and the per-module lints, which are a stage over the crate's modules of their own. Serially
+    // they run in that order, as the `par_join` they replaced did.
+    stages(|scope| {
+        scope.stage((), 1, |_, _| {
             tcx.sess.time("crate_lints", || {
                 // Run whole crate non-incremental lints
                 late_lint_crate(tcx);
             });
-        },
-        || {
+        });
+        scope.stage((), 1, |_, _| {
             tcx.sess.time("module_lints", || {
                 // Run per-module lints
-                tcx.par_hir_for_each_module(|module| tcx.ensure_ok().lint_mod(module));
+                let modules = tcx.hir_module_ids();
+                run_stage(modules, modules.len(), |modules, index| {
+                    tcx.ensure_ok().lint_mod(modules[index])
+                });
             });
-        },
-    );
+        });
+    });
 }

@@ -100,6 +100,15 @@ pub mod emitter;
 pub mod formatting;
 pub mod json;
 mod lock;
+// A par item's diagnostics as its owned output, and a query's as its own: collected while they
+// run, forwarded with their results, replayed in serial order. See its module docs for the
+// whole design.
+mod item_scope;
+pub use item_scope::{
+    ItemDiagnostics, ItemRun, OrderedReplay, QueryDiagnostics, QueryFrame,
+    consume_query_diagnostics,
+};
+use item_scope::{DcxRef, EventKind, StashOp, StashReplay};
 // `markdown` rendered the long error explanations for `--explain`, a command-line feature this
 // compiler does not have - the note further down already records that its 518 markdown files
 // went. The renderer outlived them by an oversight.
@@ -326,7 +335,8 @@ struct DiagCtxtInner {
     /// The error guarantee from all emitted lint errors, each paired with the
     /// thread that emitted it. The length gives the lint error count.
     lint_err_guars: Vec<(ErrorGuaranteed, ThreadId)>,
-    /// The delayed bugs and their error guarantees.
+    /// The delayed bugs and their error guarantees. One recorded inside a par item is carried
+    /// in the item's `ItemDiagnostics` and lands here at replay, so this is in serial order.
     delayed_bugs: Vec<(DelayedDiagInner, ErrorGuaranteed)>,
 
     /// The error count shown to the user at the end.
@@ -376,8 +386,17 @@ struct DiagCtxtInner {
     /// add more information). All stashed diagnostics must be emitted with
     /// `emit_stashed_diagnostics` by the time the `DiagCtxtInner` is dropped,
     /// otherwise an assertion failure will occur.
-    stashed_diagnostics:
-        FxIndexMap<StashKey, FxIndexMap<Span, (DiagInner, Option<ErrorGuaranteed>, ThreadId)>>,
+    stashed_diagnostics: FxIndexMap<StashKey, FxIndexMap<Span, Stashed>>,
+
+    /// The log from which `emit_stashed_diagnostics` rebuilds the order a serial run would have
+    /// left the stash in, once a par item has stashed or stolen. `None` in a serial run and
+    /// until then. See `item_scope::StashReplay`.
+    stash_replay: Option<StashReplay>,
+
+    /// This context's value on the `item_scope` clock. A par item scope opened later captures
+    /// what this context is told inside the item; one opened earlier (this context was made
+    /// inside that item) leaves it alone. See `item_scope`.
+    created: u64,
 
     future_breakage_diagnostics: Vec<DiagInner>,
 
@@ -401,6 +420,10 @@ struct DiagCtxtInner {
     /// Controlled by `-Z hint-msrv`; this allows avoiding emitting lints which would raise MSRV.
     msrv: Option<RustcVersion>,
 }
+
+/// One stashed diagnostic: the diagnostic, the guarantee handed out for it if it is an error,
+/// and the thread that stashed it (for `err_count_on_current_thread`).
+type Stashed = (DiagInner, Option<ErrorGuaranteed>, ThreadId);
 
 /// A key denoting where from a diagnostic was stashed.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -559,6 +582,8 @@ impl DiagCtxt {
             emitted_diagnostics,
             emitted_recursion_depth_exceeding_limit,
             stashed_diagnostics,
+            stash_replay,
+            created: _,
             future_breakage_diagnostics,
             fulfilled_expectations,
             ice_file: _,
@@ -580,6 +605,8 @@ impl DiagCtxt {
         *emitted_diagnostics = Default::default();
         *emitted_recursion_depth_exceeding_limit = false;
         *stashed_diagnostics = Default::default();
+        // The stash log goes with the stash it described.
+        *stash_replay = None;
         *future_breakage_diagnostics = Default::default();
         *fulfilled_expectations = Default::default();
     }
@@ -639,7 +666,11 @@ impl<'a> DiagCtxtHandle<'a> {
             // diagnostic context is dropped and thus delayed bugs are emitted.
             Error => Some(self.span_delayed_bug(span, format!("stashing {key:?}"))),
             DelayedBug => {
-                return self.inner.borrow_mut().emit_diagnostic(diag, self.tainted_with_errors);
+                return self.inner.borrow_mut().emit_diagnostic(
+                    diag,
+                    self.tainted_with_errors,
+                    Some(DcxRef::of(self.dcx)),
+                );
             }
             ForceWarning | Warning | Note | OnceNote | Help | OnceHelp | FailureNote | Allow
             | Expect => None,
@@ -648,12 +679,15 @@ impl<'a> DiagCtxtHandle<'a> {
         // FIXME(Centril, #69537): Consider reintroducing panic on overwriting a stashed diagnostic
         // if/when we have a more robust macro-friendly replacement for `(span, key)` as a key.
         // See the PR for a discussion.
-        self.inner
-            .borrow_mut()
+        let mut inner = self.inner.borrow_mut();
+        let span = span.with_parent(None);
+        // Logged before it is applied, so a log that begins here snapshots the stash without it.
+        inner.record_stash_op(StashOp::Insert(key, span), DcxRef::of(self.dcx));
+        inner
             .stashed_diagnostics
             .entry(key)
             .or_default()
-            .insert(span.with_parent(None), (diag, guar, eko::thread::current_id()));
+            .insert(span, (diag, guar, eko::thread::current_id()));
 
         guar
     }
@@ -662,10 +696,7 @@ impl<'a> DiagCtxtHandle<'a> {
     /// and [`StashKey`] as the key. Panics if the found diagnostic is an
     /// error.
     pub fn steal_non_err(self, span: Span, key: StashKey) -> Option<Diag<'a, ()>> {
-        // FIXME(#120456) - is `swap_remove` correct?
-        let (diag, guar, _) = self.inner.borrow_mut().stashed_diagnostics.get_mut(&key).and_then(
-            |stashed_diagnostics| stashed_diagnostics.swap_remove(&span.with_parent(None)),
-        )?;
+        let (diag, guar, _) = self.inner.borrow_mut().steal(key, span, DcxRef::of(self.dcx))?;
         assert!(!diag.is_error());
         assert!(guar.is_none());
         Some(Diag::new_diagnostic(self, diag))
@@ -684,10 +715,7 @@ impl<'a> DiagCtxtHandle<'a> {
     where
         F: FnMut(&mut Diag<'_>),
     {
-        // FIXME(#120456) - is `swap_remove` correct?
-        let err = self.inner.borrow_mut().stashed_diagnostics.get_mut(&key).and_then(
-            |stashed_diagnostics| stashed_diagnostics.swap_remove(&span.with_parent(None)),
-        );
+        let err = self.inner.borrow_mut().steal(key, span, DcxRef::of(self.dcx));
         err.map(|(err, guar, _)| {
             // The use of `::<ErrorGuaranteed>` is safe because level is `Level::Error`.
             assert_eq!(err.level, Error);
@@ -708,10 +736,7 @@ impl<'a> DiagCtxtHandle<'a> {
         key: StashKey,
         new_err: Diag<'_>,
     ) -> ErrorGuaranteed {
-        // FIXME(#120456) - is `swap_remove` correct?
-        let old_err = self.inner.borrow_mut().stashed_diagnostics.get_mut(&key).and_then(
-            |stashed_diagnostics| stashed_diagnostics.swap_remove(&span.with_parent(None)),
-        );
+        let old_err = self.inner.borrow_mut().steal(key, span, DcxRef::of(self.dcx));
         match old_err {
             Some((old_err, guar, _)) => {
                 assert_eq!(old_err.level, Error);
@@ -818,18 +843,26 @@ impl<'a> DiagCtxtHandle<'a> {
             (0, _) => {
                 // Use `ForceWarning` rather than `Warning` to guarantee emission, e.g. with a
                 // configuration like `--cap-lints allow --force-warn bare_trait_objects`.
+                // The count is a whole-run summary, printed once everything else has been; it is
+                // never captured into an item (`None`).
                 inner.emit_diagnostic(
                     DiagInner::new(ForceWarning, DiagMessage::Str(warnings)),
+                    None,
                     None,
                 );
             }
             (_, 0) => {
-                inner.emit_diagnostic(DiagInner::new(Error, errors), self.tainted_with_errors);
+                inner.emit_diagnostic(
+                    DiagInner::new(Error, errors),
+                    self.tainted_with_errors,
+                    None,
+                );
             }
             (_, _) => {
                 inner.emit_diagnostic(
                     DiagInner::new(Error, format!("{errors}; {warnings}")),
                     self.tainted_with_errors,
+                    None,
                 );
             }
         }
@@ -860,7 +893,11 @@ impl<'a> DiagCtxtHandle<'a> {
     }
 
     pub fn emit_diagnostic(&self, diagnostic: DiagInner) -> Option<ErrorGuaranteed> {
-        self.inner.borrow_mut().emit_diagnostic(diagnostic, self.tainted_with_errors)
+        self.inner.borrow_mut().emit_diagnostic(
+            diagnostic,
+            self.tainted_with_errors,
+            Some(DcxRef::of(self.dcx)),
+        )
     }
 
     pub fn emit_artifact_notification(&self, path: &Path, artifact_type: &str) {
@@ -1196,6 +1233,8 @@ impl DiagCtxtInner {
             emitted_diagnostics: Default::default(),
             emitted_recursion_depth_exceeding_limit: false,
             stashed_diagnostics: Default::default(),
+            stash_replay: None,
+            created: item_scope::tick(),
             future_breakage_diagnostics: Vec::new(),
             fulfilled_expectations: Default::default(),
             ice_file: None,
@@ -1207,27 +1246,165 @@ impl DiagCtxtInner {
     fn emit_stashed_diagnostics(&mut self) -> Option<ErrorGuaranteed> {
         let mut guar = None;
         let has_errors = !self.err_guars.is_empty();
-        for (_, stashed_diagnostics) in mem::take(&mut self.stashed_diagnostics).into_iter() {
-            for (_, (diag, _guar, _thread)) in stashed_diagnostics {
-                if !diag.is_error() {
-                    // Unless they're forced, don't flush stashed warnings when
-                    // there are errors, to avoid causing warning overload. The
-                    // stash would've been stolen already if it were important.
-                    if !diag.is_force_warn() && has_errors {
-                        continue;
-                    }
+        let stashed = mem::take(&mut self.stashed_diagnostics);
+        // The stash's own order is the serial one unless a par item stashed or stole while
+        // items ran in parallel; then the log, filled in item order by the replay, says what
+        // the serial order would have been. A serial run never has a log.
+        let in_order: Vec<Stashed> = match self.stash_replay.take() {
+            None => stashed.into_iter().flat_map(|(_, spans)| spans.into_values()).collect(),
+            Some(replay) => replay.in_serial_order(stashed),
+        };
+        for (diag, _guar, _thread) in in_order {
+            if !diag.is_error() {
+                // Unless they're forced, don't flush stashed warnings when
+                // there are errors, to avoid causing warning overload. The
+                // stash would've been stolen already if it were important.
+                if !diag.is_force_warn() && has_errors {
+                    continue;
                 }
-                guar = guar.or(self.emit_diagnostic(diag, None));
             }
+            guar = guar.or(self.emit_diagnostic(diag, None, None));
         }
         guar
     }
 
+    /// Take a stashed diagnostic out, logging the steal when its order has to be replayed.
+    fn steal(&mut self, key: StashKey, span: Span, origin: DcxRef) -> Option<Stashed> {
+        let span = span.with_parent(None);
+        // Logged only when something is actually taken, and before it is taken, so the log
+        // removes exactly what the live stash lost.
+        if self.stashed_diagnostics.get(&key).is_some_and(|spans| spans.contains_key(&span)) {
+            self.record_stash_op(StashOp::Remove(key, span), origin);
+        }
+        // FIXME(#120456) - is `swap_remove` correct?
+        self.stashed_diagnostics.get_mut(&key).and_then(|spans| spans.swap_remove(&span))
+    }
+
+    /// Put a stash or steal in serial order.
+    ///
+    /// The operation itself is applied live by the caller, because the item needs its effect
+    /// at once. Inside a par item only its order is captured, and reaches the log when the
+    /// item is replayed; the log's base is snapshotted here, on the first captured operation,
+    /// before it is applied, so the base holds only what was stashed before any item ran.
+    /// Outside every item the operation goes into the log directly once one exists; with no
+    /// log (a serial run, or no item has touched the stash) there is nothing to do.
+    fn record_stash_op(&mut self, op: StashOp, origin: DcxRef) {
+        if let Some(capture) = item_scope::capture(origin, self.created) {
+            if self.stash_replay.is_none() {
+                self.stash_replay = Some(StashReplay::begin(&self.stashed_diagnostics));
+            }
+            capture.push(EventKind::Stash(op));
+        } else if let Some(replay) = &mut self.stash_replay {
+            replay.record(op);
+        }
+    }
+
+    /// Hand a diagnostic that passed every check made at emission to the emitter, or, inside a
+    /// par item, to the item's owned output. See `item_scope`.
+    fn print_or_capture(&mut self, diagnostic: DiagInner, origin: Option<DcxRef>) {
+        match origin.and_then(|origin| item_scope::capture(origin, self.created)) {
+            Some(capture) => capture.push(EventKind::Print(diagnostic)),
+            None => self.print(diagnostic),
+        }
+    }
+
+    /// Apply an event an item captured, now that its turn in item order has come. Called by
+    /// `item_scope` with this context's lock held, outside every item scope that captures it.
+    ///
+    /// Nothing is counted here: every count a running item can observe was made when the item
+    /// emitted. See `item_scope` for why.
+    fn replay(&mut self, event: EventKind) {
+        match event {
+            EventKind::Print(diagnostic) => self.print(diagnostic),
+            EventKind::DelayedBug(bug, guar) => {
+                // `emit_diagnostic` stops recording delayed bugs once an error exists, and the
+                // first error clears the ones already recorded. Both come to "keep it only if
+                // there is still no error", which is what a serial run ends up with.
+                if self.has_errors().is_none() {
+                    self.delayed_bugs.push((bug, guar));
+                }
+            }
+            EventKind::Stash(op) => {
+                // The log exists: it was begun when this operation was captured, and only
+                // `reset_err_count` removes it, taking the stash it described with it.
+                if let Some(replay) = &mut self.stash_replay {
+                    replay.record(op);
+                }
+            }
+        }
+    }
+
+    /// The printing half of emission: the decisions that depend on what was printed before,
+    /// then the emitter, which renders the diagnostic to text here and only here. Runs at
+    /// emission in a serial run and at replay for a par item's output, and in both it runs in
+    /// serial order, which is what keeps the first occurrence of a duplicate the serial one.
+    ///
+    /// This is the code that stood inside the `TRACK_DIAGNOSTIC` closure in `emit_diagnostic`,
+    /// statement for statement, moved so the replay can reach it.
+    fn print(&mut self, mut diagnostic: DiagInner) {
+        let already_emitted = {
+            let mut hasher = StableHasher::new();
+            diagnostic.hash(&mut hasher);
+            let diagnostic_hash = hasher.finish();
+            !self.emitted_diagnostics.insert(diagnostic_hash)
+        };
+
+        let is_error = diagnostic.is_error();
+        // We only emit the first occurrence of `recursion_depth_exceeding_limit`.
+        let silence_recursion_depth_exceeded_limit =
+            diagnostic.is_lint.as_ref().is_some_and(|lint| {
+                lint.name.eq_ignore_ascii_case(
+                    crate::rustc_lint_defs::builtin::RECURSION_DEPTH_EXCEEDING_LIMIT.name,
+                ) && mem::replace(&mut self.emitted_recursion_depth_exceeding_limit, true)
+            });
+
+        // Only emit the diagnostic if we've been asked to deduplicate or
+        // haven't already emitted an equivalent diagnostic.
+        if !silence_recursion_depth_exceeded_limit
+            && !(self.flags.deduplicate_diagnostics && already_emitted)
+        {
+            debug!(?diagnostic);
+            debug!(?self.emitted_diagnostics);
+
+            let not_yet_emitted = |sub: &mut Subdiag| {
+                debug!(?sub);
+                if sub.level != OnceNote && sub.level != OnceHelp {
+                    return true;
+                }
+                let mut hasher = StableHasher::new();
+                sub.hash(&mut hasher);
+                let diagnostic_hash = hasher.finish();
+                debug!(?diagnostic_hash);
+                self.emitted_diagnostics.insert(diagnostic_hash)
+            };
+            diagnostic.children.retain_mut(not_yet_emitted);
+            if already_emitted {
+                let msg = "duplicate diagnostic emitted due to `-Z deduplicate-diagnostics=no`";
+                diagnostic.sub(Note, msg, MultiSpan::new());
+            }
+
+            if is_error {
+                self.deduplicated_err_count += 1;
+            } else if matches!(diagnostic.level, ForceWarning | Warning) {
+                self.deduplicated_warn_count += 1;
+            }
+            self.has_printed = true;
+
+            self.emitter.emit_diagnostic(diagnostic);
+        }
+    }
+
     // Return value is only `Some` if the level is `Error` or `DelayedBug`.
+    //
+    // `origin` is the `DiagCtxt` this inner state belongs to, passed by the public entry points
+    // so that a par item can capture what it emits and have it replayed into the right context
+    // later (see `item_scope`). `None` from the paths that only ever run outside every item:
+    // stashed-diagnostic emission, the error count, delayed-bug flushing.
     fn emit_diagnostic(
         &mut self,
         mut diagnostic: DiagInner,
         taint: Option<&Cell<Option<ErrorGuaranteed>>>,
+        origin: Option<DcxRef>,
     ) -> Option<ErrorGuaranteed> {
         if diagnostic.has_future_breakage() {
             // Future breakages aren't emitted if they're `Level::Allow` or
@@ -1277,7 +1454,14 @@ impl DiagCtxtInner {
                         // `DiagCtxtInner::drop`.
                         #[allow(deprecated)]
                         let guar = ErrorGuaranteed::unchecked_error_guaranteed();
-                        self.delayed_bugs.push((DelayedDiagInner::new(diagnostic), guar));
+                        let bug = DelayedDiagInner::new(diagnostic);
+                        // Inside a par item the bug is the item's output and reaches
+                        // `delayed_bugs` at replay, so `flush_delayed` reports bugs in the
+                        // order a serial run would. Otherwise it is recorded now, as always.
+                        match origin.and_then(|o| item_scope::capture(o, self.created)) {
+                            Some(capture) => capture.push(EventKind::DelayedBug(bug, guar)),
+                            None => self.delayed_bugs.push((bug, guar)),
+                        }
                         Some(guar)
                     };
                 }
@@ -1321,62 +1505,27 @@ impl DiagCtxtInner {
             return None;
         }
 
-        TRACK_DIAGNOSTIC(diagnostic, &mut |mut diagnostic| {
+        TRACK_DIAGNOSTIC(diagnostic, &mut |diagnostic| {
             if let Some(code) = diagnostic.code {
                 self.emitted_diagnostic_codes.insert(code);
             }
 
-            let already_emitted = {
-                let mut hasher = StableHasher::new();
-                diagnostic.hash(&mut hasher);
-                let diagnostic_hash = hasher.finish();
-                !self.emitted_diagnostics.insert(diagnostic_hash)
-            };
-
             let is_error = diagnostic.is_error();
             let is_lint = diagnostic.is_lint.is_some();
-            // We only emit the first occurrence of `recursion_depth_exceeding_limit`.
-            let silence_recursion_depth_exceeded_limit =
-                diagnostic.is_lint.as_ref().is_some_and(|lint| {
-                    lint.name.eq_ignore_ascii_case(
-                        crate::rustc_lint_defs::builtin::RECURSION_DEPTH_EXCEEDING_LIMIT.name,
-                    ) && mem::replace(&mut self.emitted_recursion_depth_exceeding_limit, true)
-                });
 
-            // Only emit the diagnostic if we've been asked to deduplicate or
-            // haven't already emitted an equivalent diagnostic.
-            if !silence_recursion_depth_exceeded_limit
-                && !(self.flags.deduplicate_diagnostics && already_emitted)
-            {
-                debug!(?diagnostic);
-                debug!(?self.emitted_diagnostics);
-
-                let not_yet_emitted = |sub: &mut Subdiag| {
-                    debug!(?sub);
-                    if sub.level != OnceNote && sub.level != OnceHelp {
-                        return true;
-                    }
-                    let mut hasher = StableHasher::new();
-                    sub.hash(&mut hasher);
-                    let diagnostic_hash = hasher.finish();
-                    debug!(?diagnostic_hash);
-                    self.emitted_diagnostics.insert(diagnostic_hash)
-                };
-                diagnostic.children.retain_mut(not_yet_emitted);
-                if already_emitted {
-                    let msg = "duplicate diagnostic emitted due to `-Z deduplicate-diagnostics=no`";
-                    diagnostic.sub(Note, msg, MultiSpan::new());
-                }
-
-                if is_error {
-                    self.deduplicated_err_count += 1;
-                } else if matches!(diagnostic.level, ForceWarning | Warning) {
-                    self.deduplicated_warn_count += 1;
-                }
-                self.has_printed = true;
-
-                self.emitter.emit_diagnostic(diagnostic);
-            }
+            // **Emission is split in two here.** What follows the call is the half a running
+            // item can observe (the error guarantee, the counts behind `has_errors`, taint,
+            // `treat_err_as_bug`), and it happens now, in every mode: counted once, at
+            // collection. The half that decides what is printed (duplicates, once-only notes,
+            // the printed counts, the emitter itself) is `print`, and inside a par item it
+            // becomes the item's owned output and runs when the item is replayed in order.
+            //
+            // In a serial run no item scope is ever open, `print_or_capture` calls `print` at
+            // once, and `print` is the code that stood here, statement for statement, so the
+            // output is byte-identical. The one move is that `is_error`/`is_lint` are read
+            // before the duplicate hash rather than after; neither the hash nor anything else
+            // between them touches the level or `is_lint`.
+            self.print_or_capture(diagnostic, origin);
 
             if is_error {
                 // If we have any delayed bugs recorded, we can discard them
@@ -1485,8 +1634,8 @@ impl DiagCtxtInner {
         // `-Ztreat-err-as-bug`, which we don't want.
         let note1 = "no errors encountered even though delayed bugs were created";
         let note2 = "those delayed bugs will now be shown as internal compiler errors";
-        self.emit_diagnostic(DiagInner::new(Note, note1), None);
-        self.emit_diagnostic(DiagInner::new(Note, note2), None);
+        self.emit_diagnostic(DiagInner::new(Note, note1), None, None);
+        self.emit_diagnostic(DiagInner::new(Note, note2), None, None);
 
         for bug in bugs {
             if let Some(out) = &mut out {
@@ -1531,7 +1680,7 @@ impl DiagCtxtInner {
             }
             bug.level = Bug;
 
-            self.emit_diagnostic(bug, None);
+            self.emit_diagnostic(bug, None, None);
         }
 
         // Panic with `DelayedBugPanic` to avoid "unexpected panic" messages.

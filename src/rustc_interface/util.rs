@@ -9,10 +9,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::num::NonZero;
-use alloc::sync::Arc;
+use eko::env;
 use eko::path::Path;
 use eko::thread::OnceLock;
-use eko::{env, thread};
 
 use crate::frontend_semantics::TargetConfig;
 use crate::frontend_semantics::target_features::internal_target_features;
@@ -21,7 +20,6 @@ use crate::rustc_attr_parsing::ShouldEmit;
 use crate::rustc_data_structures::base_n::{CASE_INSENSITIVE, ToBaseN};
 use crate::rustc_data_structures::sync;
 use crate::rustc_middle::ty::CurrentGcx;
-use crate::rustc_query_impl::{CollectActiveJobsKind, collect_active_query_jobs};
 use crate::rustc_session::config::{Cfg, Jobs, OutFileName, OutputFilenames, OutputTypes};
 use crate::rustc_session::{EarlyDiagCtxt, Session};
 use crate::rustc_span::edition::Edition;
@@ -156,6 +154,19 @@ fn run_on_current_thread_with_globals<F: FnOnce(CurrentGcx) -> R + Send, R: Send
     })
 }
 
+/// How many threads a session runs on: `jobs.frontend` when it is two or more and the
+/// `parallel` feature is built, else one, which is the serial compiler.
+///
+/// One asked-for thread is serial, not "parallel on one worker": a width of one has no helper to
+/// hand anything to, and running the thread-safe locks and the query system's latch waits with
+/// nobody to wait for would only cost.
+pub fn session_width(jobs: Jobs) -> usize {
+    match jobs.frontend {
+        Some(threads) if cfg!(feature = "parallel") && threads.get() > 1 => threads.get(),
+        _ => 1,
+    }
+}
+
 pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send, R: Send>(
     thread_builder_diag: &EarlyDiagCtxt,
     edition: Edition,
@@ -164,42 +175,170 @@ pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send,
     sm_inputs: SourceMapInputs,
     f: F,
 ) -> R {
-    use crate::rustc_data_structures::defer;
-    use crate::rustc_middle::ty::tls;
-    use crate::rustc_query_impl::break_query_cycle;
+    // Still read, because it still validates: a malformed `RUST_MIN_STACK` is refused here, as
+    // before. This crate starts no thread to give the size to. nagoya's shared pool starts its
+    // threads through `std`, which reads the same variable, so setting it is how that pool gets
+    // compiler-sized stacks today; see `NAGOYA-STACK-PATCH.md`.
+    let _ = init_stack_size(thread_builder_diag);
 
-    let thread_stack_size = init_stack_size(thread_builder_diag);
+    let width = NonZero::new(session_width(jobs)).expect("a session runs on at least one thread");
 
-    let jobs_frontend = jobs.frontend.or(NonZero::new(1)).unwrap();
-
-    // **One thread, and no pool.**
+    // **The session's thread, plus nagoya's pool when the session is parallel.**
     //
-    // This had two paths: a `rustc_thread_pool` (rayon-core) pool of `jobs_frontend` workers with
-    // a deadlock handler, and this one. The pool is gone, so this is the function.
+    // This had two paths: a `rustc_thread_pool` (rayon-core) pool of `jobs.frontend` workers that
+    // this function built, with a deadlock handler, and a single-thread one. The rustc-owned pool
+    // is gone for good. What replaced it builds no pool at all: the session runs on the caller's
+    // thread, and when it is parallel each stage (`sync::stages`) hands items to helpers on
+    // nagoya's pool, which nagoya owns and which serves every session in the process.
     //
-    // The deadlock handler is why, and it is worth keeping the shape of what it did: on detecting
-    // that every worker was blocked, it spawned *another* thread, forwarded thread-locals into it,
-    // and ran `break_query_cycle` there. That is the cost of letting pool workers block on each
-    // other's queries, and it is machinery that only exists to survive a design we are removing.
-    //
-    // Parallelism moves to owned whole-file and whole-request jobs, where nothing is borrowed
-    // across a task boundary and no compiler context has to be installed on a worker.
+    // The deadlock handler went with the pool, and nothing here replaces it. It existed because
+    // rayon workers blocked on each other's queries with nothing to detect a cycle; the query
+    // system now detects a cycle at the moment a wait would close one (`QueryWaitGraph`), and a
+    // stage's waits only ever wait for running items (see `stage.rs`).
     run_on_current_thread_with_globals(
         edition,
         sm_inputs,
         extra_symbols,
         |current_gcx| {
-            // This frontend runs one compiler invocation at a time. Its registry
-            // identifies the thread rather than an invocation, so keep it across requests;
-            // every `WorkerLocal` value remains request-owned and is still dropped with the
-            // compiler context.
-            if sync::Registry::try_current().is_none() {
-                sync::Registry::new(jobs_frontend).register();
-            }
+            // One registry per session, with one slot per thread the session may use. This
+            // thread holds slot 0 for the whole session; pool helpers lease the others while they
+            // run this session's items. Every `WorkerLocal` the session creates is sized by it.
+            //
+            // It replaced a registry kept on the thread across requests, sized by whichever
+            // session came first: a cache of the first request's shape, and wrong once sessions
+            // with different widths share threads.
+            let registry = sync::Registry::new(width);
+            let slot = registry.lease().expect("a new registry has a free slot");
+            let _in_registry = slot.enter();
 
             f(current_gcx)
         },
     )
+}
+
+// ---- what a parallel item is given ---------------------------------------------------------
+
+/// Register what the parallel stages install around every item: this session's
+/// `SessionGlobals` and `ImplicitCtxt`, and the diagnostics collection that forwards each item's
+/// diagnostics in item order. `run_compiler` calls it; registering again is a no-op, so a caller
+/// that runs stages outside `run_compiler` can call it too.
+///
+/// `rustc_data_structures` cannot name any of the three, so it takes them as hooks (see
+/// `sync::ContextHook` and `sync::ItemHook`). They are used only by parallel sessions.
+pub fn install_parallel_context() {
+    sync::install_context_hook(&SESSION_GLOBALS_HOOK);
+    sync::install_context_hook(&IMPLICIT_CTXT_HOOK);
+    sync::install_item_hook(&DIAGNOSTICS_HOOK);
+}
+
+static SESSION_GLOBALS_HOOK: sync::ContextHook =
+    sync::ContextHook { capture: capture_session_globals, enter: enter_session_globals };
+
+fn capture_session_globals() -> *const () {
+    if crate::rustc_span::session_globals_are_set() {
+        crate::rustc_span::with_session_globals(|globals| core::ptr::from_ref(globals).cast())
+    } else {
+        core::ptr::null()
+    }
+}
+
+/// Install the captured `SessionGlobals` around `run`, unless this thread already has them.
+///
+/// # Safety
+///
+/// `captured` came from `capture_session_globals` on a thread that has not left the stage scope
+/// it was captured for; see `sync::ContextHook`.
+unsafe fn enter_session_globals(captured: *const (), run: &mut dyn FnMut()) {
+    if captured.is_null() {
+        return run();
+    }
+    // SAFETY: the caller's contract: the `SessionGlobals` outlive this call.
+    let globals = unsafe { &*captured.cast::<SessionGlobals>() };
+    if crate::rustc_span::session_globals_are_set() {
+        // The session's own thread, or a pool thread running this item while it waits inside
+        // another item of the same session. Anything else would mean two sessions on one thread.
+        let same = crate::rustc_span::with_session_globals(|current| core::ptr::eq(current, globals));
+        assert!(same, "a parallel item ran on a thread that is inside another session");
+        run()
+    } else {
+        crate::rustc_span::set_session_globals_then(globals, run)
+    }
+}
+
+static IMPLICIT_CTXT_HOOK: sync::ContextHook =
+    sync::ContextHook { capture: capture_implicit_ctxt, enter: enter_implicit_ctxt };
+
+fn capture_implicit_ctxt() -> *const () {
+    crate::rustc_middle::ty::tls::with_context_opt(|icx| match icx {
+        Some(icx) => core::ptr::from_ref(icx).cast(),
+        None => core::ptr::null(),
+    })
+}
+
+/// Install the captured `ImplicitCtxt` around `run`.
+///
+/// It is installed even on a thread that already has one: the item's queries must see the
+/// context the stage was started in, whose `query` is the parent the query system's cycle check
+/// walks (`QueryWaitGraph`), not whatever context a waiting thread happens to be inside.
+///
+/// # Safety
+///
+/// As `enter_session_globals`.
+unsafe fn enter_implicit_ctxt(captured: *const (), run: &mut dyn FnMut()) {
+    use crate::rustc_middle::ty::tls;
+    if captured.is_null() {
+        return run();
+    }
+    // SAFETY: the caller's contract: the `ImplicitCtxt` outlives this call. The lifetimes are the
+    // captured context's own, erased; nothing here outlives it.
+    let icx = unsafe { &*captured.cast::<tls::ImplicitCtxt<'static, 'static>>() };
+    tls::enter_context(icx, run)
+}
+
+static DIAGNOSTICS_HOOK: sync::ItemHook = sync::ItemHook {
+    begin: begin_ordered_replay,
+    run: run_collecting_item,
+    finish: finish_ordered_replay,
+    discard: discard_ordered_replay,
+};
+
+/// One `OrderedReplay` per stage, created on the thread starting the stage (it captures that
+/// thread's enclosing item, if any, as where to forward).
+fn begin_ordered_replay() -> *mut () {
+    Box::into_raw(Box::new(crate::rustc_errors::OrderedReplay::new())).cast()
+}
+
+/// # Safety
+///
+/// `state` came from `begin_ordered_replay` and has not been finished or discarded.
+unsafe fn run_collecting_item(state: *const (), index: usize, item: &mut dyn FnMut()) -> bool {
+    // SAFETY: the caller's contract.
+    let replay = unsafe { &*state.cast::<crate::rustc_errors::OrderedReplay>() };
+    // Through the replay, not a free function: the item's scope carries the replay's root, the
+    // oldest stage of its chain, which is what a query run inside the item may capture.
+    let run = replay.collect(item);
+    let fatal = run.result.is_err();
+    replay.ready(index, run.diagnostics, fatal);
+    fatal
+}
+
+/// # Safety
+///
+/// As `run_collecting_item`, and this is its last use.
+unsafe fn finish_ordered_replay(state: *mut ()) {
+    // SAFETY: the caller's contract.
+    let replay = unsafe { Box::from_raw(state.cast::<crate::rustc_errors::OrderedReplay>()) };
+    if let Err(fatal) = replay.finish() {
+        fatal.raise()
+    }
+}
+
+/// # Safety
+///
+/// As `finish_ordered_replay`.
+unsafe fn discard_ordered_replay(state: *mut ()) {
+    // SAFETY: the caller's contract.
+    drop(unsafe { Box::from_raw(state.cast::<crate::rustc_errors::OrderedReplay>()) });
 }
 
 

@@ -207,6 +207,16 @@ where
     SESSION_GLOBALS.with(f)
 }
 
+/// Whether this thread has `SessionGlobals` installed.
+///
+/// For the parallel shims' context hook (`rustc_interface::util::install_parallel_context`),
+/// which installs a session's globals around an item on a pool thread that has none, and leaves
+/// them alone on a thread (the session's own) that already has them.
+#[inline]
+pub fn session_globals_are_set() -> bool {
+    SESSION_GLOBALS.is_set()
+}
+
 /// Default edition, no source map.
 pub fn create_default_session_globals_then<R>(f: impl FnOnce() -> R) -> R {
     create_session_globals_then(edition::DEFAULT_EDITION, &[], None, f)

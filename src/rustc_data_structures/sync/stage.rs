@@ -1,0 +1,848 @@
+//! Stages: a function over frozen input, fanned out per index, each item's output written once
+//! into its own slot and awaitable on its own. The compiler's one parallel primitive.
+//!
+//! # The shape
+//!
+//! ```ignore (illustrative)
+//! // One stage, all of it: every item's output, moved out in input order.
+//! let facts: Vec<Fact> = sync::run_stage(owners, owners.len(), |owners, i| fact(tcx, owners[i]));
+//!
+//! // Stages that feed each other, in a scope.
+//! let checked = sync::stages(|scope| {
+//!     let lowered = scope.stage(files, files.len(), |files, i| lower(&files[i]));
+//!     // Item `i` of the second stage waits for `lowered[i]` only, not for the whole first stage.
+//!     let input = lowered.clone();
+//!     scope.stage(input, lowered.len(), |lowered, i| lowered.wait(i).map(check))
+//! });
+//! ```
+//!
+//! - **Zero copy.** A stage's input is one frozen value the stage owns (an arena slice
+//!   `&'tcx [T]`, an `Arc<[T]>`, a previous stage's `Arc<Slots<_>>`) and each item is told its
+//!   index and reads in place. Outputs are moved into preallocated slots, once, and read back by
+//!   reference or moved out; nothing on the path clones an input or an output.
+//! - **Data forward.** A stage's [`Slots`] is frozen once filled and is the natural input of the
+//!   next stage. An item's diagnostics are part of its output too (see "Diagnostics" below).
+//! - **Reactive.** Starting a stage returns at once. Its items run on the pool while the scope
+//!   goes on, and a later stage's item waits for exactly the slots it reads, through
+//!   [`Slots::wait`], which also *runs* the item it waits for when nobody has started it yet.
+//!   There is no barrier between stages; there is one at the end of the scope, because that is
+//!   where the borrows the items rely on end.
+//!
+//! **Serial when parallelism is off.** In a serial session, and in a build without the `parallel`
+//! feature, a stage runs all of its items on the calling thread, in index order, at the moment it
+//! is started, and a panic or fatal error in one propagates at once. That is exactly the loop the
+//! serial compiler ran, and the rest of the API behaves the same over it: every slot is settled
+//! before a later stage asks.
+//!
+//! # Borrowing, and why there is a scope
+//!
+//! Items borrow: their functions capture `TyCtxt<'tcx>`, their inputs are arena slices, and they
+//! read the compiler's thread-locals (`SessionGlobals`, the `ImplicitCtxt`, see `par_context`),
+//! which live in the stack frames of the session. [`stages`] is shaped like
+//! `std::thread::scope`: the body gets a `&'scope StageScope<'scope, 'env>` for a `'scope` it
+//! cannot name a local for, a stage's input, function and output must outlive `'scope`, and
+//! [`stages`] does not return, or unwind, until every item of every stage has settled and every
+//! pool helper has let go of the scope. So everything an item borrows outlives every use, and a
+//! call site needs no `unsafe`. Inside, the stages are held by `'static` pool jobs with their
+//! lifetimes erased (`parallel::start`), which that same guarantee makes sound; that erasure, and
+//! the captured thread-local pointers, are the only borrowed data that crosses to a worker.
+//!
+//! What would remove them: `'static` inputs and functions, which means `TyCtxt` reachable through
+//! an `Arc`'d `GlobalCtxt` and `SessionGlobals` owned by an `Arc` rather than a stack frame.
+//!
+//! **`Send` and `Sync` are not checked.** The bounds are rustc's `DynSend` and `DynSync`, which
+//! this crate implements for every type (`marker.rs`), so a stage's items cross threads on the
+//! call site's word. The compiler's call sites are the ones upstream ran on a thread pool; a new
+//! one has to be read.
+//!
+//! # How items get run
+//!
+//! Each slot is claimed once, by compare-and-swap, by whichever thread gets to it first:
+//!
+//! - *helpers*, closures submitted to nagoya's pool when a stage starts, up to the session's
+//!   width less one, each taking unclaimed items from every open stage of the scope in turn;
+//! - a thread in [`Slots::wait`] for an item nobody has claimed, which runs it there and then;
+//! - the scope's owner at the end of the scope, which runs whatever is still unclaimed, in order.
+//!
+//! A thread only ever *waits* for an item another thread is already running; everything it
+//! could run itself, it runs. So nothing ever waits on a queued job, which is what starves a
+//! pool whose workers join: a worker running a nested stage runs its own pieces (caller-runs) and
+//! parks only while a piece it cannot run is running elsewhere. The waits follow stage order and
+//! nesting, which are acyclic, and a waiting thread never picks up unrelated work, so no item is
+//! run on top of another item's half-finished state. That is why this does not use
+//! `nagoya::par_for`: a `ParFor` completes when every piece it *published* has run, and a caller
+//! that blocks a worker can end up waiting for pieces queued behind other blocked workers.
+//!
+//! **What a parked thread costs.** A waiting thread parks in `nagoya::block_on`. nagoya does
+//! nothing when a worker parks: no compensating thread, no detection. The pool has one worker
+//! fewer until it wakes. The waits here end, for the reason above; a worker blocking on another
+//! worker's *query* is a wait the query system owns (its `QueryWaitGraph` sees a stage's items as
+//! children of the query that opened the scope, which is why every item runs inside the scope's
+//! captured `ImplicitCtxt`), and nagoya will not notice that one either.
+//!
+//! # Diagnostics, panics, and where a serial run would have stopped
+//!
+//! In a parallel session every item runs inside the item hook (`par_context::ItemHook`), which
+//! `rustc_errors` registers: what the item emits becomes part of its output, recorded as the
+//! item finishes and forwarded in item order when the stage concludes (in stage order, on the
+//! thread that started it), so the diagnostics come out in the serial order at any worker count.
+//! A query's diagnostics are part of the query's output in the same way, and come out at its
+//! first consumer in serial order, whichever item happened to compute it
+//! (`rustc_errors::item_scope`).
+//!
+//! A serial run stops at the first item that raises (a fatal error or an internal compiler
+//! error): it ran every item before it and none after. Here, the first such item in serial order
+//! (earlier stage first, then lower index) cuts off every item after it that has not started;
+//! items already running finish. The scope then settles everything, waits for its helpers, and
+//! raises what the serial run raised: an internal compiler error's original payload, resumed; or
+//! the fatal error, raised again by the hook once every earlier item's diagnostics are out. A
+//! `FatalError` is still one to `catch_fatal_errors`. [`Slots::wait`] answers `None` for an item
+//! that failed or was cut off.
+
+use alloc::boxed::Box;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+
+use core::cell::{Cell, UnsafeCell};
+use core::future::Future;
+use core::marker::PhantomData;
+use core::mem::MaybeUninit;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU8, Ordering};
+use core::task::{Context, Poll, Waker};
+
+use parking_lot::Mutex;
+
+use crate::rustc_data_structures::sync::{DynSend, DynSync};
+
+// ---- slots ---------------------------------------------------------------------------------
+
+/// Nobody has started this item.
+const UNCLAIMED: u8 = 0;
+/// Some thread claimed the item and is running it.
+const RUNNING: u8 = 1;
+/// The value is written and will not change.
+const READY: u8 = 2;
+/// The item raised, or was cut off because a serial run would not have reached it.
+const FAILED: u8 = 3;
+
+struct Slot<O> {
+    state: AtomicU8,
+    value: UnsafeCell<MaybeUninit<O>>,
+}
+
+impl<O> Slot<O> {
+    fn empty() -> Slot<O> {
+        Slot { state: AtomicU8::new(UNCLAIMED), value: UnsafeCell::new(MaybeUninit::uninit()) }
+    }
+}
+
+/// One stage's outputs: one slot per index, each written once and then frozen.
+///
+/// Read a settled slot in place with [`get`](Slots::get), wait for one with
+/// [`wait`](Slots::wait) (blocking, and running the item if nobody has) or
+/// [`ready`](Slots::ready) (a future, for a task), and move every value out with
+/// [`into_values`](Slots::into_values) once the scope that filled it has ended.
+pub struct Slots<O> {
+    slots: Box<[Slot<O>]>,
+    /// Threads and tasks waiting for a slot, by index. Woken when that slot settles.
+    waiters: Mutex<Vec<(usize, Waker)>>,
+    /// The stage that fills these, while it can still run an item: `None` for a stage run
+    /// eagerly. Weak, because the stage owns these. Its lifetime is erased (see
+    /// `parallel::start`); it can only be upgraded while the scope that owns the stage is open.
+    runner: Option<Weak<dyn Run>>,
+}
+
+// SAFETY: a slot's value is written once, by the one thread that claimed the slot, before the
+// `Release` store of `READY`; it is read only after an `Acquire` load of `READY`, and never
+// written again while `&self` exists (`into_values` owns `self`). So sharing needs `O: Sync` for
+// the readers, and sending needs `O: Send` for the writer.
+unsafe impl<O: Send> Send for Slots<O> {}
+unsafe impl<O: Send + Sync> Sync for Slots<O> {}
+
+impl<O> Slots<O> {
+    fn with_runner(len: usize, runner: Option<Weak<dyn Run>>) -> Slots<O> {
+        Slots {
+            slots: (0..len).map(|_| Slot::empty()).collect(),
+            waiters: Mutex::new(Vec::new()),
+            runner,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    fn claim(&self, index: usize) -> bool {
+        self.slots[index]
+            .state
+            .compare_exchange(UNCLAIMED, RUNNING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Write the value of a slot this thread claimed.
+    fn fill(&self, index: usize, value: O) {
+        let slot = &self.slots[index];
+        debug_assert_eq!(slot.state.load(Ordering::Relaxed), RUNNING);
+        // SAFETY: the slot is `RUNNING` and this thread claimed it, so nobody else writes it and
+        // nobody reads it until the `READY` store below.
+        unsafe { (*slot.value.get()).write(value) };
+        slot.state.store(READY, Ordering::Release);
+        self.wake(index);
+    }
+
+    /// Settle a slot this thread claimed without a value.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+    fn fail(&self, index: usize) {
+        self.slots[index].state.store(FAILED, Ordering::Release);
+        self.wake(index);
+    }
+
+    /// The value of slot `index`, if it is ready. Never waits.
+    pub fn get(&self, index: usize) -> Option<&O> {
+        let slot = &self.slots[index];
+        if slot.state.load(Ordering::Acquire) == READY {
+            // SAFETY: `READY` was stored after the write, with `Release`, and a ready slot is
+            // never written again while `&self` exists.
+            Some(unsafe { (*slot.value.get()).assume_init_ref() })
+        } else {
+            None
+        }
+    }
+
+    /// Whether slot `index` has settled, with a value or without one.
+    pub fn is_settled(&self, index: usize) -> bool {
+        matches!(self.slots[index].state.load(Ordering::Acquire), READY | FAILED)
+    }
+
+    /// A future for slot `index`: `Some` with the value once written, `None` if the item failed.
+    ///
+    /// For a task. It only waits: it never runs the item itself, so something else has to (the
+    /// stage's helpers, a [`wait`](Slots::wait)er, or the end of the scope).
+    pub fn ready(&self, index: usize) -> ReadySlot<'_, O> {
+        ReadySlot { slots: self, index }
+    }
+
+    /// The value of slot `index`, blocking until it settles; `None` if the item failed.
+    ///
+    /// If nobody has started the item, the calling thread runs it here, rather than waiting for a
+    /// helper to get to it, so a waiter only ever blocks for an item that is already running.
+    /// Call it from the scope's owner or from inside one of the scope's items: an item run here
+    /// uses the thread's registry slot, which every participant holds.
+    pub fn wait(&self, index: usize) -> Option<&O> {
+        loop {
+            match self.slots[index].state.load(Ordering::Acquire) {
+                READY => return self.get(index),
+                FAILED => return None,
+                UNCLAIMED => {
+                    let runner = self.runner.as_ref().and_then(Weak::upgrade);
+                    match runner {
+                        // Somebody may claim it between the load and here; then go round again.
+                        Some(runner) => {
+                            if self.claim(index) {
+                                runner.run_claimed(index);
+                            }
+                        }
+                        // No stage can fill it any more: a serial stage that unwound part way.
+                        None => return None,
+                    }
+                }
+                _ => return self.block(index),
+            }
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    fn block(&self, index: usize) -> Option<&O> {
+        crate::rustc_data_structures::sync::pool::block_on(self.ready(index))
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    fn block(&self, index: usize) -> Option<&O> {
+        // Without the pool only this thread runs items, so a running item can only be waited for
+        // from inside itself.
+        panic!("stage item {index} waited for itself")
+    }
+
+    /// Wait for every slot, in order, running whatever nobody has started.
+    pub fn wait_all(&self) {
+        for index in 0..self.len() {
+            let _ = self.wait(index);
+        }
+    }
+
+    /// Every value, moved out in index order.
+    ///
+    /// # Panics
+    ///
+    /// If a slot has no value: its item failed, or never ran. After a scope that returned
+    /// normally every slot has one, because a failed item makes the scope raise instead.
+    pub fn into_values(mut self) -> Vec<O> {
+        let len = self.len();
+        let mut values = Vec::with_capacity(len);
+        for index in 0..len {
+            let slot = &mut self.slots[index];
+            assert!(*slot.state.get_mut() == READY, "stage slot {index} has no value");
+            // Marked empty before the read, so `Drop` does not drop what was moved out even if a
+            // later slot panics.
+            *slot.state.get_mut() = UNCLAIMED;
+            // SAFETY: it was `READY`, so written, and `self` is owned, so nobody reads it.
+            values.push(unsafe { slot.value.get_mut().assume_init_read() });
+        }
+        values
+    }
+
+    fn wake(&self, index: usize) {
+        let woken: Vec<Waker> = {
+            let mut waiters = self.waiters.lock();
+            waiters
+                .extract_if(.., |(waiting_for, _)| *waiting_for == index)
+                .map(|(_, waker)| waker)
+                .collect()
+        };
+        // Woken outside the lock: a waker is foreign code.
+        for waker in woken {
+            waker.wake();
+        }
+    }
+}
+
+impl<O> Drop for Slots<O> {
+    fn drop(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if *slot.state.get_mut() == READY {
+                // SAFETY: `READY` means written, and `&mut self` means no reader is left.
+                unsafe { slot.value.get_mut().assume_init_drop() };
+            }
+        }
+    }
+}
+
+/// The future [`Slots::ready`] returns.
+pub struct ReadySlot<'a, O> {
+    slots: &'a Slots<O>,
+    index: usize,
+}
+
+impl<'a, O> Future for ReadySlot<'a, O> {
+    type Output = Option<&'a O>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<&'a O>> {
+        let (slots, index) = (self.slots, self.index);
+        if slots.is_settled(index) {
+            return Poll::Ready(slots.get(index));
+        }
+        {
+            let mut waiters = slots.waiters.lock();
+            let waker = context.waker();
+            if !waiters.iter().any(|(i, w)| *i == index && w.will_wake(waker)) {
+                waiters.push((index, waker.clone()));
+            }
+        }
+        // Registered before the state is read again, so a settle between the two reads finds the
+        // waker: `wake` takes the same lock.
+        if slots.is_settled(index) { Poll::Ready(slots.get(index)) } else { Poll::Pending }
+    }
+}
+
+// ---- stages --------------------------------------------------------------------------------
+
+/// A stage, seen from the threads that run it.
+///
+/// Only parallel scopes build stages that implement it; a serial stage settles every slot before
+/// it returns, so nothing ever has to run one of its items later.
+#[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+trait Run: Send + Sync {
+    /// Claim the next item nobody has started, by index order.
+    fn claim_next(&self) -> Option<usize>;
+    /// Run item `index`, which this thread claimed, and settle its slot. Never unwinds.
+    fn run_claimed(&self, index: usize);
+    /// Block until every item has settled, running any nobody has started.
+    fn settle_all(&self);
+    /// Every item has settled and nothing earlier raised: hand the item hook its `finish`, which
+    /// raises the fatal error this stage stopped at, if it did.
+    fn conclude(&self);
+}
+
+/// A scope in which stages run. See the module header, and [`stages`].
+///
+/// Neither `Send` nor `Sync`: stages are started by the thread that owns the scope, in the order
+/// a serial run would run them, which is what decides which items a raise cuts off.
+pub struct StageScope<'scope, 'env: 'scope> {
+    #[cfg(feature = "parallel")]
+    shared: Option<Arc<parallel::ScopeShared>>,
+    /// The next stage's number.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+    next_seq: Cell<u32>,
+    /// Invariant in both, as `std::thread::Scope` is: `'scope` must not shrink to a borrow the
+    /// body could end early, nor `'env` stretch past the data it names.
+    _scope: PhantomData<&'scope mut &'scope ()>,
+    _env: PhantomData<&'env mut &'env ()>,
+    _owner_thread: PhantomData<*const ()>,
+}
+
+/// Run `body` with a scope to start stages in, and return once every item of every stage it
+/// started has settled.
+///
+/// Raises what a serial run would have raised, as described in the module header, after that.
+/// If `body` itself panics, the scope still settles everything before the panic goes on, and
+/// whatever the items raised is dropped in favour of it.
+pub fn stages<'env, R>(body: impl for<'scope> FnOnce(&'scope StageScope<'scope, 'env>) -> R) -> R {
+    let scope = StageScope {
+        #[cfg(feature = "parallel")]
+        shared: parallel::ScopeShared::for_this_session(),
+        next_seq: Cell::new(0),
+        _scope: PhantomData,
+        _env: PhantomData,
+        _owner_thread: PhantomData,
+    };
+    #[cfg(feature = "parallel")]
+    let guard = SettleOnUnwind(scope.shared.as_ref());
+    let result = body(&scope);
+    #[cfg(feature = "parallel")]
+    {
+        core::mem::forget(guard);
+        if let Some(shared) = &scope.shared {
+            let settled = shared.settle();
+            shared.conclude(settled);
+        }
+    }
+    result
+}
+
+/// Settles a parallel scope whose body unwound, so no item outlives what it borrows, then drops
+/// its stages, which discards every item hook's collection: the body's panic goes on.
+#[cfg(feature = "parallel")]
+struct SettleOnUnwind<'a>(Option<&'a Arc<parallel::ScopeShared>>);
+
+#[cfg(feature = "parallel")]
+impl Drop for SettleOnUnwind<'_> {
+    fn drop(&mut self) {
+        if let Some(shared) = self.0 {
+            drop(shared.settle());
+        }
+    }
+}
+
+/// One stage in a scope of its own: `f(&input, i)` for every `i` in `0..len`, and every output,
+/// moved out in index order, once all of them have settled.
+///
+/// The common case, a `par_*` loop's replacement: an arena slice of ids in, one output per id
+/// out (`()` for a stage run for its effects on the query system).
+pub fn run_stage<'env, In, O, F>(input: In, len: usize, f: F) -> Vec<O>
+where
+    In: DynSync + DynSend + 'env,
+    O: DynSync + DynSend + 'env,
+    F: Fn(&In, usize) -> O + DynSync + DynSend + 'env,
+{
+    let slots = stages(|scope| scope.stage(input, len, f));
+    match Arc::try_unwrap(slots) {
+        Ok(slots) => slots.into_values(),
+        // The scope has dropped its stages and every helper has left it, so this `Arc` is the
+        // only one.
+        Err(_) => unreachable!("a stage's slots were still shared after its scope ended"),
+    }
+}
+
+impl<'scope, 'env> StageScope<'scope, 'env> {
+    /// Start a stage: `f(&input, i)` for every `i` in `0..len`, each output in its own slot.
+    ///
+    /// Returns at once in a parallel session, with the items running on the pool; runs them all
+    /// first, in order, in a serial one. `input` is the stage's frozen input, owned by the stage
+    /// for its life (a slice, an `Arc`, another stage's slots), and `f` reads its item in place.
+    pub fn stage<In, O, F>(&'scope self, input: In, len: usize, f: F) -> Arc<Slots<O>>
+    where
+        In: DynSync + DynSend + 'scope,
+        O: DynSync + DynSend + 'scope,
+        F: Fn(&In, usize) -> O + DynSync + DynSend + 'scope,
+    {
+        #[cfg(feature = "parallel")]
+        if let Some(shared) = &self.shared {
+            let seq = self.next_seq.get();
+            self.next_seq.set(seq.saturating_add(1));
+            return parallel::start(shared, seq, input, len, f);
+        }
+        let slots = Slots::with_runner(len, None);
+        for index in 0..len {
+            let value = f(&input, index);
+            assert!(slots.claim(index));
+            slots.fill(index, value);
+        }
+        Arc::new(slots)
+    }
+}
+
+#[cfg(feature = "parallel")]
+mod parallel {
+    use alloc::string::String;
+    use alloc::sync::{Arc, Weak};
+    use alloc::vec::Vec;
+
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use core::task::{Context, Poll, Waker};
+
+    use parking_lot::Mutex;
+
+    use super::{Run, Slots};
+    // The crate's `AtomicU64`, which falls back to `portable_atomic` where the target has none.
+    use crate::rustc_data_structures::sync::{AtomicU64, mode};
+    use crate::rustc_data_structures::sync::par_context::{CapturedContext, ItemScope};
+    use crate::rustc_data_structures::sync::pool;
+    use crate::rustc_data_structures::sync::worker_local::{Registry, RegistrySlot};
+    use crate::unwind_janky::Payload;
+
+    /// An item's place in the serial order: its stage's number, then its index. Packed so the
+    /// cut-off can be one atomic `fetch_min`; an index past `u32::MAX` saturates, which can only
+    /// make a cut-off late, never early.
+    fn serial_order(seq: u32, index: usize) -> u64 {
+        (u64::from(seq) << 32) | u64::from(u32::try_from(index).unwrap_or(u32::MAX))
+    }
+
+    /// A caught panic, and its place in the serial order.
+    struct Caught {
+        order: u64,
+        payload: Payload,
+        message: Option<String>,
+    }
+
+    /// One scope, shared by its owner and its helpers. Everything in it is owned, except the
+    /// pointers in `context` and the lifetimes erased from `stages`, which are what the scope
+    /// exists to keep valid.
+    pub(super) struct ScopeShared {
+        /// The stages started so far, in order. Taken when the scope ends, which also breaks the
+        /// `ScopeShared` -> stage -> `ScopeShared` cycle.
+        stages: Mutex<Vec<Arc<dyn Run>>>,
+        /// Set when the scope ends. A helper that sees it touches nothing.
+        closed: AtomicBool,
+        /// Helpers between arriving and leaving.
+        active: AtomicUsize,
+        /// The owner, waiting for `active` to reach zero.
+        idle: Mutex<Option<Waker>>,
+        /// No item after this one in serial order starts. `u64::MAX` until something raises.
+        cutoff: AtomicU64,
+        /// The first item, in serial order, that ended in a fatal error the item hook caught.
+        stop: AtomicU64,
+        /// The first item, in serial order, that panicked.
+        panic: Mutex<Option<Caught>>,
+        context: CapturedContext,
+        registry: Option<Registry>,
+        width: usize,
+    }
+
+    impl ScopeShared {
+        /// A parallel scope if this thread's session runs in parallel, else `None`.
+        pub(super) fn for_this_session() -> Option<Arc<ScopeShared>> {
+            if !mode::is_parallel_here() {
+                return None;
+            }
+            Some(Arc::new(ScopeShared {
+                stages: Mutex::new(Vec::new()),
+                closed: AtomicBool::new(false),
+                active: AtomicUsize::new(0),
+                idle: Mutex::new(None),
+                cutoff: AtomicU64::new(u64::MAX),
+                stop: AtomicU64::new(u64::MAX),
+                panic: Mutex::new(None),
+                context: CapturedContext::capture(),
+                registry: Registry::try_current(),
+                width: pool::width(),
+            }))
+        }
+
+        fn stop_at(&self, order: u64) {
+            self.stop.fetch_min(order, Ordering::AcqRel);
+            self.cutoff.fetch_min(order, Ordering::AcqRel);
+        }
+
+        fn stash(&self, order: u64, payload: Payload) {
+            let message = crate::unwind_janky::take_last_panic();
+            self.cutoff.fetch_min(order, Ordering::AcqRel);
+            let displaced = {
+                let mut slot = self.panic.lock();
+                if slot.as_ref().is_none_or(|caught| order < caught.order) {
+                    slot.replace(Caught { order, payload, message })
+                } else {
+                    Some(Caught { order, payload, message })
+                }
+            };
+            // Dropped outside the lock: a payload's destructor is foreign code.
+            drop(displaced);
+        }
+
+        /// The next unstarted item of any open stage, earliest stage first.
+        fn claim_any(&self) -> Option<(Arc<dyn Run>, usize)> {
+            let mut next = 0;
+            loop {
+                // A `let`, so the lock is released before the claim.
+                let stage = self.stages.lock().get(next).cloned()?;
+                if let Some(index) = stage.claim_next() {
+                    return Some((stage, index));
+                }
+                next += 1;
+            }
+        }
+
+        /// Settle every item of every stage, running whatever nobody has started, wait for the
+        /// helpers to leave, and hand back the stages. Never unwinds.
+        pub(super) fn settle(&self) -> Vec<Arc<dyn Run>> {
+            // Every item, in stage order. No stage can be added meanwhile: only the owner starts
+            // stages, and the owner is here.
+            //
+            // The lock is taken per lookup in a `let`, never in a `while let` scrutinee: that
+            // would hold it across `settle_all`, and helpers need it to find their next item.
+            let mut next = 0;
+            loop {
+                let stage = self.stages.lock().get(next).cloned();
+                let Some(stage) = stage else { break };
+                stage.settle_all();
+                next += 1;
+            }
+            // Then the helpers. `SeqCst` on both sides, against `help`: either a helper sees
+            // `closed` and leaves without touching anything, or this sees it in `active` and
+            // waits for it.
+            self.closed.store(true, Ordering::SeqCst);
+            pool::block_on(Idle(self));
+            // The only strong references left: every helper is gone, and slots hold weak ones.
+            // Dropping them drops every stage's input and function, inside the scope.
+            core::mem::take(&mut *self.stages.lock())
+        }
+
+        /// Raise what a serial run would have raised, if anything: the earliest of the first
+        /// panic and the first fatal error, in serial order.
+        pub(super) fn conclude(&self, stages: Vec<Arc<dyn Run>>) {
+            let caught = self.panic.lock().take();
+            let stop = self.stop.load(Ordering::Acquire);
+            if let Some(Caught { order, payload, message }) = caught {
+                // `<=`, not `<`: an item cannot both panic and stop, so the two are equal only
+                // when both are `u64::MAX`, a helper's panic outside any item with no fatal
+                // error anywhere. That one is raised rather than lost.
+                if order <= stop {
+                    // Dropping the stages discards every item hook's collection.
+                    drop(stages);
+                    pool::resume(payload, message);
+                }
+                // A panic after a fatal error in serial order is one a serial run never reached.
+                drop(payload);
+            }
+            // In stage order: every stage before the one a fatal error stopped hands its hook a
+            // normal `finish`; that one's raises, and the unwind drops the rest, discarding.
+            for stage in &stages {
+                stage.conclude();
+            }
+        }
+    }
+
+    /// Ready when no helper is inside the scope.
+    struct Idle<'a>(&'a ScopeShared);
+
+    impl Future for Idle<'_> {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+            let shared = self.0;
+            if shared.active.load(Ordering::SeqCst) == 0 {
+                return Poll::Ready(());
+            }
+            let old = shared.idle.lock().replace(context.waker().clone());
+            drop(old);
+            if shared.active.load(Ordering::SeqCst) == 0 { Poll::Ready(()) } else { Poll::Pending }
+        }
+    }
+
+    struct Stage<In, O, F> {
+        input: In,
+        f: F,
+        slots: Arc<Slots<O>>,
+        /// The item hook's state for this stage's items.
+        items: ItemScope,
+        /// Where `claim_next` looks first. Only a hint: a slot is claimed by its own state.
+        cursor: AtomicUsize,
+        seq: u32,
+        scope: Arc<ScopeShared>,
+    }
+
+    // SAFETY: unchecked, as the module header says: the call site's `DynSend`/`DynSync` bounds
+    // are implemented for every type. `Slots` is accessed through its own synchronisation, and
+    // `input` and `f` only through `&`.
+    unsafe impl<In, O, F> Send for Stage<In, O, F> {}
+    unsafe impl<In, O, F> Sync for Stage<In, O, F> {}
+
+    impl<In, O, F> Run for Stage<In, O, F>
+    where
+        F: Fn(&In, usize) -> O,
+    {
+        fn claim_next(&self) -> Option<usize> {
+            loop {
+                let index = self.cursor.fetch_add(1, Ordering::Relaxed);
+                if index >= self.slots.len() {
+                    return None;
+                }
+                if self.slots.claim(index) {
+                    return Some(index);
+                }
+            }
+        }
+
+        fn run_claimed(&self, index: usize) {
+            let order = serial_order(self.seq, index);
+            if order > self.scope.cutoff.load(Ordering::Acquire) {
+                self.slots.fail(index);
+                return;
+            }
+            // The item runs inside the scope's captured context on *every* thread, the owner's
+            // included, and not in whatever the running thread happens to have: a thread that
+            // runs it while waiting for it is inside another item, maybe inside a query. The
+            // item's queries must see the scope's `ImplicitCtxt`, whose `query` is the parent the
+            // query system's cycle check walks from a stage's jobs back to the query that opened
+            // the scope. Inside that, the item hook collects what the item emits.
+            let outcome = pool::catch(|| {
+                let mut value = None;
+                let mut stopped = false;
+                let mut item = || {
+                    let mut run = || value = Some((self.f)(&self.input, index));
+                    stopped = self.items.run(index, &mut run);
+                };
+                // SAFETY: the item is claimed and not settled, so the scope is open and its owner
+                // has not left `stages`; the frames the captured pointers name are alive.
+                unsafe { self.scope.context.enter(&mut item) };
+                (value, stopped)
+            });
+            match outcome {
+                Ok((value, stopped)) => {
+                    if stopped {
+                        self.scope.stop_at(order);
+                    }
+                    match value {
+                        Some(value) => self.slots.fill(index, value),
+                        None => self.slots.fail(index),
+                    }
+                }
+                Err(payload) => {
+                    self.scope.stash(order, payload);
+                    self.slots.fail(index);
+                }
+            }
+        }
+
+        fn settle_all(&self) {
+            self.slots.wait_all();
+        }
+
+        fn conclude(&self) {
+            self.items.finish();
+        }
+    }
+
+    /// Start a stage in a parallel scope. See `StageScope::stage`.
+    pub(super) fn start<'scope, In, O, F>(
+        shared: &Arc<ScopeShared>,
+        seq: u32,
+        input: In,
+        len: usize,
+        f: F,
+    ) -> Arc<Slots<O>>
+    where
+        In: 'scope,
+        O: 'scope,
+        F: Fn(&In, usize) -> O + 'scope,
+    {
+        // Begun here, on the thread starting the stage, which is where the diagnostics hook
+        // finds the item this stage is nested in, if any.
+        let items = ItemScope::begin();
+        let stage = Arc::new_cyclic(|this: &Weak<Stage<In, O, F>>| {
+            let runner: Weak<dyn Run + 'scope> = this.clone();
+            // SAFETY: only the trait object's lifetime changes. The weak reference is upgraded
+            // only while the scope is open (after it, the stages are gone and `upgrade` fails),
+            // and the scope does not close before `'scope` ends.
+            let runner = unsafe {
+                core::mem::transmute::<Weak<dyn Run + 'scope>, Weak<dyn Run + 'static>>(runner)
+            };
+            Stage {
+                input,
+                f,
+                slots: Arc::new(Slots::with_runner(len, Some(runner))),
+                items,
+                cursor: AtomicUsize::new(0),
+                seq,
+                scope: shared.clone(),
+            }
+        });
+        let slots = stage.slots.clone();
+        let stage: Arc<dyn Run + 'scope> = stage;
+        // SAFETY: only the trait object's lifetime changes. The scope holds this and its helpers
+        // clone it, and `settle` takes every such reference back and drops it before `stages`
+        // returns or unwinds, which is inside `'scope`: helpers are waited for, and a helper that
+        // arrives after the scope closed never reaches `stages`.
+        let stage = unsafe { core::mem::transmute::<Arc<dyn Run + 'scope>, Arc<dyn Run>>(stage) };
+        shared.stages.lock().push(stage);
+        // Helpers already in the scope pick this stage up when they finish their current item,
+        // so only the shortfall is submitted. A helper on its way out may be counted and not
+        // come back; the owner settles whatever is left, so that costs time, never an item.
+        let wanted = len.min(shared.width - 1).min(pool::workers());
+        let present = shared.active.load(Ordering::Relaxed);
+        for _ in present..wanted {
+            let shared = shared.clone();
+            pool::submit(move || help(shared));
+        }
+        slots
+    }
+
+    /// Leaves the scope when dropped, waking the owner if it was the last helper out of a closed
+    /// scope. Declared first in `help`, so it drops last, after every `Arc` into a stage.
+    struct Leave<'a>(&'a ScopeShared);
+
+    impl Drop for Leave<'_> {
+        fn drop(&mut self) {
+            let shared = self.0;
+            let last = shared.active.fetch_sub(1, Ordering::SeqCst) == 1;
+            if last && shared.closed.load(Ordering::SeqCst) {
+                let owner = shared.idle.lock().take();
+                if let Some(waker) = owner {
+                    waker.wake();
+                }
+            }
+        }
+    }
+
+    /// A helper: arrive, take a registry slot, then run unstarted items of any open stage until
+    /// there are none.
+    ///
+    /// The helper installs only what belongs to the thread (its registry slot and the session's
+    /// width); each item installs the scope's captured context itself, in `run_claimed`.
+    fn help(shared: Arc<ScopeShared>) {
+        shared.active.fetch_add(1, Ordering::SeqCst);
+        let _leave = Leave(&shared);
+        if shared.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        // `run_claimed` never unwinds, so this catches only the scaffolding (a registry or mode
+        // scope out of thread-local keys). Nothing is claimed while it can fail except inside
+        // `run_claimed`, so a failure here strands no item.
+        let outcome = pool::catch(|| {
+            // The registry slot is also the session's thread budget: the session asked for
+            // `width` threads and its registry has that many slots. A helper that finds none
+            // free leaves the items to the threads that have one.
+            let slot: Option<RegistrySlot> = match &shared.registry {
+                Some(registry) => match registry.lease() {
+                    Some(slot) => Some(slot),
+                    None => return,
+                },
+                None => None,
+            };
+            let _in_slot = slot.as_ref().map(RegistrySlot::enter);
+            let _mode = mode::enter_session_width(shared.width);
+            while let Some((stage, index)) = shared.claim_any() {
+                stage.run_claimed(index);
+            }
+        });
+        if let Err(payload) = outcome {
+            shared.stash(u64::MAX, payload);
+        }
+    }
+}

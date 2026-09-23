@@ -959,14 +959,12 @@ impl<'tcx> TyCtxt<'tcx> {
         current_gcx: CurrentGcx,
         f: impl FnOnce(TyCtxt<'tcx>) -> T,
     ) -> T {
-        // **Before the first interning, because this arena is about to hand out addresses a dead
-        // arena used to own.** Two `StableHash` implementations memoize on the address of an
-        // interned value - `&'tcx RawList<H, T>` and `AdtDefData` - in a thread-local that
-        // outlives the arena those addresses came from. One `GlobalCtxt` per process hides that;
-        // a second one in the same process does not, and a stale entry makes two structurally
-        // different query keys hash to one `DepNode`. See `stable_hash::bump_address_cache_generation` and
-        // Reusing an arena address for a new type would otherwise hash the two as equal.
-        crate::rustc_data_structures::stable_hash::bump_address_cache_generation();
+        // A call to `stable_hash::bump_address_cache_generation` was here, retiring the
+        // thread-local, address-keyed stable-hash memos of `RawList` and `AdtDefData` before this
+        // arena could reuse a dead arena's addresses. Those memos are gone: the memo now lives in
+        // each `StableHashState` and dies with the hashing computation that filled it, so no
+        // entry can outlive the arena its address came from and there is nothing to retire.
+        // See `StableHashCtxt::memoized_address_hash`.
         let data_layout = sess.target.parse_data_layout().unwrap_or_else(|err| {
             sess.dcx().emit_fatal(err);
         });

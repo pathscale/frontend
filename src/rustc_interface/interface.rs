@@ -340,8 +340,19 @@ pub struct Config {
 pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Send) -> R {
     trace!("run_compiler");
 
-    // Set parallel mode before thread pool creation, which will create `Lock`s.
-    crate::rustc_data_structures::sync::set_dyn_thread_safe_mode(config.opts.jobs.frontend.is_some());
+    // **This session's mode, first.** Everything below builds `Lock`s and `Sharded`s (the source
+    // map, the interners, the `GlobalCtxt`), and each picks its synchronised or unsynchronised
+    // kind from the mode when it is built, so the mode is chosen before any of them exists. It
+    // is this session's own, latched on this thread until `run_compiler` returns and installed on
+    // every pool thread while it runs this session's items: a serial session and a parallel one
+    // can share a process and each gets the locks it runs with (see `sync::enter_session_width`).
+    // It was one process-wide setting that panicked when a second session asked for the other.
+    //
+    // Parallel means `jobs.frontend` of two or more, with the `parallel` feature built; see
+    // `util::session_width`.
+    let _session_mode =
+        crate::rustc_data_structures::sync::enter_session_width(util::session_width(config.opts.jobs));
+    util::install_parallel_context();
 
     // **No jobserver.** The GNU make token protocol coordinates parallelism with an outer
     // `make`/`cargo`, and nothing in this compiler draws on it: the only consumer was
@@ -351,8 +362,8 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
     // that schedules its own work and is not a child of the build tool that invoked it, so an
     // inherited pool would be the wrong budget even if something did read it.
     //
-    // `jobs.frontend` still sizes the `sync::Registry` for the compile, which is the number that
-    // actually bounds frontend parallelism.
+    // `jobs.frontend` sizes the session's `sync::Registry`, whose slots are the session's thread
+    // budget on nagoya's pool: that is the number that bounds frontend parallelism.
     let early_dcx = EarlyDiagCtxt::new(config.opts.error_format);
     let jobs = config.opts.jobs;
 

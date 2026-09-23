@@ -35,6 +35,7 @@ use diagnostics::{
 use crate::rustc_ast::visit::{VisitorResult, try_visit};
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
+use crate::rustc_data_structures::sync::run_stage;
 use crate::rustc_errors::{MultiSpan, listify};
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalModId};
@@ -1927,7 +1928,14 @@ fn check_private_in_public(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     // Check for private types in public interfaces.
     let checker = PrivateItemsInPublicInterfacesChecker { tcx, effective_visibilities };
 
+    // Two stages over the module's frozen id lists, one after the other as before: the checker
+    // only reads, and each item's findings are emitted as diagnostics, which the stage forwards
+    // in item order.
     let crate_items = tcx.hir_module_items(mod_id);
-    let _ = crate_items.par_items(|id| Ok(checker.check_item(id)));
-    let _ = crate_items.par_foreign_items(|id| Ok(checker.check_foreign_item(id)));
+    let items = crate_items.free_item_ids();
+    run_stage(items, items.len(), |items, index| checker.check_item(items[index]));
+    let foreign_items = crate_items.foreign_item_ids();
+    run_stage(foreign_items, foreign_items.len(), |items, index| {
+        checker.check_foreign_item(items[index])
+    });
 }

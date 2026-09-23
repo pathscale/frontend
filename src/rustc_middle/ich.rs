@@ -12,6 +12,7 @@ use core::hash::Hash;
 
 use crate::rustc_crate_store::Untracked;
 use crate::rustc_data_structures::fingerprint::Fingerprint;
+use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::stable_hash::{
     RawDefId, RawSpan, StableHash, StableHashControls, StableHashCtxt, StableHasher,
 };
@@ -38,6 +39,12 @@ pub struct StableHashState<'a> {
     incremental_ignore_spans: bool,
     caching_source_map: CachingSourceMap<'a>,
     stable_hash_controls: StableHashControls,
+    /// Fingerprints of interned values (`RawList`s and `AdtDefData`) already hashed in this
+    /// computation, keyed by address and by the controls they were hashed under. Owned by this
+    /// context, so it cannot outlive the arena the addresses point into and is never shared
+    /// between threads. See `StableHashCtxt::memoized_address_hash`. An empty `FxHashMap` does
+    /// not allocate, so a computation that hashes no interned lists pays nothing for it.
+    address_memo: FxHashMap<(usize, StableHashControls), Fingerprint>,
 }
 
 impl<'a> StableHashState<'a> {
@@ -50,6 +57,7 @@ impl<'a> StableHashState<'a> {
             incremental_ignore_spans: sess.opts.unstable_opts.incremental_ignore_spans,
             caching_source_map: CachingSourceMap::Unused(sess.source_map()),
             stable_hash_controls: StableHashControls { hash_spans: hash_spans_initial },
+            address_memo: FxHashMap::default(),
         }
     }
 
@@ -205,5 +213,15 @@ impl<'a> StableHashCtxt for StableHashState<'a> {
     #[inline]
     fn stable_hash_controls(&self) -> StableHashControls {
         self.stable_hash_controls
+    }
+
+    #[inline]
+    fn memoized_address_hash(&self, addr: usize) -> Option<Fingerprint> {
+        self.address_memo.get(&(addr, self.stable_hash_controls)).copied()
+    }
+
+    #[inline]
+    fn memoize_address_hash(&mut self, addr: usize, hash: Fingerprint) {
+        self.address_memo.insert((addr, self.stable_hash_controls), hash);
     }
 }

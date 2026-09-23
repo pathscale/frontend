@@ -45,6 +45,46 @@ pub trait StableHashCtxt {
     /// Assert that the provided `StableHashCtxt` is configured with the default
     /// `StableHashControls`. We should always have bailed out before getting to here with a
     fn assert_default_stable_hash_controls(&self, msg: &str);
+
+    /// The fingerprint already computed, *in this hashing computation*, for the interned value
+    /// at `addr`, under the current `StableHashControls`.
+    ///
+    /// # Why this is on the context and not in a thread-local
+    ///
+    /// `&'tcx RawList<H, T>` and `AdtDefData` are interned, so one address is one value for as
+    /// long as the arena that handed it out lives, and an interned type graph is a DAG that
+    /// shares sub-lists freely. Hashing it without a memo re-hashes every shared node once per
+    /// path to it, which is exponential in nesting depth (upstream measured ~4,000x on
+    /// `deeply-nested-multi`).
+    ///
+    /// The memo used to be a `thread_local!` per `(H, T)` and per thread, living as long as the
+    /// thread. That made it outlive the arenas its keys pointed into, which took a process-wide
+    /// `ADDRESS_CACHE_GENERATION` counter bumped per `GlobalCtxt` to paper over, and with
+    /// sessions sharing nagoya workers even the counter was not enough (a worker could hash a
+    /// live session's value at an address a dead session's entry still named, with no new
+    /// context created in between). It was also shared mutable state that every parallel stage
+    /// touched.
+    ///
+    /// Owned by the hashing context instead, the memo lives exactly as long as one
+    /// `with_stable_hashing_context` call, during which every address it holds is alive. It
+    /// still removes the exponential re-hashing inside that call, which is what the memo was
+    /// for; it no longer carries results from one call to the next, which was a single-thread
+    /// speed-up the owner asked to drop. Nothing to invalidate, nothing shared, nothing global.
+    ///
+    /// The default is no memo, which is always correct: the value is hashed again.
+    #[inline]
+    fn memoized_address_hash(&self, addr: usize) -> Option<Fingerprint> {
+        let _ = addr;
+        None
+    }
+
+    /// Records `hash` as the fingerprint of the interned value at `addr` under the current
+    /// `StableHashControls`, for the rest of this hashing computation. See
+    /// [`StableHashCtxt::memoized_address_hash`].
+    #[inline]
+    fn memoize_address_hash(&mut self, addr: usize, hash: Fingerprint) {
+        let _ = (addr, hash);
+    }
 }
 
 // A type used to work around `Span` not being visible in this crate. It is the same layout as
@@ -678,42 +718,9 @@ pub struct StableHashControls {
     pub hash_spans: bool,
 }
 
-/// The generation of the arena whose addresses the address-keyed stable-hash memos hold.
-///
-/// # Why this exists
-///
-/// Two `StableHash` implementations memoize on the **address** of an interned value:
-/// `&'tcx RawList<H, T>` in `crate::rustc_middle::ty::impls_ty` and `AdtDefData` in
-/// `crate::rustc_middle::ty::adt`. Both memos are `std::thread_local!` and so live as long as the thread,
-/// while everything they key on is allocated in the `GlobalCtxt`'s arena and dies with it. In a
-/// compiler that compiles one crate and exits, that difference is invisible: the process ends
-/// before an address can be handed out twice.
-///
-/// **Any process that builds more than one `GlobalCtxt` hits it.** Each gets its own arena, the
-/// allocator reuses the freed addresses, and a memo entry filled for the generic args `[f64]` in
-/// one session is then returned for the args `[i64]` that landed at the same address in the next.
-/// Two structurally different query keys hash to one `DepNode`.
-/// `verify_query_key_hashes` catches that and `bug!`s; the value would otherwise be a silently
-/// wrong fingerprint: two distinct types hashed equal because one arena address was reused.
-///
-/// A generation counter is the fix rather than a `clear` call, because the memos are
-/// `std::thread_local!`s **inside a generic function**: there is one per `(H, T)` instantiation and
-/// per thread, so nothing can enumerate them to clear them. Each checks the generation it was
-/// filled for and empties itself, so the invalidation cannot be forgotten by a new caller and
-/// cannot miss an instantiation that has not been reached yet.
-static ADDRESS_CACHE_GENERATION: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-
-/// The generation an address-keyed memo must have been filled in for its entries to be readable.
-#[inline]
-pub fn address_cache_generation() -> u64 {
-    ADDRESS_CACHE_GENERATION.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-/// Retire every address-keyed stable-hash memo entry taken before now.
-///
-/// Called once per `GlobalCtxt`, from `TyCtxt::create_global_ctxt`, which is the one place that
-/// knows an arena is about to start handing out addresses that a dead arena used to own.
-pub fn bump_address_cache_generation() {
-    ADDRESS_CACHE_GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-}
+// `ADDRESS_CACHE_GENERATION`, `address_cache_generation` and `bump_address_cache_generation`
+// were here: a process-wide counter that retired the thread-local, address-keyed stable-hash
+// memos of `RawList` and `AdtDefData` whenever a new `GlobalCtxt` could start reusing a dead
+// arena's addresses. The memos moved onto the hashing context, where they die with the
+// computation that filled them, so there is nothing left to retire. See
+// `StableHashCtxt::memoized_address_hash`.
