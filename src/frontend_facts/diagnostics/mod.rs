@@ -100,7 +100,9 @@ impl Options {
 
     fn keeps(&self, d: &Diagnostic) -> bool {
         d.severity.at_least(self.min_severity)
-            && self.codes.as_ref().is_none_or(|codes| codes.iter().any(|c| *c == d.code))
+            && self.codes.as_ref().is_none_or(|codes| {
+                codes.iter().any(|c| *c == d.code || documented_name(c) == Some(d.code.as_str()))
+            })
     }
 }
 
@@ -146,6 +148,11 @@ pub fn diagnose_with(source: &str, opts: &Options) -> Result<Vec<Diagnostic>, Ve
     run(source, opts, |cx, krate, out| {
         structure::check(cx, krate, out);
         names::check(cx, krate, out);
+        for diagnostic in out.iter_mut() {
+            if let Some(name) = documented_name(&diagnostic.code) {
+                diagnostic.code = name.to_string();
+            }
+        }
     })
 }
 
@@ -233,4 +240,25 @@ fn run(
 /// stop a parse.
 fn parse_errors(captured: &str) -> Vec<String> {
     super::split_diagnostics(captured).0
+}
+
+/// rust-analyzer's documented name for a check the name pass keys by rustc's error number.
+///
+/// **One spelling on the way out.** The structural checks report rust-analyzer's documented
+/// names and the name checks were written against rustc's numbers, so one call returned
+/// `break-outside-of-loop` beside `E0425` and a caller matching on either convention missed
+/// half. Every diagnostic now leaves under the documented name; [`Options::codes`] still
+/// accepts both spellings.
+fn documented_name(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "E0425" => "unresolved-ident",
+        "E0061" | "E0057" => "mismatched-arg-count",
+        "E0063" => "missing-fields",
+        "E0560" | "E0559" => "no-such-field",
+        "E0004" => "missing-match-arm",
+        "E0046" => "trait-impl-missing-assoc-item",
+        "E0407" => "trait-impl-redundant-assoc-item",
+        "E0432" => "unresolved-import",
+        _ => return None,
+    })
 }
