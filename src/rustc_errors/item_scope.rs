@@ -130,14 +130,14 @@
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
-use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::{self, Vec};
 
 use core::cell::RefCell;
 use core::marker::PhantomData;
 use core::mem;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use eko::thread_local;
 use parking_lot::Mutex;
@@ -182,7 +182,9 @@ struct Scope {
     /// What a query frame opened on top of this scope captures (see the module docs).
     root: u64,
     /// `None` until something is pushed: a query frame allocates nothing unless its query
-    /// actually emits or consumes a query that did. An item scope creates it up front.
+    /// actually emits or consumes a query that did, and an item scope nothing unless its item
+    /// does, or starts a stage (whose replay targets this scope). It was created up front for an
+    /// item, an `Arc` and a lock per item, and nearly every item emits nothing.
     collection: Option<Collection>,
 }
 
@@ -487,11 +489,11 @@ struct Target {
 /// Records items' diagnostics as they finish and forwards them in item order when the stage
 /// concludes.
 ///
-/// Create it on the thread that makes the par call, before the items start: it captures that
-/// thread's innermost scopes, if there are any, as where to forward. Then run each item through
-/// [`collect`](Self::collect) and report it with [`ready`](Self::ready), once per item, from any
-/// thread, in any order, and call [`finish`](Self::finish) after the last one, before the par
-/// call returns.
+/// Create it on the thread that makes the par call, before the items start, with the number of
+/// items: it captures that thread's innermost scopes, if there are any, as where to forward. Then
+/// run each item through [`collect`](Self::collect) and report it with [`ready`](Self::ready),
+/// once per item, from any thread, in any order, and call [`finish`](Self::finish) after the last
+/// one, before the par call returns.
 ///
 /// Forwarding goes to the enclosing scope's collection when the par call is itself inside an
 /// item (or inside a query inside one) and that scope captures the context, and straight to
@@ -506,7 +508,7 @@ struct Target {
 /// (`rustc_interface::util`, the diagnostics hook); the shape of it is:
 ///
 /// ```ignore (sketch of the hook's part in a stage)
-/// let replay = OrderedReplay::new();               // on the calling thread, before spawning
+/// let replay = OrderedReplay::new(len);            // on the calling thread, before spawning
 /// // for item `i`, on whichever worker runs it:
 /// let run = replay.collect(|| for_each(item));
 /// replay.ready(i, run.diagnostics, run.result.is_err());
@@ -516,6 +518,13 @@ struct Target {
 ///     fatal.raise();                               // leave the par call as a serial run would
 /// }
 /// ```
+///
+/// # What an item costs it
+///
+/// Most items emit nothing. Such an item allocates nothing here (its scope's collection is
+/// created on first use, as a query frame's is), reads no clock (its scope opens at the stage's
+/// time, see `opened`), and reports with one store into its own entry of `reported`, which no
+/// other item writes. Only an item that emitted something takes the shared `emitted` lock.
 pub struct OrderedReplay {
     /// The scopes enclosing the par call, innermost first: any query frames, then the item
     /// they run in. Empty at the top level.
@@ -523,13 +532,33 @@ pub struct OrderedReplay {
     /// The start of the outermost stage of this chain; this stage's own start at the top level.
     /// Every item scope this replay opens carries it, for the query frames opened inside.
     root: u64,
-    /// Items that have reported, by index, each with whether it ended in a fatal error; held
-    /// until `finish`.
-    waiting: Mutex<BTreeMap<usize, (ItemDiagnostics, bool)>>,
+    /// This stage's start on the clock: the `opened` of every item scope it opens.
+    ///
+    /// It was a fresh `tick` per item, which is one `fetch_add` on the one clock every worker
+    /// shares, per item. The stage's own time captures exactly the same contexts. An item scope
+    /// captures a context older than itself, and the only contexts created between the stage's
+    /// start and an item's start are ones the item cannot reach: the stage's function and input
+    /// outlive the stage's scope (`sync::stages` is shaped like `std::thread::scope`), so they
+    /// cannot borrow anything the scope's body made after it began, and another item's scratch
+    /// context is that item's local. Contexts the item makes for itself are newer than either.
+    opened: u64,
+    /// Per item: whether it has reported, and whether it ended in a fatal error. Sized once, when
+    /// the stage starts, and written once per item, by the thread that ran it.
+    reported: Box<[AtomicU8]>,
+    /// What the items that emitted anything emitted, by index, in the order they finished. Sorted
+    /// once, by `finish`.
+    emitted: Mutex<Vec<(usize, ItemDiagnostics)>>,
 }
 
+/// `OrderedReplay::reported`: the item has not reported.
+const NOT_REPORTED: u8 = 0;
+/// It reported, and ended normally.
+const REPORTED: u8 = 1;
+/// It reported, and ended in a fatal error.
+const REPORTED_FATAL: u8 = 2;
+
 impl OrderedReplay {
-    pub fn new() -> Self {
+    pub fn new(len: usize) -> Self {
         let (enclosing, root) = SCOPES.with(|scopes| {
             let mut scopes = scopes.borrow_mut();
             let root = scopes.last().map(|scope| scope.root);
@@ -542,10 +571,13 @@ impl OrderedReplay {
             }
             (enclosing, root)
         });
+        let opened = tick();
         OrderedReplay {
             enclosing,
-            root: root.unwrap_or_else(tick),
-            waiting: Mutex::new(BTreeMap::new()),
+            root: root.unwrap_or(opened),
+            opened,
+            reported: (0..len).map(|_| AtomicU8::new(NOT_REPORTED)).collect(),
+            emitted: Mutex::new(Vec::new()),
         }
     }
 
@@ -565,32 +597,47 @@ impl OrderedReplay {
         if !is_dyn_thread_safe() {
             return ItemRun { result: Ok(f()), diagnostics: ItemDiagnostics::default() };
         }
+        self.collect_in_stage(f)
+    }
 
-        let collection = Collection::default();
-        let scope = Scope {
-            kind: ScopeKind::Item,
-            opened: tick(),
-            root: self.root,
-            collection: Some(Arc::clone(&collection)),
-        };
+    /// [`collect`](Self::collect) for a parallel stage's item hook, without asking the mode.
+    ///
+    /// The hook only ever runs inside a parallel stage, and every thread that runs one of its
+    /// items has a parallel session latched (the scope's owner opened a parallel scope, and a
+    /// helper latches the session's width before it runs anything), so the answer is always
+    /// "thread-safe". Asking is a thread-local read, and this is on the path of every item.
+    pub(crate) fn collect_in_stage<R>(&self, f: impl FnOnce() -> R) -> ItemRun<R> {
+        // No collection yet: one is made when the item first emits or consumes something with
+        // diagnostics, or when a stage started inside it captures this scope as its target.
+        let scope =
+            Scope { kind: ScopeKind::Item, opened: self.opened, root: self.root, collection: None };
         SCOPES.with(|scopes| scopes.borrow_mut().push(scope));
 
-        /// Closes the scope on every way out, a foreign panic included.
-        struct Close;
-        impl Drop for Close {
+        /// Closes the scope if `f` unwinds, a foreign panic included. The normal path closes it
+        /// itself, because it needs what the scope collected.
+        struct CloseOnUnwind;
+        impl Drop for CloseOnUnwind {
             fn drop(&mut self) {
                 SCOPES.with(|scopes| {
                     scopes.borrow_mut().pop();
                 });
             }
         }
-        let close = Close;
+        let close = CloseOnUnwind;
         let result = catch_fatal_errors(f);
-        drop(close);
+        mem::forget(close);
+        let scope = SCOPES.with(|scopes| scopes.borrow_mut().pop());
+        debug_assert!(
+            scope.as_ref().is_some_and(|scope| scope.kind == ScopeKind::Item),
+            "an item scope closed over a scope it did not open"
+        );
 
         // Moved out, not copied. An inner `OrderedReplay` that targeted this scope has finished
         // by now (its par call returned inside `f`), so the lock is uncontended.
-        let events = mem::take(&mut *collection.lock());
+        let events = match scope.and_then(|scope| scope.collection) {
+            Some(collection) => mem::take(&mut *collection.lock()),
+            None => Vec::new(),
+        };
         ItemRun { result, diagnostics: ItemDiagnostics { events } }
     }
 
@@ -602,7 +649,14 @@ impl OrderedReplay {
     /// output the serial run does not have. `finish` is called in stage order, and only for
     /// stages a serial run reaches, which makes the order right by construction.
     pub fn ready(&self, index: usize, diagnostics: ItemDiagnostics, fatal: bool) {
-        self.waiting.lock().insert(index, (diagnostics, fatal));
+        if !diagnostics.is_empty() {
+            self.emitted.lock().push((index, diagnostics));
+        }
+        // `Release`, after the push: `finish` reads the flag, then the list. It runs after every
+        // item has settled, which already orders it after this, so the pairing is belt and
+        // braces rather than the proof.
+        let report = if fatal { REPORTED_FATAL } else { REPORTED };
+        self.reported[index].store(report, Ordering::Release);
     }
 
     /// Every item has reported. Forwards each item's diagnostics in index order, up to and
@@ -611,20 +665,28 @@ impl OrderedReplay {
     /// item has settled, so the unwind leaves the stage as it would have in a serial run.
     pub fn finish(self) -> Result<(), FatalError> {
         // A serial run never reaches the items after the first fatal one, so their diagnostics
-        // are dropped with the rest of `waiting` when this returns early.
-        let waiting = mem::take(&mut *self.waiting.lock());
-        let mut next = 0;
-        for (index, (diagnostics, fatal)) in waiting {
+        // are dropped with the rest of `emitted` when this returns early.
+        let mut emitted = mem::take(&mut *self.emitted.lock());
+        // Each index reports once, so the keys are distinct and an unstable sort is exact.
+        emitted.sort_unstable_by_key(|(index, _)| *index);
+        let mut emitted = emitted.into_iter().peekable();
+        for (index, report) in self.reported.iter().enumerate() {
+            let report = report.load(Ordering::Acquire);
             // An item that never reported holds back everything after it. After a fatal error
             // that is expected (a stage skips the items a serial run would never reach), so only
             // a gap before any stop is a bug.
-            debug_assert_eq!(index, next, "an item never reported to its OrderedReplay");
-            if index != next {
+            debug_assert_ne!(
+                report,
+                NOT_REPORTED,
+                "item {index} never reported to its OrderedReplay"
+            );
+            if report == NOT_REPORTED {
                 break;
             }
-            next += 1;
-            self.forward(diagnostics);
-            if fatal {
+            if let Some((_, diagnostics)) = emitted.next_if(|(emitter, _)| *emitter == index) {
+                self.forward(diagnostics);
+            }
+            if report == REPORTED_FATAL {
                 return Err(FatalError);
             }
         }

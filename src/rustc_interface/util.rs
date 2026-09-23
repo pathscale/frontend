@@ -244,6 +244,11 @@ fn capture_session_globals() -> *const () {
 
 /// Install the captured `SessionGlobals` around `run`, unless this thread already has them.
 ///
+/// Once per run of items, not once per item: a stage installs its scope's context when a thread
+/// starts taking its items and keeps it installed across them (`sync::CapturedContext::enter`),
+/// so the two thread-local reads here are not on the per-item path. A single item gets its own
+/// install only when a thread waits for it and runs it there (`Slots::wait`).
+///
 /// # Safety
 ///
 /// `captured` came from `capture_session_globals` on a thread that has not left the stage scope
@@ -303,9 +308,9 @@ static DIAGNOSTICS_HOOK: sync::ItemHook = sync::ItemHook {
 };
 
 /// One `OrderedReplay` per stage, created on the thread starting the stage (it captures that
-/// thread's enclosing item, if any, as where to forward).
-fn begin_ordered_replay() -> *mut () {
-    Box::into_raw(Box::new(crate::rustc_errors::OrderedReplay::new())).cast()
+/// thread's enclosing item, if any, as where to forward), sized for the stage's `len` items.
+fn begin_ordered_replay(len: usize) -> *mut () {
+    Box::into_raw(Box::new(crate::rustc_errors::OrderedReplay::new(len))).cast()
 }
 
 /// # Safety
@@ -316,7 +321,10 @@ unsafe fn run_collecting_item(state: *const (), index: usize, item: &mut dyn FnM
     let replay = unsafe { &*state.cast::<crate::rustc_errors::OrderedReplay>() };
     // Through the replay, not a free function: the item's scope carries the replay's root, the
     // oldest stage of its chain, which is what a query run inside the item may capture.
-    let run = replay.collect(item);
+    //
+    // `collect_in_stage`, not `collect`: this hook only runs inside a parallel stage, so the
+    // thread-safe mode `collect` would ask for (a thread-local read, per item) is known.
+    let run = replay.collect_in_stage(item);
     let fatal = run.result.is_err();
     replay.ready(index, run.diagnostics, fatal);
     fatal

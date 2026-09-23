@@ -59,10 +59,11 @@
 //!
 //! Each slot is claimed once, by compare-and-swap, by whichever thread gets to it first:
 //!
-//! - *helpers*, closures submitted to nagoya's pool when a stage starts, up to the session's
-//!   width less one, each taking unclaimed items from every open stage of the scope in turn;
+//! - *helpers*, closures submitted to nagoya's pool when a stage starts (how many: "Waking
+//!   helpers" below), each taking unclaimed items from every open stage of the scope in turn;
 //! - a thread in [`Slots::wait`] for an item nobody has claimed, which runs it there and then;
-//! - the scope's owner at the end of the scope, which runs whatever is still unclaimed, in order.
+//! - the scope's owner at the end of the scope, which takes items exactly as a helper does, and
+//!   then waits, in order, for whatever other threads are still running.
 //!
 //! A thread only ever *waits* for an item another thread is already running; everything it
 //! could run itself, it runs. So nothing ever waits on a queued job, which is what starves a
@@ -72,6 +73,46 @@
 //! run on top of another item's half-finished state. That is why this does not use
 //! `nagoya::par_for`: a `ParFor` completes when every piece it *published* has run, and a caller
 //! that blocks a worker can end up waiting for pieces queued behind other blocked workers.
+//!
+//! **Chunks are reserved, items are claimed.** A thread taking work (a helper, or the owner at
+//! the end of the scope) reserves a *chunk*, a run of consecutive indices, from the stage's
+//! cursor with one `fetch_add`, and then claims the chunk's items one at a time, as it reaches
+//! each, with the same compare-and-swap on the item's own slot as before. The reservation only
+//! says where that thread looks next; it changes no slot. So an item inside a reserved chunk that
+//! its reserver has not reached is still `UNCLAIMED`, and a thread in [`Slots::wait`] for it
+//! takes it, runs it, and the reserver skips it when it gets there. Nothing a waiter could run
+//! is ever hidden from it. Once every chunk of every stage is reserved, a thread with nothing
+//! left *sweeps* the stages for items reserved elsewhere and not reached yet, so the tail of a
+//! slow chunk is shared rather than waited for.
+//!
+//! The size of a chunk is `len / (threads * CHUNKS_PER_THREAD)`, at least one: small enough that
+//! the last chunks balance the load, large enough that the cursor, which every thread taking
+//! work writes, is written once per chunk and not once per item.
+//!
+//! **The context is installed once per run of items, not once per item.** Every item of a scope
+//! runs inside the scope's captured context (`par_context::CapturedContext`: the session's
+//! `SessionGlobals` and the scope's `ImplicitCtxt`) and under a catch, and every item of a scope
+//! wants exactly the same values installed. A thread taking work installs them once and runs
+//! item after item inside, across chunks and across the scope's stages, and installs them again
+//! only after an item panicked out through them. What stays per item is what is the item's own:
+//! the claim, the cut-off check, the diagnostics hook's collection frame (so an item's
+//! diagnostics are still its own output, replayed in serial order), and the settle of its slot.
+//! A thread in [`Slots::wait`] runs a single item, so it installs the context for that one.
+//!
+//! A panic in item `k` unwinds out of the run to the catch, which settles `k` as failed and
+//! records the cut-off at `k`, exactly as it did per item; the rest of the chunk is left
+//! unclaimed, and whoever claims those items finds them past the cut-off and fails them without
+//! running them. A fatal error in item `k` is caught by the diagnostics hook inside the item,
+//! as before, and sets the same cut-off, which the next item's check sees. Either way no item
+//! after `k` in serial order starts after `k` stopped, which is what a serial run does.
+//!
+//! **Waking helpers.** When a stage starts, the scope wants one helper per chunk nobody has
+//! reserved yet, across its open stages, less the one chunk the owner will take itself when it
+//! settles (`OWNER_CHUNKS`), and never more than the session's width less one (the owner is the
+//! first of `jobs.frontend` threads) or the pool's worker count; helpers already in the scope
+//! count towards it. A stage of one item, alone in its scope, wakes nobody: its owner runs it,
+//! and a helper woken for it could only take it away and leave the owner parked waiting for it,
+//! which is a wake, a park and a second wake, for nothing.
 //!
 //! **What a parked thread costs.** A waiting thread parks in `nagoya::block_on`. nagoya does
 //! nothing when a worker parks: no compensating thread, no detection. The pool has one worker
@@ -107,13 +148,15 @@ use core::cell::{Cell, UnsafeCell};
 use core::future::Future;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+use core::ops::Range;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering, fence};
 use core::task::{Context, Poll, Waker};
 
 use parking_lot::Mutex;
 
 use crate::rustc_data_structures::sync::{DynSend, DynSync};
+use crate::unwind_janky::Payload;
 
 // ---- slots ---------------------------------------------------------------------------------
 
@@ -147,6 +190,14 @@ pub struct Slots<O> {
     slots: Box<[Slot<O>]>,
     /// Threads and tasks waiting for a slot, by index. Woken when that slot settles.
     waiters: Mutex<Vec<(usize, Waker)>>,
+    /// How many entries `waiters` holds, readable without its lock.
+    ///
+    /// Every settle has to find out whether somebody waits for that slot, and nearly always
+    /// nobody does; this answers that with a load instead of the lock, which every thread that
+    /// settles an item of this stage would otherwise take, one after another, once per item.
+    /// Written only under the lock; see `wake` and `ReadySlot::poll` for why a waiter that
+    /// registers as the slot settles is never missed.
+    waiting: AtomicUsize,
     /// The stage that fills these, while it can still run an item: `None` for a stage run
     /// eagerly. Weak, because the stage owns these. Its lifetime is erased (see
     /// `parallel::start`); it can only be upgraded while the scope that owns the stage is open.
@@ -165,6 +216,7 @@ impl<O> Slots<O> {
         Slots {
             slots: (0..len).map(|_| Slot::empty()).collect(),
             waiters: Mutex::new(Vec::new()),
+            waiting: AtomicUsize::new(0),
             runner,
         }
     }
@@ -182,6 +234,13 @@ impl<O> Slots<O> {
             .state
             .compare_exchange(UNCLAIMED, RUNNING, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+    }
+
+    /// Whether slot `index` is claimed and not settled. Only meaningful to the thread that
+    /// claimed it, which is the only thread that can settle it.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+    fn is_running(&self, index: usize) -> bool {
+        self.slots[index].state.load(Ordering::Acquire) == RUNNING
     }
 
     /// Write the value of a slot this thread claimed.
@@ -231,8 +290,10 @@ impl<O> Slots<O> {
     ///
     /// If nobody has started the item, the calling thread runs it here, rather than waiting for a
     /// helper to get to it, so a waiter only ever blocks for an item that is already running.
-    /// Call it from the scope's owner or from inside one of the scope's items: an item run here
-    /// uses the thread's registry slot, which every participant holds.
+    /// That holds inside a chunk another thread has reserved, too: a reservation claims nothing
+    /// (see "How items get run"). Call it from the scope's owner or from inside one of the
+    /// scope's items: an item run here uses the thread's registry slot, which every participant
+    /// holds.
     pub fn wait(&self, index: usize) -> Option<&O> {
         loop {
             match self.slots[index].state.load(Ordering::Acquire) {
@@ -296,13 +357,26 @@ impl<O> Slots<O> {
         values
     }
 
+    /// Wake whoever waits for slot `index`, which has just settled.
     fn wake(&self, index: usize) {
+        // The settle's store, then this fence, then the count; a waiter registers (the count),
+        // then its own fence, then reads the state (`ReadySlot::poll`). With a `SeqCst` fence
+        // on both sides at least one of the two reads sees the other side's write: either the
+        // waiter sees the slot settled and does not sleep, or this sees it counted and takes the
+        // lock to wake it. Nobody waiting is by far the common case, and then this is a fence
+        // and a load of a line nobody writes, where it was a lock every settling thread shared.
+        fence(Ordering::SeqCst);
+        if self.waiting.load(Ordering::Relaxed) == 0 {
+            return;
+        }
         let woken: Vec<Waker> = {
             let mut waiters = self.waiters.lock();
-            waiters
+            let woken = waiters
                 .extract_if(.., |(waiting_for, _)| *waiting_for == index)
                 .map(|(_, waker)| waker)
-                .collect()
+                .collect();
+            self.waiting.store(waiters.len(), Ordering::Relaxed);
+            woken
         };
         // Woken outside the lock: a waker is foreign code.
         for waker in woken {
@@ -342,9 +416,12 @@ impl<'a, O> Future for ReadySlot<'a, O> {
             if !waiters.iter().any(|(i, w)| *i == index && w.will_wake(waker)) {
                 waiters.push((index, waker.clone()));
             }
+            slots.waiting.store(waiters.len(), Ordering::Relaxed);
         }
-        // Registered before the state is read again, so a settle between the two reads finds the
-        // waker: `wake` takes the same lock.
+        // Registered, and counted, before the state is read again; the fence pairs with the one
+        // in `wake`, so a settle between the two reads either is seen here or sees the count and
+        // takes the lock, which is ordered after the push above.
+        fence(Ordering::SeqCst);
         if slots.is_settled(index) { Poll::Ready(slots.get(index)) } else { Poll::Pending }
     }
 }
@@ -357,8 +434,21 @@ impl<'a, O> Future for ReadySlot<'a, O> {
 /// it returns, so nothing ever has to run one of its items later.
 #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
 trait Run: Send + Sync {
-    /// Claim the next item nobody has started, by index order.
-    fn claim_next(&self) -> Option<usize>;
+    /// The stage's item count.
+    fn len(&self) -> usize;
+    /// Reserve the next chunk of indices nobody has reserved, in index order, or `None` once
+    /// every index has been. A reservation claims nothing: see "How items get run".
+    fn reserve(&self) -> Option<Range<usize>>;
+    /// How many chunks nobody has reserved yet.
+    fn unreserved_chunks(&self) -> usize;
+    /// Claim item `index`, if nobody has started it.
+    fn claim(&self, index: usize) -> bool;
+    /// Run item `index`, which this thread claimed, and settle its slot, inside the scope's
+    /// context, which the caller has installed. May unwind, leaving the slot claimed; the caller
+    /// catches the unwind outside the context and hands it to [`panicked`](Run::panicked).
+    fn run_in_context(&self, index: usize);
+    /// `payload` unwound out of `run_in_context(index)`: record it, and settle the item.
+    fn panicked(&self, index: usize, payload: Payload);
     /// Run item `index`, which this thread claimed, and settle its slot. Never unwinds.
     fn run_claimed(&self, index: usize);
     /// Block until every item has settled, running any nobody has started.
@@ -483,6 +573,7 @@ mod parallel {
     use alloc::vec::Vec;
 
     use core::future::Future;
+    use core::ops::Range;
     use core::pin::Pin;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use core::task::{Context, Poll, Waker};
@@ -497,11 +588,45 @@ mod parallel {
     use crate::rustc_data_structures::sync::worker_local::{Registry, RegistrySlot};
     use crate::unwind_janky::Payload;
 
+    /// How many chunks a stage is cut into per thread that may take them.
+    ///
+    /// Eight: the last chunks are what balances the load between threads that finish at
+    /// different times, and with eight per thread the most a thread can be left holding when the
+    /// others run dry is an eighth of its share (less, since the others then sweep its chunk's
+    /// tail). Fewer and larger chunks would write the cursor less, but it is already written once
+    /// per chunk and not once per item, which is the cost that mattered.
+    const CHUNKS_PER_THREAD: usize = 8;
+
+    /// How many unreserved chunks the owner of a scope is counted on to take itself, when it
+    /// settles, and so wakes no helper for.
+    ///
+    /// **A decision rule, not a tuned number.** The measurements (`examples/parallel_timing.rs`,
+    /// six clean files) gave one worker 479 ms per pass and two workers 515 ms: adding a helper
+    /// made the pass slower, and the profile at two workers had about 106 samples of
+    /// `semaphore_signal_trap` and 27 of `__psynch_mutexwait` that one worker does not have.
+    /// Those are the wakes and parks of helpers that found nothing to do or took the one item the
+    /// owner was about to run and left it parked. A stage whose remaining work is one chunk is
+    /// finished by its owner at no cost, and a helper woken for it costs a wake at best and a
+    /// wake, a park and a second wake at worst; so one chunk is the threshold below which nobody
+    /// is woken. A larger threshold would need what the measurements do not give, the cost of an
+    /// item, and would be wrong for the stages that have few items and heavy ones: the two
+    /// whole-crate lint stages (`rustc_lint::late::check_crate`, one item each, in one scope, so
+    /// together they still wake one helper under this rule) and the two diagnostics passes of
+    /// `frontend_facts`, one stage of two items, which still wakes one.
+    const OWNER_CHUNKS: usize = 1;
+
     /// An item's place in the serial order: its stage's number, then its index. Packed so the
     /// cut-off can be one atomic `fetch_min`; an index past `u32::MAX` saturates, which can only
     /// make a cut-off late, never early.
     fn serial_order(seq: u32, index: usize) -> u64 {
         (u64::from(seq) << 32) | u64::from(u32::try_from(index).unwrap_or(u32::MAX))
+    }
+
+    /// How many consecutive indices one reservation takes: `len / (threads * CHUNKS_PER_THREAD)`,
+    /// at least one. `threads` counts every thread that may take the stage's items, its owner
+    /// included.
+    fn chunk_size(len: usize, threads: usize) -> usize {
+        (len / threads.max(1).saturating_mul(CHUNKS_PER_THREAD)).max(1)
     }
 
     /// A caught panic, and its place in the serial order.
@@ -532,7 +657,19 @@ mod parallel {
         panic: Mutex<Option<Caught>>,
         context: CapturedContext,
         registry: Option<Registry>,
+        /// The session's `jobs.frontend`: the owner and at most `width - 1` helpers.
         width: usize,
+        /// How many threads may take this scope's items at once, the owner included: `width`,
+        /// or fewer when the pool has fewer workers than the session asked for. What a stage's
+        /// chunks are sized by.
+        threads: usize,
+    }
+
+    /// A run of one stage's indices that a thread goes through in order, claiming each item it
+    /// finds unclaimed: a chunk it reserved, or a whole stage it sweeps.
+    struct Batch {
+        stage: Arc<dyn Run>,
+        indices: Range<usize>,
     }
 
     impl ScopeShared {
@@ -541,6 +678,7 @@ mod parallel {
             if !mode::is_parallel_here() {
                 return None;
             }
+            let width = pool::width();
             Some(Arc::new(ScopeShared {
                 stages: Mutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
@@ -551,7 +689,8 @@ mod parallel {
                 panic: Mutex::new(None),
                 context: CapturedContext::capture(),
                 registry: Registry::try_current(),
-                width: pool::width(),
+                width,
+                threads: width.min(pool::workers().saturating_add(1)),
             }))
         }
 
@@ -575,24 +714,103 @@ mod parallel {
             drop(displaced);
         }
 
-        /// The next unstarted item of any open stage, earliest stage first.
-        fn claim_any(&self) -> Option<(Arc<dyn Run>, usize)> {
-            let mut next = 0;
+        /// The next unreserved chunk of any open stage, earliest stage first.
+        ///
+        /// `from` is where this thread looks first, and moves past every stage whose indices
+        /// are all reserved: a reservation is never given back, so such a stage has nothing
+        /// more to hand out. Stages are only ever appended, so one started later is still found.
+        fn next_chunk(&self, from: &mut usize) -> Option<Batch> {
             loop {
-                // A `let`, so the lock is released before the claim.
-                let stage = self.stages.lock().get(next).cloned()?;
-                if let Some(index) = stage.claim_next() {
-                    return Some((stage, index));
+                // A `let`, so the lock is released before the reservation.
+                let stage = self.stages.lock().get(*from).cloned()?;
+                if let Some(indices) = stage.reserve() {
+                    return Some(Batch { stage, indices });
                 }
-                next += 1;
+                *from += 1;
+            }
+        }
+
+        /// The next stage to sweep, whole, for items reserved by another thread and not reached
+        /// yet. Each stage once per thread; `from` is how far this thread has got.
+        fn next_sweep(&self, from: &mut usize) -> Option<Batch> {
+            let stage = self.stages.lock().get(*from).cloned()?;
+            *from += 1;
+            let indices = 0..stage.len();
+            Some(Batch { stage, indices })
+        }
+
+        /// Run, on this thread, every item of the scope it can claim: unreserved chunks first,
+        /// earliest stage first, then a sweep of every stage for items reserved elsewhere and not
+        /// started. Returns when there is nothing left to claim; items other threads are running
+        /// may still be running. Never unwinds.
+        ///
+        /// The scope's context is installed once around the whole run and the catch is outside
+        /// it, so an item costs neither (module header, "How items get run"). An item that
+        /// panics unwinds to the catch, is settled as failed with the cut-off at it, and the
+        /// run goes on with the context installed again; the rest of the panicking item's batch
+        /// is dropped unclaimed, which is only items after it in serial order, all cut off, and
+        /// settled (failed, unrun) by whichever thread claims them, the owner at the latest.
+        fn drain(&self) {
+            let mut chunks_from = 0;
+            let mut sweep_from = 0;
+            let mut batch: Option<Batch> = None;
+            // The item this thread claimed and is running, so a panic out of it can be settled.
+            let mut running: Option<usize> = None;
+            loop {
+                let outcome = pool::catch(|| {
+                    let mut work = || {
+                        loop {
+                            if batch.is_none() {
+                                batch = self
+                                    .next_chunk(&mut chunks_from)
+                                    .or_else(|| self.next_sweep(&mut sweep_from));
+                            }
+                            let Some(current) = &mut batch else { return };
+                            match current.indices.next() {
+                                Some(index) => {
+                                    if current.stage.claim(index) {
+                                        running = Some(index);
+                                        current.stage.run_in_context(index);
+                                        running = None;
+                                    }
+                                }
+                                None => batch = None,
+                            }
+                        }
+                    };
+                    // SAFETY: this thread is the scope's owner, inside `stages`, or a helper
+                    // counted in `active`, which the owner waits for before it leaves `stages`;
+                    // either way the frames the captured pointers name are alive until this
+                    // returns.
+                    unsafe { self.context.enter(&mut work) };
+                });
+                match outcome {
+                    Ok(()) => return,
+                    Err(payload) => match (batch.take(), running.take()) {
+                        (Some(batch), Some(index)) => batch.stage.panicked(index, payload),
+                        // Not out of an item: the scaffolding (the context hooks, a thread-local
+                        // out of keys). Recorded like a helper's own failure, and this thread
+                        // stops taking work; the owner's settle still settles every item.
+                        _ => {
+                            self.stash(u64::MAX, payload);
+                            return;
+                        }
+                    },
+                }
             }
         }
 
         /// Settle every item of every stage, running whatever nobody has started, wait for the
         /// helpers to leave, and hand back the stages. Never unwinds.
         pub(super) fn settle(&self) -> Vec<Arc<dyn Run>> {
-            // Every item, in stage order. No stage can be added meanwhile: only the owner starts
-            // stages, and the owner is here.
+            // First everything this thread can start, taken exactly as a helper takes it. It was
+            // a walk of every index in order, waiting at each one a helper was running: at two
+            // threads the owner and its one helper went through the same indices side by side,
+            // and the owner parked at nearly every other item.
+            self.drain();
+            // Then every item, in stage order, waiting only for what other threads are running.
+            // No stage can be added meanwhile: only the owner starts stages, and the owner is
+            // here.
             //
             // The lock is taken per lookup in a `let`, never in a `while let` scrutinee: that
             // would hold it across `settle_all`, and helpers need it to find their next item.
@@ -661,8 +879,11 @@ mod parallel {
         slots: Arc<Slots<O>>,
         /// The item hook's state for this stage's items.
         items: ItemScope,
-        /// Where `claim_next` looks first. Only a hint: a slot is claimed by its own state.
+        /// The first index nobody has reserved. Only says where the next chunk starts: an item
+        /// is claimed by its own slot's state, never by this.
         cursor: AtomicUsize,
+        /// How many indices one reservation takes; see `chunk_size`.
+        chunk: usize,
         seq: u32,
         scope: Arc<ScopeShared>,
     }
@@ -677,19 +898,34 @@ mod parallel {
     where
         F: Fn(&In, usize) -> O,
     {
-        fn claim_next(&self) -> Option<usize> {
-            loop {
-                let index = self.cursor.fetch_add(1, Ordering::Relaxed);
-                if index >= self.slots.len() {
-                    return None;
-                }
-                if self.slots.claim(index) {
-                    return Some(index);
-                }
-            }
+        fn len(&self) -> usize {
+            self.slots.len()
         }
 
-        fn run_claimed(&self, index: usize) {
+        fn reserve(&self) -> Option<Range<usize>> {
+            let len = self.slots.len();
+            // Read first: once every index is reserved, every later look is a load of a line
+            // nobody writes, rather than one more `fetch_add` on it.
+            if self.cursor.load(Ordering::Relaxed) >= len {
+                return None;
+            }
+            let start = self.cursor.fetch_add(self.chunk, Ordering::Relaxed);
+            if start >= len {
+                return None;
+            }
+            Some(start..len.min(start + self.chunk))
+        }
+
+        fn unreserved_chunks(&self) -> usize {
+            let len = self.slots.len();
+            (len - self.cursor.load(Ordering::Relaxed).min(len)).div_ceil(self.chunk)
+        }
+
+        fn claim(&self, index: usize) -> bool {
+            self.slots.claim(index)
+        }
+
+        fn run_in_context(&self, index: usize) {
             let order = serial_order(self.seq, index);
             if order > self.scope.cutoff.load(Ordering::Acquire) {
                 self.slots.fail(index);
@@ -700,33 +936,44 @@ mod parallel {
             // runs it while waiting for it is inside another item, maybe inside a query. The
             // item's queries must see the scope's `ImplicitCtxt`, whose `query` is the parent the
             // query system's cycle check walks from a stage's jobs back to the query that opened
-            // the scope. Inside that, the item hook collects what the item emits.
-            let outcome = pool::catch(|| {
-                let mut value = None;
-                let mut stopped = false;
-                let mut item = || {
-                    let mut run = || value = Some((self.f)(&self.input, index));
-                    stopped = self.items.run(index, &mut run);
-                };
-                // SAFETY: the item is claimed and not settled, so the scope is open and its owner
-                // has not left `stages`; the frames the captured pointers name are alive.
-                unsafe { self.scope.context.enter(&mut item) };
-                (value, stopped)
+            // the scope. The caller installed it; inside it, the item hook collects what the item
+            // emits, per item.
+            let mut value = None;
+            let stopped = self.items.run(index, &mut || value = Some((self.f)(&self.input, index)));
+            if stopped {
+                self.scope.stop_at(order);
+            }
+            match value {
+                Some(value) => self.slots.fill(index, value),
+                None => self.slots.fail(index),
+            }
+        }
+
+        fn panicked(&self, index: usize, payload: Payload) {
+            // Only this thread can settle an item it claimed, so "still running" here means the
+            // unwind came out of the item itself, and the cut-off goes at the item. Anything else
+            // (the item had settled, and something after it unwound) is not the item's.
+            if self.slots.is_running(index) {
+                // Recorded before the slot settles, so the cut-off is in place before anyone
+                // woken by the settle looks for more work.
+                self.scope.stash(serial_order(self.seq, index), payload);
+                self.slots.fail(index);
+            } else {
+                self.scope.stash(u64::MAX, payload);
+            }
+        }
+
+        fn run_claimed(&self, index: usize) {
+            // One item, run by a thread that waited for it: the context is installed for it
+            // alone. A thread taking work in runs installs it once per run instead (`drain`).
+            //
+            // SAFETY: the item is claimed and not settled, so the scope is open and its owner
+            // has not left `stages`; the frames the captured pointers name are alive.
+            let outcome = pool::catch(|| unsafe {
+                self.scope.context.enter(&mut || self.run_in_context(index))
             });
-            match outcome {
-                Ok((value, stopped)) => {
-                    if stopped {
-                        self.scope.stop_at(order);
-                    }
-                    match value {
-                        Some(value) => self.slots.fill(index, value),
-                        None => self.slots.fail(index),
-                    }
-                }
-                Err(payload) => {
-                    self.scope.stash(order, payload);
-                    self.slots.fail(index);
-                }
+            if let Err(payload) = outcome {
+                self.panicked(index, payload);
             }
         }
 
@@ -754,7 +1001,8 @@ mod parallel {
     {
         // Begun here, on the thread starting the stage, which is where the diagnostics hook
         // finds the item this stage is nested in, if any.
-        let items = ItemScope::begin();
+        let items = ItemScope::begin(len);
+        let chunk = chunk_size(len, shared.threads);
         let stage = Arc::new_cyclic(|this: &Weak<Stage<In, O, F>>| {
             let runner: Weak<dyn Run + 'scope> = this.clone();
             // SAFETY: only the trait object's lifetime changes. The weak reference is upgraded
@@ -769,6 +1017,7 @@ mod parallel {
                 slots: Arc::new(Slots::with_runner(len, Some(runner))),
                 items,
                 cursor: AtomicUsize::new(0),
+                chunk,
                 seq,
                 scope: shared.clone(),
             }
@@ -780,11 +1029,22 @@ mod parallel {
         // returns or unwinds, which is inside `'scope`: helpers are waited for, and a helper that
         // arrives after the scope closed never reaches `stages`.
         let stage = unsafe { core::mem::transmute::<Arc<dyn Run + 'scope>, Arc<dyn Run>>(stage) };
-        shared.stages.lock().push(stage);
-        // Helpers already in the scope pick this stage up when they finish their current item,
-        // so only the shortfall is submitted. A helper on its way out may be counted and not
-        // come back; the owner settles whatever is left, so that costs time, never an item.
-        let wanted = len.min(shared.width - 1).min(pool::workers());
+        // The work nobody has taken yet, in chunks, across every open stage of the scope, this
+        // one included: counted under the same lock that publishes the stage.
+        let unreserved: usize = {
+            let mut stages = shared.stages.lock();
+            stages.push(stage);
+            stages.iter().map(|stage| stage.unreserved_chunks()).sum()
+        };
+        // Helpers already in the scope pick this stage up when they finish their current chunk,
+        // so only the shortfall is submitted. The owner is counted on for `OWNER_CHUNKS` of the
+        // work, and the session's width caps the rest (module header, "Waking helpers"). A
+        // helper on its way out may be counted and not come back; the owner settles whatever is
+        // left, so that costs time, never an item.
+        let wanted = unreserved
+            .saturating_sub(OWNER_CHUNKS)
+            .min(shared.width - 1)
+            .min(pool::workers());
         let present = shared.active.load(Ordering::Relaxed);
         for _ in present..wanted {
             let shared = shared.clone();
@@ -813,17 +1073,17 @@ mod parallel {
     /// A helper: arrive, take a registry slot, then run unstarted items of any open stage until
     /// there are none.
     ///
-    /// The helper installs only what belongs to the thread (its registry slot and the session's
-    /// width); each item installs the scope's captured context itself, in `run_claimed`.
+    /// The helper installs what belongs to the thread (its registry slot and the session's
+    /// width) once, here, and the scope's captured context once per run of items, in `drain`.
     fn help(shared: Arc<ScopeShared>) {
         shared.active.fetch_add(1, Ordering::SeqCst);
         let _leave = Leave(&shared);
         if shared.closed.load(Ordering::SeqCst) {
             return;
         }
-        // `run_claimed` never unwinds, so this catches only the scaffolding (a registry or mode
+        // `drain` never unwinds, so this catches only the scaffolding (a registry or mode
         // scope out of thread-local keys). Nothing is claimed while it can fail except inside
-        // `run_claimed`, so a failure here strands no item.
+        // `drain`, so a failure here strands no item.
         let outcome = pool::catch(|| {
             // The registry slot is also the session's thread budget: the session asked for
             // `width` threads and its registry has that many slots. A helper that finds none
@@ -837,9 +1097,7 @@ mod parallel {
             };
             let _in_slot = slot.as_ref().map(RegistrySlot::enter);
             let _mode = mode::enter_session_width(shared.width);
-            while let Some((stage, index)) = shared.claim_any() {
-                stage.run_claimed(index);
-            }
+            shared.drain();
         });
         if let Err(payload) = outcome {
             shared.stash(u64::MAX, payload);

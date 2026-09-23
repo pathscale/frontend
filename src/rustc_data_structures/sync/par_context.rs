@@ -18,8 +18,6 @@
 //! Both are used only by parallel sessions. A serial session runs a stage's items in place, in
 //! order, and calls neither.
 
-use alloc::vec::Vec;
-
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
@@ -71,9 +69,14 @@ pub fn install_context_hook(hook: &'static ContextHook) {
 }
 
 /// Every registered hook's value, captured on the thread that opened a stage scope.
+///
+/// A fixed array, not a `Vec`: a scope is opened for every stage a call site runs (a
+/// `run_stage` is a scope of its own), and the hooks are at most [`MAX_HOOKS`], so the capture
+/// allocates nothing.
 #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
 pub(crate) struct CapturedContext {
-    values: Vec<(&'static ContextHook, *const ())>,
+    /// The registered hooks and their values, in registration order; `None` past the last one.
+    values: [Option<(&'static ContextHook, *const ())>; MAX_HOOKS],
 }
 
 // SAFETY: the pointers are only handed to the hooks' own `enter`, around an item, while the thread
@@ -84,18 +87,26 @@ unsafe impl Sync for CapturedContext {}
 #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
 impl CapturedContext {
     pub(crate) fn capture() -> CapturedContext {
-        let values = HOOKS
-            .iter()
-            .map(|slot| slot.load(Ordering::Acquire))
-            .take_while(|hook| !hook.is_null())
+        let mut values = [None; MAX_HOOKS];
+        for (slot, value) in HOOKS.iter().zip(values.iter_mut()) {
+            let hook = slot.load(Ordering::Acquire);
+            if hook.is_null() {
+                break;
+            }
             // SAFETY: only `&'static ContextHook`s are ever stored, by `install_context_hook`.
-            .map(|hook| unsafe { &*hook })
-            .map(|hook| (hook, (hook.capture)()))
-            .collect();
+            let hook = unsafe { &*hook };
+            *value = Some((hook, (hook.capture)()));
+        }
         CapturedContext { values }
     }
 
     /// Run `run` with every captured value installed, first registered outermost.
+    ///
+    /// The stage calls this once per *run* of items, not once per item: a helper installs the
+    /// scope's context when it arrives and runs item after item inside it (see `stage.rs`, "How
+    /// items get run"). Every item of a scope wants exactly the same values installed, and an
+    /// item puts back whatever it changed on its way out, so the values stay correct between
+    /// items and the hooks' thread-local reads and writes are paid once per run.
     ///
     /// # Safety
     ///
@@ -106,10 +117,10 @@ impl CapturedContext {
     }
 }
 
-unsafe fn enter_from(values: &[(&'static ContextHook, *const ())], run: &mut dyn FnMut()) {
+unsafe fn enter_from(values: &[Option<(&'static ContextHook, *const ())>], run: &mut dyn FnMut()) {
     match values.split_first() {
-        None => run(),
-        Some(((hook, captured), rest)) => {
+        None | Some((None, _)) => run(),
+        Some((Some((hook, captured)), rest)) => {
             // SAFETY: forwarded from `CapturedContext::enter`.
             unsafe { (hook.enter)(*captured, &mut || enter_from(rest, run)) }
         }
@@ -120,11 +131,16 @@ unsafe fn enter_from(values: &[(&'static ContextHook, *const ())], run: &mut dyn
 
 /// Wrapped around every item of a parallel stage.
 ///
-/// The stage calls `begin` on the thread that starts it, before any item runs, and keeps the
-/// state it returns; calls `run` around each item, on whichever thread runs it, in any order; and
-/// after every item has settled calls exactly one of `finish` (the stage ended normally, or it is
-/// the stage a fatal error stopped) or `discard` (an internal compiler error, or a fatal error in
-/// an earlier stage, is unwinding out instead).
+/// The stage calls `begin` on the thread that starts it, before any item runs, with the stage's
+/// item count (so the state can be sized once, per stage, instead of grown per item), and keeps
+/// the state it returns; calls `run` around each item, on whichever thread runs it, in any
+/// order; and after every item has settled calls exactly one of `finish` (the stage ended
+/// normally, or it is the stage a fatal error stopped) or `discard` (an internal compiler error,
+/// or a fatal error in an earlier stage, is unwinding out instead).
+///
+/// `run` is called once per item even when the stage runs a whole chunk of items inside one
+/// install of the scope's context: an item's diagnostics are its own output, whatever ran next
+/// to it.
 ///
 /// `run` returns `true` when a serial run would not have gone on past this item: the item ended
 /// in a fatal error, which the hook caught and keeps. The stage then skips every item after it in
@@ -136,7 +152,7 @@ unsafe fn enter_from(values: &[(&'static ContextHook, *const ())], run: &mut dyn
 /// `state` is what `begin` returned. It is used from several threads at once through `run`, so
 /// what it points at must be `Sync`, and it is not used after `finish` or `discard`.
 pub struct ItemHook {
-    pub begin: fn() -> *mut (),
+    pub begin: fn(len: usize) -> *mut (),
     pub run: unsafe fn(state: *const (), index: usize, item: &mut dyn FnMut()) -> bool,
     pub finish: unsafe fn(state: *mut ()),
     pub discard: unsafe fn(state: *mut ()),
@@ -168,14 +184,14 @@ unsafe impl Sync for ItemScope {}
 
 #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
 impl ItemScope {
-    pub(crate) fn begin() -> ItemScope {
+    pub(crate) fn begin(len: usize) -> ItemScope {
         let hook = ITEM_HOOK.load(Ordering::Acquire);
         if hook.is_null() {
             return ItemScope { hook: None, state: ptr::null_mut(), open: AtomicBool::new(false) };
         }
         // SAFETY: only `&'static ItemHook`s are ever stored, by `install_item_hook`.
         let hook = unsafe { &*hook };
-        ItemScope { hook: Some(hook), state: (hook.begin)(), open: AtomicBool::new(true) }
+        ItemScope { hook: Some(hook), state: (hook.begin)(len), open: AtomicBool::new(true) }
     }
 
     /// Run one item under the hook. `true` if a serial run would stop after it.
