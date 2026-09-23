@@ -567,6 +567,20 @@ fn type_text(tcx: TyCtxt<'_>, ty: &hir::Ty<'_>) -> String {
     })
 }
 
+/// The flag every session here is handed as `Config::using_internal_features`.
+///
+/// `Config` wants a `&'static AtomicBool`, and each call used to `Box::leak` a fresh one: one
+/// allocation per call that was never freed, which a daemon or a corpus pass turns into
+/// unbounded growth. One static serves every call on every thread instead.
+///
+/// Sharing it is sound because nothing reads it. Upstream it is set when a crate enables an
+/// `internal` feature and read by `rustc_driver`'s ICE hook, to drop "please report a bug" from
+/// an ICE that internal features probably caused. This tree has no such hook: the only access is
+/// the `store(true)` in `rustc_expand::config`, so the flag is write-only and a value one call
+/// leaves behind cannot change what another call reports. If an ICE message ever starts reading
+/// it, it has to become per session again, owned by the call rather than leaked by it.
+static USING_INTERNAL_FEATURES: AtomicBool = AtomicBool::new(false);
+
 /// Analyse one crate from source.
 ///
 /// A program with errors still has facts. Anything that leaves resolution and the HIR intact
@@ -664,8 +678,8 @@ pub fn analyze_source_with_sysroot(
         }
     };
     let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
-    let using_internal_features =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
+    // Shared, not leaked per call; see `USING_INTERNAL_FEATURES`.
+    let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
         input: Input::Str { name: FileName::anon_source_code(source), input: source.to_string() },
@@ -799,8 +813,8 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
     opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
 
     let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
-    let using_internal_features =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
+    // Shared, not leaked per call; see `USING_INTERNAL_FEATURES`.
+    let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
         input: Input::Str { name: FileName::anon_source_code(source), input: source.to_string() },
