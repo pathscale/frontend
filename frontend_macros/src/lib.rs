@@ -75,7 +75,7 @@ pub fn error_code_constants(input: TokenStream) -> TokenStream {
 /// goes into the parenthesized args of the macro, for greppability.
 /// For example:
 /// ```
-/// use rustc_macros::extension;
+/// use frontend_macros::extension;
 /// #[extension(pub trait Foo)]
 /// impl i32 { fn hello() {} }
 /// ```
