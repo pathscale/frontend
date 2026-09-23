@@ -175,9 +175,13 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
 
         let _: R = tcx.ensure_result().check_type_wf(());
 
-        for &trait_def_id in tcx.all_local_trait_impls(()).keys() {
+        // One stage over the traits with local impls, read in place from the frozen map. Each
+        // trait's coherence is its own query and reads nothing another trait's check writes.
+        let trait_impls = tcx.all_local_trait_impls(());
+        run_stage(trait_impls, trait_impls.len(), |trait_impls, index| {
+            let (&trait_def_id, _) = trait_impls.get_index(index).expect("index below len");
             let _: R = tcx.ensure_result().coherent_trait(trait_def_id);
-        }
+        });
         // these queries are executed for side-effects (error reporting):
         let _: R = tcx.ensure_result().crate_inherent_impls_validity_check(());
         let _: R = tcx.ensure_result().crate_inherent_impls_overlap_check(());

@@ -354,6 +354,13 @@ pub fn parallelism() -> usize {
 fn apply_parallelism(opts: &mut Options) {
     let asked = if cfg!(feature = "parallel") { PARALLELISM.load(Ordering::Relaxed) } else { 0 };
     opts.jobs.frontend = core::num::NonZero::new(asked);
+    // `FRONTEND_TIME_PASSES` set: rustc's own `-Z time-passes`, one JSON line per pass on
+    // stderr, which is how the pass timings of a corpus run are read.
+    if eko::env::var_os("FRONTEND_TIME_PASSES").is_some() {
+        opts.unstable_opts.time_passes = true;
+        opts.unstable_opts.time_passes_format =
+            crate::rustc_data_structures::profiling::TimePassesFormat::Json;
+    }
 }
 
 /// Extract facts from an already-built `TyCtxt`. Runs type checking, one body at a time.
