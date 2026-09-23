@@ -393,12 +393,63 @@ impl core::fmt::Write for Sink {
     }
 }
 
+/// The `psess_created` hook that sends every diagnostic to `text`, one short line each.
+///
+/// A library has no terminal to print to, and a diagnostic written to stderr is one the caller
+/// cannot read back. So the session's emitter is replaced before anything is parsed, and what
+/// it would have printed lands in a buffer the caller still holds.
+fn capture_diagnostics(
+    text: &alloc::sync::Arc<eko::thread::Mutex<String>>,
+) -> alloc::boxed::Box<dyn FnOnce(&mut crate::rustc_session::parse::ParseSess) + Send> {
+    let sink = text.clone();
+    alloc::boxed::Box::new(move |psess: &mut crate::rustc_session::parse::ParseSess| {
+        let emitter = crate::rustc_errors::plain_emitter::PlainEmitter::new()
+            .sm(Some(psess.clone_source_map()))
+            .short_message(true)
+            .dst(alloc::boxed::Box::new(Sink(sink)));
+        psess.set_emitter(alloc::boxed::Box::new(emitter));
+    })
+}
+
+/// Split captured emitter output into errors and warnings, in emission order.
+///
+/// One diagnostic starts at a line with no leading space; its `-->` location lines follow.
+/// Anything that is neither an error nor a warning (a `note`, "For more information") is
+/// dropped: it annotates a diagnostic rather than being one.
+fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
+    fn flush(entry: Option<String>, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+        if let Some(entry) = entry {
+            if entry.starts_with("error") {
+                errors.push(entry);
+            } else if entry.starts_with("warning") {
+                warnings.push(entry);
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut current: Option<String> = None;
+    for line in captured.lines() {
+        if line.starts_with(' ') {
+            if let Some(entry) = current.as_mut() {
+                entry.push('\n');
+                entry.push_str(line);
+            }
+        } else {
+            flush(current.take(), &mut errors, &mut warnings);
+            current = Some(line.to_string());
+        }
+    }
+    flush(current.take(), &mut errors, &mut warnings);
+    (errors, warnings)
+}
+
 /// Type check, borrow check and lint one crate from source, and return what was said.
 ///
 /// **Reading, never running.** This is `tcx.analysis(())`: typeck, then borrowck, then the
 /// builtin lints (skipped when typeck or borrowck already failed). Nothing is compiled to a
-/// binary and nothing is executed. It is how a caller establishes `compiles` and `linted` for
-/// a candidate without rustc, cargo or clippy.
+/// binary and nothing is executed. It is how a caller establishes whether a program compiles
+/// and lints clean without rustc, cargo or clippy.
 ///
 /// Runs as `no_core`, like [`analyze_source`] with no sysroot: see rule zero in `AGENTS.md`.
 /// Diagnostics go to this crate's `PlainEmitter`, one line each, captured rather than printed.
@@ -417,7 +468,6 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
     opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
 
     let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
-    let sink = text.clone();
     let using_internal_features =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
     let config = Config {
@@ -426,15 +476,7 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
             name: FileName::anon_source_code(source),
             input: source.to_string(),
         },
-        psess_created: Some(alloc::boxed::Box::new(
-            move |psess: &mut crate::rustc_session::parse::ParseSess| {
-                let emitter = crate::rustc_errors::plain_emitter::PlainEmitter::new()
-                    .sm(Some(psess.clone_source_map()))
-                    .short_message(true)
-                    .dst(alloc::boxed::Box::new(Sink(sink)));
-                psess.set_emitter(alloc::boxed::Box::new(emitter));
-            },
-        )),
+        psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version: None,
     };
@@ -445,32 +487,8 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
         })
     });
 
-    // One diagnostic starts at a line with no leading space; its `-->` location lines follow.
-    let mut checked = Checked { fatal: finished.is_err(), ..Checked::default() };
-    let captured = text.lock().clone();
-    let mut current: Option<String> = None;
-    let mut flush = |entry: Option<String>, checked: &mut Checked| {
-        if let Some(entry) = entry {
-            if entry.starts_with("error") {
-                checked.errors.push(entry);
-            } else if entry.starts_with("warning") {
-                checked.warnings.push(entry);
-            }
-        }
-    };
-    for line in captured.lines() {
-        if line.starts_with(' ') {
-            if let Some(entry) = current.as_mut() {
-                entry.push('\n');
-                entry.push_str(line);
-            }
-        } else {
-            flush(current.take(), &mut checked);
-            current = Some(line.to_string());
-        }
-    }
-    flush(current.take(), &mut checked);
-    checked
+    let (errors, warnings) = split_diagnostics(&text.lock());
+    Checked { errors, warnings, fatal: finished.is_err() }
 }
 
 fn host_rustc_version() -> Option<alloc::string::String> {
@@ -546,5 +564,21 @@ mod tests {
         assert_eq!(fact_kind(DefKind::Use), None);
         assert_eq!(fact_kind(DefKind::Impl { of_trait: true }), None);
         assert_eq!(fact_kind(DefKind::TyParam), None);
+    }
+
+    // Emitter output is written by hand here: producing it for real means running a session,
+    // which is exactly what these tests stay clear of. The shape is the `short_message` one.
+    #[test]
+    fn captured_output_splits_into_errors_and_warnings_with_their_locations() {
+        let captured = "error[E0425]: cannot find value `x` in this scope\n  --> src/lib.rs:1:14\nwarning: unused variable: `y`\nnote: a note on its own\nFor more information about this error, try `rustc --explain E0425`.\nerror: aborting due to 1 previous error\n";
+        let (errors, warnings) = split_diagnostics(captured);
+        assert_eq!(
+            errors,
+            vec![
+                "error[E0425]: cannot find value `x` in this scope\n  --> src/lib.rs:1:14".to_string(),
+                "error: aborting due to 1 previous error".to_string(),
+            ]
+        );
+        assert_eq!(warnings, vec!["warning: unused variable: `y`".to_string()]);
     }
 }
