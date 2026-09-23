@@ -183,28 +183,7 @@ fn parse_fragment<'a>(parser: &mut Parser<'a>, kind: Fragment) -> PResult<'a, ()
 /// leading space and runs through the indented `-->` location line that follows it. Internal
 /// compiler errors count: text the compiler could not handle has not been shown to parse.
 fn error_entries(captured: &str) -> Vec<String> {
-    let mut errors = Vec::new();
-    let mut current: Option<String> = None;
-    let mut flush = |entry: Option<String>, errors: &mut Vec<String>| {
-        if let Some(entry) = entry
-            && (entry.starts_with("error") || entry.starts_with("internal compiler error"))
-        {
-            errors.push(entry);
-        }
-    };
-    for line in captured.lines() {
-        if line.starts_with(' ') {
-            if let Some(entry) = current.as_mut() {
-                entry.push('\n');
-                entry.push_str(line);
-            }
-        } else {
-            flush(current.take(), &mut errors);
-            current = Some(line.to_string());
-        }
-    }
-    flush(current.take(), &mut errors);
-    errors
+    super::split_diagnostics(captured).0
 }
 
 #[cfg(test)]

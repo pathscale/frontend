@@ -727,11 +727,15 @@ fn capture_diagnostics(
 ///
 /// One diagnostic starts at a line with no leading space; its `-->` location lines follow.
 /// Anything that is neither an error nor a warning (a `note`, "For more information") is
-/// dropped: it annotates a diagnostic rather than being one.
-fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
+/// dropped: it annotates a diagnostic rather than being one. An internal compiler error counts
+/// as an error: input the compiler could not handle has not been shown to be clean.
+///
+/// The one splitter for every entry point here, `syntax` and `diagnostics` included, so what
+/// counts as an error cannot differ between them.
+pub(crate) fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
     fn flush(entry: Option<String>, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
         if let Some(entry) = entry {
-            if entry.starts_with("error") {
+            if entry.starts_with("error") || entry.starts_with("internal compiler error") {
                 errors.push(entry);
             } else if entry.starts_with("warning") {
                 warnings.push(entry);
