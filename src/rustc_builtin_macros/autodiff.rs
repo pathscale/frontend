@@ -198,23 +198,7 @@ mod llvm_enzyme {
     /// type-checking and can be called by users. The exact signature of the generated function
     /// depends on the configuration provided by the user, but here is an example:
     ///
-    /// ```text
-    /// #[autodiff(cos_box, Reverse, Duplicated, Active)]
-    /// fn sin(x: &Box<f32>) -> f32 {
-    ///     f32::sin(**x)
-    /// }
-    /// ```
     /// which becomes expanded to:
-    /// ```text
-    /// #[rustc_autodiff]
-    /// fn sin(x: &Box<f32>) -> f32 {
-    ///     f32::sin(**x)
-    /// }
-    /// #[rustc_autodiff(Reverse, Duplicated, Active)]
-    /// fn cos_box(x: &Box<f32>, dx: &mut Box<f32>, dret: f32) -> f32 {
-    ///     core::intrinsics::autodiff(sin::<> as fn(..) -> .., cos_box::<>, (x, dx, dret))
-    /// }
-    /// ```
     /// FIXME(ZuseZ4): Once autodiff is enabled by default, make this a doc comment which is checked
     /// in CI.
     pub(crate) fn expand_with_mode(

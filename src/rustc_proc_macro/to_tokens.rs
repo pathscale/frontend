@@ -18,38 +18,6 @@ pub trait ToTokens {
     /// Example implementation for a struct representing Rust paths like
     /// `std::cmp::PartialEq`:
     ///
-    /// ```text
-    /// #![feature(proc_macro_totokens)]
-    ///
-    /// use std::iter;
-    /// use proc_macro::{Spacing, Punct, TokenStream, TokenTree, ToTokens};
-    ///
-    /// pub struct Path {
-    ///     pub global: bool,
-    ///     pub segments: Vec<PathSegment>,
-    /// }
-    ///
-    /// impl ToTokens for Path {
-    ///     fn to_tokens(&self, tokens: &mut TokenStream) {
-    ///         for (i, segment) in self.segments.iter().enumerate() {
-    ///             if i > 0 || self.global {
-    ///                 // Double colon `::`
-    ///                 tokens.extend(iter::once(TokenTree::from(Punct::new(':', Spacing::Joint))));
-    ///                 tokens.extend(iter::once(TokenTree::from(Punct::new(':', Spacing::Alone))));
-    ///             }
-    ///             segment.to_tokens(tokens);
-    ///         }
-    ///     }
-    /// }
-    /// #
-    /// # pub struct PathSegment;
-    /// #
-    /// # impl ToTokens for PathSegment {
-    /// #     fn to_tokens(&self, tokens: &mut TokenStream) {
-    /// #         unimplemented!()
-    /// #     }
-    /// # }
-    /// ```
     fn to_tokens(&self, tokens: &mut TokenStream);
 
     /// Convert `self` directly into a `TokenStream` object.

@@ -770,28 +770,6 @@ impl SyntaxContext {
     /// Adjust this context for resolution in a scope created by the given expansion.
     /// For example, consider the following three resolutions of `f`:
     ///
-    /// ```text
-    /// #![feature(decl_macro)]
-    /// mod foo {
-    ///     pub fn f() {} // `f`'s `SyntaxContext` is empty.
-    /// }
-    /// m!(f);
-    /// macro m($f:ident) {
-    ///     mod bar {
-    ///         pub fn f() {} // `f`'s `SyntaxContext` has a single `ExpnId` from `m`.
-    ///         pub fn $f() {} // `$f`'s `SyntaxContext` is empty.
-    ///     }
-    ///     foo::f(); // `f`'s `SyntaxContext` has a single `ExpnId` from `m`
-    ///     //^ Since `mod foo` is outside this expansion, `adjust` removes the mark from `f`,
-    ///     //| and it resolves to `::foo::f`.
-    ///     bar::f(); // `f`'s `SyntaxContext` has a single `ExpnId` from `m`
-    ///     //^ Since `mod bar` not outside this expansion, `adjust` does not change `f`,
-    ///     //| and it resolves to `::bar::f`.
-    ///     bar::$f(); // `f`'s `SyntaxContext` is empty.
-    ///     //^ Since `mod bar` is not outside this expansion, `adjust` does not change `$f`,
-    ///     //| and it resolves to `::bar::$f`.
-    /// }
-    /// ```
     /// This returns the expansion whose definition scope we use to privacy check the resolution,
     /// or `None` if we privacy check as usual (i.e., not w.r.t. a macro definition scope).
     #[inline]

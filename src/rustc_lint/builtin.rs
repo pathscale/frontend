@@ -1389,15 +1389,6 @@ declare_lint! {
     /// The `trivial_bounds` lint detects trait bounds that don't depend on
     /// any type parameters.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(trivial_bounds)]
-    /// pub struct A where i32: Copy;
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// Usually you would not write a trait bound that you know is always
@@ -2204,14 +2195,6 @@ declare_lint! {
     ///
     /// [`feature` attribute]: https://doc.rust-lang.org/nightly/unstable-book/
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(generic_const_exprs)]
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// Although it is encouraged for people to experiment with unstable
@@ -2229,14 +2212,6 @@ declare_lint! {
     /// library.
     ///
     /// [`feature` attribute]: https://doc.rust-lang.org/nightly/unstable-book/
-    ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(rustc_attrs)]
-    /// ```
-    ///
-    /// {{produces}}
     ///
     /// ### Explanation
     ///

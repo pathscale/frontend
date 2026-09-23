@@ -33,35 +33,6 @@ declare_lint! {
     /// this lint serves to warn and suggest fixes for any use-cases which rely
     /// on this behavior.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(type_alias_impl_trait)]
-    ///
-    /// trait Duh {}
-    ///
-    /// impl Duh for i32 {}
-    ///
-    /// trait Trait {
-    ///     type Assoc: Duh;
-    /// }
-    ///
-    /// impl<F: Duh> Trait for F {
-    ///     type Assoc = F;
-    /// }
-    ///
-    /// type Tait = impl Sized;
-    ///
-    /// #[define_opaque(Tait)]
-    /// fn test() -> impl Trait<Assoc = Tait> {
-    ///     42
-    /// }
-    ///
-    /// fn main() {}
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// In this example, `test` declares that the associated type `Assoc` for
     /// `impl Trait` is `impl Sized`, which does not satisfy the bound `Duh`
     /// on the associated type.

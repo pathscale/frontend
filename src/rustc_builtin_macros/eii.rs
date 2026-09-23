@@ -26,25 +26,6 @@ use crate::rustc_builtin_macros::diagnostics::{
     EiiSharedMacroTarget, EiiStaticArgumentRequired, EiiStaticDefaultApple, EiiStaticMutable,
 };
 
-/// ```text
-/// #[eii]
-/// fn panic_handler();
-///
-/// // or:
-///
-/// #[eii(panic_handler)]
-/// fn panic_handler();
-///
-/// // expansion:
-///
-/// extern "Rust" {
-///     fn panic_handler();
-/// }
-///
-/// #[rustc_builtin_macro(eii_shared_macro)]
-/// #[eii_declaration(panic_handler)]
-/// macro panic_handler() {}
-/// ```
 pub(crate) fn eii(
     ecx: &mut ExtCtxt<'_>,
     span: Span,

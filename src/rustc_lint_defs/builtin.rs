@@ -505,26 +505,6 @@ declare_lint! {
     /// The `must_not_suspend` lint guards against values that shouldn't be held across suspend points
     /// (`.await`)
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(must_not_suspend)]
-    /// #![warn(must_not_suspend)]
-    ///
-    /// #[must_not_suspend]
-    /// struct SyncThing {}
-    ///
-    /// async fn yield_now() {}
-    ///
-    /// pub async fn uhoh() {
-    ///     let guard = SyncThing {};
-    ///     yield_now().await;
-    ///     let _guard = guard;
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// The `must_not_suspend` lint detects values that are marked with the `#[must_not_suspend]`
@@ -1194,15 +1174,6 @@ declare_lint! {
     /// has since been made stable.
     ///
     /// [`feature` attribute]: https://doc.rust-lang.org/nightly/unstable-book/
-    ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(test_accepted_feature)]
-    /// fn main() {}
-    /// ```
-    ///
-    /// {{produces}}
     ///
     /// ### Explanation
     ///
@@ -2452,22 +2423,6 @@ declare_lint! {
     /// [inline]: https://doc.rust-lang.org/reference/attributes/codegen.html#the-inline-attribute
     /// [sanitize]: https://doc.rust-lang.org/nightly/unstable-book/language-features/no-sanitize.html
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(sanitize)]
-    ///
-    /// #[inline(always)]
-    /// #[sanitize(address = "off")]
-    /// fn x() {}
-    ///
-    /// fn main() {
-    ///     x()
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// The use of the [`#[inline(always)]`][inline] attribute prevents the
@@ -2483,20 +2438,6 @@ declare_lint! {
     /// [`#[sanitize(realtime = "nonblocking")]`][sanitize] on async functions.
     ///
     /// [sanitize]: https://doc.rust-lang.org/nightly/unstable-book/language-features/no-sanitize.html
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(sanitize)]
-    ///
-    /// #[sanitize(realtime = "nonblocking")]
-    /// async fn x() {}
-    ///
-    /// fn main() {
-    ///     x();
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
     ///
     /// ### Explanation
     ///
@@ -3158,15 +3099,6 @@ declare_lint! {
     /// The `unstable_syntax_pre_expansion` lint detects the use of unstable
     /// syntax that is discarded during attribute expansion.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #[cfg(feature = "nightly")]
-    /// macro foo() {}
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// The input to active attributes such as `#[cfg]` or procedural macro
@@ -3177,19 +3109,6 @@ declare_lint! {
     /// To avoid relying on unstable syntax, move the use of unstable syntax
     /// into a position where the compiler does not parse the syntax, such as a
     /// functionlike macro.
-    ///
-    /// ```text
-    /// # #![deny(unstable_syntax_pre_expansion)]
-    ///
-    /// macro_rules! identity {
-    ///    ( $($tokens:tt)* ) => { $($tokens)* }
-    /// }
-    ///
-    /// #[cfg(feature = "nightly")]
-    /// identity! {
-    ///    macro foo() {}
-    /// }
-    /// ```
     ///
     /// This is a [future-incompatible] lint to transition this
     /// to a hard error in the future. See [issue #154045] for more details.
@@ -4527,18 +4446,6 @@ declare_lint! {
     /// The `malformed_diagnostic_filters` lint detects malformed filters in diagnostic
     /// attributes.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(rustc_attrs)]
-    /// #![allow(internal_features)]
-    ///
-    /// #[rustc_on_unimplemented(on(invalid, message = "unused"))]
-    /// trait Trait {}
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// A `rustc_on_unimplemented` filter must use a supported flag, a name-value predicate,
@@ -5406,24 +5313,6 @@ declare_lint! {
     /// The `tail_call_track_caller` lint detects usage of `become` attempting to tail call
     /// a function marked with `#[track_caller]`.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(explicit_tail_calls)]
-    /// #![expect(incomplete_features)]
-    ///
-    /// #[track_caller]
-    /// fn f() {}
-    ///
-    /// fn g() {
-    ///     become f();
-    /// }
-    ///
-    /// g();
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// Due to implementation details of tail calls and `#[track_caller]` attribute, calls to
@@ -5671,17 +5560,6 @@ declare_lint! {
 declare_lint! {
     /// The `method_call_on_diverging_infer_var` lint detects situations in which a method is called on a value resulting from a never-to-any coercion,
     /// without necessary information to infer a type for it.
-    ///
-    /// ### Example
-    ///
-    /// ```text
-    /// fn main() {
-    ///     let x = panic!();
-    ///     x.clone();
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
     ///
     /// ### Explanation
     ///

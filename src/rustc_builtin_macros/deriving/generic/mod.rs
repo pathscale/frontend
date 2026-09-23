@@ -1186,26 +1186,6 @@ impl<'a> MethodDef<'a> {
     ///
     /// is equivalent to:
     ///
-    /// ```text
-    /// #![feature(core_intrinsics)]
-    /// enum A {
-    ///     A1,
-    ///     A2(i32)
-    /// }
-    /// impl ::core::cmp::PartialEq for A {
-    ///     #[inline]
-    ///     fn eq(&self, other: &A) -> bool {
-    ///         let __self_discr = ::core::intrinsics::discriminant_value(self);
-    ///         let __arg1_discr = ::core::intrinsics::discriminant_value(other);
-    ///         __self_discr == __arg1_discr
-    ///             && match (self, other) {
-    ///                 (A::A2(__self_0), A::A2(__arg1_0)) => *__self_0 == *__arg1_0,
-    ///                 _ => true,
-    ///             }
-    ///     }
-    /// }
-    /// ```
-    ///
     /// Creates a discriminant check combined with a match for a tuple of all
     /// `selflike_args`, with an arm for each variant with fields, possibly an
     /// arm for each fieldless variant (if `unify_fieldless_variants` is not

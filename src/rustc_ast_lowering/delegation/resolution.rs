@@ -84,13 +84,6 @@ pub(super) mod resolver {
         }
 
         /// (from `tests\ui\delegation\target-expr-removal-defs-inside.rs`):
-        /// ```text
-        /// reuse impl Trait for S1 {
-        ///     some::path::<{ fn foo() {} }>::xd();
-        ///     fn foo() {}
-        ///     self.0
-        /// }
-        /// ```
         ///
         /// Constant from unresolved path will be in `node_id_to_def_id`,
         /// `fn foo() {}` will not be in `node_id_to_def_id` but will be in `owners`,

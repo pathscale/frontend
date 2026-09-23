@@ -26,15 +26,6 @@ declare_lint! {
     /// expected signature (like mismatch ABI, mismatch C variadics, mismatch argument count,
     /// missing return type, ...).
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #[unsafe(no_mangle)]
-    /// pub fn strlen() {} // invalid definition of the `strlen` function
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// Up-most care is required when defining runtime symbols assumed and

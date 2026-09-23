@@ -18,25 +18,6 @@ declare_lint! {
     /// The `unqualified_local_imports` lint checks for `use` items that import a local item using a
     /// path that does not start with `self::`, `super::`, or `crate::rustc_lint::`.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// #![feature(unqualified_local_imports)]
-    /// #![warn(unqualified_local_imports)]
-    ///
-    /// mod localmod {
-    ///     pub struct S;
-    /// }
-    ///
-    /// use localmod::S;
-    /// # // We have to actually use `S`, or else the `unused` warnings suppress the lint we care about.
-    /// # pub fn main() {
-    /// #     let _x = S;
-    /// # }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// This lint is meant to be used with the (unstable) rustfmt setting `group_imports = "StdExternalCrate"`.

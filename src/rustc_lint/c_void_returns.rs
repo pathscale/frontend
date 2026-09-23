@@ -23,18 +23,6 @@ use crate::rustc_lint::{LateContext, LateLintPass, LintContext};
 declare_lint! {
     /// The `c_void_returns` lint detects the use of [`core::ffi::c_void`] as a return type.
     ///
-    /// ### Example
-    ///
-    /// ```text
-    /// use alloc::ffi::c_void;
-    ///
-    /// unsafe extern "C" {
-    ///     fn foo() -> c_void;
-    /// }
-    /// ```
-    ///
-    /// {{produces}}
-    ///
     /// ### Explanation
     ///
     /// `c_void` is designed for use through a [`pointer`], equivalent to C's `void*` type. It is a
