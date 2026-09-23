@@ -10,8 +10,10 @@
 //! required to emit definitions, references, imports, impls, or trait impls.
 //!
 //! Fatal rustc errors used to abort the process. [`analyze_source`] wraps the
-//! run in [`crate::rustc_span::fatal_error::catch_fatal_errors`] so a refused
-//! program is `Err`, not a dead daemon. That wrap needs `panic = "unwind"`.
+//! run in [`crate::rustc_span::fatal_error::catch_fatal_errors`] so a program
+//! with no HIR is `Err`, not a dead daemon, and wraps each body's type check the
+//! same way so a program that merely has errors still yields its facts. Both
+//! need `panic = "unwind"`.
 //!
 //! These types serialize, so a caller can also take them as JSON from `frontend-facts`.
 //! The crate builds on stable 1.97.1, so a caller can equally link it.
@@ -29,13 +31,13 @@ use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 
 use crate::rustc_hir::def::DefKind;
-use crate::rustc_hir::def_id::LOCAL_CRATE;
+use crate::rustc_hir::def_id::{LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
-use crate::rustc_hir::{ExprKind, ItemKind, UseKind};
+use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
 #[cfg(not(feature = "force_pinned_sysroot"))]
 use crate::rustc_interface::util::rustc_version_of_sysroot;
-use crate::rustc_middle::ty::TyCtxt;
+use crate::rustc_middle::ty::{TyCtxt, TypeVisitableExt};
 use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
@@ -123,6 +125,12 @@ pub struct Reference {
 }
 
 /// Facts for one crate after analysis.
+///
+/// **Facts survive errors.** Definitions, imports and impls come from name resolution and the
+/// HIR, which exist for any program that parses and expands; they are reported even when no
+/// body type checks. References need a body's type check, so they are collected per body and
+/// a body that could not be checked contributes none. `complete` says whether anything was
+/// lost that way, and `diagnostics` says why.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
@@ -130,6 +138,28 @@ pub struct CrateFacts {
     pub imports: Vec<Import>,
     pub impls: Vec<Impl>,
     pub references: Vec<Reference>,
+    /// Every error the frontend emitted, one string each, in emission order, with its
+    /// location lines. The closing "aborting due to" summary is left out: it counts the others
+    /// rather than saying anything of its own.
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+    /// Def paths of bodies whose type check stopped on a fatal error, so none of their
+    /// references are listed. A body whose type check merely reported errors is not here: its
+    /// references that did resolve are kept.
+    #[serde(default)]
+    pub unanalyzed_bodies: Vec<String>,
+    /// No error was emitted and every body was type checked. When false, `references` is a
+    /// lower bound and the definitions, imports and impls are still whole.
+    ///
+    /// Serialized facts from before this field existed came only from runs with no error, so
+    /// a missing field reads as true. [`Default`] is false: an empty value nobody filled in is
+    /// not a finished analysis.
+    #[serde(default = "complete_when_absent")]
+    pub complete: bool,
+}
+
+fn complete_when_absent() -> bool {
+    true
 }
 
 /// Map a rustc `DefKind` to a fact kind. `None` means handled by another list
@@ -170,7 +200,16 @@ pub fn fact_kind(kind: DefKind) -> Option<FactKind> {
     })
 }
 
-/// Extract facts from an already-built `TyCtxt`. Runs analysis.
+/// Extract facts from an already-built `TyCtxt`. Runs type checking, one body at a time.
+///
+/// Resolution and HIR facts are taken first and do not depend on any body. Each body's type
+/// check then runs inside its own [`catch_fatal_errors`], so one body that stops on a fatal
+/// error (a missing lang item under `no_core` is the usual one) costs that body's references
+/// and nothing else. The query system poisons a query that unwound, so a later body whose type
+/// check needs the same result stops too, and is caught the same way.
+///
+/// `diagnostics` is left empty here: the emitter belongs to whoever built the session, and
+/// only [`analyze_source`] installed one it can read back.
 pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
@@ -179,16 +218,7 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
         let def_id = local.to_def_id();
         let kind = tcx.def_kind(def_id);
         if let DefKind::Impl { .. } = kind {
-            let self_type =
-                tcx.type_of(def_id).instantiate_identity().skip_normalization().to_string();
-            let trait_def_path =
-                tcx.impl_opt_trait_id(def_id).map(|trait_id| tcx.def_path_str(trait_id));
-            facts.impls.push(Impl {
-                def_path: tcx.def_path_str(def_id),
-                self_type,
-                trait_def_path,
-                span: byte_span(tcx, tcx.def_span(def_id)),
-            });
+            facts.impls.push(impl_fact(tcx, local));
             continue;
         }
         let Some(kind) = fact_kind(kind) else {
@@ -237,11 +267,18 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
         let Some(body) = tcx.hir_maybe_body_owned_by(owner) else {
             continue;
         };
-        let typeck = tcx.typeck(owner);
         let from = tcx.def_path_str(owner.to_def_id());
+        // Results tainted by an error are still read: a path that resolved is a fact whether
+        // or not some other expression in the body failed, and one that did not resolve is
+        // `Res::Err`, which `RefVisitor` already skips.
+        let Ok(typeck) = catch_fatal_errors(|| tcx.typeck(owner)) else {
+            facts.unanalyzed_bodies.push(from);
+            continue;
+        };
         let mut visitor = RefVisitor { tcx, typeck, from: &from, refs: &mut facts.references };
         visitor.visit_expr(body.value);
     }
+    facts.complete = tcx.dcx().has_errors().is_none() && facts.unanalyzed_bodies.is_empty();
 
     facts.definitions.sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.def_path.cmp(&b.def_path)));
     facts.imports.sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.path.cmp(&b.path)));
@@ -252,11 +289,59 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     facts
 }
 
+/// One `impl` block's fact.
+///
+/// `type_of` is a query that can stop on a fatal error of its own, and an impl whose self type
+/// did not resolve comes back as an error type that prints as nothing useful. Either way the
+/// type is reported as written in the source, so an impl is never dropped for its self type.
+fn impl_fact(tcx: TyCtxt<'_>, local: LocalDefId) -> Impl {
+    let def_id = local.to_def_id();
+    let hir_impl = match tcx.hir_node_by_def_id(local) {
+        Node::Item(hir::Item { kind: ItemKind::Impl(hir_impl), .. }) => Some(hir_impl),
+        _ => None,
+    };
+    let self_type = catch_fatal_errors(|| {
+        let ty = tcx.type_of(def_id).instantiate_identity().skip_normalization();
+        (!ty.references_error()).then(|| ty.to_string())
+    })
+    .ok()
+    .flatten()
+    .or_else(|| hir_impl.map(|hir_impl| type_text(tcx, hir_impl.self_ty)))
+    .unwrap_or_default();
+    let trait_def_path = catch_fatal_errors(|| tcx.impl_opt_trait_id(def_id))
+        .ok()
+        .flatten()
+        .map(|trait_id| tcx.def_path_str(trait_id));
+    Impl {
+        def_path: tcx.def_path_str(def_id),
+        self_type,
+        trait_def_path,
+        span: byte_span(tcx, tcx.def_span(def_id)),
+    }
+}
+
+/// The source text a span covers, or `None` when the source map has none for it.
+fn source_text(tcx: TyCtxt<'_>, span: Span) -> Option<String> {
+    tcx.sess.source_map().span_to_snippet(span).ok()
+}
+
+/// A HIR type as written. Falls back to the HIR pretty printer for a type with no source text,
+/// such as one a macro assembled from pieces.
+fn type_text(tcx: TyCtxt<'_>, ty: &hir::Ty<'_>) -> String {
+    source_text(tcx, ty.span).unwrap_or_else(|| {
+        let ann: &dyn crate::rustc_hir::intravisit::HirTyCtxt<'_> = &tcx;
+        crate::rustc_hir_pretty::ty_to_string(&ann, ty)
+    })
+}
+
 /// Analyse one crate from source.
 ///
-/// Fatal rustc errors are `Err(FatalError)`: this is rustc, not an IDE recovery
-/// engine, but the error kills the compilation, not the process. Equivalent to
-/// [`analyze_source_with_sysroot`] with `sysroot = None`.
+/// A program with errors still has facts. Anything that leaves resolution and the HIR intact
+/// (a type error, an unresolved name, a body that needs a lang item `no_core` does not have)
+/// comes back as `Ok`, with the errors in [`CrateFacts::diagnostics`] and
+/// [`CrateFacts::complete`] false. `Err(FatalError)` is kept for a program with no HIR to read:
+/// one that does not parse, or whose macros do not expand. Diagnostics are captured, not
+/// printed, in both cases. Equivalent to [`analyze_source_with_sysroot`] with `sysroot = None`.
 pub fn analyze_source(crate_name: &str, source: &str) -> Result<CrateFacts, FatalError> {
     analyze_source_with_sysroot(crate_name, source, None)
 }
@@ -345,6 +430,7 @@ pub fn analyze_source_with_sysroot(
             }
         }
     };
+    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
     let using_internal_features =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
     let config = Config {
@@ -353,16 +439,27 @@ pub fn analyze_source_with_sysroot(
             name: FileName::anon_source_code(source),
             input: source.to_string(),
         },
-        psess_created: None,
+        psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version,
     };
-    catch_fatal_errors(|| {
+    // The facts are handed out through `extracted` rather than returned, because returning is
+    // not the way out of a run that emitted an error: `run_compiler` ends every such run in
+    // `abort_if_errors`, which unwinds past the return value. What `extract` finished before
+    // that is kept here, and the unwind only tells us the run had errors.
+    let mut extracted: Option<CrateFacts> = None;
+    let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
-            create_and_enter_global_ctxt(compiler, krate, extract)
+            create_and_enter_global_ctxt(compiler, krate, |tcx| extracted = Some(extract(tcx)))
         })
-    })
+    });
+    let mut facts = extracted.ok_or(FatalError)?;
+    let (errors, _warnings) = split_diagnostics(&text.lock());
+    facts.diagnostics =
+        errors.into_iter().filter(|error| !error.starts_with("error: aborting due to")).collect();
+    facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
+    Ok(facts)
 }
 
 /// What [`check_source`] found: every error and warning the frontend emitted, one string
@@ -564,6 +661,17 @@ mod tests {
         assert_eq!(fact_kind(DefKind::Use), None);
         assert_eq!(fact_kind(DefKind::Impl { of_trait: true }), None);
         assert_eq!(fact_kind(DefKind::TyParam), None);
+    }
+
+    // Facts serialized before the error-tolerance fields existed came only from runs with no
+    // error, so they have to read back as complete, not as a partial analysis.
+    #[test]
+    fn facts_without_the_tolerance_fields_read_as_complete() {
+        let json = r#"{"crate_name":"c","definitions":[],"imports":[],"impls":[],"references":[]}"#;
+        let facts: CrateFacts = serde_json::from_str(json).unwrap();
+        assert!(facts.complete);
+        assert!(facts.diagnostics.is_empty());
+        assert!(facts.unanalyzed_bodies.is_empty());
     }
 
     // Emitter output is written by hand here: producing it for real means running a session,
