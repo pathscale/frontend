@@ -782,7 +782,10 @@ mod tests {
         use super::*;
         use crate::odht::raw_table::ByteArray;
         use quickcheck::{Arbitrary, Gen};
-        use rustc_hash::FxHashMap;
+        // quickcheck generates `std::collections::HashMap`s, and the crate's own `rustc-hash`
+        // is built without `std`, so it has no `FxHashMap`. This is the `rustc-hash` 1.1 that
+        // upstream odht tested against, as a dev-dependency under its own name.
+        use rustc_hash_std::FxHashMap;
 
         #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
         struct Bytes<const BYTE_COUNT: usize>([u8; BYTE_COUNT]);

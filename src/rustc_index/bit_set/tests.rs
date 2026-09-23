@@ -2,11 +2,6 @@
 use {alloc::boxed::Box, alloc::vec::Vec};
 use super::*;
 
-extern crate test;
-use core::hint::black_box;
-
-use test::Bencher;
-
 #[test]
 fn test_new_filled() {
     for i in 0..128 {
@@ -57,7 +52,7 @@ fn bitset_clone_from() {
 
     b.clone_from(&DenseBitSet::new_empty(40));
     assert_eq!(b.domain_size(), 40);
-    assert_eq!(b.iter().collect::<Vec<_>>(), []);
+    assert_eq!(b.iter().collect::<Vec<_>>(), [] as [usize; 0]);
 }
 
 #[test]
@@ -816,37 +811,4 @@ fn dense_contains_any() {
 
     set.insert(22);
     assert!(set.contains_any(20..59));
-}
-
-#[bench]
-fn bench_insert(b: &mut Bencher) {
-    let mut bs = DenseBitSet::new_filled(99999usize);
-    b.iter(|| {
-        black_box(bs.insert(black_box(100u32)));
-    });
-}
-
-#[bench]
-fn bench_remove(b: &mut Bencher) {
-    let mut bs = DenseBitSet::new_filled(99999usize);
-    b.iter(|| {
-        black_box(bs.remove(black_box(100u32)));
-    });
-}
-
-#[bench]
-fn bench_iter(b: &mut Bencher) {
-    let bs = DenseBitSet::new_filled(99999usize);
-    b.iter(|| {
-        bs.iter().map(|b: usize| black_box(b)).for_each(drop);
-    });
-}
-
-#[bench]
-fn bench_intersect(b: &mut Bencher) {
-    let mut ba: DenseBitSet<u32> = DenseBitSet::new_filled(99999usize);
-    let bb = DenseBitSet::new_filled(99999usize);
-    b.iter(|| {
-        ba.intersect(black_box(&bb));
-    });
 }

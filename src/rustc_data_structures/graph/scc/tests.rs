@@ -8,8 +8,6 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-extern crate test;
-
 use super::*;
 use crate::rustc_data_structures::graph::tests::TestGraph;
 
@@ -261,8 +259,10 @@ fn test_deep_linear() {
     assert_eq!(sccs.scc(NR_NODES - 1), 0);
 }
 
-#[bench]
-fn bench_sccc(b: &mut test::Bencher) {
+// Upstream's `#[bench]`, which needs the unstable `test` crate. The assertion is the part worth
+// keeping, so it runs once as a test.
+#[test]
+fn bench_sccc_once() {
     // Like `test_three_sccs` but each state is replaced by a group of
     // three or four to have some amount of test data.
     /*
@@ -299,10 +299,8 @@ fn bench_sccc(b: &mut test::Bencher) {
     graph[20] = (11, 10);
     graph[21] = (7, 4);
     let graph = TestGraph::new(0, &graph[..]);
-    b.iter(|| {
-        let sccs: UsizeSccs = Sccs::new(&graph);
-        assert_eq!(sccs.num_sccs(), 3);
-    });
+    let sccs: UsizeSccs = Sccs::new(&graph);
+    assert_eq!(sccs.num_sccs(), 3);
 }
 
 #[test]

@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 use expect_test::{Expect, expect};
 
 use super::*;

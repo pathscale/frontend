@@ -3,7 +3,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-// Allows macros to refer to this crate as `::rustc_serialize`.
 // `FileEncoder` writes metadata to a file - `fs::File`, `io::Write`, `Path`. That is a real
 // artifact write, and it is the surface this compiler is removing rather than porting: a
 // compiler answers a caller. The encoder itself is pure and stays; only its sink is std.
@@ -21,9 +20,9 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-#[cfg(test)]
-extern crate self as rustc_serialize;
+// Upstream's `#[cfg(test)] extern crate self as rustc_serialize;` is gone: an `extern crate`
+// must sit at the crate root, and this is a module. The tests name it as
+// `crate::rustc_serialize`, and the derives root their paths at `frontend::`.
 
 pub use self::serialize::{Decodable, Decoder, Encodable, Encoder};
 

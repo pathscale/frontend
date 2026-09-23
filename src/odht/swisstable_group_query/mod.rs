@@ -25,6 +25,8 @@ pub const REFERENCE_GROUP_SIZE: usize = 16;
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
 
     const EMPTY_GROUP: [u8; GROUP_SIZE] = [255; GROUP_SIZE];

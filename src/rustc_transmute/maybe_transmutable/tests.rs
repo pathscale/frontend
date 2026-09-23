@@ -1,5 +1,3 @@
-extern crate test;
-
 use alloc::vec::Vec;
 use itertools::Itertools;
 
@@ -436,38 +434,24 @@ mod r#ref {
     }
 }
 
+// Upstream's `#[bench]`es, which need the unstable `test` crate. `bench_transmute` asserts an
+// answer, so it runs once as a test. `bench_dfa_from_tree` asserted nothing and is dropped: the
+// test below builds the same DFA and unwraps it.
 mod benches {
-    use core::hint::black_box;
-
-    use test::Bencher;
-
     use super::*;
 
-    #[bench]
-    fn bench_dfa_from_tree(b: &mut Bencher) {
+    #[test]
+    fn bench_transmute_once() {
         let num = Tree::number(8).prune(&|_| false);
-        let num = black_box(num);
+        let dfa = Dfa::from_tree(num).unwrap();
 
-        b.iter(|| {
-            let _ = black_box(Dfa::from_tree(num.clone()));
-        })
-    }
-
-    #[bench]
-    fn bench_transmute(b: &mut Bencher) {
-        let num = Tree::number(8).prune(&|_| false);
-        let dfa = black_box(Dfa::from_tree(num).unwrap());
-
-        b.iter(|| {
-            let answer = crate::rustc_transmute::maybe_transmutable::MaybeTransmutableQuery::new(
-                dfa.clone(),
-                dfa.clone(),
-                Assume::default(),
-                UltraMinimal::default(),
-            )
-            .answer();
-            let answer = core::hint::black_box(answer);
-            assert_eq!(answer, Answer::Yes);
-        })
+        let answer = crate::rustc_transmute::maybe_transmutable::MaybeTransmutableQuery::new(
+            dfa.clone(),
+            dfa.clone(),
+            Assume::default(),
+            UltraMinimal::default(),
+        )
+        .answer();
+        assert_eq!(answer, Answer::Yes);
     }
 }
