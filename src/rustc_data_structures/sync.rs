@@ -50,7 +50,6 @@ pub use self::mode::{
     FromDyn, SessionMode, check_dyn_thread_safe, enter_session_width, is_dyn_thread_safe,
     set_dyn_thread_safe_mode,
 };
-pub use self::par_context::{ContextHook, ItemHook, install_context_hook, install_item_hook};
 #[cfg(feature = "parallel")]
 pub use self::pool::set_parallel_executor;
 pub use self::stage::{ReadySlot, Slots, StageScope, run_stage, stages};
@@ -64,10 +63,12 @@ pub use crate::rustc_data_structures::marker::*;
 // not on this crate's analysis path.
 mod freeze;
 mod lock;
-mod par_context;
 // The only module that names `std` or `nagoya`, and only with the `parallel` feature.
 #[cfg(feature = "parallel")]
 mod pool;
+// The one module here that names the compiler above it: a stage's items run in the compiler's
+// context (`rustc_middle::ty::tls::ItemContext`) and hand it their diagnostics
+// (`rustc_errors::OrderedReplay`). Its header says why that is a direct call and not a hook.
 mod stage;
 mod vec;
 mod worker_local;

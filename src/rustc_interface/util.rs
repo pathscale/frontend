@@ -175,10 +175,9 @@ pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send,
     sm_inputs: SourceMapInputs,
     f: F,
 ) -> R {
-    // Still read, because it still validates: a malformed `RUST_MIN_STACK` is refused here, as
-    // before. This crate starts no thread to give the size to. nagoya's shared pool starts its
-    // threads through `std`, which reads the same variable, so setting it is how that pool gets
-    // compiler-sized stacks today; see `NAGOYA-STACK-PATCH.md`.
+    // Still read, because it still validates: a malformed value is refused here, as before. This
+    // crate starts no thread to give the size to; the pool's workers get theirs from
+    // `sync::pool`, which asks nagoya for 16 MiB stacks.
     let _ = init_stack_size(thread_builder_diag);
 
     let width = NonZero::new(session_width(jobs)).expect("a session runs on at least one thread");
@@ -214,139 +213,6 @@ pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send,
             f(current_gcx)
         },
     )
-}
-
-// ---- what a parallel item is given ---------------------------------------------------------
-
-/// Register what the parallel stages install around every item: this session's
-/// `SessionGlobals` and `ImplicitCtxt`, and the diagnostics collection that forwards each item's
-/// diagnostics in item order. `run_compiler` calls it; registering again is a no-op, so a caller
-/// that runs stages outside `run_compiler` can call it too.
-///
-/// `rustc_data_structures` cannot name any of the three, so it takes them as hooks (see
-/// `sync::ContextHook` and `sync::ItemHook`). They are used only by parallel sessions.
-pub fn install_parallel_context() {
-    sync::install_context_hook(&SESSION_GLOBALS_HOOK);
-    sync::install_context_hook(&IMPLICIT_CTXT_HOOK);
-    sync::install_item_hook(&DIAGNOSTICS_HOOK);
-}
-
-static SESSION_GLOBALS_HOOK: sync::ContextHook =
-    sync::ContextHook { capture: capture_session_globals, enter: enter_session_globals };
-
-fn capture_session_globals() -> *const () {
-    if crate::rustc_span::session_globals_are_set() {
-        crate::rustc_span::with_session_globals(|globals| core::ptr::from_ref(globals).cast())
-    } else {
-        core::ptr::null()
-    }
-}
-
-/// Install the captured `SessionGlobals` around `run`, unless this thread already has them.
-///
-/// Once per run of items, not once per item: a stage installs its scope's context when a thread
-/// starts taking its items and keeps it installed across them (`sync::CapturedContext::enter`),
-/// so the two thread-local reads here are not on the per-item path. A single item gets its own
-/// install only when a thread waits for it and runs it there (`Slots::wait`).
-///
-/// # Safety
-///
-/// `captured` came from `capture_session_globals` on a thread that has not left the stage scope
-/// it was captured for; see `sync::ContextHook`.
-unsafe fn enter_session_globals(captured: *const (), run: &mut dyn FnMut()) {
-    if captured.is_null() {
-        return run();
-    }
-    // SAFETY: the caller's contract: the `SessionGlobals` outlive this call.
-    let globals = unsafe { &*captured.cast::<SessionGlobals>() };
-    if crate::rustc_span::session_globals_are_set() {
-        // The session's own thread, or a pool thread running this item while it waits inside
-        // another item of the same session. Anything else would mean two sessions on one thread.
-        let same = crate::rustc_span::with_session_globals(|current| core::ptr::eq(current, globals));
-        assert!(same, "a parallel item ran on a thread that is inside another session");
-        run()
-    } else {
-        crate::rustc_span::set_session_globals_then(globals, run)
-    }
-}
-
-static IMPLICIT_CTXT_HOOK: sync::ContextHook =
-    sync::ContextHook { capture: capture_implicit_ctxt, enter: enter_implicit_ctxt };
-
-fn capture_implicit_ctxt() -> *const () {
-    crate::rustc_middle::ty::tls::with_context_opt(|icx| match icx {
-        Some(icx) => core::ptr::from_ref(icx).cast(),
-        None => core::ptr::null(),
-    })
-}
-
-/// Install the captured `ImplicitCtxt` around `run`.
-///
-/// It is installed even on a thread that already has one: the item's queries must see the
-/// context the stage was started in, whose `query` is the parent the query system's cycle check
-/// walks (`QueryWaitGraph`), not whatever context a waiting thread happens to be inside.
-///
-/// # Safety
-///
-/// As `enter_session_globals`.
-unsafe fn enter_implicit_ctxt(captured: *const (), run: &mut dyn FnMut()) {
-    use crate::rustc_middle::ty::tls;
-    if captured.is_null() {
-        return run();
-    }
-    // SAFETY: the caller's contract: the `ImplicitCtxt` outlives this call. The lifetimes are the
-    // captured context's own, erased; nothing here outlives it.
-    let icx = unsafe { &*captured.cast::<tls::ImplicitCtxt<'static, 'static>>() };
-    tls::enter_context(icx, run)
-}
-
-static DIAGNOSTICS_HOOK: sync::ItemHook = sync::ItemHook {
-    begin: begin_ordered_replay,
-    run: run_collecting_item,
-    finish: finish_ordered_replay,
-    discard: discard_ordered_replay,
-};
-
-/// One `OrderedReplay` per stage, created on the thread starting the stage (it captures that
-/// thread's enclosing item, if any, as where to forward), sized for the stage's `len` items.
-fn begin_ordered_replay(len: usize) -> *mut () {
-    Box::into_raw(Box::new(crate::rustc_errors::OrderedReplay::new(len))).cast()
-}
-
-/// # Safety
-///
-/// `state` came from `begin_ordered_replay` and has not been finished or discarded.
-unsafe fn run_collecting_item(state: *const (), index: usize, item: &mut dyn FnMut()) -> bool {
-    // SAFETY: the caller's contract.
-    let replay = unsafe { &*state.cast::<crate::rustc_errors::OrderedReplay>() };
-    // Through the replay, not a free function: the item's scope carries the replay's root, the
-    // oldest stage of its chain, which is what a query run inside the item may capture.
-    //
-    // `collect_in_stage`, not `collect`: this hook only runs inside a parallel stage, so the
-    // thread-safe mode `collect` would ask for (a thread-local read, per item) is known.
-    let run = replay.collect_in_stage(item);
-    let fatal = run.result.is_err();
-    replay.ready(index, run.diagnostics, fatal);
-    fatal
-}
-
-/// # Safety
-///
-/// As `run_collecting_item`, and this is its last use.
-unsafe fn finish_ordered_replay(state: *mut ()) {
-    // SAFETY: the caller's contract.
-    let replay = unsafe { Box::from_raw(state.cast::<crate::rustc_errors::OrderedReplay>()) };
-    if let Err(fatal) = replay.finish() {
-        fatal.raise()
-    }
-}
-
-/// # Safety
-///
-/// As `finish_ordered_replay`.
-unsafe fn discard_ordered_replay(state: *mut ()) {
-    // SAFETY: the caller's contract.
-    drop(unsafe { Box::from_raw(state.cast::<crate::rustc_errors::OrderedReplay>()) });
 }
 
 

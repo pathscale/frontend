@@ -317,9 +317,9 @@ static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
 /// side by side on different threads, in one process. `1` (and `0`, read as `1`) is serial.
 ///
 /// What this does fix for the process: it turns on the thread-safe fallback that code outside
-/// any analysis session uses (the parse-only diagnostics path), and that stays on once on; and
-/// it registers what a pool thread needs installed to run an item of such code
-/// (`rustc_interface::util::install_parallel_context`), which `run_compiler` otherwise does.
+/// any analysis session uses (the parse-only diagnostics path), and that stays on once on.
+/// What a pool thread needs installed to run an item of such code is captured by the stage
+/// itself, where it starts (`rustc_middle::ty::tls::ItemContext`); there is nothing to register.
 ///
 /// Without the `parallel` cargo feature this does nothing and [`parallelism`] stays `1`.
 pub fn set_parallelism(threads: usize) {
@@ -327,7 +327,6 @@ pub fn set_parallelism(threads: usize) {
     {
         if threads > 1 {
             crate::rustc_data_structures::sync::set_dyn_thread_safe_mode(true);
-            crate::rustc_interface::util::install_parallel_context();
         }
         PARALLELISM.store(threads.max(1), Ordering::Relaxed);
     }
@@ -354,13 +353,6 @@ pub fn parallelism() -> usize {
 fn apply_parallelism(opts: &mut Options) {
     let asked = if cfg!(feature = "parallel") { PARALLELISM.load(Ordering::Relaxed) } else { 0 };
     opts.jobs.frontend = core::num::NonZero::new(asked);
-    // `FRONTEND_TIME_PASSES` set: rustc's own `-Z time-passes`, one JSON line per pass on
-    // stderr, which is how the pass timings of a corpus run are read.
-    if eko::env::var_os("FRONTEND_TIME_PASSES").is_some() {
-        opts.unstable_opts.time_passes = true;
-        opts.unstable_opts.time_passes_format =
-            crate::rustc_data_structures::profiling::TimePassesFormat::Json;
-    }
 }
 
 /// Extract facts from an already-built `TyCtxt`. Runs type checking, one body at a time.
@@ -925,9 +917,8 @@ impl core::fmt::Write for Sink {
 /// when `DiagCtxt` prints it. A diagnostic emitted inside a par item does not get here when it
 /// is emitted; it travels as the item's owned output and is printed when the item's turn comes
 /// in item order (`rustc_errors::item_scope`, which every stage in `rustc_data_structures::sync`
-/// runs every item through, by the hook `run_compiler` installs). So the emitter is only ever
-/// called in
-/// the order a serial run calls it, and always under the `DiagCtxt` lock, which is why `Sink`'s
+/// runs every item of a parallel stage through). So the emitter is only ever called in the
+/// order a serial run calls it, and always under the `DiagCtxt` lock, which is why `Sink`'s
 /// own lock is never contended by two diagnostics at once.
 fn capture_diagnostics(
     text: &alloc::sync::Arc<eko::thread::Mutex<String>>,

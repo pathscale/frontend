@@ -170,23 +170,6 @@ fn clean_report(checked: &[Checked]) {
 }
 
 fn main() {
-    // `PROFILE=<src|clean|large>:<workers>:<passes>` repeats one setting for a profiler to
-    // sample, and times nothing else.
-    if let Ok(spec) = std::env::var("PROFILE") {
-        let mut parts = spec.split(':');
-        let corpus = match parts.next() {
-            Some("src") => src_corpus(),
-            Some("clean") => generated('c', 200, 300, 1_500, 0x5eed_0001),
-            _ => generated('l', 6, 5_000, 8_000, 0x5eed_0002),
-        };
-        let threads = parts.next().and_then(|n| n.parse().ok()).unwrap_or(8);
-        let passes = parts.next().and_then(|n| n.parse().ok()).unwrap_or(10);
-        for _ in 0..passes {
-            let (_, check_ms, analyze_ms) = pass(threads, &corpus);
-            println!("{threads} workers: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms");
-        }
-        return;
-    }
     run("src", &src_corpus(), false);
     run("clean", &generated('c', 200, 300, 1_500, 0x5eed_0001), true);
     run("large", &generated('l', 6, 5_000, 8_000, 0x5eed_0002), true);

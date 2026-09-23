@@ -1,0 +1,58 @@
+diff --git a/src/rustc_resolve/late/diagnostics.rs b/src/rustc_resolve/late/diagnostics.rs
+index f27b0e2..7521813 100644
+--- a/src/rustc_resolve/late/diagnostics.rs
++++ b/src/rustc_resolve/late/diagnostics.rs
+@@ -56,6 +56,13 @@ use crate::rustc_resolve::{
+     ScopeSet, Segment, diagnostics, path_names_to_string,
+ };
+ 
++// The suggestion search of an unresolved name, run after the walk, as one stage. See the
++// module's header.
++mod deferred;
++
++use deferred::{SpecialCase, recordable_source};
++pub(crate) use deferred::{CallShell, LateFailureLog, Prepared, ReportShell, Shell};
++
+ /// A field or associated item from self type suggested in case of resolution failure.
+ enum AssocSuggestion {
+     Field(Span),
+diff --git a/src/rustc_resolve/mod.rs b/src/rustc_resolve/mod.rs
+index 781eb11..b602503 100644
+--- a/src/rustc_resolve/mod.rs
++++ b/src/rustc_resolve/mod.rs
+@@ -49,7 +49,7 @@ use effective_visibilities::EffectiveVisibilitiesVisitor;
+ use hygiene::Macros20NormalizedSyntaxContext;
+ use imports::{Import, ImportData, ImportKind, NameResolution, PendingDecl};
+ use late::{
+-    ForwardGenericParamBanReason, HasGenericParams, PathSource, PatternSource,
++    ForwardGenericParamBanReason, HasGenericParams, LateFailureLog, PathSource, PatternSource,
+     UnnecessaryQualification,
+ };
+ pub use macros::registered_lint_tools_ast;
+@@ -106,6 +106,7 @@ mod check_unused;
+ mod def_collector;
+ mod diagnostics;
+ mod effective_visibilities;
++mod frozen;
+ mod ident;
+ mod imports;
+ mod late;
+@@ -1474,6 +1475,10 @@ pub struct Resolver<'ra, 'tcx> {
+         CmRefCell<Vec<(Ident, MacroKind, ParentScope<'ra>, Option<Decl<'ra>>, Option<Span>)>>,
+     multi_segment_macro_resolutions:
+         CmRefCell<Vec<(Vec<Segment>, Span, MacroKind, ParentScope<'ra>, Option<Res>, Namespace)>>,
++    /// Late resolution's unresolved-path errors, in the order the walk found them, some waiting
++    /// for their suggestion search (`frozen.rs`, `late/diagnostics/deferred.rs`). Empty outside
++    /// late resolution.
++    late_failures: LateFailureLog<'ra, 'tcx>,
+     builtin_attrs: Vec<(Ident, ParentScope<'ra>)>,
+     /// `derive(Copy)` marks items they are applied to so they are treated specially later.
+     /// Derive macros cannot modify the item themselves and have to store the markers in the global
+@@ -1893,6 +1898,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
+             unused_macro_rules: Default::default(),
+             single_segment_macro_resolutions: Default::default(),
+             multi_segment_macro_resolutions: Default::default(),
++            late_failures: Default::default(),
+             lint_buffer: LintBuffer::default(),
+             owners,
+             current_owner: PerOwnerResolverData::new(DUMMY_NODE_ID, CRATE_DEF_ID),

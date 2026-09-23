@@ -37,18 +37,35 @@
 //! # Borrowing, and why there is a scope
 //!
 //! Items borrow: their functions capture `TyCtxt<'tcx>`, their inputs are arena slices, and they
-//! read the compiler's thread-locals (`SessionGlobals`, the `ImplicitCtxt`, see `par_context`),
-//! which live in the stack frames of the session. [`stages`] is shaped like
-//! `std::thread::scope`: the body gets a `&'scope StageScope<'scope, 'env>` for a `'scope` it
-//! cannot name a local for, a stage's input, function and output must outlive `'scope`, and
-//! [`stages`] does not return, or unwind, until every item of every stage has settled and every
-//! pool helper has let go of the scope. So everything an item borrows outlives every use, and a
-//! call site needs no `unsafe`. Inside, the stages are held by `'static` pool jobs with their
-//! lifetimes erased (`parallel::start`), which that same guarantee makes sound; that erasure, and
-//! the captured thread-local pointers, are the only borrowed data that crosses to a worker.
+//! read the compiler's thread-locals (`SessionGlobals`, the `ImplicitCtxt`), which live in the
+//! stack frames of the session. [`stages`] is shaped like `std::thread::scope`: the body gets a
+//! `&'scope StageScope<'scope, 'env>` for a `'scope` it cannot name a local for, a stage's input,
+//! function and output must outlive `'scope`, and [`stages`] does not return, or unwind, until
+//! every item of every stage has settled and every pool helper has let go of the scope. So
+//! everything an item borrows outlives every use, and a call site needs no `unsafe`.
 //!
-//! What would remove them: `'static` inputs and functions, which means `TyCtxt` reachable through
-//! an `Arc`'d `GlobalCtxt` and `SessionGlobals` owned by an `Arc` rather than a stack frame.
+//! **What an item runs in is typed and borrowed for `'scope` too.** A parallel scope opens inside
+//! `rustc_middle::ty::tls::ItemContext::capture`, which hands it the caller's `SessionGlobals`
+//! and `ImplicitCtxt` as references, and every stage keeps a copy (an `ItemContext<'scope>`) and
+//! installs it around its items with the real functions (`set_session_globals_then`,
+//! `tls::enter_context`). Each stage owns its diagnostics replay (`rustc_errors::OrderedReplay`)
+//! and runs every item through it. This is the one module in `rustc_data_structures` that names
+//! the compiler above it, and it names exactly those two types: a stage is the compiler's
+//! execution primitive, what it installs around an item is the compiler's context, and these are
+//! modules of one crate. It used to reach them through a registry of function pointers over
+//! `*const ()` that `rustc_interface` filled at run time, which is the shape upstream needed only
+//! because its crates could not name each other.
+//!
+//! **One lifetime erasure, in one function.** nagoya's pool takes `'static` work, and an item's
+//! function borrows `TyCtxt`, so a stage cannot be handed to a helper as it is.
+//! `parallel::detach` erases the stage's lifetime once, as a weak reference, and every `'static`
+//! handle to the stage (the scope's list, a helper's batch, the runner in its `Slots`) is that
+//! weak reference or an upgrade of it; the scope drops every upgrade before it ends, after which
+//! the weak ones can never upgrade again. Its `SAFETY` comment has the proof. What would remove
+//! it: `'static` inputs and functions, which means `TyCtxt` reachable through an `Arc`'d
+//! `GlobalCtxt` and `SessionGlobals` owned by an `Arc` rather than a stack frame. The helpers
+//! themselves need no erasure: what they are handed, the scope's `ScopeShared`, owns everything
+//! in it.
 //!
 //! **`Send` and `Sync` are not checked.** The bounds are rustc's `DynSend` and `DynSync`, which
 //! this crate implements for every type (`marker.rs`), so a stage's items cross threads on the
@@ -90,14 +107,15 @@
 //! work writes, is written once per chunk and not once per item.
 //!
 //! **The context is installed once per run of items, not once per item.** Every item of a scope
-//! runs inside the scope's captured context (`par_context::CapturedContext`: the session's
-//! `SessionGlobals` and the scope's `ImplicitCtxt`) and under a catch, and every item of a scope
-//! wants exactly the same values installed. A thread taking work installs them once and runs
-//! item after item inside, across chunks and across the scope's stages, and installs them again
-//! only after an item panicked out through them. What stays per item is what is the item's own:
-//! the claim, the cut-off check, the diagnostics hook's collection frame (so an item's
-//! diagnostics are still its own output, replayed in serial order), and the settle of its slot.
-//! A thread in [`Slots::wait`] runs a single item, so it installs the context for that one.
+//! runs inside the scope's captured context (`ItemContext`: the session's `SessionGlobals` and
+//! the scope's `ImplicitCtxt`) and under a catch, and every item of a scope wants exactly the
+//! same values installed; every stage of a scope carries a copy of the same one. A thread taking
+//! work installs it once, from the first stage it takes work from, and runs item after item
+//! inside, across chunks and across the scope's stages, and installs it again only after an item
+//! panicked out through it. What stays per item is what is the item's own: the claim, the
+//! cut-off check, the replay's collection frame (so an item's diagnostics are still its own
+//! output, replayed in serial order), and the settle of its slot. A thread in [`Slots::wait`]
+//! runs a single item, so it installs the context for that one.
 //!
 //! A panic in item `k` unwinds out of the run to the catch, which settles `k` as failed and
 //! records the cut-off at `k`, exactly as it did per item; the rest of the chunk is left
@@ -123,10 +141,11 @@
 //!
 //! # Diagnostics, panics, and where a serial run would have stopped
 //!
-//! In a parallel session every item runs inside the item hook (`par_context::ItemHook`), which
-//! `rustc_errors` registers: what the item emits becomes part of its output, recorded as the
-//! item finishes and forwarded in item order when the stage concludes (in stage order, on the
-//! thread that started it), so the diagnostics come out in the serial order at any worker count.
+//! In a parallel session every item runs through its stage's `OrderedReplay`
+//! (`rustc_errors::item_scope`), begun on the thread that starts the stage: what the item emits
+//! becomes part of its output, recorded as the item finishes and forwarded in item order when
+//! the stage concludes (in stage order, on the thread that started it), so the diagnostics come
+//! out in the serial order at any worker count.
 //! A query's diagnostics are part of the query's output in the same way, and come out at its
 //! first consumer in serial order, whichever item happened to compute it
 //! (`rustc_errors::item_scope`).
@@ -136,7 +155,7 @@
 //! (earlier stage first, then lower index) cuts off every item after it that has not started;
 //! items already running finish. The scope then settles everything, waits for its helpers, and
 //! raises what the serial run raised: an internal compiler error's original payload, resumed; or
-//! the fatal error, raised again by the hook once every earlier item's diagnostics are out. A
+//! the fatal error, raised again once the replay has every earlier item's diagnostics out. A
 //! `FatalError` is still one to `catch_fatal_errors`. [`Slots::wait`] answers `None` for an item
 //! that failed or was cut off.
 
@@ -199,8 +218,9 @@ pub struct Slots<O> {
     /// registers as the slot settles is never missed.
     waiting: AtomicUsize,
     /// The stage that fills these, while it can still run an item: `None` for a stage run
-    /// eagerly. Weak, because the stage owns these. Its lifetime is erased (see
-    /// `parallel::start`); it can only be upgraded while the scope that owns the stage is open.
+    /// eagerly. Weak, because the stage owns these. It is the stage's one erased handle (see
+    /// `parallel::detach`), so these `Slots` can outlive the scope, as a stage's output does; it
+    /// upgrades only while the scope that owns the stage is open, and never after.
     runner: Option<Weak<dyn Run>>,
 }
 
@@ -443,6 +463,8 @@ trait Run: Send + Sync {
     fn unreserved_chunks(&self) -> usize;
     /// Claim item `index`, if nobody has started it.
     fn claim(&self, index: usize) -> bool;
+    /// Run `run` inside the scope's context, which every stage of the scope carries a copy of.
+    fn enter_context(&self, run: &mut dyn FnMut());
     /// Run item `index`, which this thread claimed, and settle its slot, inside the scope's
     /// context, which the caller has installed. May unwind, leaving the slot claimed; the caller
     /// catches the unwind outside the context and hands it to [`panicked`](Run::panicked).
@@ -453,8 +475,9 @@ trait Run: Send + Sync {
     fn run_claimed(&self, index: usize);
     /// Block until every item has settled, running any nobody has started.
     fn settle_all(&self);
-    /// Every item has settled and nothing earlier raised: hand the item hook its `finish`, which
-    /// raises the fatal error this stage stopped at, if it did.
+    /// Every item has settled and nothing earlier raised: finish the stage's replay, which
+    /// forwards its items' diagnostics, and raise the fatal error this stage stopped at, if it
+    /// did.
     fn conclude(&self);
 }
 
@@ -463,8 +486,9 @@ trait Run: Send + Sync {
 /// Neither `Send` nor `Sync`: stages are started by the thread that owns the scope, in the order
 /// a serial run would run them, which is what decides which items a raise cuts off.
 pub struct StageScope<'scope, 'env: 'scope> {
+    /// `None` for a serial scope.
     #[cfg(feature = "parallel")]
-    shared: Option<Arc<parallel::ScopeShared>>,
+    parallel: Option<parallel::Open<'scope>>,
     /// The next stage's number.
     #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
     next_seq: Cell<u32>,
@@ -482,40 +506,22 @@ pub struct StageScope<'scope, 'env: 'scope> {
 /// If `body` itself panics, the scope still settles everything before the panic goes on, and
 /// whatever the items raised is dropped in favour of it.
 pub fn stages<'env, R>(body: impl for<'scope> FnOnce(&'scope StageScope<'scope, 'env>) -> R) -> R {
-    let scope = StageScope {
+    #[cfg(feature = "parallel")]
+    if let Some(shared) = parallel::ScopeShared::for_this_session() {
+        // The whole scope runs inside the capture, so `'scope` ends inside the frames that
+        // installed the context it carries; see `ItemContext`.
+        return parallel::ItemContext::capture(move |context| {
+            parallel::scope(shared, context, body)
+        });
+    }
+    body(&StageScope {
         #[cfg(feature = "parallel")]
-        shared: parallel::ScopeShared::for_this_session(),
+        parallel: None,
         next_seq: Cell::new(0),
         _scope: PhantomData,
         _env: PhantomData,
         _owner_thread: PhantomData,
-    };
-    #[cfg(feature = "parallel")]
-    let guard = SettleOnUnwind(scope.shared.as_ref());
-    let result = body(&scope);
-    #[cfg(feature = "parallel")]
-    {
-        core::mem::forget(guard);
-        if let Some(shared) = &scope.shared {
-            let settled = shared.settle();
-            shared.conclude(settled);
-        }
-    }
-    result
-}
-
-/// Settles a parallel scope whose body unwound, so no item outlives what it borrows, then drops
-/// its stages, which discards every item hook's collection: the body's panic goes on.
-#[cfg(feature = "parallel")]
-struct SettleOnUnwind<'a>(Option<&'a Arc<parallel::ScopeShared>>);
-
-#[cfg(feature = "parallel")]
-impl Drop for SettleOnUnwind<'_> {
-    fn drop(&mut self) {
-        if let Some(shared) = self.0 {
-            drop(shared.settle());
-        }
-    }
+    })
 }
 
 /// One stage in a scope of its own: `f(&input, i)` for every `i` in `0..len`, and every output,
@@ -551,10 +557,10 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
         F: Fn(&In, usize) -> O + DynSync + DynSend + 'scope,
     {
         #[cfg(feature = "parallel")]
-        if let Some(shared) = &self.shared {
+        if let Some(open) = &self.parallel {
             let seq = self.next_seq.get();
             self.next_seq.set(seq.saturating_add(1));
-            return parallel::start(shared, seq, input, len, f);
+            return parallel::start(open, seq, input, len, f);
         }
         let slots = Slots::with_runner(len, None);
         for index in 0..len {
@@ -580,12 +586,18 @@ mod parallel {
 
     use parking_lot::Mutex;
 
-    use super::{Run, Slots};
+    use core::cell::Cell;
+    use core::marker::PhantomData;
+
+    use super::{Run, Slots, StageScope};
     // The crate's `AtomicU64`, which falls back to `portable_atomic` where the target has none.
     use crate::rustc_data_structures::sync::{AtomicU64, mode};
-    use crate::rustc_data_structures::sync::par_context::{CapturedContext, ItemScope};
     use crate::rustc_data_structures::sync::pool;
     use crate::rustc_data_structures::sync::worker_local::{Registry, RegistrySlot};
+    // What an item runs in, and where its diagnostics go: the compiler's own types, named
+    // directly. The module header says why this module may.
+    use crate::rustc_errors::OrderedReplay;
+    pub(super) use crate::rustc_middle::ty::tls::ItemContext;
     use crate::unwind_janky::Payload;
 
     /// How many chunks a stage is cut into per thread that may take them.
@@ -636,9 +648,49 @@ mod parallel {
         message: Option<String>,
     }
 
-    /// One scope, shared by its owner and its helpers. Everything in it is owned, except the
-    /// pointers in `context` and the lifetimes erased from `stages`, which are what the scope
-    /// exists to keep valid.
+    /// What a parallel [`StageScope`] holds: the state it shares with its helpers, and the
+    /// context its stages' items run in, borrowed for the scope.
+    pub(super) struct Open<'scope> {
+        shared: Arc<ScopeShared>,
+        context: ItemContext<'scope>,
+    }
+
+    /// Run a parallel scope's `body`, then settle it and raise what a serial run would have.
+    /// Called inside `ItemContext::capture`, which is what `context` borrows from.
+    pub(super) fn scope<'c, 'env, R>(
+        shared: Arc<ScopeShared>,
+        context: ItemContext<'c>,
+        body: impl for<'scope> FnOnce(&'scope StageScope<'scope, 'env>) -> R,
+    ) -> R {
+        let owner = Arc::clone(&shared);
+        let scope = StageScope {
+            parallel: Some(Open { shared, context }),
+            next_seq: Cell::new(0),
+            _scope: PhantomData,
+            _env: PhantomData,
+            _owner_thread: PhantomData,
+        };
+        let guard = SettleOnUnwind(&owner);
+        let result = body(&scope);
+        core::mem::forget(guard);
+        let settled = owner.settle();
+        owner.conclude(settled);
+        result
+    }
+
+    /// Settles a parallel scope whose body unwound, so no item outlives what it borrows, then
+    /// drops its stages, which discards every stage's replay: the body's panic goes on.
+    struct SettleOnUnwind<'a>(&'a ScopeShared);
+
+    impl Drop for SettleOnUnwind<'_> {
+        fn drop(&mut self) {
+            drop(self.0.settle());
+        }
+    }
+
+    /// One scope, shared by its owner and its helpers, and handed to the pool with each helper.
+    /// Everything in it is owned: the stages are in it as `detach`ed handles, and the context
+    /// they run in is in each stage, not here.
     pub(super) struct ScopeShared {
         /// The stages started so far, in order. Taken when the scope ends, which also breaks the
         /// `ScopeShared` -> stage -> `ScopeShared` cycle.
@@ -651,11 +703,10 @@ mod parallel {
         idle: Mutex<Option<Waker>>,
         /// No item after this one in serial order starts. `u64::MAX` until something raises.
         cutoff: AtomicU64,
-        /// The first item, in serial order, that ended in a fatal error the item hook caught.
+        /// The first item, in serial order, that ended in a fatal error its replay caught.
         stop: AtomicU64,
         /// The first item, in serial order, that panicked.
         panic: Mutex<Option<Caught>>,
-        context: CapturedContext,
         registry: Option<Registry>,
         /// The session's `jobs.frontend`: the owner and at most `width - 1` helpers.
         width: usize,
@@ -687,7 +738,6 @@ mod parallel {
                 cutoff: AtomicU64::new(u64::MAX),
                 stop: AtomicU64::new(u64::MAX),
                 panic: Mutex::new(None),
-                context: CapturedContext::capture(),
                 registry: Registry::try_current(),
                 width,
                 threads: width.min(pool::workers().saturating_add(1)),
@@ -745,11 +795,14 @@ mod parallel {
         /// may still be running. Never unwinds.
         ///
         /// The scope's context is installed once around the whole run and the catch is outside
-        /// it, so an item costs neither (module header, "How items get run"). An item that
-        /// panics unwinds to the catch, is settled as failed with the cut-off at it, and the
-        /// run goes on with the context installed again; the rest of the panicking item's batch
-        /// is dropped unclaimed, which is only items after it in serial order, all cut off, and
-        /// settled (failed, unrun) by whichever thread claims them, the owner at the latest.
+        /// it, so an item costs neither (module header, "How items get run"). It is installed
+        /// from the first stage the run takes work from: every stage of the scope carries a copy
+        /// of the scope's one context, so it is the right one for every stage the run goes on
+        /// to. An item that panics unwinds to the catch, is settled as failed with the cut-off
+        /// at it, and the run goes on with the context installed again; the rest of the
+        /// panicking item's batch is dropped unclaimed, which is only items after it in serial
+        /// order, all cut off, and settled (failed, unrun) by whichever thread claims them, the
+        /// owner at the latest.
         fn drain(&self) {
             let mut chunks_from = 0;
             let mut sweep_from = 0;
@@ -757,8 +810,18 @@ mod parallel {
             // The item this thread claimed and is running, so a panic out of it can be settled.
             let mut running: Option<usize> = None;
             loop {
+                if batch.is_none() {
+                    batch = self
+                        .next_chunk(&mut chunks_from)
+                        .or_else(|| self.next_sweep(&mut sweep_from));
+                }
+                // A handle of its own, so `batch` is free to move on to other stages under it.
+                let installer = match &batch {
+                    Some(first) => Arc::clone(&first.stage),
+                    None => return,
+                };
                 let outcome = pool::catch(|| {
-                    let mut work = || {
+                    installer.enter_context(&mut || {
                         loop {
                             if batch.is_none() {
                                 batch = self
@@ -777,18 +840,13 @@ mod parallel {
                                 None => batch = None,
                             }
                         }
-                    };
-                    // SAFETY: this thread is the scope's owner, inside `stages`, or a helper
-                    // counted in `active`, which the owner waits for before it leaves `stages`;
-                    // either way the frames the captured pointers name are alive until this
-                    // returns.
-                    unsafe { self.context.enter(&mut work) };
+                    })
                 });
                 match outcome {
                     Ok(()) => return,
                     Err(payload) => match (batch.take(), running.take()) {
                         (Some(batch), Some(index)) => batch.stage.panicked(index, payload),
-                        // Not out of an item: the scaffolding (the context hooks, a thread-local
+                        // Not out of an item: the scaffolding (the context install, a thread-local
                         // out of keys). Recorded like a helper's own failure, and this thread
                         // stops taking work; the owner's settle still settles every item.
                         _ => {
@@ -841,7 +899,7 @@ mod parallel {
                 // when both are `u64::MAX`, a helper's panic outside any item with no fatal
                 // error anywhere. That one is raised rather than lost.
                 if order <= stop {
-                    // Dropping the stages discards every item hook's collection.
+                    // Dropping the stages discards every stage's replay.
                     drop(stages);
                     pool::resume(payload, message);
                 }
@@ -873,12 +931,15 @@ mod parallel {
         }
     }
 
-    struct Stage<In, O, F> {
+    struct Stage<'scope, In, O, F> {
         input: In,
         f: F,
         slots: Arc<Slots<O>>,
-        /// The item hook's state for this stage's items.
-        items: ItemScope,
+        /// This stage's items' diagnostics, forwarded in item order when it concludes, and
+        /// dropped with the stage when it does not (the unwind path).
+        replay: OrderedReplay,
+        /// The scope's context, copied in when the stage started; see `drain`.
+        context: ItemContext<'scope>,
         /// The first index nobody has reserved. Only says where the next chunk starts: an item
         /// is claimed by its own slot's state, never by this.
         cursor: AtomicUsize,
@@ -889,12 +950,13 @@ mod parallel {
     }
 
     // SAFETY: unchecked, as the module header says: the call site's `DynSend`/`DynSync` bounds
-    // are implemented for every type. `Slots` is accessed through its own synchronisation, and
-    // `input` and `f` only through `&`.
-    unsafe impl<In, O, F> Send for Stage<In, O, F> {}
-    unsafe impl<In, O, F> Sync for Stage<In, O, F> {}
+    // are implemented for every type, and this is the one place that word is taken. `Slots` is
+    // accessed through its own synchronisation, `replay` through its own (per-item entries and
+    // a lock, `rustc_errors::item_scope`), and `input`, `f` and `context` only through `&`.
+    unsafe impl<In, O, F> Send for Stage<'_, In, O, F> {}
+    unsafe impl<In, O, F> Sync for Stage<'_, In, O, F> {}
 
-    impl<In, O, F> Run for Stage<In, O, F>
+    impl<In, O, F> Run for Stage<'_, In, O, F>
     where
         F: Fn(&In, usize) -> O,
     {
@@ -925,6 +987,10 @@ mod parallel {
             self.slots.claim(index)
         }
 
+        fn enter_context(&self, run: &mut dyn FnMut()) {
+            self.context.enter(run)
+        }
+
         fn run_in_context(&self, index: usize) {
             let order = serial_order(self.seq, index);
             if order > self.scope.cutoff.load(Ordering::Acquire) {
@@ -936,10 +1002,10 @@ mod parallel {
             // runs it while waiting for it is inside another item, maybe inside a query. The
             // item's queries must see the scope's `ImplicitCtxt`, whose `query` is the parent the
             // query system's cycle check walks from a stage's jobs back to the query that opened
-            // the scope. The caller installed it; inside it, the item hook collects what the item
+            // the scope. The caller installed it; inside it, the replay collects what the item
             // emits, per item.
             let mut value = None;
-            let stopped = self.items.run(index, &mut || value = Some((self.f)(&self.input, index)));
+            let stopped = self.replay.run_item(index, || value = Some((self.f)(&self.input, index)));
             if stopped {
                 self.scope.stop_at(order);
             }
@@ -966,12 +1032,8 @@ mod parallel {
         fn run_claimed(&self, index: usize) {
             // One item, run by a thread that waited for it: the context is installed for it
             // alone. A thread taking work in runs installs it once per run instead (`drain`).
-            //
-            // SAFETY: the item is claimed and not settled, so the scope is open and its owner
-            // has not left `stages`; the frames the captured pointers name are alive.
-            let outcome = pool::catch(|| unsafe {
-                self.scope.context.enter(&mut || self.run_in_context(index))
-            });
+            let outcome =
+                pool::catch(|| self.context.enter(&mut || self.run_in_context(index)));
             if let Err(payload) = outcome {
                 self.panicked(index, payload);
             }
@@ -982,13 +1044,54 @@ mod parallel {
         }
 
         fn conclude(&self) {
-            self.items.finish();
+            if let Err(fatal) = self.replay.finish() {
+                fatal.raise()
+            }
         }
+    }
+
+    /// The one place a stage lets go of `'scope`: its weak self-reference, as the `'static`
+    /// handle nagoya's pool and a stage's escaping `Slots` need.
+    ///
+    /// Every other `'static` handle to the stage is an upgrade of what this returns: `start`
+    /// takes the scope's strong reference that way, helpers clone that one into their batches,
+    /// and `Slots::wait` upgrades the runner. Nothing else erases anything; the helpers are
+    /// handed `Arc<ScopeShared>`, which borrows nothing.
+    ///
+    /// Why no owned design removes it: the stage owns its input and function, but the function
+    /// borrows `TyCtxt<'tcx>`, and `'tcx` is a stack frame of the session (`GlobalCtxt` is not
+    /// behind an `Arc`); the pool's `submit` requires `'static`. The scope blocking until every
+    /// helper has left is what makes the erasure sound, and that is exactly what `std::thread`
+    /// scopes rely on too.
+    fn detach<'scope>(stage: Weak<dyn Run + 'scope>) -> Weak<dyn Run> {
+        // SAFETY: only the trait object's lifetime changes; the layout and the vtable are the
+        // same. What `'scope` guards is the stage's value (its input, function, replay and
+        // context borrow for `'scope`), and that value is reached only through a strong
+        // reference, so the proof is that no strong reference exists once `'scope` may end:
+        //
+        // - Strong references come only from upgrading this weak one. They are held by the
+        //   scope's `stages` list, by a thread's current `Batch` (the owner's, or a helper's), by
+        //   `drain` while it installs the context, and by `Slots::wait` while it runs an
+        //   unclaimed item.
+        // - `stages` (and the unwind guard `SettleOnUnwind`) runs `settle` before it returns or
+        //   unwinds, and `stages` is where `'scope` ends. `settle` settles every item, so no
+        //   `Slots::wait` finds one unclaimed any more; closes the scope and waits until no
+        //   helper is inside it, and a helper's `Leave` drops after its batches; and takes the
+        //   list, which `conclude` drops (or the unwind out of `conclude` does) before `stages`
+        //   returns. A helper that arrives after the scope closed sees `closed` and touches no
+        //   stage, and `closed` is `SeqCst` against its `active` count, so it is either seen and
+        //   waited for or it sees `closed`.
+        // - So the strong count reaches zero inside `'scope`, the stage's value is dropped
+        //   there, and from then on `upgrade` fails for good (a strong count never comes back
+        //   from zero). What is left is weak references, in `Slots` that may outlive the
+        //   scope, whose only other use is their drop, which frees the allocation using the
+        //   layout in the vtable, a `'static` table.
+        unsafe { core::mem::transmute::<Weak<dyn Run + 'scope>, Weak<dyn Run>>(stage) }
     }
 
     /// Start a stage in a parallel scope. See `StageScope::stage`.
     pub(super) fn start<'scope, In, O, F>(
-        shared: &Arc<ScopeShared>,
+        open: &Open<'scope>,
         seq: u32,
         input: In,
         len: usize,
@@ -999,36 +1102,35 @@ mod parallel {
         O: 'scope,
         F: Fn(&In, usize) -> O + 'scope,
     {
-        // Begun here, on the thread starting the stage, which is where the diagnostics hook
-        // finds the item this stage is nested in, if any.
-        let items = ItemScope::begin(len);
+        let shared = &open.shared;
+        // Begun here, on the thread starting the stage, which is where the replay finds the
+        // item this stage is nested in, if any.
+        let replay = OrderedReplay::new(len);
         let chunk = chunk_size(len, shared.threads);
-        let stage = Arc::new_cyclic(|this: &Weak<Stage<In, O, F>>| {
-            let runner: Weak<dyn Run + 'scope> = this.clone();
-            // SAFETY: only the trait object's lifetime changes. The weak reference is upgraded
-            // only while the scope is open (after it, the stages are gone and `upgrade` fails),
-            // and the scope does not close before `'scope` ends.
-            let runner = unsafe {
-                core::mem::transmute::<Weak<dyn Run + 'scope>, Weak<dyn Run + 'static>>(runner)
-            };
+        let mut detached: Option<Weak<dyn Run>> = None;
+        let typed = Arc::new_cyclic(|this: &Weak<Stage<'scope, In, O, F>>| {
+            let runner = detach(this.clone());
+            detached = Some(runner.clone());
             Stage {
                 input,
                 f,
                 slots: Arc::new(Slots::with_runner(len, Some(runner))),
-                items,
+                replay,
+                context: open.context,
                 cursor: AtomicUsize::new(0),
                 chunk,
                 seq,
                 scope: shared.clone(),
             }
         });
-        let slots = stage.slots.clone();
-        let stage: Arc<dyn Run + 'scope> = stage;
-        // SAFETY: only the trait object's lifetime changes. The scope holds this and its helpers
-        // clone it, and `settle` takes every such reference back and drops it before `stages`
-        // returns or unwinds, which is inside `'scope`: helpers are waited for, and a helper that
-        // arrives after the scope closed never reaches `stages`.
-        let stage = unsafe { core::mem::transmute::<Arc<dyn Run + 'scope>, Arc<dyn Run>>(stage) };
+        let slots = typed.slots.clone();
+        // The scope's strong reference, as an upgrade of the detached one (see `detach`); then
+        // the typed one goes, and this is the stage's only strong reference.
+        let stage: Arc<dyn Run> = detached
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .expect("a stage is alive while its starter holds it");
+        drop(typed);
         // The work nobody has taken yet, in chunks, across every open stage of the scope, this
         // one included: counted under the same lock that publishes the stage.
         let unreserved: usize = {

@@ -7,12 +7,21 @@
 //! # Frontend owns no thread
 //!
 //! Every thread that runs a stage's items is the caller's own or one of nagoya's pool workers: by
-//! default `nagoya::runtime::background()`, the process's shared pool, or the pool a program
-//! handed over with [`set_parallel_executor`]. This module submits closures and parks the calling
-//! thread; it starts nothing.
+//! default a nagoya `Runtime` built here on first use, or the pool a program handed over with
+//! [`set_parallel_executor`]. This module submits closures and parks the calling thread; the
+//! runtime's threads are started by nagoya, not by this crate.
+//!
+//! # Why not nagoya's shared pool
+//!
+//! `nagoya::runtime::background()` starts its workers on `std`'s default stack, and the compiler
+//! is written for 16 MiB: upstream starts its threads at `DEFAULT_STACK_SIZE`
+//! (`rustc_interface::util`), and this tree has no stack-growing fallback, so a deep item on a
+//! default stack overflows and takes the process with it. So the default pool is one this module
+//! asks nagoya for, shaped like `background()` in every other respect, with `WORKER_STACK`
+//! bytes per worker.
 //!
 //! The executor is fetched per use rather than kept anywhere: `EXECUTOR` is configuration the
-//! program sets once, and `background()` is nagoya's own one-per-process pool.
+//! program sets once, and `RUNTIME` is started once, only if nothing was handed over.
 //!
 //! # Why `std`'s catch and not `unwind_janky::catch`
 //!
@@ -32,16 +41,22 @@ use eko::thread::OnceLock;
 use crate::rustc_data_structures::sync::mode;
 use crate::unwind_janky::Payload;
 
+/// Each default pool worker's stack, in bytes: upstream's `DEFAULT_STACK_SIZE`, which the
+/// compiler's recursion depth is written against.
+const WORKER_STACK: usize = 16 * 1024 * 1024;
+
 /// The pool a program handed over, if it did. Configuration, set once; not a cache.
 static EXECUTOR: OnceLock<nagoya::Executor> = OnceLock::new();
 
-/// Run parallel frontend work on `executor`'s pool instead of nagoya's shared one.
+/// The default pool, started on first use when nothing was handed over. Kept for the life of the
+/// process: dropping a `Runtime` does not stop its threads, and this is the one handle to them.
+static RUNTIME: OnceLock<nagoya::runtime::Runtime> = OnceLock::new();
+
+/// Run parallel frontend work on `executor`'s pool instead of the one this module starts.
 ///
-/// **For a program that owns its workers.** nagoya starts the shared pool's threads with the
-/// platform's default stack, and the compiler recurses deeply enough to want 16 MiB (see
-/// `NAGOYA-STACK-PATCH.md` at the repository root). A program that builds its own
-/// `st3::fanout::Pool`, starts its threads with the stack it wants and runs each with
-/// `nagoya::Executor::run_worker`, passes the executor here.
+/// **For a program that owns its workers**, or that already runs a nagoya pool and does not want
+/// a second. Its threads run compiler items, so they want the 16 MiB stacks the default pool's
+/// workers get, as `nagoya::runtime::Runtime::builder().stack_size(16 * 1024 * 1024)` gives them.
 ///
 /// Call it before the first parallel session. The first call wins; a later one hands its argument
 /// back as the `Err`.
@@ -52,7 +67,14 @@ pub fn set_parallel_executor(executor: nagoya::Executor) -> Result<(), nagoya::E
 fn executor() -> &'static nagoya::Executor {
     match EXECUTOR.get() {
         Some(executor) => executor,
-        None => nagoya::runtime::background().executor(),
+        None => RUNTIME
+            .get_or_init(|| {
+                nagoya::runtime::Runtime::builder()
+                    .label("frontend")
+                    .stack_size(WORKER_STACK)
+                    .build()
+            })
+            .executor(),
     }
 }
 

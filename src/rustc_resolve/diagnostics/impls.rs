@@ -1669,6 +1669,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     return;
                 }
 
+                // A child acts only as a candidate (its name and namespace match) or as a module
+                // to descend into. Anything else leaves nothing behind, so it returns here, before
+                // the visibility, stability and doc-hidden queries below, which are most of what
+                // this walk costs: it visits every child of every module once per unresolved name.
+                let is_candidate = ident.name == lookup_ident.name && ns == namespace;
+                if !is_candidate && name_binding.res().module_like_def_id().is_none() {
+                    return;
+                }
+
                 let child_accessible =
                     accessible && this.is_accessible_from(name_binding.vis(), parent_scope.module);
 

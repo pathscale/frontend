@@ -21,6 +21,8 @@ use alloc::vec::Vec;
 
 use core::{cmp, mem};
 
+use smallvec::{SmallVec, smallvec};
+
 use crate::rustc_span::Symbol;
 
 #[cfg(test)]
@@ -32,8 +34,24 @@ mod tests;
 ///
 /// [edit distance]: https://en.wikipedia.org/wiki/Edit_distance
 pub fn edit_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
-    let mut a = &a.chars().collect::<Vec<_>>()[..];
-    let mut b = &b.chars().collect::<Vec<_>>()[..];
+    // Read in place: an ASCII string's bytes are its chars, so the byte slices give the same
+    // distance with nothing copied. Identifiers, which is what this compares nearly every time,
+    // are ASCII. Anything else is decoded into chars first.
+    if a.is_ascii() && b.is_ascii() {
+        return distance(a.as_bytes(), b.as_bytes(), limit);
+    }
+    // Most candidates fail on length alone, before anything is decoded.
+    if a.chars().count().abs_diff(b.chars().count()) > limit {
+        return None;
+    }
+    let a = a.chars().collect::<Vec<_>>();
+    let b = b.chars().collect::<Vec<_>>();
+    distance(&a, &b, limit)
+}
+
+/// [`edit_distance`] over any two sequences of comparable units.
+fn distance<T: PartialEq>(a: &[T], b: &[T], limit: usize) -> Option<usize> {
+    let (mut a, mut b) = (a, b);
 
     // Ensure that `b` is the shorter string, minimizing memory use.
     if a.len() < b.len() {
@@ -67,13 +85,18 @@ pub fn edit_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
         return Some(min_dist);
     }
 
-    let mut prev_prev = vec![usize::MAX; b.len() + 1];
-    let mut prev = (0..=b.len()).collect::<Vec<_>>();
-    let mut current = vec![0; b.len() + 1];
+    // The rows live on the stack for any identifier-sized string.
+    let mut prev_prev: SmallVec<[usize; 32]> = smallvec![usize::MAX; b.len() + 1];
+    let mut prev: SmallVec<[usize; 32]> = (0..=b.len()).collect();
+    let mut current: SmallVec<[usize; 32]> = smallvec![0; b.len() + 1];
+
+    // The smallest value in the row before `prev`, for the early stop below.
+    let mut prev_min = 0;
 
     // row by row
     for i in 1..=a.len() {
         current[0] = i;
+        let mut current_min = i;
         let a_idx = i - 1;
 
         // column by column
@@ -98,7 +121,17 @@ pub fn edit_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
                 // transposition
                 current[j] = cmp::min(current[j], prev_prev[j - 2] + 1);
             }
+            current_min = cmp::min(current_min, current[j]);
         }
+
+        // Every cell is built from the two rows above it and the cell to its left, each plus a
+        // cost of at least zero, so once two consecutive rows are both entirely over the limit
+        // no later cell can come back under it. The answer is `None` either way; this stops at
+        // the row that decides it instead of filling the rest of the table.
+        if current_min > limit && prev_min > limit {
+            return None;
+        }
+        prev_min = current_min;
 
         // Rotate the buffers, reusing the memory.
         [prev_prev, prev, current] = [prev, current, prev_prev];
@@ -223,7 +256,11 @@ fn find_best_match_for_name_impl(
     // 1. Exact case insensitive match
     // 2. Edit distance match
     // 3. Sorted word match
-    if let Some(c) = candidates.iter().find(|c| c.as_str().to_uppercase() == lookup_uppercase) {
+    // `str::to_uppercase` is each char's `to_uppercase`, joined, so comparing the two char
+    // streams is the same test without allocating an uppercase copy of every candidate.
+    if let Some(c) = candidates.iter().find(|c| {
+        c.as_str().chars().flat_map(char::to_uppercase).eq(lookup_uppercase.chars())
+    }) {
         return Some(*c);
     }
 

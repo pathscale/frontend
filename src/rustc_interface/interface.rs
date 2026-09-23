@@ -352,7 +352,6 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
     // `util::session_width`.
     let _session_mode =
         crate::rustc_data_structures::sync::enter_session_width(util::session_width(config.opts.jobs));
-    util::install_parallel_context();
 
     // **No jobserver.** The GNU make token protocol coordinates parallelism with an outer
     // `make`/`cargo`, and nothing in this compiler draws on it: the only consumer was

@@ -16,11 +16,11 @@
 //! There is no shared emission buffer and no reorder logic. A par item's diagnostics are part of
 //! its *result*, and a query's diagnostics are part of *its* result:
 //!
-//! 1. The stage runs each item inside [`OrderedReplay::collect`] (through the item hook
-//!    `rustc_interface::util::install_parallel_context` registers). While it runs, whatever the
-//!    item emits into a `DiagCtxt` that already existed when the item began is *moved* into an
-//!    owned [`ItemDiagnostics`] instead of reaching the emitter.
-//! 2. The hook hands that value to the stage's replay as the item's diagnostic output.
+//! 1. A parallel stage owns one [`OrderedReplay`] and runs each item through it
+//!    ([`OrderedReplay::run_item`], which is [`OrderedReplay::collect`] without the mode check).
+//!    While the item runs, whatever it emits into a `DiagCtxt` that already existed when the
+//!    item began is *moved* into an owned [`ItemDiagnostics`] instead of reaching the emitter.
+//! 2. `run_item` hands that value to the replay as the item's diagnostic output.
 //! 3. An [`OrderedReplay`] records the items' outputs as they finish, in any order, and when the
 //!    stage concludes ([`OrderedReplay::finish`], called in stage order on the thread that
 //!    started the stage) forwards them in item order.
@@ -150,6 +150,13 @@ use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 
 /// One clock for `DiagCtxt` creation, item scope opening and stage starts. Only its order
 /// matters.
+///
+/// **Ordering data, and process-wide because what it orders is.** The question it answers is
+/// "did this `DiagCtxt` exist before that stage started", asked on whichever thread emits, about
+/// a context and a stage that may each have been made on any thread. Nothing the stage could
+/// carry answers it: a stage cannot list the contexts older than itself, and a context cannot
+/// name the stages younger than itself. One counter both sides draw from is the least that does.
+/// It is not a knob and not a cache; nothing reads it but the comparisons below.
 static CLOCK: AtomicU64 = AtomicU64::new(1);
 
 /// The next value of [`CLOCK`].
@@ -204,6 +211,12 @@ thread_local! {
     /// while its own is waiting opens that item's scope on top, and closes it again when the
     /// item returns, so the innermost scope is always what this thread is running: the query
     /// it is executing, or else the item.
+    ///
+    /// **Thread state, because what it records is.** An emission happens deep inside whatever
+    /// the item calls (`DiagCtxtInner::emit_diagnostic`, reached through a `DiagCtxt` the item
+    /// did not make), and the only thing that knows which item or query is running there is
+    /// the thread running it, exactly as with the `ImplicitCtxt`. Carrying it as a value would
+    /// mean threading a collection handle through every call that can emit.
     static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -218,14 +231,14 @@ thread_local! {
 /// query frame captures only a context older than its chain's outermost stage, which in this
 /// compiler is always the session's context (see the module docs, "Which `DiagCtxt` a scope
 /// captures"): it lives as long as the `TyCtxt` whose query results hold the record.
+///
+/// It asserts nothing about threads. An event reaches another thread only inside a parallel
+/// stage's own state (its replay, its items' outputs), which `sync::stage` hands to the pool on
+/// the `DynSend`/`DynSync` word of the call site, the one place that word is taken; a
+/// `DcxRef` is dereferenced only to take the context's own lock (`DiagCtxt::inner`, a real
+/// mutex in thread-safe mode, which is the only mode in which one is ever made).
 #[derive(Copy, Clone)]
 pub(super) struct DcxRef(*const DiagCtxt);
-
-// SAFETY: a `DcxRef` is only dereferenced to take the context's own lock (`DiagCtxt::inner`,
-// a real mutex in thread-safe mode, which is the only mode in which one is ever made), and the
-// lifetime argument is on the type.
-unsafe impl Send for DcxRef {}
-unsafe impl Sync for DcxRef {}
 
 impl DcxRef {
     pub(super) fn of(dcx: &DiagCtxt) -> Self {
@@ -504,12 +517,13 @@ struct Target {
 /// # How a stage uses it
 ///
 /// In thread-safe mode only; a serial stage needs none of this. Every item index must report,
-/// or everything after it is held back and lost. The stage does this through its item hook
-/// (`rustc_interface::util`, the diagnostics hook); the shape of it is:
+/// or everything after it is held back and lost. A parallel stage (`sync::stage`) owns one,
+/// begun where the stage starts and dropped with the stage, and calls it directly; the shape of
+/// it is:
 ///
-/// ```ignore (sketch of the hook's part in a stage)
+/// ```ignore (sketch of the replay's part in a stage)
 /// let replay = OrderedReplay::new(len);            // on the calling thread, before spawning
-/// // for item `i`, on whichever worker runs it:
+/// // for item `i`, on whichever worker runs it (`run_item` is these two calls):
 /// let run = replay.collect(|| for_each(item));
 /// replay.ready(i, run.diagnostics, run.result.is_err());
 /// slots[i] = run.result.ok();                      // the item's own result, if any
@@ -600,13 +614,29 @@ impl OrderedReplay {
         self.collect_in_stage(f)
     }
 
-    /// [`collect`](Self::collect) for a parallel stage's item hook, without asking the mode.
+    /// Run item `index` of a parallel stage with its diagnostics collected, and report it:
+    /// [`collect`](Self::collect) then [`ready`](Self::ready), without asking the mode. `true`
+    /// if the item ended in a fatal error, after which a serial run would not have gone on.
     ///
-    /// The hook only ever runs inside a parallel stage, and every thread that runs one of its
-    /// items has a parallel session latched (the scope's owner opened a parallel scope, and a
-    /// helper latches the session's width before it runs anything), so the answer is always
-    /// "thread-safe". Asking is a thread-local read, and this is on the path of every item.
-    pub(crate) fn collect_in_stage<R>(&self, f: impl FnOnce() -> R) -> ItemRun<R> {
+    /// What `sync::stage` calls around every item of a parallel stage, on whichever thread runs
+    /// it, once per item even when the thread runs a whole chunk inside one install of the
+    /// scope's context: an item's diagnostics are its own output, whatever ran next to it.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+    pub(crate) fn run_item(&self, index: usize, item: impl FnOnce()) -> bool {
+        let run = self.collect_in_stage(item);
+        let fatal = run.result.is_err();
+        self.ready(index, run.diagnostics, fatal);
+        fatal
+    }
+
+    /// [`collect`](Self::collect) for a parallel stage's item, without asking the mode.
+    ///
+    /// [`run_item`](Self::run_item) calls it only inside a parallel stage, where every thread
+    /// that runs an item has a parallel session latched (the scope's owner opened a
+    /// parallel scope, and a helper latches the session's width before it runs anything), so the
+    /// answer is always "thread-safe". Asking is a thread-local read, and this is on the path of
+    /// every item.
+    fn collect_in_stage<R>(&self, f: impl FnOnce() -> R) -> ItemRun<R> {
         // No collection yet: one is made when the item first emits or consumes something with
         // diagnostics, or when a stage started inside it captures this scope as its target.
         let scope =
@@ -663,7 +693,12 @@ impl OrderedReplay {
     /// including the first that ended in a fatal error, and drops the rest, which a serial run
     /// never reaches. Returns that fatal error to raise again; the stage raises it after every
     /// item has settled, so the unwind leaves the stage as it would have in a serial run.
-    pub fn finish(self) -> Result<(), FatalError> {
+    ///
+    /// By reference, because the stage that owns the replay is shared with the threads that ran
+    /// its items; call it once. A replay dropped without it is discarded: what its items emitted
+    /// is dropped with it, which is the unwind path (an internal compiler error, or a fatal error
+    /// in an earlier stage of the scope).
+    pub fn finish(&self) -> Result<(), FatalError> {
         // A serial run never reaches the items after the first fatal one, so their diagnostics
         // are dropped with the rest of `emitted` when this returns early.
         let mut emitted = mem::take(&mut *self.emitted.lock());

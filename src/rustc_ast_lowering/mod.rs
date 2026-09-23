@@ -774,7 +774,7 @@ fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
 /// it itself.
 ///
 /// **Diagnostics come out in index order.** What an owner's lowering emits is its item's
-/// output, forwarded in item order by the stage's item hook. The one way an owner's lowering can
+/// output, forwarded in item order by the stage's replay. The one way an owner's lowering can
 /// land in another item's slot is the dependency above: a nested `use` tree's item, run before
 /// its parent's, lowers the parent. The only definitions between a `use` item and its nested
 /// trees are its other nested trees, which emit nothing of their own, so the order printed is
