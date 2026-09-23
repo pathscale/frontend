@@ -32,15 +32,15 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 
+use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
-use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
 #[cfg(not(feature = "force_pinned_sysroot"))]
 use crate::rustc_interface::util::rustc_version_of_sysroot;
+use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
 use crate::rustc_middle::ty::{TyCtxt, TypeVisitableExt};
-use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::{FileName, Span};
@@ -48,7 +48,8 @@ use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
 pub mod site;
 
-#[cfg(feature = "diagnostics")] pub mod diagnostics;
+#[cfg(feature = "diagnostics")]
+pub mod diagnostics;
 
 /// Byte range inside one source file, relative to that file's start.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -300,7 +301,22 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
 
-    for local in tcx.iter_local_def_id() {
+    // Not `tcx.iter_local_def_id()`: that depends on the `analysis` query so that it lists the
+    // definitions of a finished compilation, and `analysis` runs well-formedness checking over
+    // the whole crate first. In a `no_core` session a real file's first `fn` that returns a
+    // value asks for a lang item that is not there, which is fatal, so the facts of every file
+    // that uses a library type were lost before one definition was read. The table is read
+    // directly instead, counted once: definitions created while the bodies are checked below
+    // are the compiler's own and are not facts about the source.
+    //
+    // Lowering is forced first, and only lowering: it is what feeds each local definition its
+    // `def_kind`, which `analysis` used to force as a side effect. Without it the first
+    // `def_kind` below is an unprovided query and an internal compiler error.
+    let _ = tcx.hir_crate_items(());
+    let count = tcx.untracked().definitions.read().num_definitions();
+    for local in (0..count).map(|i| LocalDefId {
+        local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i),
+    }) {
         let def_id = local.to_def_id();
         let kind = tcx.def_kind(def_id);
         if let DefKind::Impl { .. } = kind {
@@ -371,12 +387,14 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     }
     facts.complete = tcx.dcx().has_errors().is_none() && facts.unanalyzed_bodies.is_empty();
 
-    facts.definitions.sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.def_path.cmp(&b.def_path)));
+    facts
+        .definitions
+        .sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.def_path.cmp(&b.def_path)));
     facts.imports.sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.path.cmp(&b.path)));
     facts.impls.sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.def_path.cmp(&b.def_path)));
-    facts.references.sort_by(|a, b| {
-        a.span.start.cmp(&b.span.start).then(a.to_def_path.cmp(&b.to_def_path))
-    });
+    facts
+        .references
+        .sort_by(|a, b| a.span.start.cmp(&b.span.start).then(a.to_def_path.cmp(&b.to_def_path)));
     facts
 }
 
@@ -650,10 +668,7 @@ pub fn analyze_source_with_sysroot(
         alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
     let config = Config {
         opts,
-        input: Input::Str {
-            name: FileName::anon_source_code(source),
-            input: source.to_string(),
-        },
+        input: Input::Str { name: FileName::anon_source_code(source), input: source.to_string() },
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version,
@@ -788,10 +803,7 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
         alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
     let config = Config {
         opts,
-        input: Input::Str {
-            name: FileName::anon_source_code(source),
-            input: source.to_string(),
-        },
+        input: Input::Str { name: FileName::anon_source_code(source), input: source.to_string() },
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version: None,
@@ -931,7 +943,8 @@ mod tests {
         assert_eq!(
             errors,
             vec![
-                "error[E0425]: cannot find value `x` in this scope\n  --> src/lib.rs:1:14".to_string(),
+                "error[E0425]: cannot find value `x` in this scope\n  --> src/lib.rs:1:14"
+                    .to_string(),
                 "error: aborting due to 1 previous error".to_string(),
             ]
         );
