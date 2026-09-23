@@ -296,7 +296,8 @@ impl<'sess> AttributeParser<'sess> {
             .span_to_source(span, |content, _, span_end| {
                 let mut source = &content[span_end..];
                 let initial_source_len = source.len();
-                let span = try {
+                // Immediately called closure in place of an unstable `try {}` block.
+                let span = (|| -> Option<Span> {
                     loop {
                         let first = source.chars().next()?;
 
@@ -325,10 +326,10 @@ impl<'sess> AttributeParser<'sess> {
                             let hi = BytePos(hi as u32);
                             let next_item_span = Span::new(lo, hi, span.ctxt(), None);
 
-                            break next_item_span;
+                            break Some(next_item_span);
                         }
                     }
-                };
+                })();
 
                 Ok(span)
             })

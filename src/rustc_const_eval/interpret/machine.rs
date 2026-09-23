@@ -697,189 +697,245 @@ pub trait Machine<'tcx>: Sized {
 
 /// A lot of the flexibility above is just needed for `Miri`, but all "compile-time" machines
 /// (CTFE and ConstProp) use the same instance. Here, we share that code.
-pub macro compile_time_machine(<$tcx: lifetime>) {
-    type Provenance = CtfeProvenance;
+// Was a `pub macro` (decl_macro), whose unqualified names resolved at this definition site. As
+// `macro_rules!` they resolve inside the caller's `impl Machine`, so every type, function and
+// associated path in the body is written `$crate::`-rooted. `#[macro_export]` plus the
+// `pub use` below keeps `interpret::compile_time_machine!` and its imports working.
+#[macro_export]
+macro_rules! compile_time_machine {
+    (<$tcx: lifetime>) => {
+    type Provenance = $crate::rustc_const_eval::interpret::CtfeProvenance;
     type ProvenanceExtra = bool; // the "immutable" flag
 
-    type ExtraFnVal = !;
+    type ExtraFnVal = $crate::Never;
 
     type MemoryKind = $crate::rustc_const_eval::const_eval::MemoryKind;
-    type MemoryMap =
-        crate::rustc_data_structures::fx::FxIndexMap<AllocId, (MemoryKind<Self::MemoryKind>, Allocation)>;
+    type MemoryMap = $crate::rustc_data_structures::fx::FxIndexMap<
+        $crate::rustc_const_eval::interpret::AllocId,
+        (
+            $crate::rustc_const_eval::interpret::MemoryKind<Self::MemoryKind>,
+            $crate::rustc_const_eval::interpret::Allocation,
+        ),
+    >;
     const GLOBAL_KIND: Option<Self::MemoryKind> = None; // no copying of globals from `tcx` to machine memory
 
     type AllocExtra = ();
     type FrameExtra = ();
-    type Bytes = Box<[u8]>;
+    type Bytes = ::alloc::boxed::Box<[u8]>;
 
     #[inline(always)]
-    fn ignore_optional_overflow_checks(_ecx: &InterpCx<$tcx, Self>) -> bool {
+    fn ignore_optional_overflow_checks(
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+    ) -> bool {
         false
     }
 
     #[inline(always)]
     fn unwind_terminate(
-        _ecx: &mut InterpCx<$tcx, Self>,
-        _reason: mir::UnwindTerminateReason,
-    ) -> InterpResult<$tcx> {
+        _ecx: &mut $crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        _reason: $crate::rustc_middle::mir::UnwindTerminateReason,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<$tcx> {
         unreachable!("unwinding cannot happen during compile-time evaluation")
     }
 
     #[inline(always)]
     fn check_fn_target_features(
-        _ecx: &InterpCx<$tcx, Self>,
-        _instance: ty::Instance<$tcx>,
-    ) -> InterpResult<$tcx> {
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        _instance: $crate::rustc_middle::ty::Instance<$tcx>,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<$tcx> {
         // For now we don't do any checking here. We can't use `tcx.sess` because that can differ
         // between crates, and we need to ensure that const-eval always behaves the same.
-        interp_ok(())
+        $crate::rustc_const_eval::interpret::interp_ok(())
     }
 
     #[inline(always)]
     fn call_extra_fn(
-        _ecx: &mut InterpCx<$tcx, Self>,
-        fn_val: !,
-        _abi: &FnAbi<$tcx, Ty<$tcx>>,
-        _args: &[FnArg<$tcx>],
-        _destination: &PlaceTy<$tcx, Self::Provenance>,
-        _target: Option<mir::BasicBlock>,
-        _unwind: mir::UnwindAction,
-    ) -> InterpResult<$tcx> {
+        _ecx: &mut $crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        fn_val: $crate::Never,
+        _abi: &$crate::rustc_target::callconv::FnAbi<$tcx, $crate::rustc_middle::ty::Ty<$tcx>>,
+        _args: &[$crate::rustc_const_eval::interpret::FnArg<$tcx>],
+        _destination: &$crate::rustc_const_eval::interpret::PlaceTy<$tcx, Self::Provenance>,
+        _target: Option<$crate::rustc_middle::mir::BasicBlock>,
+        _unwind: $crate::rustc_middle::mir::UnwindAction,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<$tcx> {
         match fn_val {}
     }
 
     #[inline(always)]
-    fn float_fuse_mul_add(_ecx: &InterpCx<$tcx, Self>) -> bool {
+    fn float_fuse_mul_add(_ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>) -> bool {
         true
     }
 
     #[inline(always)]
     fn atomic_load(
-        ecx: &InterpCx<$tcx, Self>,
-        place: &MPlaceTy<$tcx, Self::Provenance>,
-        _ordering: AtomicOrdering,
-    ) -> InterpResult<$tcx, Scalar<Self::Provenance>> {
+        ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        place: &$crate::rustc_const_eval::interpret::MPlaceTy<$tcx, Self::Provenance>,
+        _ordering: $crate::rustc_middle::ty::AtomicOrdering,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        $crate::rustc_const_eval::interpret::Scalar<Self::Provenance>,
+    > {
         // Compile-time machines are single-threaded so this is like a regular load.
         ecx.read_scalar(place)
     }
 
     #[inline(always)]
     fn atomic_store(
-        ecx: &mut InterpCx<$tcx, Self>,
-        place: &MPlaceTy<$tcx, Self::Provenance>,
-        val: &ImmTy<$tcx, Self::Provenance>,
-        _ordering: AtomicOrdering,
-    ) -> InterpResult<$tcx> {
+        ecx: &mut $crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        place: &$crate::rustc_const_eval::interpret::MPlaceTy<$tcx, Self::Provenance>,
+        val: &$crate::rustc_const_eval::interpret::ImmTy<$tcx, Self::Provenance>,
+        _ordering: $crate::rustc_middle::ty::AtomicOrdering,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<$tcx> {
         // Compile-time machines are single-threaded so this is like a regular store.
         ecx.write_scalar(val.to_scalar(), place)
     }
 
     fn atomic_rmw(
-        ecx: &mut InterpCx<$tcx, Self>,
-        place: &MPlaceTy<$tcx, Self::Provenance>,
-        op: AtomicRmwOp,
-        operand: &ImmTy<$tcx, Self::Provenance>,
-        _ordering: AtomicOrdering,
-    ) -> InterpResult<$tcx, Scalar<Self::Provenance>> {
+        ecx: &mut $crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        place: &$crate::rustc_const_eval::interpret::MPlaceTy<$tcx, Self::Provenance>,
+        op: $crate::rustc_const_eval::interpret::AtomicRmwOp,
+        operand: &$crate::rustc_const_eval::interpret::ImmTy<$tcx, Self::Provenance>,
+        _ordering: $crate::rustc_middle::ty::AtomicOrdering,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        $crate::rustc_const_eval::interpret::Scalar<Self::Provenance>,
+    > {
         // Compile-time machines are single-threaded so we ignore the ordering.
         let old_val = ecx.read_immediate(place)?;
         let new_val = ecx.atomic_rmw_op(op, &old_val, operand)?;
         ecx.write_immediate(*new_val, place)?;
-        interp_ok(old_val.to_scalar())
+        $crate::rustc_const_eval::interpret::interp_ok(old_val.to_scalar())
     }
 
     fn atomic_compare_exchange(
-        ecx: &mut InterpCx<$tcx, Self>,
-        place: &MPlaceTy<$tcx, Self::Provenance>,
-        expected_old: &ImmTy<$tcx, Self::Provenance>,
-        new: &ImmTy<$tcx, Self::Provenance>,
+        ecx: &mut $crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        place: &$crate::rustc_const_eval::interpret::MPlaceTy<$tcx, Self::Provenance>,
+        expected_old: &$crate::rustc_const_eval::interpret::ImmTy<$tcx, Self::Provenance>,
+        new: &$crate::rustc_const_eval::interpret::ImmTy<$tcx, Self::Provenance>,
         _can_fail_spuriously: bool,
-        _success_ordering: AtomicOrdering,
-        _failure_ordering: AtomicOrdering,
-    ) -> InterpResult<$tcx, (Scalar<Self::Provenance>, bool)> {
+        _success_ordering: $crate::rustc_middle::ty::AtomicOrdering,
+        _failure_ordering: $crate::rustc_middle::ty::AtomicOrdering,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        ($crate::rustc_const_eval::interpret::Scalar<Self::Provenance>, bool),
+    > {
         // Compile-time machines are single-threaded so we ignore the ordering.
         // They are also deterministic so we do not fail spuriously.
         let actual_old = ecx.read_immediate(place)?;
-        let eq = ecx.binary_op(mir::BinOp::Eq, &actual_old, expected_old)?.to_scalar().to_bool()?;
+        let eq = ecx
+            .binary_op($crate::rustc_middle::mir::BinOp::Eq, &actual_old, expected_old)?
+            .to_scalar()
+            .to_bool()?;
         if eq {
             ecx.write_immediate(**new, place)?;
         }
-        interp_ok((actual_old.to_scalar(), eq))
+        $crate::rustc_const_eval::interpret::interp_ok((actual_old.to_scalar(), eq))
     }
 
     #[inline(always)]
     fn atomic_fence(
-        _ecx: &InterpCx<$tcx, Self>,
-        _ordering: AtomicOrdering,
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        _ordering: $crate::rustc_middle::ty::AtomicOrdering,
         _singlethread: bool,
-    ) -> InterpResult<$tcx> {
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<$tcx> {
         // Compile-time machines are single-threaded so this is a NOP.
-        interp_ok(())
+        $crate::rustc_const_eval::interpret::interp_ok(())
     }
 
     #[inline(always)]
     fn adjust_global_allocation<'b>(
-        _ecx: &InterpCx<$tcx, Self>,
-        _id: AllocId,
-        alloc: &'b Allocation,
-    ) -> InterpResult<$tcx, Cow<'b, Allocation<Self::Provenance>>> {
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        _id: $crate::rustc_const_eval::interpret::AllocId,
+        alloc: &'b $crate::rustc_const_eval::interpret::Allocation,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        ::alloc::borrow::Cow<'b, $crate::rustc_const_eval::interpret::Allocation<Self::Provenance>>,
+    > {
         // Overwrite default implementation: no need to adjust anything.
-        interp_ok(Cow::Borrowed(alloc))
+        $crate::rustc_const_eval::interpret::interp_ok(::alloc::borrow::Cow::Borrowed(alloc))
     }
 
     fn init_local_allocation(
-        _ecx: &InterpCx<$tcx, Self>,
-        _id: AllocId,
-        _kind: MemoryKind<Self::MemoryKind>,
-        _size: Size,
-        _align: Align,
-    ) -> InterpResult<$tcx, Self::AllocExtra> {
-        interp_ok(())
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        _id: $crate::rustc_const_eval::interpret::AllocId,
+        _kind: $crate::rustc_const_eval::interpret::MemoryKind<Self::MemoryKind>,
+        _size: $crate::rustc_abi::Size,
+        _align: $crate::rustc_abi::Align,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<$tcx, Self::AllocExtra> {
+        $crate::rustc_const_eval::interpret::interp_ok(())
     }
 
     fn extern_static_pointer(
-        ecx: &InterpCx<$tcx, Self>,
-        def_id: DefId,
-    ) -> InterpResult<$tcx, Pointer> {
+        ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        def_id: $crate::rustc_span::def_id::DefId,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        $crate::rustc_const_eval::interpret::Pointer,
+    > {
         // Use the `AllocId` associated with the `DefId`. Any actual *access* will fail.
-        interp_ok(Pointer::new(ecx.tcx.reserve_and_set_static_alloc(def_id).into(), Size::ZERO))
+        $crate::rustc_const_eval::interpret::interp_ok($crate::rustc_const_eval::interpret::Pointer::new(
+            ecx.tcx.reserve_and_set_static_alloc(def_id).into(),
+            $crate::rustc_abi::Size::ZERO,
+        ))
     }
 
     #[inline(always)]
     fn adjust_alloc_root_pointer(
-        _ecx: &InterpCx<$tcx, Self>,
-        ptr: Pointer<CtfeProvenance>,
-        _kind: Option<MemoryKind<Self::MemoryKind>>,
-    ) -> InterpResult<$tcx, Pointer<CtfeProvenance>> {
-        interp_ok(ptr)
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        ptr: $crate::rustc_const_eval::interpret::Pointer<
+            $crate::rustc_const_eval::interpret::CtfeProvenance,
+        >,
+        _kind: Option<$crate::rustc_const_eval::interpret::MemoryKind<Self::MemoryKind>>,
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        $crate::rustc_const_eval::interpret::Pointer<
+            $crate::rustc_const_eval::interpret::CtfeProvenance,
+        >,
+    > {
+        $crate::rustc_const_eval::interpret::interp_ok(ptr)
     }
 
     #[inline(always)]
     fn ptr_from_addr_cast(
-        _ecx: &InterpCx<$tcx, Self>,
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
         addr: u64,
-    ) -> InterpResult<$tcx, Pointer<Option<CtfeProvenance>>> {
+    ) -> $crate::rustc_const_eval::interpret::InterpResult<
+        $tcx,
+        $crate::rustc_const_eval::interpret::Pointer<
+            Option<$crate::rustc_const_eval::interpret::CtfeProvenance>,
+        >,
+    > {
         // Allow these casts, but make the pointer not dereferenceable.
         // (I.e., they behave like transmutation.)
         // This is correct because no pointers can ever be exposed in compile-time evaluation.
-        interp_ok(Pointer::without_provenance(addr))
+        $crate::rustc_const_eval::interpret::interp_ok(
+            $crate::rustc_const_eval::interpret::Pointer::without_provenance(addr),
+        )
     }
 
     #[inline(always)]
     fn ptr_get_alloc(
-        _ecx: &InterpCx<$tcx, Self>,
-        ptr: Pointer<CtfeProvenance>,
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        ptr: $crate::rustc_const_eval::interpret::Pointer<
+            $crate::rustc_const_eval::interpret::CtfeProvenance,
+        >,
         _size: i64,
-    ) -> Option<(AllocId, Size, Self::ProvenanceExtra)> {
+    ) -> Option<(
+        $crate::rustc_const_eval::interpret::AllocId,
+        $crate::rustc_abi::Size,
+        Self::ProvenanceExtra,
+    )> {
         let (prov, offset) = ptr.prov_and_relative_offset();
         Some((prov.alloc_id(), offset, prov.immutable()))
     }
 
     #[inline(always)]
     fn get_global_alloc_salt(
-        _ecx: &InterpCx<$tcx, Self>,
-        _instance: Option<ty::Instance<$tcx>>,
+        _ecx: &$crate::rustc_const_eval::interpret::InterpCx<$tcx, Self>,
+        _instance: Option<$crate::rustc_middle::ty::Instance<$tcx>>,
     ) -> usize {
-        CTFE_ALLOC_SALT
+        $crate::rustc_const_eval::interpret::CTFE_ALLOC_SALT
     }
+    };
 }
+pub use crate::compile_time_machine;

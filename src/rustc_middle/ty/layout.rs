@@ -705,7 +705,7 @@ pub trait MaybeResult<T> {
 }
 
 impl<T> MaybeResult<T> for T {
-    type Error = !;
+    type Error = crate::Never;
 
     fn from(Ok(x): Result<T, Self::Error>) -> Self {
         x
@@ -733,7 +733,9 @@ pub type TyAndLayout<'tcx> = crate::rustc_abi::TyAndLayout<'tcx, Ty<'tcx>>;
 pub trait LayoutOfHelpers<'tcx>: HasDataLayout + HasTyCtxt<'tcx> + HasTypingEnv<'tcx> {
     /// The `TyAndLayout`-wrapping type (or `TyAndLayout` itself), which will be
     /// returned from `layout_of` (see also `handle_layout_err`).
-    type LayoutOfResult: MaybeResult<TyAndLayout<'tcx>> = TyAndLayout<'tcx>;
+    // Stable Rust has no associated type defaults, so every impl names this type; an
+    // infallible context uses `TyAndLayout<'tcx>`.
+    type LayoutOfResult: MaybeResult<TyAndLayout<'tcx>>;
 
     /// `Span` to use for `tcx.at(span)`, from `layout_of`.
     // FIXME(eddyb) perhaps make this mandatory to get contexts to track it better?
@@ -1374,7 +1376,9 @@ pub enum FnAbiRequest<'tcx> {
 pub trait FnAbiOfHelpers<'tcx>: LayoutOfHelpers<'tcx> {
     /// The `&FnAbi`-wrapping type (or `&FnAbi` itself), which will be
     /// returned from `fn_abi_of_*` (see also `handle_fn_abi_err`).
-    type FnAbiOfResult: MaybeResult<&'tcx FnAbi<'tcx, Ty<'tcx>>> = &'tcx FnAbi<'tcx, Ty<'tcx>>;
+    // Stable Rust has no associated type defaults, so every impl names this type; an
+    // infallible context uses `&'tcx FnAbi<'tcx, Ty<'tcx>>`.
+    type FnAbiOfResult: MaybeResult<&'tcx FnAbi<'tcx, Ty<'tcx>>>;
 
     /// Helper used for `fn_abi_of_*`, to adapt `tcx.fn_abi_of_*(...)` into a
     /// `Self::FnAbiOfResult` (which does not need to be a `Result<...>`).

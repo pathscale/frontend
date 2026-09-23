@@ -775,7 +775,6 @@ impl<'p, Cx: PatCx> BranchPatUsefulness<'p, Cx> {
         } else {
             // We avoid instability by sorting by `uid`. The order of `uid`s only depends on the
             // pattern structure.
-            #[cfg_attr(feature = "rustc", allow(rustc::potential_query_instability))]
             let mut covered_by: Vec<_> = self.covered_by.iter().copied().collect();
             covered_by.sort_by_key(|pat| pat.uid); // sort to avoid instability
             Some(RedundancyExplanation { covered_by })

@@ -183,15 +183,8 @@ impl<T: Eq + Hash> Extend<T> for SsoHashSet<T> {
         }
     }
 
-    #[inline]
-    fn extend_one(&mut self, item: T) {
-        self.insert(item);
-    }
-
-    #[inline]
-    fn extend_reserve(&mut self, additional: usize) {
-        self.map.extend_reserve(additional)
-    }
+    // No `extend_one` or `extend_reserve`: overriding them is the unstable `extend_one`. The
+    // provided `extend_one` goes through `extend` to the same `insert`; the reserve was a hint.
 }
 
 impl<'a, T> Extend<&'a T> for SsoHashSet<T>
@@ -201,16 +194,6 @@ where
     #[inline]
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.extend(iter.into_iter().cloned());
-    }
-
-    #[inline]
-    fn extend_one(&mut self, &item: &'a T) {
-        self.insert(item);
-    }
-
-    #[inline]
-    fn extend_reserve(&mut self, additional: usize) {
-        Extend::<T>::extend_reserve(self, additional)
     }
 }
 

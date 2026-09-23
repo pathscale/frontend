@@ -117,7 +117,8 @@ pub trait HirTyCtxt<'hir> {
 }
 
 /// Used when no tcx is actually available, forcing manual implementation of nested visitors.
-impl<'hir> HirTyCtxt<'hir> for ! {
+// `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+impl<'hir> HirTyCtxt<'hir> for crate::Never {
     fn hir_node(&self, _: HirId) -> Node<'hir> {
         *self
     }
@@ -170,7 +171,7 @@ pub trait NestedFilter<'hir> {
 /// `tcx` around.
 pub struct IgnoreNested(());
 impl NestedFilter<'_> for IgnoreNested {
-    type MaybeTyCtxt = !;
+    type MaybeTyCtxt = crate::Never;
     const INTER: bool = false;
     const INTRA: bool = false;
 }
@@ -196,33 +197,34 @@ impl NestedFilter<'_> for IgnoreNested {
 /// enums. This will result in a compile error if a field is added, which makes
 /// it more likely the appropriate visit call will be added for it.
 pub trait Visitor<'v>: Sized {
-    // This type should not be overridden, it exists for convenient usage as `Self::MaybeTyCtxt`.
-    type MaybeTyCtxt: HirTyCtxt<'v> = <Self::NestedFilter as NestedFilter<'v>>::MaybeTyCtxt;
+    // Stable Rust has no associated type defaults, so every impl names
+    // `NestedFilter` and `Result` itself. `IgnoreNested` and `()` are the
+    // conventional choices for a visitor that needs nothing special.
 
     ///////////////////////////////////////////////////////////////////////////
     // Nested items.
 
-    /// Override this type to control which nested HIR are visited; see
-    /// [`NestedFilter`] for details. If you override this type, you
-    /// must also override [`maybe_tcx`](Self::maybe_tcx).
+    /// Set this type to control which nested HIR are visited; see
+    /// [`NestedFilter`] for details. If you choose anything other than
+    /// [`IgnoreNested`], you must also override [`maybe_tcx`](Self::maybe_tcx).
     ///
     /// **If for some reason you want the nested behavior, but don't
     /// have a `tcx` at your disposal:** then override the
     /// `visit_nested_XXX` methods. If a new `visit_nested_XXX` variant is
     /// added in the future, it will cause a panic which can be detected
     /// and fixed appropriately.
-    type NestedFilter: NestedFilter<'v> = IgnoreNested;
+    type NestedFilter: NestedFilter<'v>;
 
     /// The result type of the `visit_*` methods. Can be either `()`,
     /// or `ControlFlow<T>`.
-    type Result: VisitorResult = ();
+    type Result: VisitorResult;
 
     /// If `type NestedFilter` is set to visit nested items, this method
     /// must also be overridden to provide a map to retrieve nested items.
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> <Self::NestedFilter as NestedFilter<'v>>::MaybeTyCtxt {
         panic!(
             "maybe_tcx must be implemented or consider using \
-            `type NestedFilter = Skip` (the default)"
+            `type NestedFilter = IgnoreNested`"
         );
     }
 
@@ -1026,6 +1028,9 @@ pub fn walk_ty<'v, V: Visitor<'v>>(visitor: &mut V, typ: &'v Ty<'v, AmbigArg>) -
             try_visit!(visitor.visit_ty_unambig(mutable_type.ty));
         }
         TyKind::Never => {}
+        // `AmbigArg` is uninhabited, so this arm is unreachable; stable exhaustiveness
+        // checking does not see through the place behind `&`, so it is spelled out.
+        TyKind::Infer(ref never) => match *never {},
         TyKind::Tup(tuple_element_types) => {
             walk_list!(visitor, visit_ty_unambig, tuple_element_types);
         }
@@ -1106,6 +1111,9 @@ pub fn walk_const_arg<'v, V: Visitor<'v>>(
     let ConstArg { hir_id, kind, span: _ } = const_arg;
     try_visit!(visitor.visit_id(*hir_id));
     match kind {
+        // `AmbigArg` is uninhabited, so this arm is unreachable; stable exhaustiveness
+        // checking does not see through the reference, so it is spelled out.
+        ConstArgKind::Infer(never) => match *never {},
         ConstArgKind::Tup(exprs) => {
             walk_list!(visitor, visit_const_arg_unambig, *exprs);
             V::Result::output()

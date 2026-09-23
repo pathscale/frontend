@@ -83,6 +83,23 @@ pub struct RawDefId(pub u32, pub u32);
 ///   differences.
 pub trait StableHash {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher);
+
+    /// Hashes the elements of a slice, after `[T]` has hashed the length.
+    ///
+    /// This is the `Hash::hash_slice` pattern. It replaces a specialized `[u8]` impl
+    /// (stable Rust cannot specialize): `u8` overrides it to write the bytes in one call.
+    #[inline]
+    fn stable_hash_slice<Hcx: StableHashCtxt>(
+        slice: &[Self],
+        hcx: &mut Hcx,
+        hasher: &mut StableHasher,
+    ) where
+        Self: Sized,
+    {
+        for item in slice {
+            item.stable_hash(hcx, hasher);
+        }
+    }
 }
 
 /// Implement this for types that can be turned into stable keys like, for
@@ -205,7 +222,32 @@ impl_stable_traits_for_trivial_type!(i32);
 impl_stable_traits_for_trivial_type!(i64);
 impl_stable_traits_for_trivial_type!(isize);
 
-impl_stable_traits_for_trivial_type!(u8);
+// `u8` is spelled out rather than macro-generated so it can override `stable_hash_slice`:
+// a byte slice goes to the hasher in one `write`, as the old specialized `[u8]` impl did.
+impl StableHash for u8 {
+    #[inline]
+    fn stable_hash<Hcx>(&self, _: &mut Hcx, hasher: &mut StableHasher) {
+        ::core::hash::Hash::hash(self, hasher);
+    }
+
+    #[inline]
+    fn stable_hash_slice<Hcx: StableHashCtxt>(
+        slice: &[Self],
+        _: &mut Hcx,
+        hasher: &mut StableHasher,
+    ) {
+        hasher.write(slice);
+    }
+}
+
+impl StableOrd for u8 {
+    const CAN_USE_UNSTABLE_SORT: bool = true;
+
+    // Encoding and decoding doesn't change the bytes of trivial types
+    // and `Ord::cmp` depends only on those bytes.
+    const THIS_IMPLEMENTATION_HAS_BEEN_TRIPLE_CHECKED: () = ();
+}
+
 impl_stable_traits_for_trivial_type!(u16);
 impl_stable_traits_for_trivial_type!(u32);
 impl_stable_traits_for_trivial_type!(u64);
@@ -236,7 +278,8 @@ impl StableOrd for Hash128 {
     const THIS_IMPLEMENTATION_HAS_BEEN_TRIPLE_CHECKED: () = ();
 }
 
-impl StableHash for ! {
+// `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+impl StableHash for crate::Never {
     fn stable_hash<Hcx>(&self, _hcx: &mut Hcx, _hasher: &mut StableHasher) {
         unreachable!()
     }
@@ -246,12 +289,21 @@ impl<T> StableHash for PhantomData<T> {
     fn stable_hash<Hcx>(&self, _hcx: &mut Hcx, _hasher: &mut StableHasher) {}
 }
 
-impl<T: StableHash + core::num::ZeroablePrimitive> StableHash for NonZero<T> {
-    #[inline]
-    fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        self.get().stable_hash(hcx, hasher)
+// `ZeroablePrimitive` is unstable, so the `NonZero` impls are spelled out per integer type.
+macro_rules! impl_stable_hash_for_nonzero {
+    ($($ty:ty),*) => {
+        $(
+            impl StableHash for NonZero<$ty> {
+                #[inline]
+                fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
+                    self.get().stable_hash(hcx, hasher)
+                }
+            }
+        )*
     }
 }
+
+impl_stable_hash_for_nonzero!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
 
 impl StableHash for f32 {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
@@ -349,18 +401,10 @@ impl<T1: StableOrd, T2: StableOrd, T3: StableOrd, T4: StableOrd> StableOrd for (
 }
 
 impl<T: StableHash> StableHash for [T] {
-    default fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        self.len().stable_hash(hcx, hasher);
-        for item in self {
-            item.stable_hash(hcx, hasher);
-        }
-    }
-}
-
-impl StableHash for [u8] {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
         self.len().stable_hash(hcx, hasher);
-        hasher.write(self);
+        // `u8` overrides this to write the whole slice at once; see `stable_hash_slice`.
+        T::stable_hash_slice(self, hcx, hasher);
     }
 }
 
@@ -593,12 +637,9 @@ impl_stable_traits_for_trivial_type!(::eko::path::PathBuf);
 // It is not safe to implement StableHash for HashSet, HashMap or any other collection type
 // with unstable but observable iteration order.
 // See https://github.com/rust-lang/compiler-team/issues/533 for further information.
-// The hasher parameter is spelled out because this crate takes hashbrown with
-// `default-features = false`, so there is no `DefaultHashBuilder` to default `S` to. That also
-// widens the negative impl to every hasher, `FxBuildHasher` included, which is what was meant:
-// the iteration order is unstable whichever hasher is in use.
-impl<V, S> !StableHash for hashbrown::HashSet<V, S> {}
-impl<K, V, S> !StableHash for hashbrown::HashMap<K, V, S> {}
+// Upstream stated this as `impl !StableHash` for hashbrown's `HashSet` and `HashMap` (every
+// hasher, `FxBuildHasher` included). Negative impls are unstable, so the rule is now kept by
+// not writing an impl; nothing in this crate needs the negative impl for coherence.
 
 impl<K, V> StableHash for ::alloc::collections::BTreeMap<K, V>
 where

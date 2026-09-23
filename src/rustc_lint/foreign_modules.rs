@@ -2,6 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -298,7 +299,7 @@ fn structurally_same_type_impl<'tcx>(
                 let b_fields = b_def.variants().iter().flat_map(|v| v.fields.iter());
 
                 // Perform a structural comparison for each field.
-                a_fields.eq_by(
+                a_fields.eq_with(
                     b_fields,
                     |&ty::FieldDef { did: a_did, .. }, &ty::FieldDef { did: b_did, .. }| {
                         structurally_same_type_impl(
@@ -347,7 +348,7 @@ fn structurally_same_type_impl<'tcx>(
 
                 (a_sig.abi(), a_sig.safety(), a_sig.c_variadic())
                     == (b_sig.abi(), b_sig.safety(), b_sig.c_variadic())
-                    && a_sig.inputs().iter().eq_by(b_sig.inputs().iter(), |a, b| {
+                    && a_sig.inputs().iter().eq_with(b_sig.inputs().iter(), |a, b| {
                         structurally_same_type_impl(seen_types, tcx, typing_env, *a, *b)
                     })
                     && structurally_same_type_impl(

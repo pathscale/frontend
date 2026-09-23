@@ -79,7 +79,7 @@ impl<'tcx> Visitor<'tcx> for FindNestedTypeVisitor<'tcx> {
     type Result = ControlFlow<&'tcx hir::Ty<'tcx>>;
     type NestedFilter = nested_filter::OnlyBodies;
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -185,7 +185,7 @@ impl<'tcx> Visitor<'tcx> for TyPathVisitor<'tcx> {
     type Result = ControlFlow<()>;
     type NestedFilter = nested_filter::OnlyBodies;
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

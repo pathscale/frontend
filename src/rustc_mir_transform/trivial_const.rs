@@ -99,9 +99,10 @@ where
         return None;
     }
 
-    let StatementKind::Assign((place, rvalue)) = &block.statements[0].kind else {
+    let StatementKind::Assign(assign) = &block.statements[0].kind else {
         return None;
     };
+    let (place, rvalue) = &**assign;
 
     if *place != Place::from(RETURN_PLACE) {
         return None;

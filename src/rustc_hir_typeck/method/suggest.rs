@@ -7,6 +7,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -278,7 +279,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // NOTE: Reporting a method error should also suppress any unused trait errors,
         // since the method error is very possibly the reason why the trait wasn't used.
         for &import_id in
-            self.tcx.in_scope_traits(call_id).into_flat_iter().flat_map(|c| c.import_ids)
+            self.tcx.in_scope_traits(call_id).into_iter().flatten().flat_map(|c| c.import_ids)
         {
             self.typeck_results.borrow_mut().used_trait_imports.insert(import_id);
         }
@@ -709,6 +710,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         impl<'v> Visitor<'v> for LetVisitor<'_, '_> {
+            type NestedFilter = intravisit::IgnoreNested;
             type Result = ControlFlow<()>;
             fn visit_stmt(&mut self, ex: &'v hir::Stmt<'v>) -> Self::Result {
                 if let hir::StmtKind::Let(&hir::LetStmt { pat, ty, init, .. }) = ex.kind
@@ -2428,7 +2430,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         if let Some(ref args) = call_args
                             && expected_inputs
                                 .iter()
-                                .eq_by(args, |expected, found| self.may_coerce(*expected, *found))
+                                .eq_with(args, |expected, found| self.may_coerce(*expected, *found))
                         {
                             err.span_suggestion_verbose(
                                 item_name.span,
@@ -3051,7 +3053,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                     // If this is a floating point literal that ends with '.',
                     // get rid of it to stop this from becoming a member access.
-                    let snippet = snippet.trim_suffix('.');
+                    let snippet = snippet.strip_suffix('.').unwrap_or(&snippet);
                     err.span_suggestion(
                         lit.span,
                         format!(
@@ -3166,6 +3168,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 // FIXME: This really should be taking scoping, etc into account.
                 impl<'v> Visitor<'v> for LetVisitor {
+                    type NestedFilter = intravisit::IgnoreNested;
                     type Result = ControlFlow<Option<&'v hir::Expr<'v>>>;
                     fn visit_stmt(&mut self, ex: &'v hir::Stmt<'v>) -> Self::Result {
                         if let hir::StmtKind::Let(&hir::LetStmt { pat, init, .. }) = ex.kind
@@ -4618,7 +4621,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                             } => None,
                                             _ => Some(param.name.as_str()),
                                         })
-                                        .intersperse(", ")
+                                        .separated_by(", ")
                                         .collect();
                                     if cand_args.is_empty() {
                                         cand_path

@@ -652,6 +652,8 @@ impl<'a> Parser<'a> {
         }
 
         impl<'a> Visitor<'a> for PatVisitor<'a> {
+            type Result = ();
+
             fn visit_arm(&mut self, a: &'a Arm) -> Self::Result {
                 self.arm = Some(a);
                 visit::walk_arm(self, a);

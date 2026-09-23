@@ -111,11 +111,13 @@ fn default_enum_substructure(
     enum_def: &EnumDef,
     item_span: Span,
 ) -> BlockOrExpr {
-    let expr = match try {
-        let default_variant = extract_default_variant(cx, enum_def, trait_span, item_span)?;
-        validate_default_attribute(cx, default_variant)?;
-        default_variant
-    } {
+    // `and_then` in place of an unstable `try {}` block.
+    let expr = match extract_default_variant(cx, enum_def, trait_span, item_span).and_then(
+        |default_variant| {
+            validate_default_attribute(cx, default_variant)?;
+            Ok(default_variant)
+        },
+    ) {
         Ok(default_variant) => {
             // We now know there is exactly one unit variant with exactly one `#[default]` attribute.
             match &default_variant.data {
@@ -295,6 +297,8 @@ struct DetectNonVariantDefaultAttr<'a, 'b> {
 }
 
 impl<'a, 'b> crate::rustc_ast::visit::Visitor<'a> for DetectNonVariantDefaultAttr<'a, 'b> {
+    type Result = ();
+
     fn visit_attribute(&mut self, attr: &'a crate::rustc_ast::Attribute) {
         if attr.has_name(kw::Default) {
             let post = if self.cx.ecfg.features.default_field_values() {

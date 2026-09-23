@@ -99,8 +99,9 @@ impl<'tcx> ExportableItemCollector<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for ExportableItemCollector<'tcx> {
     type NestedFilter = nested_filter::All;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -360,8 +361,9 @@ impl<'tcx> ImplsOrderVisitor<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for ImplsOrderVisitor<'tcx> {
     type NestedFilter = nested_filter::All;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

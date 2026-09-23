@@ -3166,8 +3166,10 @@ impl<'a> Parser<'a> {
             let TyKind::Path(_, path) = ty.kind else {
                 return origin_error;
             };
-            let Some(GenericArgs::AngleBracketed(AngleBracketedArgs { span: _, ref args })) =
-                path.segments[0].args
+            let Some(ref seg_args) = path.segments[0].args else {
+                return origin_error;
+            };
+            let GenericArgs::AngleBracketed(AngleBracketedArgs { span: _, ref args }) = **seg_args
             else {
                 return origin_error;
             };

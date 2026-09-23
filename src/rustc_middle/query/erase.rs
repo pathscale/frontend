@@ -15,8 +15,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::intrinsics::transmute_unchecked;
 use core::marker::PhantomData;
+use core::mem::transmute_copy;
 use core::mem::MaybeUninit;
 
 use crate::rustc_ast::tokenstream::TokenStream;
@@ -29,9 +29,13 @@ use crate::rustc_middle::mono::{MonoItem, NormalizationErrorInMono};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_middle::{mir, thir, traits};
 
-unsafe extern "C" {
-    type NoAutoTraits;
-}
+/// Opts `ErasedData` out of `Send` and `Sync`, which would be wrong for an erased type.
+///
+/// Upstream this is an extern type (`extern { type NoAutoTraits; }`), which is unstable.
+/// A raw pointer is neither `Send` nor `Sync`, which covers the auto traits that matter
+/// here; unlike the extern type it leaves `Unpin` and the unwind-safety traits in place,
+/// which nothing in this crate reads off erased values.
+type NoAutoTraits = *const ();
 
 /// Internal implementation detail of [`Erased`].
 #[derive(Copy, Clone)]
@@ -44,9 +48,9 @@ pub struct ErasedData<Storage: Copy> {
     no_auto_traits: PhantomData<NoAutoTraits>,
 }
 
-// SAFETY: The bounds on `erase_val` ensure the types we erase are `DynSync` and `DynSend`
-unsafe impl<Storage: Copy> DynSync for ErasedData<Storage> {}
-unsafe impl<Storage: Copy> DynSend for ErasedData<Storage> {}
+// Upstream grants `DynSync`/`DynSend` here explicitly because the extern-type marker
+// opted `ErasedData` out of the auto impls. Both are now blanket-implemented (see
+// `rustc_data_structures/marker.rs`), so a second impl would conflict.
 
 /// Trait for types that can be erased into [`Erased<Self>`].
 ///
@@ -68,17 +72,31 @@ pub trait Erasable: Copy {
 /// This is helpful for reducing the number of concrete instantiations needed
 /// during codegen when building the compiler.
 ///
-/// Using an opaque type alias allows the type checker to enforce that
-/// `Erased<T>` and `Erased<U>` are still distinct types, while allowing
-/// monomorphization to see that they might actually use the same storage type.
-pub type Erased<T: Erasable> = ErasedData<impl Copy>;
+/// Upstream this is an opaque alias, `ErasedData<impl Copy>` (`type_alias_impl_trait`, unstable),
+/// so that `Erased<T>` and `Erased<U>` are distinct types while monomorphization can still see
+/// the shared storage. A plain `ErasedData<T::Storage>` alias would merge them and stop callers
+/// such as `restore_val(*erased_value)` from inferring `T`, so this is a newtype over the same
+/// storage instead. Layout and auto traits are unchanged; what is lost is only the codegen
+/// sharing between instantiations with equal storage.
+pub struct Erased<T: Erasable> {
+    data: ErasedData<<T as Erasable>::Storage>,
+    _type: PhantomData<fn() -> T>,
+}
+
+impl<T: Erasable> Copy for Erased<T> {}
+
+impl<T: Erasable> Clone for Erased<T> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
 /// Erases a value of type `T` into `Erased<T>`.
 ///
 /// `Erased<T>` and `Erased<U>` are type-checked as distinct types, but codegen
 /// can see whether they actually have the same storage type.
 #[inline(always)]
-#[define_opaque(Erased)]
 // The `DynSend` and `DynSync` bounds on `T` are used to
 // justify the safety of the implementations of these traits for `ErasedData`.
 pub fn erase_val<T: Erasable + DynSend + DynSync>(value: T) -> Erased<T> {
@@ -89,17 +107,18 @@ pub fn erase_val<T: Erasable + DynSend + DynSync>(value: T) -> Erased<T> {
         }
     };
 
-    ErasedData::<<T as Erasable>::Storage> {
-        // `transmute_unchecked` is needed here because it does not have `transmute`'s size check
-        // (and thus allows to transmute between `T` and `MaybeUninit<T::Storage>`) (we do the size
-        // check ourselves in the `const` block above).
-        //
-        // `transmute_copy` is also commonly used for this (and it would work here since
-        // `Erasable: Copy`), but `transmute_unchecked` better explains the intent.
-        //
-        // SAFETY: It is safe to transmute to MaybeUninit for types with the same sizes.
-        data: unsafe { transmute_unchecked::<T, MaybeUninit<T::Storage>>(value) },
-        no_auto_traits: PhantomData,
+    Erased {
+        data: ErasedData::<<T as Erasable>::Storage> {
+            // `transmute` cannot be used: its size check does not see through the generic
+            // `T::Storage`. Upstream used the `transmute_unchecked` intrinsic, which is unstable;
+            // `transmute_copy` does the same here because `Erasable: Copy`, and the `const` block
+            // above has already checked that the sizes match.
+            //
+            // SAFETY: It is safe to transmute to MaybeUninit for types with the same sizes.
+            data: unsafe { transmute_copy::<T, MaybeUninit<T::Storage>>(&value) },
+            no_auto_traits: PhantomData,
+        },
+        _type: PhantomData,
     }
 }
 
@@ -108,15 +127,14 @@ pub fn erase_val<T: Erasable + DynSend + DynSync>(value: T) -> Erased<T> {
 /// This relies on the fact that `Erased<T>` and `Erased<U>` are type-checked
 /// as distinct types, even if they use the same storage type.
 #[inline(always)]
-#[define_opaque(Erased)]
 pub fn restore_val<T: Erasable>(erased_value: Erased<T>) -> T {
-    let ErasedData { data, .. }: ErasedData<<T as Erasable>::Storage> = erased_value;
-    // See comment in `erase_val` for why we use `transmute_unchecked`.
+    let Erased { data: ErasedData { data, .. }, .. } = erased_value;
+    // See comment in `erase_val` for why we use `transmute_copy`.
     //
     // SAFETY: Due to the use of impl Trait in `Erased` the only way to safely create an instance
     // of `Erased` is to call `erase_val`, so we know that `erased_value.data` is a valid instance
     // of `T` of the right size.
-    unsafe { transmute_unchecked::<MaybeUninit<T::Storage>, T>(data) }
+    unsafe { transmute_copy::<MaybeUninit<T::Storage>, T>(&data) }
 }
 
 impl<T> Erasable for &'_ T {
@@ -127,15 +145,10 @@ impl<T> Erasable for &'_ [T] {
     type Storage = [u8; size_of::<&'_ [()]>()];
 }
 
-// Note: this impl does not overlap with the impl for `&'_ T` above because `RawList` is unsized
-// and does not satisfy the implicit `T: Sized` bound.
-//
-// Furthermore, even if that implicit bound was removed (by adding `T: ?Sized`) this impl still
-// wouldn't overlap because `?Sized` is equivalent to `MetaSized` and `RawList` does not satisfy
-// `MetaSized` because it contains an extern type.
-impl<H, T> Erasable for &'_ ty::RawList<H, T> {
-    type Storage = [u8; size_of::<&'_ ty::RawList<(), ()>>()];
-}
+// Upstream has a separate `impl Erasable for &'_ ty::RawList<H, T>` here, which did not overlap
+// the `&'_ T` impl only because `RawList` ended in an extern type and was unsized. Extern types
+// are unstable, `RawList` is `Sized` now (see `ty/list.rs`), so that impl would conflict. The
+// `&'_ T` impl above covers it with the same storage: `&RawList` is a thin pointer either way.
 
 impl<T> Erasable for Result<&'_ T, traits::query::NoSolution> {
     type Storage = [u8; size_of::<Result<&'_ (), traits::query::NoSolution>>()];

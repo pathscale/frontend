@@ -2698,7 +2698,6 @@ impl Symbol {
     }
 
     /// Maps a string to its interned representation.
-    #[rustc_diagnostic_item = "SymbolIntern"]
     #[inline]
     pub fn intern(str: &str) -> Self {
         with_session_globals(|session_globals| session_globals.symbol_interner.intern_str(str))

@@ -358,9 +358,10 @@ impl CoverageSuccessors<'_> {
     }
 }
 
-impl IntoIterator for CoverageSuccessors<'_> {
+impl<'a> IntoIterator for CoverageSuccessors<'a> {
     type Item = BasicBlock;
-    type IntoIter = impl DoubleEndedIterator<Item = Self::Item>;
+    // Named concretely; upstream's `impl DoubleEndedIterator` here is `impl_trait_in_assoc_type`.
+    type IntoIter = core::iter::Copied<core::slice::Iter<'a, BasicBlock>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.targets.iter().copied()

@@ -310,8 +310,6 @@ fn transcribe_sequence<'tx, 'itp>(
         LockstepIterSize::Unconstrained => {
             let mut repeatables = Vec::new();
             let mut non_repeatables = Vec::new();
-
-            #[allow(rustc::potential_query_instability)]
             for (name, matcher) in interp.iter() {
                 if matcher.is_repeatable() {
                     repeatables.push(name);

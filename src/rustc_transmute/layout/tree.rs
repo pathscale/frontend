@@ -141,7 +141,7 @@ where
 
     /// Remove all `Def` nodes, and all branches of the layout for which `f`
     /// produces `true`.
-    pub(crate) fn prune<F>(self, f: &F) -> Tree<!, R, T>
+    pub(crate) fn prune<F>(self, f: &F) -> Tree<crate::Never, R, T>
     where
         F: Fn(D) -> bool,
     {

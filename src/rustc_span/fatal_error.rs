@@ -15,9 +15,10 @@ pub struct FatalError;
 
 pub use crate::rustc_data_structures::FatalErrorMarker;
 
-// Don't implement Send on FatalError. This makes it impossible to `panic_any!(FatalError)`.
-// We don't want to invoke the panic handler and print a backtrace for fatal errors.
-impl !Send for FatalError {}
+// Upstream had `impl !Send for FatalError` so that `std::panic::panic_any(FatalError)` could
+// not compile. Negative impls are unstable, and a marker field would break every
+// `FatalError` unit expression. The guard has nothing left to guard here: there is no
+// `panic_any` without `std`, and `raise` panics with a `&str` sentinel, never the value.
 
 impl FatalError {
     pub fn raise(self) -> ! {

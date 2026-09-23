@@ -824,13 +824,15 @@ impl<'a> Parser<'a> {
                     /// we likely meant to use `if let`.
                     /// This is pre-expansion, so if we encounter
                     /// `let Some(x) = foo() { println!("{x}") }` we won't find it.
-                    references_ident: bool = false,
+                    references_ident: bool,
                     /// If a block has a `return`, then we know with high certainty that it was
                     /// meant to be let-else.
-                    has_return: bool = false,
+                    has_return: bool,
                 }
 
                 impl<'a> Visitor<'a> for IdentFinder {
+                    type Result = ();
+
                     fn visit_ident(&mut self, ident: &Ident) {
                         for i in &self.idents {
                             if ident.name == i.name {
@@ -849,7 +851,8 @@ impl<'a> Parser<'a> {
                 // Collect all bindings in pattern and see if they appear in the block. Likely meant
                 // to write `if let`. See if the block has a return. Likely meant to write
                 // `let else`.
-                let mut visitor = IdentFinder { idents, .. };
+                let mut visitor =
+                    IdentFinder { idents, references_ident: false, has_return: false };
                 visitor.visit_block(&block);
 
                 (visitor.references_ident, visitor.has_return)

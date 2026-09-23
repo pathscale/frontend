@@ -4,6 +4,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -320,7 +321,7 @@ fn make_elided_region_spans_suggs<'a>(
                 consecutive_brackets += 1;
             } else if let Some(bracket_span) = bracket_span.take() {
                 let sugg = core::iter::once("<")
-                    .chain(core::iter::repeat_n(name, consecutive_brackets).intersperse(", "))
+                    .chain(core::iter::repeat_n(name, consecutive_brackets).separated_by(", "))
                     .chain([">"])
                     .collect();
                 spans_suggs.push((bracket_span.shrink_to_hi(), sugg));
@@ -412,6 +413,8 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
 pub struct TraitObjectVisitor(pub FxIndexSet<DefId>);
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for TraitObjectVisitor {
+    type Result = ();
+
     fn visit_ty(&mut self, t: Ty<'tcx>) {
         match t.kind() {
             ty::Dynamic(preds, re) if re.is_static() => {
@@ -428,6 +431,8 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for TraitObjectVisitor {
 pub struct HirTraitObjectVisitor<'a>(pub &'a mut Vec<Span>, pub DefId);
 
 impl<'a, 'tcx> Visitor<'tcx> for HirTraitObjectVisitor<'a> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_ty(&mut self, t: &'tcx hir::Ty<'tcx, AmbigArg>) {
         if let TyKind::TraitObject(poly_trait_refs, lifetime_ptr) = t.kind
             && let Lifetime { kind: LifetimeKind::ImplicitObjectLifetimeDefault, .. } =

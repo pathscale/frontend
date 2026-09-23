@@ -83,7 +83,7 @@ pub(super) fn failed_to_match_macro(
         message: custom_message, label: custom_label, notes: custom_notes, ..
     } = {
         on_unmatched_args
-            .map(|directive| directive.eval(None, &FormatArgs { this: name.to_string(), .. }))
+            .map(|directive| directive.eval(None, &FormatArgs::new(name.to_string())))
             .unwrap_or_default()
     };
 
@@ -296,10 +296,6 @@ impl<'dcx, 'matcher> Tracker<'matcher> for CollectTrackerAndEmitter<'dcx, 'match
             bug!("`Self::prepare()` was not called to initialize context");
         };
 
-        #[expect(
-            rustc::potential_query_instability,
-            reason = "sorting the results deterministically afterwards"
-        )]
         let (mut bb_locs, mut next_locs) = self
             .matches
             .iter()

@@ -24,6 +24,7 @@ use crate::rustc_mir_dataflow::{Analysis, Backward, GenKill};
 pub struct MaybeLiveLocals;
 
 impl<'tcx> Analysis<'tcx> for MaybeLiveLocals {
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
     type Direction = Backward;
 
@@ -230,12 +231,15 @@ impl<'a> MaybeTransitiveLiveLocals<'a> {
     ) -> Option<Place<'tcx>> {
         // Compute the place that we are storing to, if any
         let destination = match stmt_kind {
-            StatementKind::Assign((place, rvalue)) => (rvalue.is_safe_to_remove()
-                // FIXME: We are not sure how we should represent this debugging information for some statements,
-                // keep it for now.
-                && (!debuginfo_locals.contains(place.local)
-                    || (place.as_local().is_some() && stmt_kind.as_debuginfo().is_some())))
-            .then_some(*place),
+            StatementKind::Assign(assign) => {
+                let (place, rvalue) = &**assign;
+                (rvalue.is_safe_to_remove()
+                    // FIXME: We are not sure how we should represent this debugging information for some statements,
+                    // keep it for now.
+                    && (!debuginfo_locals.contains(place.local)
+                        || (place.as_local().is_some() && stmt_kind.as_debuginfo().is_some())))
+                .then_some(*place)
+            }
             StatementKind::SetDiscriminant { place, .. } => {
                 (!debuginfo_locals.contains(place.local)).then_some(**place)
             }
@@ -261,6 +265,7 @@ impl<'a> MaybeTransitiveLiveLocals<'a> {
 }
 
 impl<'a, 'tcx> Analysis<'tcx> for MaybeTransitiveLiveLocals<'a> {
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
     type Direction = Backward;
 

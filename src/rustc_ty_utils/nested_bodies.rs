@@ -19,6 +19,8 @@ struct NestedBodiesVisitor<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for NestedBodiesVisitor<'tcx> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_nested_body(&mut self, id: hir::BodyId) {
         let body_def_id = self.tcx.hir_body_owner_def_id(id);
         if self.tcx.typeck_root_def_id_local(body_def_id) == self.root_def_id {

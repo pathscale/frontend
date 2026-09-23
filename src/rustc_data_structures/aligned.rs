@@ -8,8 +8,28 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::marker::PointeeSized;
-use core::mem::Alignment;
+use core::num::NonZero;
+
+/// A power-of-two alignment in bytes.
+///
+/// A local stand-in for `core::mem::Alignment`, which is the unstable `ptr_alignment_type`. It
+/// carries only what the tagged-pointer code reads back out of it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Alignment(NonZero<usize>);
+
+impl Alignment {
+    /// The alignment of `T`.
+    pub const fn of<T>() -> Self {
+        match NonZero::new(core::mem::align_of::<T>()) {
+            Some(align) => Alignment(align),
+            None => unreachable!(),
+        }
+    }
+
+    pub const fn as_nonzero_usize(self) -> NonZero<usize> {
+        self.0
+    }
+}
 
 /// Returns the ABI-required minimum alignment of a type in bytes.
 ///
@@ -28,7 +48,9 @@ pub const fn align_of<T: ?Sized + Aligned>() -> Alignment {
 /// example `[T]` has alignment of `T`.
 ///
 /// [`align_of::<Self>()`]: align_of
-pub unsafe trait Aligned: PointeeSized {
+// Upstream bounds this `: PointeeSized` (unstable `sized_hierarchy`); a trait's `Self` is
+// already `?Sized`, which is the stable meaning, so the bound is simply dropped.
+pub unsafe trait Aligned {
     /// Alignment of `Self`.
     const ALIGN: Alignment;
 }

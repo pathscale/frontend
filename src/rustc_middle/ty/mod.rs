@@ -9,8 +9,6 @@
 //!
 //! ["The `ty` module: representing types"]: https://rustc-dev-guide.rust-lang.org/ty.html
 
-
-#![allow(rustc::usage_of_ty_tykind)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
@@ -28,7 +26,8 @@ use core::marker::PhantomData;
 use core::num::NonZero;
 use core::ops::ControlFlow;
 use core::ptr::NonNull;
-use core::{assert_matches, fmt, iter, str};
+use core::{fmt, iter, str};
+use crate::assert_matches;
 
 pub use adt::*;
 pub use assoc::*;
@@ -217,21 +216,21 @@ pub struct ResolverGlobalCtxt {
 
 #[derive(Debug)]
 pub struct PerOwnerResolverData<'tcx> {
-    pub node_id_to_def_id: NodeMap<LocalDefId> = Default::default(),
+    pub node_id_to_def_id: NodeMap<LocalDefId>,
     /// Whether lifetime elision was successful.
-    pub lifetime_elision_allowed: bool = false,
+    pub lifetime_elision_allowed: bool,
     /// Resolutions for labels.
     /// Maps from NodeId of the break/continue expression to the NodeId of their corresponding blocks or loops.
-    pub label_res_map: NodeMap<ast::NodeId> = Default::default(),
+    pub label_res_map: NodeMap<ast::NodeId>,
     /// Resolutions for lifetimes.
-    pub lifetimes_res_map: NodeMap<LifetimeRes> = Default::default(),
+    pub lifetimes_res_map: NodeMap<LifetimeRes>,
 
-    pub trait_map: NodeMap<&'tcx [hir::TraitCandidate<'tcx>]> = Default::default(),
+    pub trait_map: NodeMap<&'tcx [hir::TraitCandidate<'tcx>]>,
 
     /// Resolution for import nodes, which have multiple resolutions in different namespaces.
-    pub import_res: hir::def::PerNS<Option<Res<ast::NodeId>>> = Default::default(),
+    pub import_res: hir::def::PerNS<Option<Res<ast::NodeId>>>,
     /// Lifetime parameters that lowering will have to introduce.
-    pub extra_lifetime_params_map: NodeMap<Vec<(Ident, ast::NodeId, hir::MissingLifetimeKind)>> = Default::default(),
+    pub extra_lifetime_params_map: NodeMap<Vec<(Ident, ast::NodeId, hir::MissingLifetimeKind)>>,
 
     /// The id of the owner
     pub id: ast::NodeId,
@@ -241,7 +240,17 @@ pub struct PerOwnerResolverData<'tcx> {
 
 impl<'tcx> PerOwnerResolverData<'tcx> {
     pub fn new(id: ast::NodeId, def_id: LocalDefId) -> PerOwnerResolverData<'tcx> {
-        PerOwnerResolverData { id, def_id, .. }
+        PerOwnerResolverData {
+            node_id_to_def_id: Default::default(),
+            lifetime_elision_allowed: false,
+            label_res_map: Default::default(),
+            lifetimes_res_map: Default::default(),
+            trait_map: Default::default(),
+            import_res: Default::default(),
+            extra_lifetime_params_map: Default::default(),
+            id,
+            def_id,
+        }
     }
 
     /// Obtains resolution for a label with the given `NodeId`.
@@ -656,8 +665,6 @@ pub struct CReaderCacheKey {
 
 /// Use this rather than `TyKind`, whenever possible.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, StableHash)]
-#[rustc_diagnostic_item = "Ty"]
-#[rustc_pass_by_value]
 pub struct Ty<'tcx>(Interned<'tcx, WithCachedTypeInfo<TyKind<'tcx>>>);
 
 impl<'tcx> crate::rustc_type_ir::inherent::IntoKind for Ty<'tcx> {
@@ -708,14 +715,8 @@ impl<'tcx> crate::rustc_type_ir::inherent::IntoKind for Term<'tcx> {
     }
 }
 
-unsafe impl<'tcx> crate::rustc_data_structures::sync::DynSend for Term<'tcx> where
-    &'tcx (Ty<'tcx>, Const<'tcx>): crate::rustc_data_structures::sync::DynSend
-{
-}
-unsafe impl<'tcx> crate::rustc_data_structures::sync::DynSync for Term<'tcx> where
-    &'tcx (Ty<'tcx>, Const<'tcx>): crate::rustc_data_structures::sync::DynSync
-{
-}
+// The `DynSend`/`DynSync` impls that were here now come from the blanket impls in
+// `rustc_data_structures/marker.rs` (auto traits are unstable); a second impl would conflict.
 unsafe impl<'tcx> Send for Term<'tcx> where &'tcx (Ty<'tcx>, Const<'tcx>): Send {}
 unsafe impl<'tcx> Sync for Term<'tcx> where &'tcx (Ty<'tcx>, Const<'tcx>): Sync {}
 
@@ -803,7 +804,8 @@ impl<'tcx> Term<'tcx> {
                 CONST_TAG => TermKind::Const(ty::Const(Interned::new_unchecked(
                     ptr.cast::<WithCachedTypeInfo<ty::ConstKind<'tcx>>>().as_ref(),
                 ))),
-                _ => core::intrinsics::unreachable(),
+                // `hint::unreachable_unchecked` is the stable face of `intrinsics::unreachable`.
+                _ => core::hint::unreachable_unchecked(),
             }
         }
     }

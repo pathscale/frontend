@@ -10,7 +10,6 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::intrinsics;
 use core::marker::PhantomData;
 use core::num::NonZero;
 use core::ptr::NonNull;
@@ -146,14 +145,8 @@ impl<'tcx> crate::rustc_type_ir::inherent::IntoKind for GenericArg<'tcx> {
     }
 }
 
-unsafe impl<'tcx> crate::rustc_data_structures::sync::DynSend for GenericArg<'tcx> where
-    &'tcx (Ty<'tcx>, ty::Region<'tcx>, ty::Const<'tcx>): crate::rustc_data_structures::sync::DynSend
-{
-}
-unsafe impl<'tcx> crate::rustc_data_structures::sync::DynSync for GenericArg<'tcx> where
-    &'tcx (Ty<'tcx>, ty::Region<'tcx>, ty::Const<'tcx>): crate::rustc_data_structures::sync::DynSync
-{
-}
+// The `DynSend`/`DynSync` impls that were here now come from the blanket impls in
+// `rustc_data_structures/marker.rs` (auto traits are unstable); a second impl would conflict.
 unsafe impl<'tcx> Send for GenericArg<'tcx> where
     &'tcx (Ty<'tcx>, ty::Region<'tcx>, ty::Const<'tcx>): Send
 {
@@ -249,7 +242,8 @@ impl<'tcx> GenericArg<'tcx> {
                 CONST_TAG => GenericArgKind::Const(ty::Const(Interned::new_unchecked(
                     ptr.cast::<WithCachedTypeInfo<ty::ConstKind<'tcx>>>().as_ref(),
                 ))),
-                _ => intrinsics::unreachable(),
+                // `hint::unreachable_unchecked` is the stable face of `intrinsics::unreachable`.
+                _ => core::hint::unreachable_unchecked(),
             }
         }
     }
@@ -546,28 +540,32 @@ impl<'tcx> GenericArgs<'tcx> {
     #[inline]
     #[track_caller]
     pub fn type_at(&self, i: usize) -> Ty<'tcx> {
-        self[i].as_type().unwrap_or_else(
-            #[track_caller]
-            || bug!("expected type for param #{} in {:?}", i, self),
-        )
+        // A `match` rather than a `#[track_caller]` closure (unstable `closure_track_caller`):
+        // `bug!` then reports this fn's caller, as it did through the closure.
+        match self[i].as_type() {
+            Some(ty) => ty,
+            None => bug!("expected type for param #{} in {:?}", i, self),
+        }
     }
 
     #[inline]
     #[track_caller]
     pub fn region_at(&self, i: usize) -> ty::Region<'tcx> {
-        self[i].as_region().unwrap_or_else(
-            #[track_caller]
-            || bug!("expected region for param #{} in {:?}", i, self),
-        )
+        // A `match` rather than a `#[track_caller]` closure (unstable `closure_track_caller`).
+        match self[i].as_region() {
+            Some(region) => region,
+            None => bug!("expected region for param #{} in {:?}", i, self),
+        }
     }
 
     #[inline]
     #[track_caller]
     pub fn const_at(&self, i: usize) -> ty::Const<'tcx> {
-        self[i].as_const().unwrap_or_else(
-            #[track_caller]
-            || bug!("expected const for param #{} in {:?}", i, self),
-        )
+        // A `match` rather than a `#[track_caller]` closure (unstable `closure_track_caller`).
+        match self[i].as_const() {
+            Some(ct) => ct,
+            None => bug!("expected const for param #{} in {:?}", i, self),
+        }
     }
 
     #[inline]

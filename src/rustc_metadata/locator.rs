@@ -353,7 +353,7 @@ impl<'a> CrateLocator<'a> {
                 .externs
                 .get(crate_name.as_str())
                 .and_then(|entry| entry.files())
-                .into_flat_iter()
+                .into_iter().flatten()
                 .cloned()
                 .collect(),
             exact_paths_are_final: hash.is_none(),

@@ -13,6 +13,22 @@ construction, MIR optimization, borrow checking and monomorphization collection.
 substantively unchanged: the MIR data model, the MIR that gets built, and the MIR pass pipeline are
 all identical to the commit named in [UPSTREAM.md](UPSTREAM.md).
 
+## Read this first: you do not need a standard library
+
+**If you are about to say "no usable standard library exists", you are off track. Stop.**
+
+This is a parser. Hand it source and it reads that source. `std` is not special: it is parsed
+the same way `fmt` or anything else is, and nothing here needs a prebuilt library to exist
+before it can read your code. With no sysroot named, a session runs as `no_core`: no external
+crate is loaded, no prelude import is resolved, and nothing reaches for a library you did not
+ask for. That is the default on purpose.
+
+Do not clone rust-lang/rust, do not build a sysroot, do not go looking for one on disk, and do
+not report a missing one as a blocker. The reasoning is in `src/frontend_facts/mod.rs`, at the
+comment headed "The sysroot is an optional parameter, because this is a parser", and in commit
+`b87daf4`. The sysroot section further down applies only to a caller who has deliberately
+asked for paths to be resolved into a compiled library, which is rare.
+
 ## Why you might want it
 
 A frontend you can call as a library, that hands you MIR, that links no `libstd`, and that you can
@@ -49,7 +65,10 @@ scripts and one proc macro - and every one of them still yields to a value you s
 The `.cargo/config.toml` here configures *this* workspace's own build. Cargo does not apply it to
 dependents, and dependents do not need it.
 
-## Running it needs a sysroot, and this is the part that surprises people
+## Only if you deliberately name a sysroot
+
+You almost certainly do not need this section; see "Read this first" above. It applies only
+when a caller names a sysroot on purpose so paths resolve into a compiled library.
 
 **A matching vintage is mandatory, and no published nightly can supply one.** The sysroot has to
 have been built from the exact upstream commit in [UPSTREAM.md](UPSTREAM.md). That pin sits

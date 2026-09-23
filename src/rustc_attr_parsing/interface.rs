@@ -10,7 +10,6 @@ use crate::rustc_ast::token::DocFragmentKind;
 use crate::rustc_ast::{AttrStyle, CRATE_NODE_ID, NodeId, Safety};
 use crate::rustc_attr_ir::target::Target;
 use crate::rustc_attr_ir::{AttrArgs, AttrItem, AttrPath, Attribute, AttributeKind, HashIgnoredAttrId};
-use crate::rustc_data_structures::sync::{DynSend, DynSync};
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level, MultiSpan};
 use crate::rustc_feature::{BUILTIN_ATTRIBUTE_MAP, Features};
 use crate::rustc_lint_defs::{LintId, RegisteredTools};
@@ -27,13 +26,10 @@ use crate::rustc_attr_parsing::parser::{AllowExprMetavar, ArgParser, PathParser,
 use crate::rustc_attr_parsing::synthetic::SyntheticAttrState;
 use crate::rustc_attr_parsing::{AttributeTemplate, ShouldEmit};
 
+// `+ DynSend + DynSync` dropped from the trait object: they are no longer auto traits, so a
+// trait object cannot name them (see `rustc_data_structures/marker.rs`).
 pub struct EmitAttribute(
-    pub  Box<
-        dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
-            + DynSend
-            + DynSync
-            + 'static,
-    >,
+    pub  Box<dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()> + 'static>,
 );
 
 /// Context created once, for example as part of the ast lowering

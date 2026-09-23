@@ -25,7 +25,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::Cell;
-use core::{assert_matches, debug_assert_matches, iter};
+use core::iter;
+use crate::{assert_matches, debug_assert_matches};
 
 use crate::rustc_abi::{ExternAbi, Size};
 use crate::rustc_ast::Recovered;
@@ -157,6 +158,8 @@ pub(crate) struct HirPlaceholderCollector {
 }
 
 impl<'v> Visitor<'v> for HirPlaceholderCollector {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_infer(&mut self, _inf_id: HirId, inf_span: Span, kind: InferKind<'v>) -> Self::Result {
         self.spans.push(inf_span);
 

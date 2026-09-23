@@ -256,7 +256,9 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         let mut target = place.local_or_deref_local();
         for stmt in &self.body[location.block].statements[location.statement_index..] {
             debug!("add_moved_or_invoked_closure_note: stmt={:?} target={:?}", stmt, target);
-            if let StatementKind::Assign((into, Rvalue::Use(from, _))) = &stmt.kind {
+            if let StatementKind::Assign(assign) = &stmt.kind
+                && let (into, Rvalue::Use(from, _)) = &**assign
+            {
                 debug!("add_fnonce_closure_note: into={:?} from={:?}", into, from);
                 match from {
                     Operand::Copy(place) | Operand::Move(place)
@@ -272,11 +274,9 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         // Check if we are attempting to call a closure after it has been invoked.
         let terminator = self.body[location.block].terminator();
         debug!("add_moved_or_invoked_closure_note: terminator={:?}", terminator);
-        if let TerminatorKind::Call {
-            func: Operand::Constant(ConstOperand { const_, .. }),
-            args,
-            ..
-        } = &terminator.kind
+        if let TerminatorKind::Call { func: Operand::Constant(func_const), args, .. } =
+            &terminator.kind
+            && let ConstOperand { const_, .. } = &**func_const
             && let ty::FnDef(id, _) = *const_.ty().kind()
         {
             debug!("add_moved_or_invoked_closure_note: id={:?}", id);
@@ -1047,7 +1047,8 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         };
 
         debug!("move_spans: moved_place={:?} location={:?} stmt={:?}", moved_place, location, stmt);
-        if let StatementKind::Assign((_, Rvalue::Aggregate(kind, places))) = &stmt.kind
+        if let StatementKind::Assign(assign) = &stmt.kind
+            && let (_, Rvalue::Aggregate(kind, places)) = &**assign
             && let AggregateKind::Closure(def_id, _) | AggregateKind::Coroutine(def_id, _) = **kind
         {
             debug!("move_spans: def_id={:?} places={:?}", def_id, places);
@@ -1061,7 +1062,8 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
 
         // StatementKind::FakeRead only contains a def_id if they are introduced as a result
         // of pattern matching within a closure.
-        if let StatementKind::FakeRead((cause, place)) = stmt.kind {
+        if let StatementKind::FakeRead(fake_read) = &stmt.kind {
+            let (cause, place) = **fake_read;
             match cause {
                 FakeReadCause::ForMatchedPlace(Some(closure_def_id))
                 | FakeReadCause::ForLet(Some(closure_def_id)) => {
@@ -1100,9 +1102,9 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         // `_temp` is some other local, and `FnSelfCall` is a function
         // that has a `self` parameter.
 
-        let target_temp = match stmt.kind {
-            StatementKind::Assign((temp, _)) if temp.as_local().is_some() => {
-                temp.as_local().unwrap()
+        let target_temp = match &stmt.kind {
+            StatementKind::Assign(assign) if assign.0.as_local().is_some() => {
+                assign.0.as_local().unwrap()
             }
             _ => return normal_ret,
         };
@@ -1148,12 +1150,12 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         use self::UseSpans::*;
         debug!("borrow_spans: use_span={:?} location={:?}", use_span, location);
 
-        let Some(Statement { kind: StatementKind::Assign((place, _)), .. }) =
+        let Some(Statement { kind: StatementKind::Assign(assign), .. }) =
             self.body[location.block].statements.get(location.statement_index)
         else {
             return OtherUse(use_span);
         };
-        let Some(target) = place.as_local() else { return OtherUse(use_span) };
+        let Some(target) = assign.0.as_local() else { return OtherUse(use_span) };
 
         if self.body.local_kind(target) != LocalKind::Temp {
             // operands are always temporaries.
@@ -1174,8 +1176,10 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
             self.body[location.block].statements[location.statement_index + 1..].iter();
 
         for stmt in statements.chain(maybe_additional_statement) {
-            if let StatementKind::Assign((_, Rvalue::Aggregate(kind, places))) = &stmt.kind {
-                let (&def_id, is_coroutine) = match kind {
+            if let StatementKind::Assign(assign) = &stmt.kind
+                && let (_, Rvalue::Aggregate(kind, places)) = &**assign
+            {
+                let (&def_id, is_coroutine) = match &**kind {
                     AggregateKind::Closure(def_id, _) => (def_id, false),
                     AggregateKind::Coroutine(def_id, _) => (def_id, true),
                     _ => continue,

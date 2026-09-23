@@ -314,9 +314,6 @@ macro_rules! define_named_walk {
 #[macro_export]
 macro_rules! common_visitor_and_walkers {
     ($(($mut: ident))? $Visitor:ident$(<$lt:lifetime>)?) => {
-        $(${ignore($lt)}
-            #[derive(Copy, Clone)]
-        )?
         #[derive(Debug)]
         pub enum FnKind<'a> {
             /// E.g., `fn foo()`, `fn foo(&self)`, or `extern "Abi" fn foo()`.
@@ -330,6 +327,19 @@ macro_rules! common_visitor_and_walkers {
                 &'a $($mut)? Box<Expr>
             ),
         }
+
+        // Only the immutable `FnKind` is `Copy`. Upstream put `#[derive(Copy, Clone)]` in a
+        // `$(${ignore($lt)} ...)?` group; `${ignore}` is unstable, and these impls, which use
+        // `$lt` for real, are what that derive generated.
+        $(
+            impl<$lt> Copy for FnKind<$lt> {}
+            impl<$lt> Clone for FnKind<$lt> {
+                #[inline]
+                fn clone(&self) -> Self {
+                    *self
+                }
+            }
+        )?
 
         impl<'a> FnKind<'_> {
             pub fn header(&'a $($mut)? self) -> Option<&'a $($mut)? FnHeader> {
@@ -519,12 +529,25 @@ macro_rules! common_visitor_and_walkers {
         /// Every `walk_*` method uses deconstruction to access fields of structs and
         /// enums. This will result in a compile error if a field is added, which makes
         /// it more likely the appropriate visit call will be added for it.
-        pub trait $Visitor<$($lt)?> : Sized $(${ignore($mut)} + MutVisitorResult<Result = ()>)? {
+        //
+        // Upstream wrote the `MutVisitorResult` supertrait as `$(${ignore($mut)} + ...)?`, and
+        // `${ignore}` is unstable. A bound cannot be a macro call but a type can, so the
+        // supertrait moves to the equivalent `where Self: ...` clause with `Self` written
+        // through `metavar_ignore!` to drive the repetition on `$mut`.
+        pub trait $Visitor<$($lt)?> : Sized
+        where
+            $($crate::metavar_ignore!([$mut] Self): MutVisitorResult<Result = ()>,)?
+        {
             $(
-                ${ignore($lt)}
-                /// The result type of the `visit_*` methods. Can be either `()`,
-                /// or `ControlFlow<T>`.
-                type Result: VisitorResult = ();
+                // Only the immutable visitor declares `Result`; `metavar_ignore!` drives this
+                // repetition on `$lt` in place of `${ignore($lt)}`.
+                $crate::metavar_ignore! {
+                    [$lt]
+                    /// The result type of the `visit_*` methods. Can be either `()`,
+                    /// or `ControlFlow<T>`.
+                    // Stable Rust has no associated type defaults, so every impl names this type.
+                    type Result: VisitorResult;
+                }
             )?
 
             // Methods in this trait have one of three forms, with the last two forms
@@ -671,7 +694,9 @@ macro_rules! common_visitor_and_walkers {
             // for `MutVisitor`: `Span` and `NodeId` are mutated at the caller site.
             fn visit_fn(
                 &mut self,
-                fk: FnKind<$($lt)? $(${ignore($mut)} '_)?>,
+                // `FnKind<'a>` or, for `MutVisitor`, `FnKind<'_>`: exactly one of `$lt` and
+                // `$mut` is present. `metavar_ignore!` replaces upstream's `${ignore($mut)}`.
+                fk: $(FnKind<$lt>)? $($crate::metavar_ignore!([$mut] FnKind<'_>))?,
                 _: &AttrVec,
                 _: Span,
                 _: NodeId,
@@ -779,14 +804,23 @@ macro_rules! common_visitor_and_walkers {
 
         // This is only used by the MutVisitor. We include this symmetry here to make writing other
         // functions easier.
-        $(${ignore($lt)}
-            #[expect(unused, rustc::disallowed_pass_by_ref)]
+        //
+        // Written out once per flavour: upstream shared one body and switched pieces with
+        // `${ignore($lt)}` / `${ignore($mut)}`, which are unstable. Each copy below uses its
+        // metavariable for real, so the repetition needs no `ignore`.
+        $(
+            #[expect(unused)]
             #[inline]
+            fn visit_span<$lt, V: $Visitor<$lt>>(vis: &mut V, span: &$lt Span) -> V::Result {
+                V::Result::output()
+            }
         )?
-        fn visit_span<$($lt,)? V: $Visitor$(<$lt>)?>(vis: &mut V, span: &$($lt)? $($mut)? Span) -> V::Result {
-            $(${ignore($mut)} vis.visit_span(span))?;
-            V::Result::output()
-        }
+        $(
+            fn visit_span<V: $Visitor>(vis: &mut V, span: &$mut Span) -> V::Result {
+                vis.visit_span(span);
+                V::Result::output()
+            }
+        )?
 
         $(impl_visitable!(|&$lt self: ThinVec<(UseTree, NodeId)>, vis: &mut V, _extra: ()| {
             for (nested_tree, nested_id) in self {
@@ -868,7 +902,9 @@ macro_rules! common_visitor_and_walkers {
                         visit_visitable!($($mut)? vis, impl_),
                     ItemKind::Trait(trait_) =>
                         visit_visitable!($($mut)? vis, trait_),
-                    ItemKind::TraitAlias(TraitAlias { constness, ident, generics, bounds}) => {
+                    ItemKind::TraitAlias(trait_alias) => {
+                        let TraitAlias { constness, ident, generics, bounds } =
+                            &$($mut)? **trait_alias;
                         visit_visitable!($($mut)? vis, constness, ident, generics);
                         visit_visitable_with!($($mut)? vis, bounds, BoundKind::Bound)
                     }
@@ -945,7 +981,9 @@ macro_rules! common_visitor_and_walkers {
             }
         }
 
-        pub fn walk_fn<$($lt,)? V: $Visitor$(<$lt>)?>(vis: &mut V, kind: FnKind<$($lt)? $(${ignore($mut)} '_)?>) -> V::Result {
+        // `kind` is `FnKind<'a>` or, for `MutVisitor`, `FnKind<'_>`; `metavar_ignore!` replaces
+        // upstream's unstable `${ignore($mut)}`.
+        pub fn walk_fn<$($lt,)? V: $Visitor$(<$lt>)?>(vis: &mut V, kind: $(FnKind<$lt>)? $($crate::metavar_ignore!([$mut] FnKind<'_>))?) -> V::Result {
             match kind {
                 FnKind::Fn(
                     _ctxt,
@@ -969,7 +1007,8 @@ macro_rules! common_visitor_and_walkers {
             let Impl { generics, of_trait, self_ty, items, constness: _ } = self;
             try_visit!(vis.visit_generics(generics));
             if let Some(of_trait) = of_trait {
-                let TraitImplHeader { defaultness, safety, polarity, trait_ref } = of_trait;
+                let TraitImplHeader { defaultness, safety, polarity, trait_ref } =
+                    &$($mut)? **of_trait;
                 visit_visitable!($($mut)? vis, defaultness, safety, polarity, trait_ref);
             }
             try_visit!(vis.visit_ty(self_ty));
@@ -1017,23 +1056,26 @@ macro_rules! common_visitor_and_walkers {
                     visit_visitable!($($mut)? vis, head_expression, if_block, optional_else),
                 ExprKind::While(subexpression, block, opt_label) =>
                     visit_visitable!($($mut)? vis, subexpression, block, opt_label),
-                ExprKind::ForLoop(ForLoop { pat, iter, body, label, kind }) =>
-                    visit_visitable!($($mut)? vis, pat, iter, body, label, kind),
+                ExprKind::ForLoop(for_loop) => {
+                    let ForLoop { pat, iter, body, label, kind } = &$($mut)? **for_loop;
+                    visit_visitable!($($mut)? vis, pat, iter, body, label, kind)
+                }
                 ExprKind::Loop(block, opt_label, span) =>
                     visit_visitable!($($mut)? vis, block, opt_label, span),
                 ExprKind::Match(subexpression, arms, kind) =>
                     visit_visitable!($($mut)? vis, subexpression, arms, kind),
-                ExprKind::Closure(Closure {
-                    binder,
-                    capture_clause,
-                    coroutine_marker,
-                    constness,
-                    movability,
-                    fn_decl,
-                    body,
-                    fn_decl_span,
-                    fn_arg_span,
-                }) => {
+                ExprKind::Closure(closure) => {
+                    let Closure {
+                        binder,
+                        capture_clause,
+                        coroutine_marker,
+                        constness,
+                        movability,
+                        fn_decl,
+                        body,
+                        fn_decl_span,
+                        fn_arg_span,
+                    } = &$($mut)? **closure;
                     visit_visitable!($($mut)? vis, constness, movability, capture_clause);
                     let kind = FnKind::Closure(binder, coroutine_marker, fn_decl, body);
                     try_visit!(vis.visit_fn(kind, attrs, *span, *id));

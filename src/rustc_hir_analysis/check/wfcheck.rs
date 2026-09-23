@@ -724,6 +724,8 @@ impl<'tcx> GATArgsCollector<'tcx> {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for GATArgsCollector<'tcx> {
+    type Result = ();
+
     fn visit_ty(&mut self, t: Ty<'tcx>) {
         match t.kind() {
             &ty::Alias(_, ty::AliasTy { kind: ty::Projection { def_id }, args, .. })
@@ -2264,6 +2266,7 @@ struct CollectUsageSpans<'a> {
 }
 
 impl<'tcx> Visitor<'tcx> for CollectUsageSpans<'_> {
+    type NestedFilter = intravisit::IgnoreNested;
     type Result = ();
 
     fn visit_generics(&mut self, _g: &'tcx crate::rustc_hir::Generics<'tcx>) -> Self::Result {

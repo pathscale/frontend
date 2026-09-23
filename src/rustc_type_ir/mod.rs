@@ -20,13 +20,8 @@
 //! chapter](https://rustc-dev-guide.rust-lang.org/solve/sharing-crates-with-rust-analyzer.html).
 
 // tidy-alphabetical-start
-#![cfg_attr(feature = "nightly", rustc_diagnostic_item = "type_ir")]
-#![allow(rustc::direct_use_of_rustc_type_ir)]
-#![allow(rustc::usage_of_ty_tykind)]
-#![allow(rustc::usage_of_type_ir_inherent)]
-#![allow(rustc::usage_of_type_ir_traits)]
 #![cfg_attr(feature = "nightly", allow(internal_features))]
-#![cfg_attr(feature = "nightly", feature(associated_type_defaults, rustc_attrs, negative_impls))]
+#![cfg_attr(feature = "nightly", feature(negative_impls))]
 
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
@@ -62,9 +57,7 @@ use rustc_macros::{Decodable, Encodable, StableHash};
 pub mod data_structures;
 pub mod elaborate;
 pub mod error;
-pub mod fast_reject;
-#[cfg_attr(feature = "nightly", rustc_diagnostic_item = "type_ir_inherent")]
-pub mod inherent;
+pub mod fast_reject;pub mod inherent;
 pub mod intern;
 pub mod ir_print;
 pub mod lang_items;
@@ -272,9 +265,7 @@ pub fn debug_bound_var<T: core::fmt::Write>(
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, GenericTypeVisitable)]
-#[cfg_attr(feature = "nightly", derive(Decodable, Encodable, StableHash))]
-#[cfg_attr(feature = "nightly", rustc_pass_by_value)]
-pub enum Variance {
+#[cfg_attr(feature = "nightly", derive(Decodable, Encodable, StableHash))]pub enum Variance {
     Covariant,     // T<A> <: T<B> iff A <: B -- e.g., function return type
     Invariant,     // T<A> <: T<B> iff B == A -- e.g., type of mutable cell
     Contravariant, // T<A> <: T<B> iff B <: A -- e.g., function param type

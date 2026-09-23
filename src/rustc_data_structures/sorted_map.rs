@@ -2,6 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -11,7 +12,6 @@ use alloc::vec::Vec;
 use alloc::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt::Debug;
-use core::iter::TrustedLen;
 use core::mem;
 use core::ops::{Bound, Index, IndexMut, RangeBounds};
 
@@ -58,7 +58,7 @@ impl<K: Ord, V> SortedMap<K, V> {
     /// and that there are no duplicates.
     #[inline]
     pub fn from_presorted_elements(elements: Vec<(K, V)>) -> SortedMap<K, V> {
-        debug_assert!(elements.array_windows().all(|[fst, snd]| fst.0 < snd.0));
+        debug_assert!(elements.windows_array().all(|[fst, snd]| fst.0 < snd.0));
 
         SortedMap { data: elements }
     }
@@ -228,8 +228,10 @@ impl<K: Ord, V> SortedMap<K, V> {
     #[inline]
     pub fn insert_presorted(
         &mut self,
-        // We require `TrustedLen` to ensure that the `splice` below is actually efficient.
-        mut elements: impl Iterator<Item = (K, V)> + DoubleEndedIterator + TrustedLen,
+        // Upstream requires `TrustedLen` here so the `splice` below can trust the size hint.
+        // That trait is unstable; `ExactSizeIterator` keeps the intent for callers, and the
+        // result is the same either way, only the reservation inside `splice` can differ.
+        mut elements: impl Iterator<Item = (K, V)> + DoubleEndedIterator + ExactSizeIterator,
     ) {
         let Some(first) = elements.next() else {
             return;

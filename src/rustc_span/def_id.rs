@@ -239,7 +239,6 @@ crate::rustc_index::newtype_index! {
 // On below-64 bit systems we can simply use the derived `Hash` impl
 #[cfg_attr(not(target_pointer_width = "64"), derive(Hash))]
 #[repr(C)]
-#[rustc_pass_by_value]
 // We guarantee field order. Note that the order is essential here, see below why.
 pub struct DefId {
     // cfg-ing the order of fields so that the `DefIndex` which is high entropy always ends up in
@@ -255,8 +254,8 @@ pub struct DefId {
 // To ensure correctness of incremental compilation,
 // `DefId` must not implement `Ord` or `PartialOrd`.
 // See https://github.com/rust-lang/rust/issues/90317.
-impl !Ord for DefId {}
-impl !PartialOrd for DefId {}
+// Upstream enforced this with `impl !Ord` / `impl !PartialOrd` (unstable negative
+// impls); stable Rust relies on neither being derived or written.
 
 // On 64-bit systems, we can hash the whole `DefId` as one `u64` instead of two `u32`s. This
 // improves performance without impairing `FxHash` quality. So the below code gets compiled to a
@@ -375,8 +374,8 @@ pub struct LocalDefId {
 // To ensure correctness of incremental compilation,
 // `LocalDefId` must not implement `Ord` or `PartialOrd`.
 // See https://github.com/rust-lang/rust/issues/90317.
-impl !Ord for LocalDefId {}
-impl !PartialOrd for LocalDefId {}
+// Upstream enforced this with `impl !Ord` / `impl !PartialOrd` (unstable negative
+// impls); stable Rust relies on neither being derived or written.
 
 pub const CRATE_DEF_ID: LocalDefId = LocalDefId { local_def_index: CRATE_DEF_INDEX };
 pub const CRATE_MOD_ID: LocalModId = LocalModId::new_unchecked(CRATE_DEF_ID);
@@ -522,8 +521,8 @@ impl From<ModId> for DefId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Encodable, Decodable, StableHash)]
 pub struct LocalModId(LocalDefId);
 
-impl !Ord for LocalModId {}
-impl !PartialOrd for LocalModId {}
+// `LocalModId` must not implement `Ord` or `PartialOrd` either (see `LocalDefId`). Upstream
+// said so with unstable negative impls; on stable, by not deriving or writing them.
 
 impl LocalModId {
     #[inline]

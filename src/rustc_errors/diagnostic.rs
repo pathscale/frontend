@@ -2,6 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -33,7 +34,8 @@ use crate::rustc_errors::{
 pub trait EmissionGuarantee: Sized {
     /// This exists so that bugs and fatal errors can both result in `!` (an
     /// abort) when emitted, but have different aborting behaviour.
-    type EmitResult = Self;
+    // Stable Rust has no associated type defaults, so every impl names this type.
+    type EmitResult;
 
     /// Implementation of `Diag::emit`, fully controlled by each `impl` of
     /// `EmissionGuarantee`, to make it impossible to create a value of
@@ -43,12 +45,16 @@ pub trait EmissionGuarantee: Sized {
 }
 
 impl EmissionGuarantee for ErrorGuaranteed {
+    type EmitResult = Self;
+
     fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
         diag.emit_producing_error_guaranteed()
     }
 }
 
 impl EmissionGuarantee for () {
+    type EmitResult = Self;
+
     fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
         diag.emit_producing_nothing();
     }
@@ -60,7 +66,8 @@ impl EmissionGuarantee for () {
 pub struct BugAbort;
 
 impl EmissionGuarantee for BugAbort {
-    type EmitResult = !;
+    // `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+    type EmitResult = crate::Never;
 
     fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
         diag.emit_producing_nothing();
@@ -77,7 +84,7 @@ impl EmissionGuarantee for BugAbort {
 pub struct FatalAbort;
 
 impl EmissionGuarantee for FatalAbort {
-    type EmitResult = !;
+    type EmitResult = crate::Never;
 
     fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
         diag.emit_producing_nothing();
@@ -86,6 +93,8 @@ impl EmissionGuarantee for FatalAbort {
 }
 
 impl EmissionGuarantee for crate::rustc_span::fatal_error::FatalError {
+    type EmitResult = Self;
+
     fn emit_producing_guarantee(diag: Diag<'_, Self>) -> Self::EmitResult {
         diag.emit_producing_nothing();
         crate::rustc_span::fatal_error::FatalError
@@ -479,8 +488,8 @@ pub struct Diag<'a, G: EmissionGuarantee = ErrorGuaranteed> {
 }
 
 // Cloning a `Diag` is a recipe for a diagnostic being emitted twice, which
-// would be bad.
-impl<G> !Clone for Diag<'_, G> {}
+// would be bad. Upstream enforced this with `impl !Clone`, which is unstable; `Diag`
+// derives no `Clone`, so simply never adding one keeps the guarantee.
 
 crate::static_assert_size!(Diag<'_, ()>, 3 * size_of::<usize>());
 
@@ -911,7 +920,7 @@ impl<'a, G: EmissionGuarantee> Diag<'a, G> {
             "Span must not be empty and have no suggestion",
         );
         debug_assert_eq!(
-            parts.array_windows().find(|[a, b]| a.span.overlaps(b.span)),
+            parts.windows_array().find(|[a, b]| a.span.overlaps(b.span)),
             None,
             "suggestion must not have overlapping parts",
         );
@@ -1096,7 +1105,7 @@ impl<'a, G: EmissionGuarantee> Diag<'a, G> {
                     "Span must not be empty and have no suggestion",
                 );
                 debug_assert_eq!(
-                    parts.array_windows().find(|[a, b]| a.span.overlaps(b.span)),
+                    parts.windows_array().find(|[a, b]| a.span.overlaps(b.span)),
                     None,
                     "suggestion must not have overlapping parts",
                 );

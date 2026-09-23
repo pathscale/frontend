@@ -96,9 +96,11 @@ impl fmt::Display for ConstEvalErrKind {
 impl MachineStopType for ConstEvalErrKind {}
 
 /// The errors become [`InterpErrorKind::MachineStop`] when being raised.
-impl<'tcx> Into<InterpErrorInfo<'tcx>> for ConstEvalErrKind {
-    fn into(self) -> InterpErrorInfo<'tcx> {
-        err_machine_stop!(self).into()
+// `From` rather than upstream's `Into`: with `InterpResult` a plain `Result`, `?` on a
+// `Result<_, ConstEvalErrKind>` converts through `From`, not through a `FromResidual` impl.
+impl<'tcx> From<ConstEvalErrKind> for InterpErrorInfo<'tcx> {
+    fn from(kind: ConstEvalErrKind) -> InterpErrorInfo<'tcx> {
+        err_machine_stop!(kind).into()
     }
 }
 

@@ -18,7 +18,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 
 use min_specialization::check_min_specialization;
 use crate::rustc_data_structures::fx::FxHashSet;

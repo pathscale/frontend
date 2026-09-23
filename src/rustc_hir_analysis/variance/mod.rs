@@ -139,6 +139,8 @@ fn variance_of_opaque(
     }
 
     impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for OpaqueTypeLifetimeCollector<'tcx> {
+        type Result = ();
+
         #[instrument(level = "trace", skip(self), ret)]
         fn visit_region(&mut self, r: ty::Region<'tcx>) {
             if let ty::RegionKind::ReEarlyParam(ebr) = r.kind() {

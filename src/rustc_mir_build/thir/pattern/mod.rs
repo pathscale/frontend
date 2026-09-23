@@ -6,7 +6,7 @@ mod check_match;
 mod const_to_pat;
 mod migration;
 
-use core::assert_matches;
+use crate::assert_matches;
 use core::cmp::Ordering;
 use alloc::sync::Arc;
 
@@ -179,7 +179,7 @@ impl<'tcx, 'ptcx> PatCtxt<'tcx, 'ptcx> {
         // Lower the endpoint into a temporary `thir::Pat` that will then be
         // deconstructed to obtain the constant value and other data.
         let endpoint_pat: Box<Pat<'tcx>> = self.lower_pat_expr(pat, expr);
-        let Pat { ref kind, extra, .. } = endpoint_pat;
+        let Pat { ref kind, extra, .. } = *endpoint_pat;
 
         // Preserve any ascriptions from endpoint constants.
         if let Some(extra) = extra {

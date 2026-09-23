@@ -370,14 +370,15 @@ pub(super) fn compute_layout<'tcx>(
             // this code runs on pre-cleanup MIR, and `ignore_for_traits = false` is the safer
             // default.
             let ignore_for_traits = match decl.local_info {
-                // Do not include raw pointers created from accessing `static` items, as those could
-                // well be re-created by another access to the same static.
-                ClearCrossCrate::Set(LocalInfo::StaticRef { is_thread_local, .. }) => {
-                    !is_thread_local
-                }
-                // Fake borrows are only read by fake reads, so do not have any reality in
-                // post-analysis MIR.
-                ClearCrossCrate::Set(LocalInfo::FakeBorrow) => true,
+                ClearCrossCrate::Set(ref local_info) => match **local_info {
+                    // Do not include raw pointers created from accessing `static` items, as those
+                    // could well be re-created by another access to the same static.
+                    LocalInfo::StaticRef { is_thread_local, .. } => !is_thread_local,
+                    // Fake borrows are only read by fake reads, so do not have any reality in
+                    // post-analysis MIR.
+                    LocalInfo::FakeBorrow => true,
+                    _ => false,
+                },
                 _ => false,
             };
 

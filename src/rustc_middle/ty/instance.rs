@@ -8,7 +8,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{assert_matches, fmt};
+use core::fmt;
+use crate::assert_matches;
 
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::ErrorGuaranteed;
@@ -426,6 +427,8 @@ fn type_length<'tcx>(item: impl TypeVisitable<TyCtxt<'tcx>>) -> usize {
         cache: FxHashMap<Ty<'tcx>, usize>,
     }
     impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for Visitor<'tcx> {
+        type Result = ();
+
         fn visit_ty(&mut self, t: Ty<'tcx>) {
             if let Some(&value) = self.cache.get(&t) {
                 self.type_length += value;

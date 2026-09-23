@@ -132,8 +132,9 @@ pub struct BridgeConfig<'a> {
     force_show_panics: bool,
 }
 
-impl !Send for BridgeConfig<'_> {}
-impl !Sync for BridgeConfig<'_> {}
+// Upstream also wrote `impl !Send` / `impl !Sync` here (unstable negative impls). They are
+// redundant: `closure::Closure` holds a raw-pointer marker, so `BridgeConfig` is neither
+// already.
 
 macro_rules! declare_tags {
     (

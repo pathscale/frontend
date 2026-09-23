@@ -1,5 +1,6 @@
 
 #![deny(unused_must_use)]
+use core::convert::Infallible;
 use std::collections::HashSet;
 
 use proc_macro2::{Ident, Span, TokenStream};
@@ -384,7 +385,9 @@ impl DiagnosticDeriveVariantBuilder {
                 {
                     Ok(self.add_subdiagnostic(&fn_ident, message))
                 } else {
-                    report_type_error(attr, "`Span`, `MultiSpan`, `bool` or `()`")?
+                    // The empty match turns `Infallible` into a diverging branch; see
+                    // `report_type_error`.
+                    match report_type_error(attr, "`Span`, `MultiSpan`, `bool` or `()`")? {}
                 }
             }
             SubdiagnosticKind::Suggestion {
@@ -471,7 +474,9 @@ impl DiagnosticDeriveVariantBuilder {
                 let mut span_idx = None;
                 let mut applicability_idx = None;
 
-                fn type_err(span: &Span) -> Result<!, DiagnosticDeriveError> {
+                // `Infallible` stands in for the nightly-only `!`, so the `let ... else` arms
+                // below need `match ...? {}` to diverge where a bare `?` used to.
+                fn type_err(span: &Span) -> Result<Infallible, DiagnosticDeriveError> {
                     span_err(span.unwrap(), "wrong types for suggestion")
                         .help(
                             "`#[suggestion(...)]` on a tuple field must be applied to fields \
@@ -492,10 +497,10 @@ impl DiagnosticDeriveVariantBuilder {
                 }
 
                 let Some((span_idx, _)) = span_idx else {
-                    type_err(&tup.span())?;
+                    match type_err(&tup.span())? {}
                 };
                 let Some((applicability_idx, applicability_span)) = applicability_idx else {
-                    type_err(&tup.span())?;
+                    match type_err(&tup.span())? {}
                 };
                 let binding = &info.binding.binding;
                 let span = quote!(#binding.#span_idx);

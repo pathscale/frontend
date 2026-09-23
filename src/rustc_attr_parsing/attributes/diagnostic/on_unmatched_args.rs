@@ -17,7 +17,7 @@ impl AttributeParser for OnUnmatchedArgsParser {
         template!(List: &[r#"/*opt*/ message = "...", /*opt*/ label = "...", /*opt*/ note = "...""#]),
         AttributeStability::Stable, // Unstable, stability checked manually below
         |this, cx, args| {
-            gate_diagnostic_attr!(diagnostic_on_unmatched_args);
+            gate_diagnostic_attr!(cx, args, diagnostic_on_unmatched_args);
 
             let span = cx.attr_span;
             this.span = Some(span);

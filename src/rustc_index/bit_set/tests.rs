@@ -170,7 +170,8 @@ fn chunked_bitset() {
     assert!(!b100.contains(20) && b100.contains(30) && !b100.contains(99) && b100.contains(50));
     assert_eq!(
         b100.chunks(),
-        #[rustfmt::skip]
+        // `#[rustfmt::skip]` dropped: an attribute on a macro argument is an expression
+        // attribute (`stmt_expr_attributes`, unstable).
         vec![Mixed {
             chunk_domain_size: 100,
             ones_count: 97,
@@ -248,7 +249,7 @@ fn chunked_bitset() {
     );
     assert_eq!(
         b4096.chunks(),
-        #[rustfmt::skip]
+        // `#[rustfmt::skip]` dropped: `stmt_expr_attributes` is unstable.
         vec![
             Mixed {
                 chunk_domain_size: 2048,
@@ -293,7 +294,7 @@ fn chunked_bitset() {
     assert!(b10000.insert(3000) && b10000.insert(5000));
     assert_eq!(
         b10000.chunks(),
-        #[rustfmt::skip]
+        // `#[rustfmt::skip]` dropped: `stmt_expr_attributes` is unstable.
         vec![
             Zeros { chunk_domain_size: 2048 },
             Mixed {
@@ -350,7 +351,7 @@ fn chunked_bitset() {
     assert!(b64.contains(63));
     assert_eq!(
         b64.chunks(),
-        #[rustfmt::skip]
+        // `#[rustfmt::skip]` dropped: `stmt_expr_attributes` is unstable.
         vec![
             Mixed {
                 chunk_domain_size: 64,

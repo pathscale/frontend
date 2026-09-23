@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
+use core::convert::Infallible;
 use std::fmt;
 use std::str::FromStr;
 
@@ -63,10 +64,14 @@ pub(crate) fn type_is_bool(ty: &Type) -> bool {
 }
 
 /// Reports a type error for field with `attr`.
+///
+/// `Infallible` where `!` would say it better: `!` as a type is nightly-only. The difference shows
+/// at a caller that needs the `Ok` side to diverge, which has to write `match ...? {}` instead of
+/// a bare `?`.
 pub(crate) fn report_type_error(
     attr: &Attribute,
     ty_name: &str,
-) -> Result<!, DiagnosticDeriveError> {
+) -> Result<Infallible, DiagnosticDeriveError> {
     let name = attr.path().segments.last().unwrap().ident.to_string();
     let meta = &attr.meta;
 

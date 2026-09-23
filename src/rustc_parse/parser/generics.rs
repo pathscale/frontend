@@ -704,7 +704,7 @@ fn suggest_replacing_equality_pred_with_assoc_item_constraint(
                 parts.push((qself.ty.span.between(trait_segs[0].span()), ": ".into()));
                 let (span, snippet) = match &final_trait_seg.args {
                     Some(args) => {
-                        let ast::GenericArgs::AngleBracketed(args) = args else { return };
+                        let ast::GenericArgs::AngleBracketed(args) = &**args else { return };
                         let Some(args) = args.args.last() else { return };
                         (args.span(), ", ")
                     }

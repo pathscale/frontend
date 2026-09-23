@@ -57,12 +57,14 @@ enum Shadowing {
     Unrestricted,
 }
 
-impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
+// Methods taking a `CmResolver` receiver live in inherent impls on `CmResolver` itself, since a
+// `self: CmResolver` receiver on `Resolver` needs the unstable `arbitrary_self_types`.
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// A generic scope visitor.
     /// Visits scopes in order to resolve some identifier in them or perform other actions.
     /// If the callback returns `Some` result, we stop visiting scopes and return it.
-    pub(crate) fn visit_scopes<'r, T>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn visit_scopes<T>(
+        mut self,
         scope_set: ScopeSet<'ra>,
         parent_scope: &ParentScope<'ra>,
         mut ctxt: Macros20NormalizedSyntaxContext,
@@ -248,7 +250,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         None
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn hygienic_lexical_parent(
         &self,
         module: Module<'ra>,
@@ -397,9 +401,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         unreachable!()
     }
 
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// Resolve an identifier in the specified set of scopes.
-    pub(crate) fn resolve_ident_in_scope_set<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn resolve_ident_in_scope_set(
+        self,
         orig_ident: Ident,
         scope_set: ScopeSet<'ra>,
         parent_scope: &ParentScope<'ra>,
@@ -418,8 +425,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         )
     }
 
-    fn resolve_ident_in_scope_set_inner<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+    fn resolve_ident_in_scope_set_inner(
+        self,
         ident: IdentKey,
         orig_ident_span: Span,
         scope_set: ScopeSet<'ra>,
@@ -489,7 +496,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     Err(ControlFlow::Break(determinacy)) if innermost_results.is_empty() => {
                         return ControlFlow::Break(Err(determinacy));
                     }
-                    Err(determinacy) => Err(determinacy.into_value()),
+                    // Both arms carry the same type; this is the unstable
+                    // `ControlFlow::into_value`, spelled out.
+                    Err(ControlFlow::Continue(d) | ControlFlow::Break(d)) => Err(d),
                 };
                 match res {
                     Ok(decl) if sub_namespace_match(decl.macro_kinds(), macro_kind) => {
@@ -550,8 +559,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    fn resolve_ident_in_scope<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    fn resolve_ident_in_scope(
+        mut self,
         ident: IdentKey,
         orig_ident_span: Span,
         ns: Namespace,
@@ -809,7 +818,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         ret.map_err(ControlFlow::Continue)
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn maybe_push_glob_vs_glob_vis_ambiguity(
         &mut self,
         ident: IdentKey,
@@ -970,9 +981,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         false
     }
 
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn maybe_resolve_ident_in_module<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn maybe_resolve_ident_in_module(
+        self,
         module: ModuleOrUniformRoot<'ra>,
         ident: Ident,
         ns: Namespace,
@@ -981,7 +995,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     ) -> Result<Decl<'ra>, Determinacy> {
         self.resolve_ident_in_module(module, ident, ns, parent_scope, None, None, ignore_import)
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn resolve_super_in_module(
         &self,
         ident: Ident,
@@ -999,9 +1015,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         ident.name == kw::PathRoot && ident.span.is_rust_2015() && self.tcx.sess.is_rust_2015()
     }
 
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn resolve_ident_in_module<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn resolve_ident_in_module(
+        self,
         module: ModuleOrUniformRoot<'ra>,
         ident: Ident,
         ns: Namespace,
@@ -1105,8 +1124,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Attempts to resolve `ident` in namespace `ns` of non-glob bindings in an external `module`.
-    fn resolve_ident_in_extern_module_non_globs_unadjusted<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    fn resolve_ident_in_extern_module_non_globs_unadjusted(
+        mut self,
         module: ExternModule<'ra>,
         ident: IdentKey,
         orig_ident_span: Span,
@@ -1144,8 +1163,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Attempts to resolve `ident` in namespace `ns` of non-glob bindings in a local `module`.
-    fn resolve_ident_in_local_module_non_globs_unadjusted<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    fn resolve_ident_in_local_module_non_globs_unadjusted(
+        mut self,
         module: LocalModule<'ra>,
         ident: IdentKey,
         orig_ident_span: Span,
@@ -1212,8 +1231,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Attempts to resolve `ident` in namespace `ns` of glob bindings in `module`.
-    fn resolve_ident_in_module_globs_unadjusted<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    fn resolve_ident_in_module_globs_unadjusted(
+        mut self,
         module: LocalModule<'ra>,
         ident: IdentKey,
         orig_ident_span: Span,
@@ -1350,7 +1369,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         // No resolution and no one else can define the name - determinate error.
         Err(ControlFlow::Continue(Determined))
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn finalize_module_binding(
         &mut self,
         ident: IdentKey,
@@ -1395,10 +1416,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         return Ok(binding);
     }
 
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     // Checks if a single import can define the `Ident` corresponding to `binding`.
     // This is used to check whether we can definitively accept a glob as a resolution.
-    fn single_import_can_define_name<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    fn single_import_can_define_name(
+        mut self,
         resolution: &NameResolution<'ra>,
         binding: Option<Decl<'ra>>,
         ns: Namespace,
@@ -1465,6 +1489,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         false
     }
 
+}
+
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Validate a local resolution (from ribs).
     #[instrument(level = "debug", skip(self, all_ribs))]
     fn validate_res_from_ribs(
@@ -1797,9 +1824,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         res
     }
 
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn maybe_resolve_path<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn maybe_resolve_path(
+        self,
         path: &[Segment],
         opt_ns: Option<Namespace>, // `None` indicates a module path in import
         parent_scope: &ParentScope<'ra>,
@@ -1818,8 +1848,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         )
     }
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn resolve_path<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn resolve_path(
+        self,
         path: &[Segment],
         opt_ns: Option<Namespace>, // `None` indicates a module path in import
         parent_scope: &ParentScope<'ra>,
@@ -1840,8 +1870,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         )
     }
 
-    pub(crate) fn resolve_path_with_ribs<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    pub(crate) fn resolve_path_with_ribs(
+        mut self,
         path: &[Segment],
         opt_ns: Option<Namespace>, // `None` indicates a module path in import
         parent_scope: &ParentScope<'ra>,

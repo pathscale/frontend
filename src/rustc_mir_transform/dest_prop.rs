@@ -290,7 +290,8 @@ impl<'tcx> MutVisitor<'tcx> for Merger<'tcx> {
         };
         self.super_statement(statement, location);
         match &statement.kind {
-            StatementKind::Assign((dest, rvalue)) => {
+            StatementKind::Assign(assign) => {
+                let (dest, rvalue) = &**assign;
                 match rvalue {
                     Rvalue::Use(Operand::Copy(place) | Operand::Move(place), _) => {
                         // These might've been turned into self-assignments by the replacement
@@ -404,8 +405,8 @@ struct FindAssignments<'a, 'tcx> {
 
 impl<'tcx> Visitor<'tcx> for FindAssignments<'_, 'tcx> {
     fn visit_statement(&mut self, statement: &Statement<'tcx>, _: Location) {
-        if let StatementKind::Assign((lhs, Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _))) =
-            &statement.kind
+        if let StatementKind::Assign(assign) = &statement.kind
+            && let (lhs, Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _)) = &**assign
             && let Some(src) = lhs.as_local()
             && let Some(dest) = rhs.as_local()
         {
@@ -643,11 +644,14 @@ fn save_as_intervals<'tcx>(
             // We make an exception for simple assignments `_a.stuff = {copy|move} _b.stuff`,
             // as marking `_b` live here would prevent unification.
             let is_simple_assignment = match stmt.kind {
-                StatementKind::Assign((
-                    lhs,
-                    Rvalue::CopyForDeref(rhs)
-                    | Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _),
-                )) => lhs.projection == rhs.projection,
+                StatementKind::Assign(ref assign) => match **assign {
+                    (
+                        lhs,
+                        Rvalue::CopyForDeref(rhs)
+                        | Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _),
+                    ) => lhs.projection == rhs.projection,
+                    _ => false,
+                },
                 _ => false,
             };
             VisitPlacesWith(|place: Place<'tcx>, ctxt| {

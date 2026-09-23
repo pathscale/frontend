@@ -1700,7 +1700,8 @@ pub fn find_self_call<'tcx>(
     debug!("find_self_call(local={:?}): terminator={:?}", local, body[block].terminator);
     if let Some(Terminator { kind: TerminatorKind::Call { func, args, .. }, .. }) =
         &body[block].terminator
-        && let Operand::Constant(ConstOperand { const_, .. }) = func
+        && let Operand::Constant(constant) = func
+        && let ConstOperand { const_, .. } = &**constant
         && let ty::FnDef(def_id, fn_args) = *const_.ty().kind()
         && let Some(item) = tcx.opt_associated_item(def_id)
         && item.is_method()
@@ -1716,7 +1717,8 @@ pub fn find_self_call<'tcx>(
         // Handle the case where `self_place` gets reborrowed.
         // This happens when the receiver is `&T`.
         for stmt in &body[block].statements {
-            if let StatementKind::Assign((place, rvalue)) = &stmt.kind
+            if let StatementKind::Assign(assign) = &stmt.kind
+                && let (place, rvalue) = &**assign
                 && let Some(reborrow_local) = place.as_local()
                 && self_place.as_local() == Some(reborrow_local)
                 && let Rvalue::Ref(_, _, deref_place) = rvalue
@@ -1738,11 +1740,11 @@ mod size_asserts {
 
     use super::*;
     // tidy-alphabetical-start
-    static_assert_size!(BasicBlockData<'_>, 144);
+    static_assert_size!(BasicBlockData<'_>, 152);
     static_assert_size!(LocalDecl<'_>, 40);
-    static_assert_size!(SourceScopeData<'_>, 64);
+    static_assert_size!(SourceScopeData<'_>, 88);
     static_assert_size!(Statement<'_>, 40);
-    static_assert_size!(Terminator<'_>, 104);
+    static_assert_size!(Terminator<'_>, 112);
     static_assert_size!(VarDebugInfo<'_>, 88);
     // tidy-alphabetical-end
 }

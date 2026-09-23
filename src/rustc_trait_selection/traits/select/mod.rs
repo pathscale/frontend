@@ -926,7 +926,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                             self.infcx,
                             c,
                             obligation.param_env,
-                            |v| Ok::<_, !>(v.skip_norm_wip()),
+                            |v| Ok::<_, crate::Never>(v.skip_norm_wip()),
                         )
                     } else {
                         Ok(c)
@@ -1463,7 +1463,9 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         // bound regions.
         let trait_ref = predicate.skip_binder().trait_ref;
 
-        coherence::trait_ref_is_knowable(self.infcx, trait_ref, |ty| Ok::<_, !>(ty)).into_ok()
+        // The error type is uninhabited, so the empty match is `into_ok` without the gate.
+        coherence::trait_ref_is_knowable(self.infcx, trait_ref, |ty| Ok::<_, crate::Never>(ty))
+            .unwrap_or_else(|never| match never {})
     }
 
     /// Returns `true` if the global caches can be used.
@@ -1874,7 +1876,7 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
             break;
         }
 
-        let mut alias_bounds = candidates.iter().filter_map(|c| {
+        let alias_bounds = candidates.iter().filter_map(|c| {
             if let ProjectionCandidate { idx, kind } = c.candidate {
                 Some((idx, kind))
             } else {
@@ -1887,7 +1889,7 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
             match alias_bounds
                 .clone()
                 .filter_map(|(idx, kind)| (kind == AliasBoundKind::SelfBounds).then_some(idx))
-                .try_reduce(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) })
+                .try_reduce_option(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) })
             {
                 Some(Some(idx)) => {
                     return Some(ProjectionCandidate { idx, kind: AliasBoundKind::SelfBounds });
@@ -1930,7 +1932,7 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
         // fairly arbitrary but once again necessary for backwards compatibility.
         // If there are multiple applicable candidates which don't affect type inference,
         // choose the one with the lowest index.
-        match alias_bounds.try_reduce(|(c1, k1), (c2, k2)| {
+        match alias_bounds.try_reduce_option(|(c1, k1), (c2, k2)| {
             if has_non_region_infer {
                 None
             } else if c1 < c2 {
@@ -1955,7 +1957,7 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
         let object_bound = candidates
             .iter()
             .filter_map(|c| if let ObjectCandidate(i) = c.candidate { Some(i) } else { None })
-            .try_reduce(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) });
+            .try_reduce_option(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) });
         match object_bound {
             Some(Some(index)) => {
                 return if has_non_region_infer
@@ -1975,7 +1977,7 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
             .filter_map(|c| {
                 if let TraitUpcastingUnsizeCandidate(i) = c.candidate { Some(i) } else { None }
             })
-            .try_reduce(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) });
+            .try_reduce_option(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) });
         match upcast_bound {
             Some(Some(index)) => return Some(TraitUpcastingUnsizeCandidate(index)),
             Some(None) => {}
@@ -2575,7 +2577,8 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
                         elaborate::supertrait_def_ids(tcx, principal_def_id)
                             .filter(|def_id| tcx.trait_is_auto(*def_id))
                     })
-                    .into_flat_iter(),
+                    .into_iter()
+                    .flatten(),
             )
             .collect();
 
@@ -3210,3 +3213,22 @@ pub(crate) struct AutoImplConstituents<'tcx> {
     pub types: Vec<Ty<'tcx>>,
     pub assumptions: Vec<ty::ArgOutlivesClause<'tcx>>,
 }
+
+/// `Iterator::try_reduce` as this module uses it, with `Option` as the short-circuit type. The
+/// real one is the unstable `iterator_try_reduce`. A `None` from `f` stops the fold and comes back
+/// as `None`; otherwise the result is `Some` of the plain reduction, which is `None` for an empty
+/// iterator.
+trait TryReduceOption: Iterator + Sized {
+    fn try_reduce_option(
+        mut self,
+        mut f: impl FnMut(Self::Item, Self::Item) -> Option<Self::Item>,
+    ) -> Option<Option<Self::Item>> {
+        let Some(mut acc) = self.next() else { return Some(None) };
+        for item in self {
+            acc = f(acc, item)?;
+        }
+        Some(Some(acc))
+    }
+}
+
+impl<I: Iterator> TryReduceOption for I {}

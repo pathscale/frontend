@@ -161,10 +161,11 @@ pub(crate) fn find_cycle_in_stack<'tcx>(
             // Replace it with the span which caused the cycle to form.
             frames[0].span = span;
             // Find out why the cycle itself was used.
-            let usage = try {
-                let parent = info.job.parent?;
-                QueryStackFrame { span: info.job.span, tagged_key: job_map.tagged_key_of(parent) }
-            };
+            // `Option::map` in place of an unstable `try {}` block.
+            let usage = info.job.parent.map(|parent| QueryStackFrame {
+                span: info.job.span,
+                tagged_key: job_map.tagged_key_of(parent),
+            });
             return QueryCycle { usage, frames };
         }
 
@@ -431,7 +432,6 @@ fn find_and_process_cycle<'tcx>(
 ///
 /// There may be multiple cycles involved in a deadlock, but this only breaks one at a time so
 /// there will be multiple rounds through the deadlock handler if multiple cycles are present.
-#[allow(rustc::potential_query_instability)]
 pub fn break_query_cycle<'tcx>(job_map: QueryJobMap<'tcx>) {
     // Look for a cycle starting at each query job
     let waiter = job_map

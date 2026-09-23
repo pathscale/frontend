@@ -349,7 +349,7 @@ fn orphan_check<'tcx>(
             return Ok(user_ty);
         }
 
-        Ok::<_, !>(ty)
+        Ok::<_, crate::Never>(ty)
     };
 
     let result = traits::orphan_check_trait_ref(
@@ -358,7 +358,8 @@ fn orphan_check<'tcx>(
         traits::InCrate::Local { mode },
         lazily_normalize_ty,
     )
-    .into_ok();
+    // The error type is uninhabited, so the empty match is `into_ok` without the gate.
+    .unwrap_or_else(|never| match never {});
 
     // (2)  Try to map the remaining inference vars back to generic params.
     result.map_err(|err| match err {
@@ -518,6 +519,8 @@ struct UncoveredTyParamCollector<'cx, 'tcx> {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for UncoveredTyParamCollector<'_, 'tcx> {
+    type Result = ();
+
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> Self::Result {
         if !ty.has_type_flags(ty::TypeFlags::HAS_TY_INFER) {
             return;

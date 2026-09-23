@@ -113,8 +113,6 @@ impl LivenessValues {
 
     /// Iterate through each region that has a value in this set.
     // We are passing query instability implications to the caller.
-    #[rustc_lint_query_instability]
-    #[allow(rustc::potential_query_instability)]
     pub(crate) fn live_regions_unordered(&self) -> impl Iterator<Item = RegionVid> {
         if let LiveRegions::InBody(live_regions) = &self.live_regions {
             live_regions.iter().copied()
@@ -188,7 +186,7 @@ impl LivenessValues {
 
     /// Returns an iterator of all the points where `region` is live.
     fn live_points(&self, region: RegionVid) -> impl Iterator<Item = PointIndex> {
-        self.point_liveness(region).map(|set| set.iter()).into_flat_iter()
+        self.point_liveness(region).map(|set| set.iter()).into_iter().flatten()
     }
 
     /// For debugging purposes, returns a pretty-printed string of the points where the `region` is
@@ -359,12 +357,13 @@ impl<'tcx, N: Idx> RegionValues<'tcx, N> {
         self.points
             .row(r)
             .map(move |set| set.iter().map(move |p| self.location_map.to_location(p)))
-            .into_flat_iter()
+            .into_iter()
+            .flatten()
     }
 
     /// Returns just the universal regions that are contained in a given region's value.
     pub(crate) fn universal_regions_outlived_by(&self, r: N) -> impl Iterator<Item = RegionVid> {
-        self.free_regions.row(r).map(|set| set.iter()).into_flat_iter()
+        self.free_regions.row(r).map(|set| set.iter()).into_iter().flatten()
     }
 
     /// Returns all the elements contained in a given region's value.
@@ -375,7 +374,8 @@ impl<'tcx, N: Idx> RegionValues<'tcx, N> {
         self.placeholders
             .row(r)
             .map(|set| set.iter())
-            .into_flat_iter()
+            .into_iter()
+            .flatten()
             .map(move |p| self.placeholder_indices.lookup_placeholder(p))
     }
 

@@ -61,15 +61,17 @@ pub(super) fn diagnostic_hir_wf_check<'tcx>(
     struct HirWfCheck<'tcx> {
         tcx: TyCtxt<'tcx>,
         predicate: ty::Predicate<'tcx>,
-        cause: Option<ObligationCause<'tcx>> = None,
-        cause_depth: usize = 0,
+        cause: Option<ObligationCause<'tcx>>,
+        cause_depth: usize,
         icx: ItemCtxt<'tcx>,
         def_id: LocalDefId,
         param_env: ty::ParamEnv<'tcx>,
-        depth: usize = 0,
+        depth: usize,
     }
 
     impl<'tcx> Visitor<'tcx> for HirWfCheck<'tcx> {
+        type NestedFilter = intravisit::IgnoreNested;
+        type Result = ();
         fn visit_ty(&mut self, ty: &'tcx hir::Ty<'tcx, AmbigArg>) {
             let infcx = self.tcx.infer_ctxt().build(TypingMode::non_body_analysis());
             let ocx = ObligationCtxt::new_with_diagnostics(&infcx);
@@ -135,7 +137,16 @@ pub(super) fn diagnostic_hir_wf_check<'tcx>(
     }
 
     let param_env = tcx.param_env(def_id.to_def_id());
-    let mut visitor = HirWfCheck { tcx, predicate, icx, def_id, param_env, .. };
+    let mut visitor = HirWfCheck {
+        tcx,
+        predicate,
+        cause: None,
+        cause_depth: 0,
+        icx,
+        def_id,
+        param_env,
+        depth: 0,
+    };
 
     // Get the starting `hir::Ty` using our `WellFormedLoc`.
     // We will walk 'into' this type to try to find

@@ -494,7 +494,6 @@ pub enum NonDivergingIntrinsic<'tcx> {
 
 /// Describes whether this operand use performs a retag.
 #[derive(Copy, Clone, TyEncodable, TyDecodable, Debug, PartialEq, Eq, StableHash)]
-#[rustc_pass_by_value]
 pub enum WithRetag {
     Yes,
     No,
@@ -1770,12 +1769,12 @@ mod size_asserts {
 
     use super::*;
     // tidy-alphabetical-start
-    static_assert_size!(AggregateKind<'_>, 32);
+    static_assert_size!(AggregateKind<'_>, 40);
     static_assert_size!(Operand<'_>, 24);
     static_assert_size!(Place<'_>, 16);
     static_assert_size!(PlaceElem<'_>, 24);
     static_assert_size!(Rvalue<'_>, 40);
     static_assert_size!(StatementKind<'_>, 16);
-    static_assert_size!(TerminatorKind<'_>, 80);
+    static_assert_size!(TerminatorKind<'_>, 88);
     // tidy-alphabetical-end
 }

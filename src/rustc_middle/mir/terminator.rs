@@ -494,11 +494,15 @@ pub use helper::*;
 
 mod helper {
     use super::*;
-    pub type Successors<'a> = impl DoubleEndedIterator<Item = BasicBlock> + 'a;
+    // Upstream is `impl DoubleEndedIterator` (`type_alias_impl_trait`, unstable); this is the
+    // concrete type `mk_successors` builds.
+    pub type Successors<'a> = core::iter::Chain<
+        core::iter::Copied<core::slice::Iter<'a, BasicBlock>>,
+        core::iter::Chain<core::option::IntoIter<BasicBlock>, core::option::IntoIter<BasicBlock>>,
+    >;
 
     // Note: this method ensures all paths below produce an iterator with the same concrete type.
     #[inline]
-    #[define_opaque(Successors)]
     fn mk_successors(
         slice: &[BasicBlock],
         option1: Option<BasicBlock>,

@@ -768,6 +768,8 @@ impl<'tcx> ScopeResolutionVisitor<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for ScopeResolutionVisitor<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_block(&mut self, b: &'tcx Block<'tcx>) {
         resolve_block(self, b, false);
     }

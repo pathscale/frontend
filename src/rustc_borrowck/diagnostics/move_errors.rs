@@ -138,11 +138,11 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         // to a user variable is when initializing it.
         // If that ever stops being the case, then the ever initialized
         // flow could be used.
-        if let Some(StatementKind::Assign((place, Rvalue::Use(Operand::Move(move_from), _)))) =
-            self.body.basic_blocks[location.block]
-                .statements
-                .get(location.statement_index)
-                .map(|stmt| &stmt.kind)
+        if let Some(StatementKind::Assign(assign)) = self.body.basic_blocks[location.block]
+            .statements
+            .get(location.statement_index)
+            .map(|stmt| &stmt.kind)
+            && let (place, Rvalue::Use(Operand::Move(move_from), _)) = &**assign
             && let Some(local) = place.as_local()
         {
             let local_decl = &self.body.local_decls[local];
@@ -1100,8 +1100,9 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         }
         impl<'tcx> Visitor<'tcx> for BindingFinder<'tcx> {
             type NestedFilter = crate::rustc_middle::hir::nested_filter::OnlyBodies;
+            type Result = ();
 
-            fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+            fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
                 self.tcx
             }
 

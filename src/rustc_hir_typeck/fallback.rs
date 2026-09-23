@@ -406,6 +406,7 @@ impl<'tcx> AnnotateUnitFallbackVisitor<'_, 'tcx> {
     }
 }
 impl<'tcx> Visitor<'tcx> for AnnotateUnitFallbackVisitor<'_, 'tcx> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
     type Result = ControlFlow<diagnostics::SuggestAnnotation>;
 
     fn visit_infer(
@@ -537,6 +538,8 @@ fn compute_unsafe_infer_vars<'a, 'tcx>(
     }
 
     impl Visitor<'_> for UnsafeInferVarsVisitor<'_, '_> {
+        type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+        type Result = ();
         fn visit_expr(&mut self, ex: &'_ hir::Expr<'_>) {
             let typeck_results = self.fcx.typeck_results.borrow();
 
@@ -645,6 +648,8 @@ fn compute_unsafe_infer_vars<'a, 'tcx>(
     }
 
     impl<'tcx, V: Copy> ty::TypeVisitor<TyCtxt<'tcx>> for InferVarCollector<'_, V> {
+        type Result = ();
+
         fn visit_ty(&mut self, t: Ty<'tcx>) {
             if let Some(vid) = t.ty_vid() {
                 _ = self.res.try_insert(vid, self.value);

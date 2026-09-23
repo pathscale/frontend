@@ -16,80 +16,21 @@
 
 #![no_std]
 #![recursion_limit = "512"]
-#![feature(allocator_api)]
-#![feature(allow_internal_unstable)]
-#![feature(arbitrary_self_types)]
-#![feature(array_try_map)]
-#![feature(ascii_char)]
-#![feature(ascii_char_variants)]
-#![feature(assert_matches)]
-#![feature(associated_type_defaults)]
-#![feature(auto_traits)]
-#![feature(closure_track_caller)]
-#![feature(const_default)]
-#![feature(const_trait_impl)]
-#![feature(const_type_name)]
-#![feature(control_flow_into_value)]
-#![feature(core_intrinsics)]
-#![feature(core_io_borrowed_buf)]
-#![feature(cow_is_borrowed)]
-#![feature(debug_closure_helpers)]
-#![feature(decl_macro)]
-#![feature(default_field_values)]
-#![feature(deref_patterns)]
-#![feature(derive_const)]
-#![feature(diagnostic_on_unknown)]
-#![feature(discriminant_kind)]
-#![feature(dropck_eyepatch)]
-#![feature(error_iter)]
-#![feature(exact_size_is_empty)]
-#![feature(exhaustive_patterns)]
-#![feature(extend_one)]
-#![feature(extern_types)]
-#![feature(f16)]
-#![feature(gen_blocks)]
-#![feature(impl_trait_in_assoc_type)]
-#![feature(iter_intersperse)]
-#![feature(iter_is_partitioned)]
-#![feature(iter_order_by)]
-#![feature(iterator_try_collect)]
-#![feature(iterator_try_reduce)]
-#![feature(macro_metavar_expr)]
-#![feature(macro_metavar_expr_concat)]
-#![feature(map_try_insert)]
-#![feature(mem_conjure_zst)]
-#![feature(min_specialization)]
-#![feature(negative_impls)]
-#![feature(nonzero_internals)]
-#![feature(once_cell_get_mut)]
-#![feature(option_into_flat_iter)]
-#![feature(option_reference_flattening)]
-#![feature(pattern_type_macro)]
-#![feature(pattern_types)]
 // `proc_macro_diagnostic`, `proc_macro_internals` and `proc_macro_quote` were here and are gone
 // with `staged_api`. They were never core's: `proc_macro` declared them itself, in the
 // `#[unstable(feature = "...")]` attributes on its own items, and gating against your own
 // declarations is only meaningful for a crate that ships in the sysroot. With the attributes
 // removed the names exist nowhere, and naming them is E0635, "unknown feature".
-#![feature(ptr_alignment_type)]
-#![feature(range_bounds_is_empty)]
-#![feature(rustc_attrs)]
-#![feature(rustdoc_internals)]
 // Required by `rustc_data_structures`, `rustc_middle` and `rustc_serialize`, which spell
 // `PointeeSized` in about twenty-five bounds. Upstream only those three crates enable it; here it
 // is necessarily on for all seventy, which is why `RawList` needs the inherent slice methods in
 // `rustc_middle/ty/list.rs`. Measured, not assumed: turning it off leaves the dropck failure in
 // `rustc_interface::passes` exactly as it was, so that is a separate problem and this is not it.
-#![feature(sized_hierarchy)]
-#![feature(slice_partition_dedup)]
-#![feature(slice_ptr_get)]
 // Both are core library features these modules use and no crate in the union declared, because
 // upstream they are supplied by bootstrap rather than by the crate. `step_trait` is
 // `core::iter::Step`, which `rustc_abi` implements; `hasher_prefixfree_extras` is
 // `Hasher::write_length_prefix`. They surfaced only once `staged_api` came off, because the pass
 // that reports them is the one that was aborting on 39,258 missing stability attributes.
-#![feature(step_trait)]
-#![feature(hasher_prefixfree_extras)]
 // `staged_api` is deliberately absent from this list, and it was in it.
 //
 // It arrived by unioning the feature lists of the crates that became modules here: `proc_macro`
@@ -101,20 +42,6 @@
 // This is a normal library and not part of any sysroot, so it is not staged. The 211 stability
 // attributes in `rustc_proc_macro` were removed with the feature; keeping them without it is
 // E0734, "stability attributes may not be used outside of the standard library".
-#![feature(stmt_expr_attributes)]
-#![feature(titlecase)]
-#![feature(trait_alias)]
-#![feature(trim_prefix_suffix)]
-#![feature(trusted_len)]
-#![feature(try_blocks)]
-#![feature(try_trait_v2)]
-#![feature(try_trait_v2_residual)]
-#![feature(try_trait_v2_yeet)]
-#![feature(type_alias_impl_trait)]
-#![feature(unqualified_local_imports)]
-#![feature(unwrap_infallible)]
-#![feature(variant_count)]
-#![feature(yeet_expr)]
 // Proc macros generate paths rooted at `frontend::`. This alias makes those resolve inside
 // this crate too, so one generated path works for us and for a consumer alike.
 extern crate self as frontend;
@@ -209,3 +136,27 @@ pub mod rustc_ty_utils;
 pub mod rustc_ty_walk;
 pub mod rustc_type_ir;
 pub mod unwind_janky;
+
+/// The never type `!`, named on stable Rust.
+///
+/// Writing `!` anywhere but a function's return type needs the unstable `never_type`
+/// feature. `fn() -> !` is stable, and its `Output` projection is `!` itself, so this alias
+/// is the real never type: it coerces to anything, matches with `match x {}`, and can be
+/// the self type of an impl. Every former `!` in a type position in this crate spells it
+/// `crate::Never`. `core::convert::Infallible` was not used because it does not coerce,
+/// which would break every `emit_fatal()` in expression position.
+pub type Never = <fn() -> ! as never_type::FnReturn>::Output;
+
+// Public because `Never` is public and names this trait; a private one would trip the
+// private-interfaces lint.
+#[doc(hidden)]
+pub mod never_type {
+    /// Projects a function pointer's return type; exists only to name `!`.
+    pub trait FnReturn {
+        type Output;
+    }
+
+    impl<R> FnReturn for fn() -> R {
+        type Output = R;
+    }
+}

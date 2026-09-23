@@ -98,10 +98,14 @@ pub trait Analysis<'tcx> {
     type Domain: Clone + JoinSemiLattice;
 
     /// The direction of this analysis. Either `Forward` or `Backward`.
-    type Direction: Direction = Forward;
+    // Stable Rust has no associated type defaults, so every impl names this type; the usual
+    // choice is `Forward`.
+    type Direction: Direction;
 
     /// Auxiliary data used for analyzing `SwitchInt` terminators, if necessary.
-    type SwitchIntData = !;
+    // Stable Rust has no associated type defaults, so every impl names this type; an analysis
+    // that needs no such data uses `crate::Never`.
+    type SwitchIntData;
 
     /// A descriptive name for this analysis. Used only for debugging.
     ///

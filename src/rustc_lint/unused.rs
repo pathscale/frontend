@@ -391,7 +391,8 @@ trait UnusedDelimLint {
                 (cond, UnusedDelimsCtx::WhileCond, true, Some(left), Some(right), true)
             }
 
-            ForLoop(ast::ForLoop { ref iter, ref body, .. }) => {
+            ForLoop(ref fl) => {
+                let ast::ForLoop { ref iter, ref body, .. } = **fl;
                 (iter, UnusedDelimsCtx::ForIterExpr, true, None, Some(body.span.lo()), true)
             }
 
@@ -520,9 +521,13 @@ trait UnusedDelimLint {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &ast::Item) {
         use ast::ItemKind::*;
 
-        let expr = if let Const(ast::ConstItem { body: Some(expr), .. }) = &item.kind {
+        let expr = if let Const(c) = &item.kind
+            && let ast::ConstItem { body: Some(expr), .. } = &**c
+        {
             expr
-        } else if let Static(ast::StaticItem { expr: Some(expr), .. }) = &item.kind {
+        } else if let Static(s) = &item.kind
+            && let ast::StaticItem { expr: Some(expr), .. } = &**s
+        {
             expr
         } else {
             return;
@@ -738,7 +743,11 @@ impl EarlyLintPass for UnusedParens {
         }
 
         match e.kind {
-            ExprKind::Let(ref pat, _, _, _) | ExprKind::ForLoop(ForLoop { ref pat, .. }) => {
+            ExprKind::Let(ref pat, _, _, _) => {
+                self.check_unused_parens_pat(cx, pat, false, false, (true, true));
+            }
+            ExprKind::ForLoop(ref fl) => {
+                let ForLoop { ref pat, .. } = **fl;
                 self.check_unused_parens_pat(cx, pat, false, false, (true, true));
             }
             // We ignore parens in cases like `if (((let Some(0) = Some(1))))` because we already

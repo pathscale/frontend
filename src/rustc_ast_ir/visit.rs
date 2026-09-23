@@ -11,7 +11,8 @@ pub trait VisitorResult {
 
 impl VisitorResult for () {
     #[cfg(feature = "nightly")]
-    type Residual = !;
+    // `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+    type Residual = crate::Never;
 
     #[cfg(not(feature = "nightly"))]
     type Residual = core::convert::Infallible;

@@ -93,14 +93,16 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for SimplifyComparisonInteg
             let (_, rhs) = bb.statements[opt.bin_op_stmt_idx].kind.as_assign_mut().unwrap();
 
             use Operand::*;
-            match rhs {
-                Rvalue::BinaryOp(_, (left @ Move(_), Constant(_))) => {
-                    *left = Copy(opt.to_switch_on);
+            if let Rvalue::BinaryOp(_, operands) = rhs {
+                match &mut **operands {
+                    (left @ Move(_), Constant(_)) => {
+                        *left = Copy(opt.to_switch_on);
+                    }
+                    (Constant(_), right @ Move(_)) => {
+                        *right = Copy(opt.to_switch_on);
+                    }
+                    _ => (),
                 }
-                Rvalue::BinaryOp(_, (Constant(_), right @ Move(_))) => {
-                    *right = Copy(opt.to_switch_on);
-                }
-                _ => (),
             }
 
             let [bb_cond, bb_otherwise] = match new_targets.all_targets() {
@@ -138,11 +140,13 @@ impl<'tcx> OptimizationFinder<'_, 'tcx> {
                 // find the statement that assigns the place being switched on
                 bb.statements.iter().enumerate().rev().find_map(|(stmt_idx, stmt)| {
                     match &stmt.kind {
-                        crate::rustc_middle::mir::StatementKind::Assign((lhs, rhs))
-                            if *lhs == place_switched_on =>
+                        crate::rustc_middle::mir::StatementKind::Assign(assign)
+                            if assign.0 == place_switched_on =>
                         {
+                            let (_, rhs) = &**assign;
                             match rhs {
-                                Rvalue::BinaryOp(op @ (BinOp::Eq | BinOp::Ne), (left, right)) => {
+                                Rvalue::BinaryOp(op @ (BinOp::Eq | BinOp::Ne), operands) => {
+                                    let (left, right) = &**operands;
                                     let (branch_value_scalar, branch_value_ty, to_switch_on) =
                                         find_branch_value_info(left, right, ssa)?;
 

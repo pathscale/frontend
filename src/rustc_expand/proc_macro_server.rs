@@ -595,14 +595,15 @@ impl server::Server for Rustc<'_, '_> {
 
     fn ts_expand_expr(&mut self, stream: &Self::TokenStream) -> Result<Self::TokenStream, ()> {
         // Parse the expression from our tokenstream.
-        let expr = try {
+        // Immediately called closure in place of an unstable `try {}` block.
+        let expr = (|| -> Result<_, Diag<'_>> {
             let mut p = Parser::new(self.psess(), stream.clone(), Some("proc_macro expand expr"));
             let expr = p.parse_expr()?;
             if p.token != tk::Eof {
                 p.unexpected()?;
             }
-            expr
-        };
+            Ok(expr)
+        })();
         let expr = expr.map_err(|err| {
             err.emit();
         })?;

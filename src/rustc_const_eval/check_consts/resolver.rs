@@ -337,6 +337,8 @@ impl<'tcx, Q> Analysis<'tcx> for FlowSensitiveAnalysis<'_, 'tcx, Q>
 where
     Q: Qualif,
 {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = State;
 
     const NAME: &'static str = Q::ANALYSIS_NAME;

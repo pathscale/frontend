@@ -1951,9 +1951,8 @@ impl<'a> Parser<'a> {
             if let Some(expr) = &mut expr {
                 if label.is_some()
                     && match &expr.kind {
-                        ExprKind::While(_, _, None)
-                        | ExprKind::ForLoop(ForLoop { label: None, .. })
-                        | ExprKind::Loop(_, None, _) => true,
+                        ExprKind::While(_, _, None) | ExprKind::Loop(_, None, _) => true,
+                        ExprKind::ForLoop(fl) if fl.label.is_none() => true,
                         ExprKind::Block(block, None) => {
                             matches!(block.rules, BlockCheckMode::Default)
                         }

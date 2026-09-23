@@ -40,8 +40,10 @@ fn opt_span_bug_fmt<S: Into<MultiSpan>>(
     args: fmt::Arguments<'_>,
     location: &Location<'_>,
 ) -> ! {
+    // Upstream marks this closure `#[track_caller]` (`closure_track_caller`, unstable). Without
+    // it the message is unchanged, since it names `location` explicitly; only the location
+    // recorded by the `dcx().bug` call inside points at this closure.
     tls::with_opt(
-        #[track_caller]
         move |tcx| {
             let msg = format!("{location}: {args}");
             match (tcx, span) {

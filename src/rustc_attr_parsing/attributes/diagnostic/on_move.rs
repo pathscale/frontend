@@ -20,7 +20,7 @@ impl AttributeParser for OnMoveParser {
         template!(List: &[r#"/*opt*/ message = "...", /*opt*/ label = "...", /*opt*/ note = "...""#]),
         AttributeStability::Stable, // Unstable, stability checked manually below
         |this, cx, args| {
-            gate_diagnostic_attr!(diagnostic_on_move);
+            gate_diagnostic_attr!(cx, args, diagnostic_on_move);
 
             let span = cx.attr_span;
             this.span = Some(span);

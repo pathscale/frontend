@@ -8,7 +8,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 use core::ops::ControlFlow;
 
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
@@ -459,6 +459,7 @@ fn has_late_bound_regions<'tcx>(tcx: TyCtxt<'tcx>, node: Node<'tcx>) -> Option<S
     }
 
     impl<'tcx> Visitor<'tcx> for LateBoundRegionsDetector<'tcx> {
+        type NestedFilter = intravisit::IgnoreNested;
         type Result = ControlFlow<Span>;
         fn visit_ty(&mut self, ty: &'tcx hir::Ty<'tcx, AmbigArg>) -> ControlFlow<Span> {
             match ty.kind {
@@ -532,6 +533,7 @@ struct AnonConstInParamTyDetector {
 }
 
 impl<'v> Visitor<'v> for AnonConstInParamTyDetector {
+    type NestedFilter = intravisit::IgnoreNested;
     type Result = ControlFlow<()>;
 
     fn visit_generic_param(&mut self, p: &'v hir::GenericParam<'v>) -> Self::Result {

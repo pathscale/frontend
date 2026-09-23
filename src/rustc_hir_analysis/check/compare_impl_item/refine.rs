@@ -277,6 +277,8 @@ struct ImplTraitInTraitCollector<'tcx> {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ImplTraitInTraitCollector<'tcx> {
+    type Result = ();
+
     fn visit_ty(&mut self, ty: Ty<'tcx>) {
         if let ty::Alias(_, alias) = *ty.kind()
             && let Some(proj) = alias.try_to_projection()
@@ -426,6 +428,8 @@ struct CollectParams<'a, 'tcx> {
     params: &'a mut FxIndexSet<ty::GenericArg<'tcx>>,
 }
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for CollectParams<'_, 'tcx> {
+    type Result = ();
+
     fn visit_ty(&mut self, ty: Ty<'tcx>) {
         if let ty::Param(_) = ty.kind() {
             self.params.insert(ty.into());

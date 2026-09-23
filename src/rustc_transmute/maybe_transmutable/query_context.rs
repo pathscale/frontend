@@ -13,7 +13,7 @@ pub(crate) mod test {
 
     use super::QueryContext;
 
-    pub(crate) struct UltraMinimal<R = !, T = !>(PhantomData<(R, T)>);
+    pub(crate) struct UltraMinimal<R = crate::Never, T = crate::Never>(PhantomData<(R, T)>);
 
     impl<R, T> Default for UltraMinimal<R, T> {
         fn default() -> Self {

@@ -138,6 +138,8 @@ struct MaxEscapingBoundVarVisitor {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for MaxEscapingBoundVarVisitor {
+    type Result = ();
+
     fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(&mut self, t: &ty::Binder<'tcx, T>) {
         self.outer_index.shift_in(1);
         t.super_visit_with(self);

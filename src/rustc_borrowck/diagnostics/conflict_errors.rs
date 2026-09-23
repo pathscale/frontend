@@ -168,7 +168,7 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                     .collect();
                 generic_args.push((kw::SelfUpper, this.clone()));
 
-                let args = FormatArgs { this, generic_args, .. };
+                let args = FormatArgs { generic_args, ..FormatArgs::new(this) };
                 let CustomDiagnostic { message, label, notes, parent_label: _ } =
                     directive.eval(None, &args);
 
@@ -382,8 +382,9 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         }
         impl<'hir> Visitor<'hir> for ExpressionFinder<'hir> {
             type NestedFilter = OnlyBodies;
+            type Result = ();
 
-            fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+            fn maybe_tcx(&mut self) -> TyCtxt<'hir> {
                 self.tcx
             }
 
@@ -614,6 +615,8 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             arg_name: Symbol,
         }
         impl Visitor<'_> for MatchArgFinder {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_expr(&mut self, e: &hir::Expr<'_>) {
                 // dbg! is expanded into a match pattern, we need to find the right argument span
                 if let hir::ExprKind::Match(expr, ..) = &e.kind
@@ -981,6 +984,8 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             }
 
             impl<'v> Visitor<'v> for LetVisitor {
+                type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                type Result = ();
                 fn visit_stmt(&mut self, ex: &'v hir::Stmt<'v>) {
                     if self.sugg.is_some() {
                         return;
@@ -1068,6 +1073,7 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             hir_id: hir::HirId,
         }
         impl<'hir> Visitor<'hir> for Finder {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
             type Result = ControlFlow<()>;
             fn visit_pat(&mut self, pat: &'hir hir::Pat<'hir>) -> Self::Result {
                 if pat.hir_id == self.hir_id {
@@ -2135,6 +2141,8 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             }
         }
         impl<'tcx> Visitor<'tcx> for FindUselessClone<'tcx> {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_expr(&mut self, ex: &'tcx hir::Expr<'tcx>) {
                 if let hir::ExprKind::MethodCall(..) = ex.kind
                     && let Some(method_def_id) =
@@ -2497,14 +2505,16 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             tcx: TyCtxt<'hir>,
             issue_span: Span,
             expr_span: Span,
-            body_expr: Option<&'hir hir::Expr<'hir>> = None,
-            loop_bind: Option<&'hir Ident> = None,
-            loop_span: Option<Span> = None,
-            head_span: Option<Span> = None,
-            pat_span: Option<Span> = None,
-            head: Option<&'hir hir::Expr<'hir>> = None,
+            body_expr: Option<&'hir hir::Expr<'hir>>,
+            loop_bind: Option<&'hir Ident>,
+            loop_span: Option<Span>,
+            head_span: Option<Span>,
+            pat_span: Option<Span>,
+            head: Option<&'hir hir::Expr<'hir>>,
         }
         impl<'hir> Visitor<'hir> for ExprFinder<'hir> {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_expr(&mut self, ex: &'hir hir::Expr<'hir>) {
                 // Try to find
                 // let result = match IntoIterator::into_iter(<head>) {
@@ -2568,7 +2578,17 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                 hir::intravisit::walk_expr(self, ex);
             }
         }
-        let mut finder = ExprFinder { tcx, expr_span: span, issue_span, .. };
+        let mut finder = ExprFinder {
+            tcx,
+            expr_span: span,
+            issue_span,
+            body_expr: None,
+            loop_bind: None,
+            loop_span: None,
+            head_span: None,
+            pat_span: None,
+            head: None,
+        };
         finder.visit_expr(tcx.hir_body(body_id).value);
 
         if let Some(body_expr) = finder.body_expr
@@ -2731,8 +2751,9 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         }
         impl<'hir> Visitor<'hir> for ClosureFinder<'hir> {
             type NestedFilter = OnlyBodies;
+            type Result = ();
 
-            fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+            fn maybe_tcx(&mut self) -> TyCtxt<'hir> {
                 self.tcx
             }
 
@@ -2810,6 +2831,8 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                 spans: Vec<Span>,
             }
             impl<'hir> Visitor<'hir> for VariableUseFinder {
+                type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                type Result = ();
                 fn visit_expr(&mut self, ex: &'hir hir::Expr<'hir>) {
                     if let hir::ExprKind::Path(qpath) = &ex.kind
                         && let hir::QPath::Resolved(_, path) = qpath
@@ -2847,15 +2870,17 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
 
         struct ExpressionFinder<'tcx> {
             capture_span: Span,
-            closure_change_spans: Vec<Span> = vec![],
-            closure_arg_span: Option<Span> = None,
-            in_closure: bool = false,
-            suggest_arg: String = String::new(),
+            closure_change_spans: Vec<Span>,
+            closure_arg_span: Option<Span>,
+            in_closure: bool,
+            suggest_arg: String,
             tcx: TyCtxt<'tcx>,
-            closure_local_id: Option<hir::HirId> = None,
-            closure_call_changes: Vec<(Span, String)> = vec![],
+            closure_local_id: Option<hir::HirId>,
+            closure_call_changes: Vec<(Span, String)>,
         }
         impl<'hir> Visitor<'hir> for ExpressionFinder<'hir> {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_expr(&mut self, e: &'hir hir::Expr<'hir>) {
                 if e.span.contains(self.capture_span)
                     && let hir::ExprKind::Closure(&hir::Closure {
@@ -2934,8 +2959,16 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         }) = self.infcx.tcx.hir_node(self.mir_hir_id())
             && let hir::Node::Expr(expr) = self.infcx.tcx.hir_node(body_id.hir_id)
         {
-            let mut finder =
-                ExpressionFinder { capture_span: *capture_kind_span, tcx: self.infcx.tcx, .. };
+            let mut finder = ExpressionFinder {
+                capture_span: *capture_kind_span,
+                closure_change_spans: vec![],
+                closure_arg_span: None,
+                in_closure: false,
+                suggest_arg: String::new(),
+                tcx: self.infcx.tcx,
+                closure_local_id: None,
+                closure_call_changes: vec![],
+            };
             finder.visit_expr(expr);
 
             if finder.closure_change_spans.is_empty() || finder.closure_call_changes.is_empty() {
@@ -3476,6 +3509,8 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                 }
 
                 impl<'tcx> Visitor<'tcx> for NestedStatementVisitor<'tcx> {
+                    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                    type Result = ();
                     fn visit_block(&mut self, block: &'tcx hir::Block<'tcx>) {
                         self.current += 1;
                         walk_block(self, block);
@@ -4145,19 +4180,19 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         // PATTERN;) then make the error refer to that local, rather than the
         // place being assigned later.
         let (place_description, assigned_span) = match local_decl {
-            Some(LocalDecl {
-                local_info:
-                    ClearCrossCrate::Set(
-                        LocalInfo::User(BindingForm::Var(VarBindingForm {
-                            opt_match_place: None,
-                            ..
-                        }))
-                        | LocalInfo::StaticRef { .. }
-                        | LocalInfo::Boring,
-                    ),
-                ..
-            })
-            | None => (self.describe_any_place(place.as_ref()), assigned_span),
+            Some(LocalDecl { local_info: ClearCrossCrate::Set(local_info), .. })
+                if matches!(
+                    &**local_info,
+                    LocalInfo::User(BindingForm::Var(VarBindingForm {
+                        opt_match_place: None,
+                        ..
+                    })) | LocalInfo::StaticRef { .. }
+                        | LocalInfo::Boring
+                ) =>
+            {
+                (self.describe_any_place(place.as_ref()), assigned_span)
+            }
+            None => (self.describe_any_place(place.as_ref()), assigned_span),
             Some(decl) => (self.describe_any_place(err_place.as_ref()), decl.source_info.span),
         };
         let mut err = self.cannot_reassign_immutable(span, &place_description, from_arg);
@@ -4192,8 +4227,9 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
 
                     impl<'tcx> Visitor<'tcx> for RefPatternFinder<'tcx> {
                         type NestedFilter = OnlyBodies;
+                        type Result = ();
 
-                        fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+                        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
                             self.tcx
                         }
 
@@ -4328,10 +4364,10 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         impl<'tcx> Visitor<'tcx> for FakeReadCauseFinder<'tcx> {
             fn visit_statement(&mut self, statement: &Statement<'tcx>, _: Location) {
                 match statement {
-                    Statement { kind: StatementKind::FakeRead((cause, place)), .. }
-                        if *place == self.place =>
+                    Statement { kind: StatementKind::FakeRead(fake_read), .. }
+                        if fake_read.1 == self.place =>
                     {
-                        self.cause = Some(*cause);
+                        self.cause = Some(fake_read.0);
                     }
                     _ => (),
                 }
@@ -4389,9 +4425,10 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         // and it'll make sense.
         let location = borrow.reserve_location;
         debug!("annotate_argument_and_return_for_borrow: location={:?}", location);
-        if let Some(Statement { kind: StatementKind::Assign((reservation, _)), .. }) =
+        if let Some(Statement { kind: StatementKind::Assign(reservation_assign), .. }) =
             &self.body[location.block].statements.get(location.statement_index)
         {
+            let (reservation, _) = &**reservation_assign;
             debug!("annotate_argument_and_return_for_borrow: reservation={:?}", reservation);
             // Check that the initial assignment of the reserve location is into a temporary.
             let mut target = match reservation.as_local() {
@@ -4407,17 +4444,18 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                     "annotate_argument_and_return_for_borrow: target={:?} stmt={:?}",
                     target, stmt
                 );
-                if let StatementKind::Assign((place, rvalue)) = &stmt.kind
-                    && let Some(assigned_to) = place.as_local()
+                if let StatementKind::Assign(assign) = &stmt.kind
+                    && let Some(assigned_to) = assign.0.as_local()
                 {
+                    let (_, rvalue) = &**assign;
                     debug!(
                         "annotate_argument_and_return_for_borrow: assigned_to={:?} \
                              rvalue={:?}",
                         assigned_to, rvalue
                     );
                     // Check if our `target` was captured by a closure.
-                    if let Rvalue::Aggregate(AggregateKind::Closure(def_id, args), operands) =
-                        rvalue
+                    if let Rvalue::Aggregate(aggregate_kind, operands) = rvalue
+                        && let AggregateKind::Closure(def_id, args) = &**aggregate_kind
                     {
                         let def_id = def_id.expect_local();
                         for operand in operands {
@@ -4748,6 +4786,8 @@ fn find_for_loop_span<'hir>(
         result: Option<Span>,
     }
     impl<'hir> Visitor<'hir> for ExprFinder<'hir> {
+        type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+        type Result = ();
         fn visit_expr(&mut self, ex: &'hir hir::Expr<'hir>) {
             if let hir::ExprKind::Match(scrutinee, _, hir::MatchSource::ForLoopDesugar) = ex.kind
                 && let hir::ExprKind::Call(path, [arg]) = scrutinee.kind
@@ -4833,6 +4873,7 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
 struct ReferencedStatementsVisitor<'a>(&'a [Span]);
 
 impl<'v> Visitor<'v> for ReferencedStatementsVisitor<'_> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
     type Result = ControlFlow<()>;
     fn visit_stmt(&mut self, s: &'v hir::Stmt<'v>) -> Self::Result {
         match s.kind {
@@ -4850,6 +4891,8 @@ struct BreakFinder {
     found_continues: Vec<(hir::Destination, Span)>,
 }
 impl<'hir> Visitor<'hir> for BreakFinder {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, ex: &'hir hir::Expr<'hir>) {
         match ex.kind {
             hir::ExprKind::Break(destination, _)
@@ -4900,6 +4943,8 @@ impl ConditionErrorKind {
 }
 
 impl<'v, 'tcx> Visitor<'v> for ConditionVisitor<'tcx> {
+    type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) {
         match ex.kind {
             hir::ExprKind::If(cond, body, None) => {

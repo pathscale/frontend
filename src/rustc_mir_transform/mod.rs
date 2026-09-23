@@ -269,14 +269,14 @@ fn remap_mir_for_const_eval_select<'tcx>(
         let terminator = bb.terminator.as_mut().expect("invalid terminator");
         match terminator.kind {
             TerminatorKind::Call {
-                func: Operand::Constant(ConstOperand { ref const_, .. }),
+                func: Operand::Constant(ref func_const),
                 ref mut args,
                 destination,
                 target,
                 unwind,
                 fn_span,
                 ..
-            } if let ty::FnDef(def_id, _) = *const_.ty().kind()
+            } if let ty::FnDef(def_id, _) = *func_const.const_.ty().kind()
                 && tcx.is_intrinsic(def_id, sym::const_eval_select) =>
             {
                 let Ok([tupled_args, called_in_const, called_at_rt]) = take_array(args) else {

@@ -24,7 +24,7 @@ mod diagnostics;
 
 use core::marker::PhantomData;
 use core::ops::ControlFlow;
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 use core::fmt;
 
 use diagnostics::{
@@ -78,7 +78,8 @@ impl<'tcx> fmt::Display for LazyDefPathStr<'tcx> {
 /// manually. Second, it doesn't visit some type components like signatures of fn types, or traits
 /// in `impl Trait`, see individual comments in `DefIdVisitorSkeleton::visit_ty`.
 pub trait DefIdVisitor<'tcx> {
-    type Result: VisitorResult = ();
+    // Stable Rust has no associated type defaults, so every impl names this type.
+    type Result: VisitorResult;
     const SHALLOW: bool = false;
     fn skip_assoc_tys(&self) -> bool {
         false
@@ -367,6 +368,7 @@ struct FindMin<'a, 'tcx, VL: VisibilityLike, const SHALLOW: bool> {
 impl<'a, 'tcx, VL: VisibilityLike, const SHALLOW: bool> DefIdVisitor<'tcx>
     for FindMin<'a, 'tcx, VL, SHALLOW>
 {
+    type Result = ();
     const SHALLOW: bool = SHALLOW;
     fn skip_assoc_tys(&self) -> bool {
         true
@@ -471,6 +473,7 @@ impl<'tcx, 'a> DefIdsToImplsCollector<'tcx, 'a> {
 }
 
 impl<'tcx, 'a> DefIdVisitor<'tcx> for DefIdsToImplsCollector<'tcx, 'a> {
+    type Result = ();
     const SHALLOW: bool = true;
     fn skip_assoc_tys(&self) -> bool {
         true
@@ -799,7 +802,6 @@ impl ReachEverythingInTheInterfaceVisitor<'_, '_> {
                 // Make sure that all affected impls are traversed one more time.
                 if let Some(impls) = self.ev.def_ids_to_impls.get(&def_id) {
                     // The order in which items are traversed is irrelevant.
-                    #[allow(rustc::potential_query_instability)]
                     self.ev.queue.extend(impls);
                 }
             }
@@ -855,6 +857,8 @@ impl ReachEverythingInTheInterfaceVisitor<'_, '_> {
 }
 
 impl<'tcx> DefIdVisitor<'tcx> for ReachEverythingInTheInterfaceVisitor<'_, 'tcx> {
+    type Result = ();
+
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.ev.tcx
     }
@@ -1067,6 +1071,8 @@ impl<'tcx> NamePrivacyVisitor<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for NamePrivacyVisitor<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_nested_body(&mut self, body_id: hir::BodyId) {
         let new_typeck_results = self.tcx.typeck_body(body_id);
         // Do not try reporting privacy violations if we failed to infer types.
@@ -1180,13 +1186,15 @@ impl<'tcx> TypePrivacyVisitor<'tcx> {
         let typeck_results = self
             .maybe_typeck_results
             .unwrap_or_else(|| span_bug!(span, "`hir::Expr` or `hir::Pat` outside of a body"));
-        try {
+        // Immediately called closure in place of an unstable `try {}` block.
+        (|| -> ControlFlow<()> {
             self.check_ty(typeck_results.node_type(id))?;
             self.visit(typeck_results.node_args(id))?;
             if let Some(adjustments) = typeck_results.adjustments().get(id) {
                 adjustments.iter().try_for_each(|adjustment| self.check_ty(adjustment.target))?;
             }
-        }
+            ControlFlow::Continue(())
+        })()
         .is_break()
     }
 
@@ -1208,6 +1216,8 @@ impl<'tcx> crate::rustc_ty_walk::SpannedTypeVisitor<'tcx> for TypePrivacyVisitor
 }
 
 impl<'tcx> Visitor<'tcx> for TypePrivacyVisitor<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_nested_body(&mut self, body_id: hir::BodyId) {
         let old_maybe_typeck_results =
             self.maybe_typeck_results.replace(self.tcx.typeck_body(body_id));
@@ -1392,9 +1402,9 @@ struct SearchInterfaceForPrivateItemsVisitor<'tcx> {
     /// The visitor checks that each component type is at least this visible.
     required_visibility: ty::Visibility,
     required_effective_vis: Option<EffectiveVisibility>,
-    hard_error: bool = false,
-    in_primary_interface: bool = true,
-    skip_assoc_tys: bool = false,
+    hard_error: bool,
+    in_primary_interface: bool,
+    skip_assoc_tys: bool,
 }
 
 impl SearchInterfaceForPrivateItemsVisitor<'_> {
@@ -1575,7 +1585,9 @@ impl<'tcx> PrivateItemsInPublicInterfacesChecker<'_, 'tcx> {
             item_def_id: def_id,
             required_visibility,
             required_effective_vis,
-            ..
+            hard_error: false,
+            in_primary_interface: true,
+            skip_assoc_tys: false,
         }
     }
 

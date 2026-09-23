@@ -119,11 +119,11 @@ fn value_assigned_to_local<'a, 'tcx>(
     stmt: &'a mir::Statement<'tcx>,
     local: Local,
 ) -> Option<&'a mir::Rvalue<'tcx>> {
-    if let mir::StatementKind::Assign((place, rvalue)) = &stmt.kind
-        && let Some(l) = place.as_local()
+    if let mir::StatementKind::Assign(assign) = &stmt.kind
+        && let Some(l) = assign.0.as_local()
         && local == l
     {
-        return Some(&*rvalue);
+        return Some(&assign.1);
     }
 
     None

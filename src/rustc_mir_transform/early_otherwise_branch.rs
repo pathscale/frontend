@@ -278,12 +278,12 @@ fn evaluate_candidate<'tcx>(
         //    switchInt(move _8) -> [2: bb7, otherwise: bb1];
         // }
         // ```
-        let [
-            Statement {
-                kind: StatementKind::Assign((_, Rvalue::Discriminant(child_place))), ..
-            },
-        ] = bbs[child].statements.as_slice()
+        let [Statement { kind: StatementKind::Assign(assign), .. }] =
+            bbs[child].statements.as_slice()
         else {
+            return None;
+        };
+        let (_, Rvalue::Discriminant(child_place)) = &**assign else {
             return None;
         };
         *child_place
@@ -400,8 +400,10 @@ fn verify_candidate_branch<'tcx>(
             return false;
         };
         // The statement must assign the discriminant of `place`.
-        let StatementKind::Assign((discr_place, Rvalue::Discriminant(from_place))) = statement.kind
-        else {
+        let StatementKind::Assign(ref assign) = statement.kind else {
+            return false;
+        };
+        let (discr_place, Rvalue::Discriminant(from_place)) = **assign else {
             return false;
         };
         if from_place != place {

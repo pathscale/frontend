@@ -11,7 +11,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::{Range, RangeFrom};
-use core::{debug_assert_matches, iter};
+use core::iter;
+use crate::debug_assert_matches;
 
 use crate::rustc_abi::{ExternAbi, FieldIdx};
 use crate::rustc_data_structures::thin_vec::ThinVec;
@@ -464,8 +465,8 @@ impl<'tcx> Inliner<'tcx> for NormalInliner<'tcx> {
     ) {
         self.changed = true;
 
-        let new_calls_count = new_blocks
-            .clone()
+        let new_calls_count = (new_blocks.start.index()..new_blocks.end.index())
+            .map(BasicBlock::new)
             .filter(|&bb| is_call_like(caller_body.basic_blocks[bb].terminator()))
             .count();
         if new_calls_count > 1 {
@@ -507,7 +508,7 @@ fn process_blocks<'tcx, I: Inliner<'tcx>>(
     caller_body: &mut Body<'tcx>,
     blocks: Range<BasicBlock>,
 ) {
-    for bb in blocks {
+    for bb in (blocks.start.index()..blocks.end.index()).map(BasicBlock::new) {
         let bb_data = &caller_body[bb];
         if bb_data.is_cleanup {
             continue;

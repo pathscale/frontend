@@ -10,7 +10,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{debug_assert_matches, fmt};
+use core::fmt;
+use crate::debug_assert_matches;
 
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_errors::ErrorGuaranteed;
@@ -35,8 +36,6 @@ use crate::rustc_middle::ty::{
     self, BoundRegion, Clause, Const, List, ParamTy, Pattern, PolyExistentialPredicate, Predicate,
     Region, RegionKind, RequiredDepth, Ty, TyCtxt,
 };
-
-#[allow(rustc::usage_of_ty_tykind)]
 impl<'tcx> Interner for TyCtxt<'tcx> {
     fn next_trait_solver_globally(self) -> bool {
         self.next_trait_solver_globally()

@@ -59,7 +59,7 @@ pub(super) fn apply_member_constraints<'tcx>(
             rcx.scc_values.add_region(scc_a, scc_b);
         }
 
-        for defining_use in member_constraints.get(&scc_a).into_flat_iter() {
+        for defining_use in member_constraints.get(&scc_a).into_iter().flatten() {
             apply_member_constraint(rcx, scc_a, &defining_use.arg_regions);
         }
     }
@@ -165,6 +165,8 @@ impl<'tcx> CollectMemberConstraintsVisitor<'_, '_, 'tcx> {
     }
 }
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for CollectMemberConstraintsVisitor<'_, '_, 'tcx> {
+    type Result = ();
+
     fn visit_region(&mut self, r: Region<'tcx>) {
         match r.kind() {
             ty::ReBound(..) => return,

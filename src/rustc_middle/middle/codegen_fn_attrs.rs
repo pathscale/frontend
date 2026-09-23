@@ -144,7 +144,9 @@ pub enum InstrumentFnAttr {
     Default,
 }
 
-const impl Default for InstrumentFnAttr {
+// Not `const impl` (`const_trait_impl`, unstable); `CodegenFnAttrs::new` names the variant
+// directly to stay a `const fn`.
+impl Default for InstrumentFnAttr {
     fn default() -> Self {
         InstrumentFnAttr::Default
     }
@@ -278,13 +280,14 @@ impl CodegenFnAttrs {
             linkage: None,
             import_linkage: None,
             link_section: None,
-            sanitizers: SanitizerFnAttrs::default(),
+            sanitizers: SanitizerFnAttrs::DEFAULT,
             instruction_set: None,
             alignment: None,
             patchable_function_entry: None,
             objc_class: None,
             objc_selector: None,
-            instrument_fn: InstrumentFnAttr::default(),
+            // The `Default` impl's value, named directly because `default()` is not const.
+            instrument_fn: InstrumentFnAttr::Default,
         }
     }
 
@@ -323,8 +326,16 @@ pub struct SanitizerFnAttrs {
     pub rtsan_setting: RtsanSetting,
 }
 
-const impl Default for SanitizerFnAttrs {
+impl SanitizerFnAttrs {
+    /// The `Default` value as a constant, so `CodegenFnAttrs::new` can stay a `const fn`
+    /// without `const impl Default` (`const_trait_impl`, unstable). `RtsanSetting::Caller` is
+    /// `RtsanSetting`'s `#[default]` variant.
+    pub const DEFAULT: Self =
+        Self { disabled: SanitizerSet::empty(), rtsan_setting: RtsanSetting::Caller };
+}
+
+impl Default for SanitizerFnAttrs {
     fn default() -> Self {
-        Self { disabled: SanitizerSet::empty(), rtsan_setting: RtsanSetting::default() }
+        Self::DEFAULT
     }
 }

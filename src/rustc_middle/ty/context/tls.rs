@@ -135,8 +135,8 @@ pub fn with_opt<F, R>(f: F) -> R
 where
     F: for<'tcx> FnOnce(Option<TyCtxt<'tcx>>) -> R,
 {
+    // No `#[track_caller]` on this closure: that is `closure_track_caller`, unstable.
     with_context_opt(
-        #[track_caller]
         |opt_context| f(opt_context.map(|context| context.tcx)),
     )
 }

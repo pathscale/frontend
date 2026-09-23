@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use alloc::string::String;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_ast::visit::{self, AssocCtxt, FnKind, Visitor};
 use crate::rustc_ast::{self as ast, AttrVec, GenericBound, NodeId, PatKind, attr, token};
 use crate::rustc_attr_ir::{Attribute, AttributeKind};
@@ -72,6 +73,8 @@ impl<'a> PostExpansionVisitor<'a> {
             in_associated_ty: bool,
         }
         impl Visitor<'_> for ImplTraitVisitor<'_> {
+            type Result = ();
+
             fn visit_ty(&mut self, ty: &ast::Ty) {
                 if let ast::TyKind::ImplTrait(..) = ty.kind {
                     if self.in_associated_ty {
@@ -150,6 +153,8 @@ impl<'a> PostExpansionVisitor<'a> {
 }
 
 impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
+    type Result = ();
+
     fn visit_attribute(&mut self, attr: &'a ast::Attribute) {
         // Checked in attribute parsers, do NOT add checks here
         visit::walk_attribute(self, attr)
@@ -176,7 +181,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 }
             }
 
-            ast::ItemKind::Trait(ast::Trait { is_auto: ast::IsAuto::Yes, .. }) => {
+            ast::ItemKind::Trait(t) if matches!(**t, ast::Trait { is_auto: ast::IsAuto::Yes, .. }) => {
                 gate!(self, auto_traits, i.span, "auto traits are experimental and possibly buggy");
             }
 
@@ -189,12 +194,14 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 gate!(self, decl_macro, i.span, msg);
             }
 
-            ast::ItemKind::TyAlias(ast::TyAlias { ty: Some(ty), .. }) => {
-                self.check_impl_trait(ty, false)
+            ast::ItemKind::TyAlias(ta) if ta.ty.is_some() => {
+                if let Some(ty) = &ta.ty {
+                    self.check_impl_trait(ty, false)
+                }
             }
-            ast::ItemKind::Const(ast::ConstItem {
-                kind: ast::ConstItemKind::TypeConst, ..
-            }) => {
+            ast::ItemKind::Const(c)
+                if matches!(**c, ast::ConstItem { kind: ast::ConstItemKind::TypeConst, .. }) =>
+            {
                 // Make sure this is only allowed if the feature gate is enabled.
                 // #![feature(min_generic_const_args)]
                 gate!(self, min_generic_const_args, i.span, "top-level `type const` are unstable");
@@ -338,7 +345,8 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
     fn visit_assoc_item(&mut self, i: &'a ast::AssocItem, ctxt: AssocCtxt) {
         let is_fn = match &i.kind {
             ast::AssocItemKind::Fn(_) => true,
-            ast::AssocItemKind::Type(ast::TyAlias { ty, .. }) => {
+            ast::AssocItemKind::Type(ta) => {
+                let ast::TyAlias { ty, .. } = &**ta;
                 if let (Some(_), AssocCtxt::Trait) = (ty, ctxt) {
                     gate!(
                         self,
@@ -352,11 +360,10 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 }
                 false
             }
-            ast::AssocItemKind::Const(ast::ConstItem {
-                body,
-                kind: ast::ConstItemKind::TypeConst,
-                ..
-            }) => {
+            ast::AssocItemKind::Const(c)
+                if matches!(**c, ast::ConstItem { kind: ast::ConstItemKind::TypeConst, .. }) =>
+            {
+                let body = &c.body;
                 // Make sure this is only allowed if the feature gate is enabled.
                 // #![feature(min_generic_const_args)]
                 gate!(self, min_generic_const_args, i.span, "associated `type const` are unstable");
@@ -417,7 +424,7 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
     let spans = sess.psess.gated_spans.spans.borrow();
     macro_rules! gate_all {
         ($feature:ident, $explain:literal $(, $help:literal)?) => {
-            for &span in spans.get(&sym::$feature).into_flat_iter() {
+            for &span in spans.get(&sym::$feature).into_iter().flatten() {
                 gate!(visitor, $feature, span, $explain $(, $help)?);
             }
         };
@@ -487,13 +494,13 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
     );
 
     // `associated_const_equality` will be stabilized as part of `min_generic_const_args`.
-    for &span in spans.get(&sym::associated_const_equality).into_flat_iter() {
+    for &span in spans.get(&sym::associated_const_equality).into_iter().flatten() {
         gate!(visitor, min_generic_const_args, span, "associated const equality is incomplete");
     }
 
     // `mgca_type_const_syntax` is part of `min_generic_const_args` so if
     // either or both are enabled we don't need to emit a feature error.
-    for &span in spans.get(&sym::mgca_type_const_syntax).into_flat_iter() {
+    for &span in spans.get(&sym::mgca_type_const_syntax).into_iter().flatten() {
         if visitor.features.min_generic_const_args()
             || visitor.features.mgca_type_const_syntax()
             || span.allows_unstable(sym::min_generic_const_args)
@@ -521,13 +528,13 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
     //       it does **not** mean "`T` doesn't implement `Bound` (positively or negatively)"!
     //       The latter would be a SemVer hazard!
     if !sess.opts.unstable_opts.internal_testing_features || !visitor.features.negative_bounds() {
-        for &span in spans.get(&sym::negative_bounds).into_flat_iter() {
+        for &span in spans.get(&sym::negative_bounds).into_iter().flatten() {
             sess.dcx().emit_err(diagnostics::NegativeBoundUnsupported { span });
         }
     }
 
     if !visitor.features.never_patterns() {
-        for &span in spans.get(&sym::never_patterns).into_flat_iter() {
+        for &span in spans.get(&sym::never_patterns).into_iter().flatten() {
             if span.allows_unstable(sym::never_patterns) {
                 continue;
             }
@@ -545,7 +552,7 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
     }
 
     // Yield exprs can be enabled either by `yield_expr`, by `coroutines` or by `gen_blocks`.
-    for &span in spans.get(&sym::yield_expr).into_flat_iter() {
+    for &span in spans.get(&sym::yield_expr).into_iter().flatten() {
         if (!visitor.features.coroutines() && !span.allows_unstable(sym::coroutines))
             && (!visitor.features.gen_blocks() && !span.allows_unstable(sym::gen_blocks))
             && (!visitor.features.yield_expr() && !span.allows_unstable(sym::yield_expr))
@@ -567,7 +574,7 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
 
     macro_rules! soft_gate_all_legacy_dont_use {
         ($feature:ident, $explain:literal) => {
-            for &span in spans.get(&sym::$feature).into_flat_iter() {
+            for &span in spans.get(&sym::$feature).into_iter().flatten() {
                 if !visitor.features.$feature() && !span.allows_unstable(sym::$feature) {
                     feature_warn(&visitor.sess, sym::$feature, span, $explain);
                 }
@@ -584,7 +591,7 @@ pub fn check_crate(krate: &ast::Crate, sess: &Session, features: &Features) {
     soft_gate_all_legacy_dont_use!(try_blocks, "`try` blocks are unstable");
     // tidy-alphabetical-end
 
-    for &span in spans.get(&sym::min_specialization).into_flat_iter() {
+    for &span in spans.get(&sym::min_specialization).into_iter().flatten() {
         if !visitor.features.specialization()
             && !visitor.features.min_specialization()
             && !span.allows_unstable(sym::specialization)
@@ -679,7 +686,7 @@ fn check_dependent_features(sess: &Session, features: &Features) {
                 .iter()
                 .filter(|f| !features.enabled(**f))
                 .map(|s| format!("`{}`", s.as_str()))
-                .intersperse(String::from(", "))
+                .separated_by(String::from(", "))
                 .collect();
             sess.dcx().emit_err(diagnostics::MissingDependentFeatures {
                 parent_span,
@@ -720,9 +727,7 @@ fn check_features_requiring_new_solver(sess: &Session, features: &Features) {
         .iter()
         .find(|feat| feat.gate_name == sym::generic_const_args)
         .map(|feat| feat.attr_sp)
-    {
-        #[allow(rustc::symbol_intern_string_literal)]
-        sess.dcx().emit_err(diagnostics::MissingDependentFeatures {
+    {        sess.dcx().emit_err(diagnostics::MissingDependentFeatures {
             parent_span: gca_span,
             parent: sym::generic_const_args,
             missing: String::from("-Znext-solver=globally"),

@@ -60,37 +60,20 @@
 //! }
 //! ```
 
-#![cfg_attr(feature = "nightly", feature(core_intrinsics))]
-
-
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 
 
-#[cfg(feature = "nightly")]
-macro_rules! likely {
-    ($x:expr) => {
-        core::intrinsics::likely($x)
-    };
-}
-
-#[cfg(not(feature = "nightly"))]
+// Branch hints only. The `nightly` versions called `core::intrinsics::likely`/`unlikely`, which
+// is `core_intrinsics`; the plain versions that upstream uses off nightly are now the only ones.
 macro_rules! likely {
     ($x:expr) => {
         $x
     };
 }
 
-#[cfg(feature = "nightly")]
-macro_rules! unlikely {
-    ($x:expr) => {
-        core::intrinsics::unlikely($x)
-    };
-}
-
-#[cfg(not(feature = "nightly"))]
 macro_rules! unlikely {
     ($x:expr) => {
         $x

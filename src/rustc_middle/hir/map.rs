@@ -1341,28 +1341,42 @@ struct ItemCollector<'tcx> {
     // (see <https://github.com/rust-lang/rust/pull/158119#issuecomment-4751513679>).
     crate_collector: bool,
     tcx: TyCtxt<'tcx>,
-    submodules: Vec<LocalModId> = vec![],
-    items: Vec<ItemId> = vec![],
-    trait_items: Vec<TraitItemId> = vec![],
-    impl_items: Vec<ImplItemId> = vec![],
-    foreign_items: Vec<ForeignItemId> = vec![],
-    body_owners: Vec<LocalDefId> = vec![],
-    opaques: Vec<LocalDefId> = vec![],
-    nested_bodies: Vec<LocalDefId> = vec![],
-    eiis: Vec<LocalDefId> = vec![],
-    proc_macro_decls: Option<LocalDefId> = None,
+    submodules: Vec<LocalModId>,
+    items: Vec<ItemId>,
+    trait_items: Vec<TraitItemId>,
+    impl_items: Vec<ImplItemId>,
+    foreign_items: Vec<ForeignItemId>,
+    body_owners: Vec<LocalDefId>,
+    opaques: Vec<LocalDefId>,
+    nested_bodies: Vec<LocalDefId>,
+    eiis: Vec<LocalDefId>,
+    proc_macro_decls: Option<LocalDefId>,
 }
 
 impl<'tcx> ItemCollector<'tcx> {
     fn new(tcx: TyCtxt<'tcx>, crate_collector: bool) -> ItemCollector<'tcx> {
-        ItemCollector { crate_collector, tcx, .. }
+        ItemCollector {
+            crate_collector,
+            tcx,
+            submodules: vec![],
+            items: vec![],
+            trait_items: vec![],
+            impl_items: vec![],
+            foreign_items: vec![],
+            body_owners: vec![],
+            opaques: vec![],
+            nested_bodies: vec![],
+            eiis: vec![],
+            proc_macro_decls: None,
+        }
     }
 }
 
 impl<'hir> Visitor<'hir> for ItemCollector<'hir> {
     type NestedFilter = nested_filter::All;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'hir> {
         self.tcx
     }
 

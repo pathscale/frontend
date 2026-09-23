@@ -8,6 +8,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -77,8 +79,13 @@ macro_rules! err_validation_failure {
 }
 
 macro_rules! throw_validation_failure {
+    // `return` stands in for upstream's unstable `do yeet`; no caller is inside a `try {}` block.
     ($where:expr, $msg:expr ) => {
-        do yeet err_validation_failure!($where, $msg)
+        return ::core::result::Result::Err(
+            crate::rustc_middle::mir::interpret::InterpErrorInfo::from(
+                err_validation_failure!($where, $msg),
+            ),
+        )
     };
 }
 

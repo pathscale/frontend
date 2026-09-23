@@ -176,6 +176,8 @@ impl<'a, 'tcx> GatherLocalsVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for GatherLocalsVisitor<'a, 'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     // Add explicitly-declared locals.
     fn visit_local(&mut self, local: &'tcx hir::LetStmt<'tcx>) {
         self.declare(local.into());

@@ -90,7 +90,11 @@ fn filtered_statement_span(statement: &Statement<'_>) -> Option<Span> {
         // and `_1` is the `Place` for `somenum`.
         //
         // If and when the Issue is resolved, remove this special case match pattern:
-        StatementKind::FakeRead((FakeReadCause::ForGuardBinding, _)) => None,
+        StatementKind::FakeRead(ref fake_read)
+            if matches!(**fake_read, (FakeReadCause::ForGuardBinding, _)) =>
+        {
+            None
+        }
 
         // Retain spans from most other statements.
         StatementKind::FakeRead(_)

@@ -615,6 +615,8 @@ impl SelfResolver<'_, '_, '_> {
 }
 
 impl<'ast> Visitor<'ast> for SelfResolver<'_, '_, '_> {
+    type Result = ();
+
     fn visit_id(&mut self, id: NodeId) {
         self.try_replace_id(id);
     }

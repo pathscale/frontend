@@ -217,13 +217,30 @@ impl FormatString {
 pub struct FormatArgs {
     /// The name of the item the attribute is on.
     pub this: String,
-    pub this_resolved: String = String::new(),
-    pub this_path: String = String::new(),
-    pub found: String = String::new(),
-    pub expected: String = String::new(),
-    pub unresolved: String = String::new(),
-    pub item_context: &'static str = "",
-    pub generic_args: Vec<(Symbol, String)> = Vec::new(),
+    pub this_resolved: String,
+    pub this_path: String,
+    pub found: String,
+    pub expected: String,
+    pub unresolved: String,
+    pub item_context: &'static str,
+    pub generic_args: Vec<(Symbol, String)>,
+}
+
+impl FormatArgs {
+    /// Every field but `this` is optional context, so callers start from this and override the
+    /// fields they know with struct update syntax. Stable Rust has no field default values.
+    pub fn new(this: String) -> Self {
+        FormatArgs {
+            this,
+            this_resolved: String::new(),
+            this_path: String::new(),
+            found: String::new(),
+            expected: String::new(),
+            unresolved: String::new(),
+            item_context: "",
+            generic_args: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, StableHash, Encodable, Decodable, PrintAttribute)]

@@ -38,7 +38,6 @@ pub type AliasConstKind<'tcx> = ir::AliasConstKind<TyCtxt<'tcx>>;
 crate::static_assert_size!(ConstKind<'_>, 32);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, StableHash)]
-#[rustc_pass_by_value]
 pub struct Const<'tcx>(pub(super) Interned<'tcx, WithCachedTypeInfo<ConstKind<'tcx>>>);
 
 impl<'tcx> crate::rustc_type_ir::inherent::IntoKind for Const<'tcx> {

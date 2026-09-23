@@ -50,7 +50,7 @@ pub use self::allocation::{
 pub use self::error::{
     BadBytesAccess, CheckAlignMsg, CheckInAllocMsg, ErrorHandled, EvalStaticInitializerRawResult,
     EvalToAllocationRawResult, EvalToConstValueResult, EvalToValTreeResult, InterpErrorInfo,
-    InterpErrorKind, InterpResult, InvalidMetaKind, InvalidProgramInfo, MachineStopType,
+    InterpErrorKind, InterpResult, InterpResultExt, InvalidMetaKind, InvalidProgramInfo, MachineStopType,
     Misalignment, ReportedErrorInfo, ResourceExhaustionInfo, UndefinedBehaviorInfo,
     UnsupportedOpInfo, ValTreeCreationError, interp_ok,
 };

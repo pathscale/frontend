@@ -1,12 +1,11 @@
 //! Compiler-true facts extracted from `TyCtxt`.
 //!
-//! This is the additive module the rust-analyzer handover asked for: agentcode's
-//! concepts do not live here, and nothing under `rustc_*` is edited. A fact this
-//! module reports is a fact rustc would use. Capabilities in the adapter stay
-//! false until those facts are proven there.
+//! An additive module: no caller's concepts live here, and nothing under `rustc_*` is
+//! edited to serve it. A fact this module reports is a fact rustc would use.
+//! Capabilities in a caller's adapter stay false until those facts are proven there.
 //!
-//! `run_compiler` is still batch-shaped. Agentcode indexes immutable snapshots,
-//! so one analysis per snapshot is the first milestone: extract, then drop the
+//! `run_compiler` is still batch-shaped. A caller that indexes immutable snapshots
+//! needs one analysis per snapshot, so that is the first milestone: extract, then drop the
 //! `TyCtxt`. A resident holder that outlives one call is a later increment, not
 //! required to emit definitions, references, imports, impls, or trait impls.
 //!
@@ -14,8 +13,8 @@
 //! run in [`crate::rustc_span::fatal_error::catch_fatal_errors`] so a refused
 //! program is `Err`, not a dead daemon. That wrap needs `panic = "unwind"`.
 //!
-//! These types serialize so a helper process can emit them. Agentcode stays on
-//! rustc 1.97.1 and cannot path-dep this crate.
+//! These types serialize, so a caller can also take them as JSON from `frontend-facts`.
+//! The crate builds on stable 1.97.1, so a caller can equally link it.
 //!
 //! Within-crate first. A sysroot is optional: when present it is the library
 //! tree this session reads, when absent rustc's default search is used. The
@@ -291,7 +290,7 @@ pub fn analyze_source_with_sysroot(
 ) -> Result<CrateFacts, FatalError> {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
-        "analyze_source needs panic=unwind so abort_if_errors can be caught"
+        "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
     let mut opts = Options::default();
     opts.crate_name = Some(crate_name.to_string());
@@ -366,6 +365,114 @@ pub fn analyze_source_with_sysroot(
     })
 }
 
+/// What [`check_source`] found: every error and warning the frontend emitted, one string
+/// each, in emission order.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Checked {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    /// The session stopped on a fatal error before the analysis finished. `errors` says why
+    /// when the frontend said anything; when it said nothing this is the only signal.
+    pub fatal: bool,
+}
+
+impl Checked {
+    /// Nothing refused the program: no error, and the analysis ran to its end.
+    pub fn is_clean(&self) -> bool {
+        self.errors.is_empty() && !self.fatal
+    }
+}
+
+/// A `fmt::Write` into a buffer the caller keeps a handle on, so the emitter can own one end.
+struct Sink(alloc::sync::Arc<eko::thread::Mutex<String>>);
+
+impl core::fmt::Write for Sink {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.lock().push_str(s);
+        Ok(())
+    }
+}
+
+/// Type check, borrow check and lint one crate from source, and return what was said.
+///
+/// **Reading, never running.** This is `tcx.analysis(())`: typeck, then borrowck, then the
+/// builtin lints (skipped when typeck or borrowck already failed). Nothing is compiled to a
+/// binary and nothing is executed. It is how a caller establishes `compiles` and `linted` for
+/// a candidate without rustc, cargo or clippy.
+///
+/// Runs as `no_core`, like [`analyze_source`] with no sysroot: see rule zero in `AGENTS.md`.
+/// Diagnostics go to this crate's `PlainEmitter`, one line each, captured rather than printed.
+/// Needs a catcher installed through [`crate::unwind_janky::install_catcher`], because a
+/// refused program ends in `abort_if_errors`, which unwinds.
+pub fn check_source(crate_name: &str, source: &str) -> Checked {
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    let mut opts = Options::default();
+    opts.crate_name = Some(crate_name.to_string());
+    opts.crate_types = alloc::vec![CrateType::Rlib];
+    opts.unstable_features = UnstableFeatures::Allow;
+    opts.unstable_opts.crate_attr.push("no_core".to_string());
+    opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
+
+    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let sink = text.clone();
+    let using_internal_features =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(AtomicBool::new(false)));
+    let config = Config {
+        opts,
+        input: Input::Str {
+            name: FileName::anon_source_code(source),
+            input: source.to_string(),
+        },
+        psess_created: Some(alloc::boxed::Box::new(
+            move |psess: &mut crate::rustc_session::parse::ParseSess| {
+                let emitter = crate::rustc_errors::plain_emitter::PlainEmitter::new()
+                    .sm(Some(psess.clone_source_map()))
+                    .short_message(true)
+                    .dst(alloc::boxed::Box::new(Sink(sink)));
+                psess.set_emitter(alloc::boxed::Box::new(emitter));
+            },
+        )),
+        using_internal_features,
+        rustc_version: None,
+    };
+    let finished = catch_fatal_errors(|| {
+        run_compiler(config, |compiler| {
+            let krate = parse(&compiler.sess);
+            create_and_enter_global_ctxt(compiler, krate, |tcx| tcx.analysis(()))
+        })
+    });
+
+    // One diagnostic starts at a line with no leading space; its `-->` location lines follow.
+    let mut checked = Checked { fatal: finished.is_err(), ..Checked::default() };
+    let captured = text.lock().clone();
+    let mut current: Option<String> = None;
+    let mut flush = |entry: Option<String>, checked: &mut Checked| {
+        if let Some(entry) = entry {
+            if entry.starts_with("error") {
+                checked.errors.push(entry);
+            } else if entry.starts_with("warning") {
+                checked.warnings.push(entry);
+            }
+        }
+    };
+    for line in captured.lines() {
+        if line.starts_with(' ') {
+            if let Some(entry) = current.as_mut() {
+                entry.push('\n');
+                entry.push_str(line);
+            }
+        } else {
+            flush(current.take(), &mut checked);
+            current = Some(line.to_string());
+        }
+    }
+    flush(current.take(), &mut checked);
+    checked
+}
+
 fn host_rustc_version() -> Option<alloc::string::String> {
     let out = eko::command::Command::new("rustc").arg("--version").output()?;
     if !out.success() {
@@ -396,6 +503,8 @@ struct RefVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_expr(&mut self, expr: &'tcx crate::rustc_hir::Expr<'tcx>) {
         match expr.kind {
             ExprKind::Path(ref qpath) => {

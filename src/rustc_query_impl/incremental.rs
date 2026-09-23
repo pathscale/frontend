@@ -56,7 +56,9 @@ pub(crate) fn verify_query_key_hashes<'tcx>(tcx: TyCtxt<'tcx>) {
 fn verify_query_key_hashes_inner<'tcx, C: QueryCache>(
     query: &'tcx QueryVTable<'tcx, C>,
     tcx: TyCtxt<'tcx>,
-) {
+) where
+    C::Key: DepNodeKey<'tcx>,
+{
     let _timer = tcx.prof.generic_activity_with_arg("query_key_hash_verify_for", query.name);
 
     let cache = &query.cache;
@@ -109,7 +111,9 @@ pub(crate) fn promote_from_disk_inner<'tcx, C: QueryCache>(
     dep_node: DepNode,
     prev_index: SerializedDepNodeIndex,
     dep_node_index: DepNodeIndex,
-) {
+) where
+    C::Key: DepNodeKey<'tcx>,
+{
     debug_assert!(tcx.dep_graph.is_green(&dep_node));
 
     let key = C::Key::try_recover_key(tcx, &dep_node).unwrap_or_else(|| {

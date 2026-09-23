@@ -31,7 +31,8 @@ mod dyn_trait;
 pub mod errors;
 pub mod generics;
 
-use core::{assert_matches, slice};
+use core::slice;
+use crate::assert_matches;
 
 use crate::rustc_abi::FIRST_VARIANT;
 use crate::rustc_ast::LitKind;

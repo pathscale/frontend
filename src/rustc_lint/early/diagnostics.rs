@@ -10,13 +10,13 @@ use alloc::vec::Vec;
 
 use core::any::Any;
 
-use crate::rustc_data_structures::sync::DynSend;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
 use crate::rustc_session::Session;
 
 pub struct DiagAndSess<'sess> {
     pub callback: Box<
-        dyn for<'b> FnOnce(DiagCtxtHandle<'b>, Level, &dyn Any) -> Diag<'b, ()> + DynSend + 'static,
+        // `+ DynSend` dropped: no longer an auto trait (see `rustc_data_structures/marker.rs`).
+        dyn for<'b> FnOnce(DiagCtxtHandle<'b>, Level, &dyn Any) -> Diag<'b, ()> + 'static,
     >,
     pub sess: &'sess Session,
 }

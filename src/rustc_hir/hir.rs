@@ -3264,6 +3264,8 @@ impl<'hir> Ty<'hir> {
         use crate::rustc_hir::intravisit::Visitor;
         struct MyVisitor(Vec<Span>);
         impl<'v> Visitor<'v> for MyVisitor {
+            type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+            type Result = ();
             fn visit_ty(&mut self, t: &'v Ty<'v, AmbigArg>) {
                 if matches!(
                     &t.kind,

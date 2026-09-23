@@ -43,6 +43,8 @@ struct LocalCollector {
 }
 
 impl<'tcx> Visitor<'tcx> for LocalCollector {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
         if let hir::PatKind::Binding(_, hir_id, ..) = pat.kind {
             self.locals.insert(hir_id);
@@ -66,6 +68,8 @@ impl CaptureCollector<'_, '_> {
 }
 
 impl<'tcx> Visitor<'tcx> for CaptureCollector<'_, 'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_path(&mut self, path: &hir::Path<'tcx>, _: HirId) {
         if let Res::Local(var_id) = path.res {
             self.visit_local_use(var_id, path.span);

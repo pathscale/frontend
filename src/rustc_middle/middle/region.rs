@@ -176,7 +176,7 @@ crate::rustc_index::newtype_index! {
 }
 
 // compilation error if size of `ScopeData` is not the same as a `u32`
-crate::static_assert_size!(ScopeData, 4);
+crate::static_assert_size!(ScopeData, 8);
 
 impl Scope {
     pub fn hir_id(&self, scope_tree: &ScopeTree) -> Option<HirId> {

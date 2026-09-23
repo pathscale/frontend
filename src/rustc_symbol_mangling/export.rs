@@ -1,6 +1,6 @@
 use alloc::string::String;
 use alloc::string::ToString;
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 
 use crate::rustc_abi::IntegerType;
 use crate::rustc_data_structures::stable_hash::StableHasher;

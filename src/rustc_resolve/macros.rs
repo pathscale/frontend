@@ -752,9 +752,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         Ok((ext, res))
     }
+}
 
-    pub(crate) fn resolve_derive_macro_path<'r>(
-        self: CmResolver<'r, 'ra, 'tcx>,
+// Methods taking a `CmResolver` receiver live in inherent impls on `CmResolver` itself, since a
+// `self: CmResolver` receiver on `Resolver` needs the unstable `arbitrary_self_types`.
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    pub(crate) fn resolve_derive_macro_path(
+        self,
         path: &ast::Path,
         parent_scope: &ParentScope<'ra>,
         force: bool,
@@ -772,8 +776,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         )
     }
 
-    fn resolve_macro_or_delegation_path<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+    fn resolve_macro_or_delegation_path(
+        mut self,
         ast_path: &ast::Path,
         kind: MacroKind,
         parent_scope: &ParentScope<'ra>,
@@ -879,7 +883,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         };
         Ok((ext, res))
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     pub(crate) fn finalize_macro_resolutions(&mut self, krate: &Crate) {
         let check_consistency = |this: &Self,
                                  path: &[Segment],
@@ -1142,9 +1148,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             }
         }
     }
+}
 
-    fn report_out_of_scope_macro_calls<'r>(
-        mut self: CmResolver<'r, 'ra, 'tcx>,
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    fn report_out_of_scope_macro_calls(
+        mut self,
         path: &ast::Path,
         parent_scope: &ParentScope<'ra>,
         invoc_in_mod_inert_attr: Option<(LocalDefId, NodeId)>,
@@ -1202,7 +1210,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             }
         }
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     pub(crate) fn check_reserved_macro_name(&self, name: Symbol, span: Span, res: Res) {
         // Reserve some names that are not quite covered by the general check
         // performed on `Resolver::builtin_attrs`.

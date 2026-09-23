@@ -643,7 +643,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
             let local_ty = frame.body.local_decls[local].ty;
             let local_ty =
                 self.instantiate_from_frame_and_normalize_erasing_regions(frame, local_ty)?;
-            self.layout_of(local_ty).into()
+            self.layout_of(local_ty).map_err(Into::into)
         })?;
 
         // Layouts of locals are requested a lot, so we cache them.

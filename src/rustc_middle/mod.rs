@@ -27,9 +27,7 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![allow(internal_features)]
-#![allow(rustc::direct_use_of_rustc_type_ir)]
-#![cfg_attr(doc, feature(intra_doc_pointers))]
+#![allow(internal_features)]#![cfg_attr(doc, feature(intra_doc_pointers))]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.

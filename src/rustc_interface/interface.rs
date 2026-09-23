@@ -292,9 +292,7 @@ pub(crate) fn parse_check_cfg(sess: &Session, specs: Vec<String>) -> CheckCfg {
                     .entry(name.name)
                     .and_modify(|v| match v {
                         ExpectedValues::Some(v) if !values_any_specified =>
-                        {
-                            #[allow(rustc::potential_query_instability)]
-                            v.extend(values.clone())
+                        {                            v.extend(values.clone())
                         }
                         ExpectedValues::Some(_) => *v = ExpectedValues::Any,
                         ExpectedValues::Any => {}
@@ -339,7 +337,6 @@ pub struct Config {
 }
 
 // JUSTIFICATION: before session exists, only config
-#[allow(rustc::bad_opt_access)]
 pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Send) -> R {
     trace!("run_compiler");
 

@@ -1,11 +1,10 @@
 //! Type context book-keeping.
 
-
-#![allow(rustc::usage_of_ty_tykind)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -19,7 +18,8 @@ use alloc::borrow::Cow;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
-use core::marker::PointeeSized;
+// `core::marker::PointeeSized` (unstable `sized_hierarchy`) is gone: `RawList` is `Sized`
+// now, so `InternedInSet` needs only the stable `?Sized`.
 use core::ops::Deref;
 use eko::thread::OnceLock;
 use alloc::sync::Arc;
@@ -36,7 +36,7 @@ use crate::rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
 use crate::rustc_data_structures::stable_hash::StableHash;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::sync::{
-    self, DynSend, DynSync, FreezeReadGuard, Lock, RwLock, WorkerLocal,
+    self, FreezeReadGuard, Lock, RwLock, WorkerLocal,
 };
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, MultiSpan};
 use crate::rustc_hir::attrs::lang_items::LangItem;
@@ -214,7 +214,6 @@ impl<'tcx> CtxtInterners<'tcx> {
     }
 
     /// Interns a type. (Use `mk_*` functions instead, where possible.)
-    #[allow(rustc::usage_of_ty_tykind)]
     #[inline(never)]
     fn intern_ty(&self, kind: TyKind<'tcx>) -> Ty<'tcx> {
         Ty(Interned::new_unchecked(
@@ -232,7 +231,6 @@ impl<'tcx> CtxtInterners<'tcx> {
     }
 
     /// Interns a const. (Use `mk_*` functions instead, where possible.)
-    #[allow(rustc::usage_of_ty_tykind)]
     #[inline(never)]
     fn intern_const(&self, kind: ty::ConstKind<'tcx>) -> Const<'tcx> {
         Const(Interned::new_unchecked(
@@ -584,8 +582,9 @@ pub struct TyCtxtFeed<'tcx, K: Copy> {
     key: K,
 }
 
-/// Only queries that create a `DefId` are allowed to feed queries for that `DefId`.
-impl<K: Copy> !StableHash for TyCtxtFeed<'_, K> {}
+// Only queries that create a `DefId` are allowed to feed queries for that `DefId`.
+// Upstream: `impl<K: Copy> !StableHash for TyCtxtFeed<'_, K>` (unstable negative impl), so
+// a feed cannot be hashed into a query key. On stable, kept by not writing the impl.
 
 /// Some workarounds to use cases that cannot use `create_def`.
 /// Do not add new ways to create `TyCtxtFeed` without consulting
@@ -715,17 +714,14 @@ pub struct GlobalCaches<'tcx> {
 ///   implicitly within the `ImplicitCtxt`. Explicit access is preferred when
 ///   possible.
 #[derive(Copy, Clone)]
-#[rustc_diagnostic_item = "TyCtxt"]
-#[rustc_pass_by_value]
 pub struct TyCtxt<'tcx> {
     gcx: &'tcx GlobalCtxt<'tcx>,
 }
 
-// Explicitly implement `DynSync` and `DynSend` for `TyCtxt` to short circuit trait resolution. Its
-// field are asserted to implement these traits below, so this is trivially safe, and it greatly
-// speeds-up compilation of this crate and its dependents.
-unsafe impl DynSend for TyCtxt<'_> {}
-unsafe impl DynSync for TyCtxt<'_> {}
+// Upstream explicitly implements `DynSync` and `DynSend` for `TyCtxt` to short circuit
+// auto-trait resolution. They are now blanket-implemented ordinary traits (see
+// `rustc_data_structures/marker.rs`), so there is nothing to short-circuit and a second
+// impl would conflict.
 fn _assert_tcx_fields() {
     sync::assert_dyn_sync::<&'_ GlobalCtxt<'_>>();
     sync::assert_dyn_send::<&'_ GlobalCtxt<'_>>();
@@ -828,8 +824,7 @@ pub struct CurrentGcx {
     value: Arc<RwLock<Option<*const ()>>>,
 }
 
-unsafe impl DynSend for CurrentGcx {}
-unsafe impl DynSync for CurrentGcx {}
+// `DynSend`/`DynSync` for `CurrentGcx` come from the blanket impls in `marker.rs`.
 
 impl CurrentGcx {
     pub fn new() -> Self {
@@ -1368,20 +1363,27 @@ impl<'tcx> TyCtxt<'tcx> {
         self.ensure_ok().analysis(());
 
         let definitions = &self.untracked.definitions;
-        gen {
-            let mut i = 0;
-
+        // This was a `gen {}` block (unstable), rewritten as a hand-rolled state machine. `done`
+        // makes it fused like the gen block was, so `freeze` runs exactly once.
+        let mut i = 0;
+        let mut done = false;
+        core::iter::from_fn(move || {
+            if done {
+                return None;
+            }
             // Recompute the number of definitions each time, because our caller may be creating
             // new ones.
-            while i < { definitions.read().num_definitions() } {
+            if i < { definitions.read().num_definitions() } {
                 let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
-                yield LocalDefId { local_def_index };
                 i += 1;
+                return Some(LocalDefId { local_def_index });
             }
 
             // Freeze definitions once we finish iterating on them, to prevent adding new ones.
             definitions.freeze();
-        }
+            done = true;
+            None
+        })
     }
 
     pub fn definitions(self) -> &'tcx crate::rustc_hir::definitions::Definitions {
@@ -1788,7 +1790,6 @@ macro_rules! sty_debug_print {
 
                 for shard in tcx.interners.type_.lock_shards() {
                     // It seems that ordering doesn't affect anything here.
-                    #[allow(rustc::potential_query_instability)]
                     let types = shard.iter();
                     for &(InternedInSet(t), ()) in types {
                         let variant = match t.internee {
@@ -1877,23 +1878,21 @@ impl<'tcx> TyCtxt<'tcx> {
 // this type just holds a pointer to it, but it still effectively owns it. It
 // impls `Borrow` so that it can be looked up using the original
 // (non-arena-memory-owning) types.
-struct InternedInSet<'tcx, T: ?Sized + PointeeSized>(&'tcx T);
+struct InternedInSet<'tcx, T: ?Sized>(&'tcx T);
 
-impl<'tcx, T: 'tcx + ?Sized + PointeeSized> Clone for InternedInSet<'tcx, T> {
+impl<'tcx, T: 'tcx + ?Sized> Clone for InternedInSet<'tcx, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'tcx, T: 'tcx + ?Sized + PointeeSized> Copy for InternedInSet<'tcx, T> {}
+impl<'tcx, T: 'tcx + ?Sized> Copy for InternedInSet<'tcx, T> {}
 
-impl<'tcx, T: 'tcx + ?Sized + PointeeSized> IntoPointer for InternedInSet<'tcx, T> {
+impl<'tcx, T: 'tcx + ?Sized> IntoPointer for InternedInSet<'tcx, T> {
     fn into_pointer(&self) -> *const () {
         self.0 as *const _ as *const ()
     }
 }
-
-#[allow(rustc::usage_of_ty_tykind)]
 impl<'tcx, T> Borrow<T> for InternedInSet<'tcx, WithCachedTypeInfo<T>> {
     fn borrow(&self) -> &T {
         &self.0.internee
@@ -2251,7 +2250,6 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     // Avoid this in favour of more specific `Ty::new_*` methods, where possible.
-    #[allow(rustc::usage_of_ty_tykind)]
     #[inline]
     pub fn mk_ty_from_kind(self, st: TyKind<'tcx>) -> Ty<'tcx> {
         self.interners.intern_ty(st)
@@ -2318,7 +2316,7 @@ impl<'tcx> TyCtxt<'tcx> {
     ) -> &'tcx List<PolyExistentialPredicate<'tcx>> {
         assert!(!eps.is_empty());
         assert!(
-            eps.array_windows()
+            eps.windows_array()
                 .all(|[a, b]| a.skip_binder().stable_cmp(self, &b.skip_binder())
                     != Ordering::Greater)
         );
@@ -2728,8 +2726,6 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn renormalize_rigid_aliases(self) -> bool {
         self.sess.opts.unstable_opts.renormalize_rigid_aliases
     }
-
-    #[allow(rustc::bad_opt_access)]
     pub fn use_typing_mode_post_typeck_until_borrowck(self) -> bool {
         self.next_trait_solver_globally()
             || self.sess.opts.unstable_opts.typing_mode_post_typeck_until_borrowck

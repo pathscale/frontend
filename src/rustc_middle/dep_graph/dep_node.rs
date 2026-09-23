@@ -95,7 +95,7 @@ impl DepKind {
     }
 
     /// The number of dep kind variants.
-    pub(crate) const NUM_VARIANTS: usize = core::mem::variant_count::<DepKind>();
+    pub(crate) const NUM_VARIANTS: usize = Self::COUNTED_VARIANTS;
 
     /// This is the highest value a `DepKind` can have. It's used during encoding to
     /// pack information into the unused bits. u16 matches the `repr(u16)` on `DepKind`.
@@ -295,6 +295,12 @@ macro_rules! define_dep_nodes {
         pub enum DepKind {
             $( $(#[$nq_attr])* $nq_name, )*
             $( $(#[$q_attr])* $q_name, )*
+        }
+
+        impl DepKind {
+            /// Counted from the table, because `mem::variant_count` is unstable.
+            const COUNTED_VARIANTS: usize =
+                [$( self::DepKind::$nq_name, )* $( self::DepKind::$q_name, )*].len();
         }
 
         /// Converts a string to a `DepKind`. Used for handling attributes like `rustc_clean` that

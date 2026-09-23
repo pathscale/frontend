@@ -8,7 +8,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{assert_matches, fmt, iter};
+use core::{fmt, iter};
+use crate::assert_matches;
 
 use crate::rustc_abi::{ExternAbi, FIRST_VARIANT, FieldIdx, VariantIdx};
 use crate::rustc_data_structures::thin_vec::ThinVec;

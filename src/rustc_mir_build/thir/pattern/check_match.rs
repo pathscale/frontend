@@ -152,10 +152,8 @@ impl<'p, 'tcx> Visitor<'p, 'tcx> for MatchVisitor<'p, 'tcx> {
             ExprKind::Match { scrutinee, ref arms, match_source } => {
                 self.check_match(scrutinee, arms, match_source, ex.span);
             }
-            ExprKind::LoopMatch {
-                match_data: LoopMatchMatchData { scrutinee, ref arms, span },
-                ..
-            } => {
+            ExprKind::LoopMatch { ref match_data, .. } => {
+                let LoopMatchMatchData { scrutinee, ref arms, span } = **match_data;
                 self.check_match(scrutinee, arms, MatchSource::Normal, span);
             }
             ExprKind::Let { ref pat, expr } => {
@@ -488,8 +486,8 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
             && self.tcx.is_diagnostic_item(crate::rustc_span::sym::Option, s_ty.did())
             && let ExprKind::Scope { value, .. } = initializer.kind
             && let initializer_expr = &self.thir[value]
-            && let ExprKind::Adt(AdtExpr { fields, .. }) = &initializer_expr.kind
-            && let Some(field) = fields.first()
+            && let ExprKind::Adt(adt_expr) = &initializer_expr.kind
+            && let Some(field) = adt_expr.fields.first()
             && let inner = &self.thir[field.expr]
             && let Some(inner_ty) = inner.ty.ty_adt_def()
             && self.tcx.is_diagnostic_item(crate::rustc_span::sym::Option, inner_ty.did())
@@ -1240,7 +1238,7 @@ fn is_const_pat_that_looks_like_binding<'tcx>(tcx: TyCtxt<'tcx>, pat: &Pat<'tcx>
     // The pattern must be a named constant, and the name that appears in
     // the pattern's source text must resemble a plain identifier without any
     // `::` namespace separators or other non-identifier characters.
-    if let Some(def_id) = try { pat.extra.as_deref()?.expanded_const? }
+    if let Some(def_id) = pat.extra.as_deref().and_then(|extra| extra.expanded_const)
         && matches!(tcx.def_kind(def_id), DefKind::Const { .. })
         && let Ok(snippet) = tcx.sess.source_map().span_to_snippet(pat.span)
         && snippet.chars().all(|c| c.is_alphanumeric() || c == '_')

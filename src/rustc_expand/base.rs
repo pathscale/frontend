@@ -14,7 +14,6 @@ use crate::rustc_ast::visit::{AssocCtxt, Visitor};
 use crate::rustc_ast::{self as ast, AttrVec, Attribute, HasAttrs, Item, NodeId, PatKind, Safety};
 use crate::rustc_attr_ir::{self as attrs, CfgEntry, Deprecation, Stability, find_attr};
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexMap};
-use crate::rustc_data_structures::sync;
 use crate::rustc_errors::{BufferedEarlyLint, DiagCtxtHandle, ErrorGuaranteed};
 use crate::rustc_feature::Features;
 use crate::rustc_hir::def::MacroKinds;
@@ -689,13 +688,13 @@ pub enum SyntaxExtensionKind {
     /// A token-based function-like macro.
     Bang(
         /// An expander with signature TokenStream -> TokenStream.
-        Arc<dyn BangProcMacro + sync::DynSync + sync::DynSend>,
+        Arc<dyn BangProcMacro>,
     ),
 
     /// An AST-based function-like macro.
     LegacyBang(
         /// An expander with signature TokenStream -> AST.
-        Arc<dyn TTMacroExpander + sync::DynSync + sync::DynSend>,
+        Arc<dyn TTMacroExpander>,
     ),
 
     /// A token-based attribute macro.
@@ -703,7 +702,7 @@ pub enum SyntaxExtensionKind {
         /// An expander with signature (TokenStream, TokenStream) -> TokenStream.
         /// The first TokenStream is the attribute itself, the second is the annotated item.
         /// The produced TokenStream replaces the input TokenStream.
-        Arc<dyn AttrProcMacro + sync::DynSync + sync::DynSend>,
+        Arc<dyn AttrProcMacro>,
     ),
 
     /// An AST-based attribute macro.
@@ -711,7 +710,7 @@ pub enum SyntaxExtensionKind {
         /// An expander with signature (AST, AST) -> AST.
         /// The first AST fragment is the attribute itself, the second is the annotated item.
         /// The produced AST fragment replaces the input AST fragment.
-        Arc<dyn MultiItemModifier + sync::DynSync + sync::DynSend>,
+        Arc<dyn MultiItemModifier>,
     ),
 
     /// A trivial attribute "macro" that does nothing,
@@ -729,27 +728,27 @@ pub enum SyntaxExtensionKind {
         /// is handled identically to `LegacyDerive`. It should be migrated to
         /// a token-based representation like `Bang` and `Attr`, instead of
         /// using `MultiItemModifier`.
-        Arc<dyn MultiItemModifier + sync::DynSync + sync::DynSend>,
+        Arc<dyn MultiItemModifier>,
     ),
 
     /// An AST-based derive macro.
     LegacyDerive(
         /// An expander with signature AST -> AST.
         /// The produced AST fragment is appended to the input AST fragment.
-        Arc<dyn MultiItemModifier + sync::DynSync + sync::DynSend>,
+        Arc<dyn MultiItemModifier>,
     ),
 
     /// A glob delegation.
     ///
     /// This is for delegated function implementations, and has nothing to do with glob imports.
-    GlobDelegation(Arc<dyn GlobDelegationExpander + sync::DynSync + sync::DynSend>),
+    GlobDelegation(Arc<dyn GlobDelegationExpander>),
 }
 
 impl SyntaxExtensionKind {
     /// Returns `Some(expander)` for a macro usable as a `LegacyBang`; otherwise returns `None`
     ///
     /// This includes a `MacroRules` with function-like rules.
-    pub fn as_legacy_bang(&self) -> Option<&(dyn TTMacroExpander + sync::DynSync + sync::DynSend)> {
+    pub fn as_legacy_bang(&self) -> Option<&(dyn TTMacroExpander)> {
         match self {
             SyntaxExtensionKind::LegacyBang(exp) => Some(exp.as_ref()),
             SyntaxExtensionKind::MacroRules(exp) if exp.kinds().contains(MacroKinds::BANG) => {
@@ -762,7 +761,7 @@ impl SyntaxExtensionKind {
     /// Returns `Some(expander)` for a macro usable as an `Attr`; otherwise returns `None`
     ///
     /// This includes a `MacroRules` with `attr` rules.
-    pub fn as_attr(&self) -> Option<&(dyn AttrProcMacro + sync::DynSync + sync::DynSend)> {
+    pub fn as_attr(&self) -> Option<&(dyn AttrProcMacro)> {
         match self {
             SyntaxExtensionKind::Attr(exp) => Some(exp.as_ref()),
             SyntaxExtensionKind::MacroRules(exp) if exp.kinds().contains(MacroKinds::ATTR) => {

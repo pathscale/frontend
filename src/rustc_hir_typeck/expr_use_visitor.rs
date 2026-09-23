@@ -241,7 +241,7 @@ impl<'tcx> TypeInformationCtxt<'tcx> for (&LateContext<'tcx>, LocalDefId) {
     where
         Self: 'a;
 
-    type Error = !;
+    type Error = crate::Never;
 
     fn typeck_results(&self) -> Self::TypeckResults<'_> {
         self.0.typeck_results()
@@ -260,11 +260,11 @@ impl<'tcx> TypeInformationCtxt<'tcx> for (&LateContext<'tcx>, LocalDefId) {
         span_bug!(span, "{}", msg.to_string())
     }
 
-    fn error_reported_in_ty(&self, _ty: Ty<'tcx>) -> Result<(), !> {
+    fn error_reported_in_ty(&self, _ty: Ty<'tcx>) -> Result<(), crate::Never> {
         Ok(())
     }
 
-    fn tainted_by_errors(&self) -> Result<(), !> {
+    fn tainted_by_errors(&self) -> Result<(), crate::Never> {
         Ok(())
     }
 

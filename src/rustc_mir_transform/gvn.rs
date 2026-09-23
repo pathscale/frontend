@@ -97,6 +97,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -342,7 +344,6 @@ impl<'a, 'tcx> ValueSet<'a, 'tcx> {
 
     /// Insert a `(Value, Ty)` pair to be deduplicated.
     /// Returns `true` as second tuple field if this value did not exist previously.
-    #[allow(rustc::disallowed_pass_by_ref)] // closures take `&VnIndex`
     fn insert(&mut self, ty: Ty<'tcx>, value: Value<'a, 'tcx>) -> (VnIndex, bool) {
         debug_assert!(match value {
             Value::Opaque(_) | Value::Address { .. } => false,
@@ -970,7 +971,8 @@ impl<'body, 'a, 'tcx> VnState<'body, 'a, 'tcx> {
             }
         }
 
-        if Cow::is_owned(&projection) {
+        // A match rather than `Cow::is_owned`, which is the unstable `cow_is_borrowed`.
+        if matches!(projection, Cow::Owned(_)) {
             place.projection = self.tcx.mk_place_elems(&projection);
         }
 
@@ -1117,7 +1119,8 @@ impl<'body, 'a, 'tcx> VnState<'body, 'a, 'tcx> {
             Rvalue::Cast(ref mut kind, ref mut value, to) => {
                 return self.simplify_cast(kind, value, to, location);
             }
-            Rvalue::BinaryOp(op, (ref mut lhs, ref mut rhs)) => {
+            Rvalue::BinaryOp(op, ref mut operands) => {
+                let (lhs, rhs) = &mut **operands;
                 return self.simplify_binary(op, lhs, rhs, location);
             }
             Rvalue::UnaryOp(op, ref mut arg_op) => {
@@ -1219,7 +1222,7 @@ impl<'body, 'a, 'tcx> VnState<'body, 'a, 'tcx> {
         let Rvalue::Aggregate(ref kind, ref mut field_ops) = *rvalue else { bug!() };
 
         if field_ops.is_empty() {
-            let is_zst = match *kind {
+            let is_zst = match **kind {
                 AggregateKind::Array(..)
                 | AggregateKind::Tuple
                 | AggregateKind::Closure(..)
@@ -1241,7 +1244,7 @@ impl<'body, 'a, 'tcx> VnState<'body, 'a, 'tcx> {
                 .unwrap_or_else(|| self.new_opaque(op.ty(self.local_decls, self.tcx)))
         }));
 
-        let variant_index = match *kind {
+        let variant_index = match **kind {
             AggregateKind::Array(..) | AggregateKind::Tuple => {
                 assert!(!field_ops.is_empty());
                 FIRST_VARIANT

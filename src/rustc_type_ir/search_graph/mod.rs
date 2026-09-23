@@ -246,7 +246,6 @@ impl CandidateHeadUsages {
             if let Some(ref mut self_usages) = self.usages {
                 // Each head is merged independently, so the final usage counts are the same
                 // regardless of hash iteration order.
-                #[allow(rustc::potential_query_instability)]
                 for (head_index, head) in other_usages.into_iter() {
                     let HeadUsages { inductive, unknown, coinductive, forced_ambiguity } = head;
                     let self_usages = self_usages.entry(head_index).or_default();
@@ -535,7 +534,6 @@ impl<X: Cx> NestedGoals<X> {
     fn extend_from_child(&mut self, step_kind: PathKind, nested_goals: &NestedGoals<X>) {
         // Each nested goal is updated independently, and `insert` only unions paths for that
         // goal, so traversal order cannot affect the result.
-        #[allow(rustc::potential_query_instability)]
         for (input, paths_to_nested) in nested_goals.iter() {
             let paths_to_nested = paths_to_nested.extend_with(step_kind);
             self.insert(input, paths_to_nested);
@@ -544,8 +542,6 @@ impl<X: Cx> NestedGoals<X> {
 
     // This helper intentionally exposes unstable hash iteration so each caller must opt in
     // locally and justify why its traversal is order-insensitive.
-    #[cfg_attr(feature = "nightly", rustc_lint_query_instability)]
-    #[allow(rustc::potential_query_instability)]
     fn iter(&self) -> impl Iterator<Item = (X::Input, PathsToNested)> + '_ {
         self.nested_goals.iter().map(|(i, p)| (*i, *p))
     }
@@ -748,7 +744,6 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D> {
             let (entry_index, entry) = self.stack.last_mut_with_index().unwrap();
             // Ignoring usages only mutates the state for the current `head_index`, so the
             // resulting per-head state is unchanged by iteration order.
-            #[allow(rustc::potential_query_instability)]
             for (head_index, usages) in usages.into_iter() {
                 if head_index == entry_index {
                     entry.usages.unwrap().ignore_usages(usages);
@@ -946,7 +941,6 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D> {
         let rerun_index = self.stack.next_index();
         // Each cached entry is filtered independently based on whether it depends on
         // `rerun_index`, so bucket traversal order does not matter.
-        #[allow(rustc::potential_query_instability)]
         self.provisional_cache.retain(|_, entries| {
             entries.retain(|entry| {
                 let (head_index, head) = entry.heads.highest_cycle_head();
@@ -1004,7 +998,6 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
         let popped_head_index = self.stack.next_index();
         // Rebasing decisions depend only on each provisional entry and the current stack state,
         // so traversing the cache in hash order cannot change the final cache contents.
-        #[allow(rustc::potential_query_instability)]
         self.provisional_cache.retain(|&input, entries| {
             entries.retain_mut(|entry| {
                 let ProvisionalCacheEntry {
@@ -1193,7 +1186,6 @@ impl<D: Delegate<Cx = X>, X: Cx> SearchGraph<D, X> {
         // would apply for any of its nested goals.
         // Any matching provisional entry rejects the candidate,
         // so iteration order only affects when we return `false`, not the final answer.
-        #[allow(rustc::potential_query_instability)]
         for (input, path_from_global_entry) in nested_goals.iter() {
             let Some(entries) = self.provisional_cache.get(&input) else {
                 continue;

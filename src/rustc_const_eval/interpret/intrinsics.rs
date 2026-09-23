@@ -6,6 +6,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -15,7 +17,7 @@ use alloc::vec::Vec;
 mod atomic;
 mod simd;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_abi::{FieldIdx, HasDataLayout, Size, VariantIdx};
 use rustc_apfloat::ieee::{Double, Half, Quad, Single};

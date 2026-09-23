@@ -10,6 +10,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -190,7 +191,7 @@ impl<'a, Node: Idx> SpantreeBuilder<'a, Node> {
 
         // For each spantree edge `a -> b` in the path that was just traversed,
         // reverse it to become `a <- b`, while preserving `claiming_node`.
-        for &[a, b] in path_buf.array_windows::<2>().rev() {
+        for &[a, b] in path_buf.windows_array::<2>().rev() {
             let SpantreeEdge { is_reversed, claiming_node, span_parent } = self.span_edges[a]
                 .take()
                 .expect("all nodes in the path (except the last) have a `span_parent`");

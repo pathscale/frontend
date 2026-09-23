@@ -119,6 +119,8 @@ impl<'a, 'tcx> Encoder for EncodeContext<'a, 'tcx> {
         emit_i16(i16);
 
         emit_raw_bytes(&[u8]);
+        // Byte slices go to the opaque encoder in one call, as the removed `[u8]` impl did.
+        emit_u8_slice(&[u8]);
     }
 }
 
@@ -373,13 +375,6 @@ impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for SpanData {
             let cnum = s.source_file_cache.0.cnum;
             cnum.encode(s);
         }
-    }
-}
-
-impl<'a, 'tcx> Encodable<EncodeContext<'a, 'tcx>> for [u8] {
-    fn encode(&self, e: &mut EncodeContext<'a, 'tcx>) {
-        Encoder::emit_usize(e, self.len());
-        e.emit_raw_bytes(self);
     }
 }
 
@@ -1782,7 +1777,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 .resolutions(())
                 .ambig_module_children
                 .get(&local_def_id)
-                .map_or_default(|v| &v[..]);
+                .map(|v| &v[..]).unwrap_or_default();
             record_defaulted_array!(self.tables.ambig_module_children[def_id] <-
                 ambig_module_children);
         }

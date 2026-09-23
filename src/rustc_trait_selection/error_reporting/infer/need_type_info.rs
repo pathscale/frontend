@@ -1148,9 +1148,10 @@ impl<'a, 'tcx> FindInferSourceVisitor<'a, 'tcx> {
             hir::ExprKind::MethodCall(segment, ..) => {
                 if let Some(def_id) = self.typeck_results.type_dependent_def_id(expr.hir_id) {
                     let generics = tcx.generics_of(def_id);
-                    let insertable = try {
+                    // Immediately called closure in place of an unstable `try {}` block.
+                    let insertable = (|| {
                         if generics.has_impl_trait() {
-                            None?
+                            return None;
                         }
                         let args = self.node_args_opt(expr.hir_id)?;
                         let span = tcx.hir_span(segment.hir_id);
@@ -1158,14 +1159,14 @@ impl<'a, 'tcx> FindInferSourceVisitor<'a, 'tcx> {
                         let have_turbofish = segment.args.is_some_and(|args| {
                             args.args.iter().any(|arg| arg.is_ty_or_const())
                         });
-                        InsertableGenericArgs {
+                        Some(InsertableGenericArgs {
                             insert_span,
                             args,
                             generics_def_id: def_id,
                             def_id,
                             have_turbofish,
-                        }
-                    };
+                        })
+                    })();
                     return Box::new(insertable.into_iter());
                 }
             }
@@ -1189,22 +1190,24 @@ impl<'a, 'tcx> FindInferSourceVisitor<'a, 'tcx> {
         //
         // FIXME: We deal with that one separately for now,
         // would be good to remove this special case.
-        let last_segment_using_path_data = try {
+        // Immediately called closure in place of an unstable `try {}` block; the early
+        // `return None` replaces `do yeet ()`, which on `Option` also produced `None`.
+        let last_segment_using_path_data = (|| {
             let generics_def_id = tcx.res_generics_def_id(path.res)?;
             let generics = tcx.generics_of(generics_def_id);
             if generics.has_impl_trait() {
-                do yeet ();
+                return None;
             }
             let insert_span =
                 path.segments.last().unwrap().ident.span.shrink_to_hi().with_hi(path.span.hi());
-            InsertableGenericArgs {
+            Some(InsertableGenericArgs {
                 insert_span,
                 args,
                 generics_def_id,
                 def_id: path.res.def_id(),
                 have_turbofish,
-            }
-        };
+            })
+        })();
 
         path.segments
             .iter()
@@ -1304,8 +1307,9 @@ impl<'a, 'tcx> FindInferSourceVisitor<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for FindInferSourceVisitor<'a, 'tcx> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tecx.tcx
     }
 

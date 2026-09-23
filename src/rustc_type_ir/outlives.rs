@@ -73,7 +73,6 @@ struct OutlivesCollector<'a, I: Interner> {
 }
 
 impl<I: Interner> TypeVisitor<I> for OutlivesCollector<'_, I> {
-    #[cfg(not(feature = "nightly"))]
     type Result = ();
 
     fn visit_ty(&mut self, ty: I::Ty) -> Self::Result {

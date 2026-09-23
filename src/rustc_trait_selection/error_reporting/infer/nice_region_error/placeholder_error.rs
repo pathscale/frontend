@@ -29,7 +29,7 @@ use crate::rustc_trait_selection::diagnostics::{
     TraitPlaceholderMismatch, TyOrSig,
 };
 use crate::rustc_trait_selection::error_reporting::infer::nice_region_error::NiceRegionError;
-use crate::rustc_trait_selection::infer::{RegionResolutionError, SubregionOrigin, TypeTrace, ValuePairs};
+use crate::rustc_trait_selection::infer::{RegionResolutionError, SubregionOrigin, ValuePairs};
 use crate::rustc_trait_selection::traits::{ObligationCause, ObligationCauseCode};
 
 #[derive(Copy, Clone)]
@@ -99,49 +99,49 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
             Some(RegionResolutionError::SubSupConflict(
                 vid,
                 _,
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sub_placeholder @ Region(Interned(RePlaceholder(_), _)),
                 _,
                 sup_placeholder @ Region(Interned(RePlaceholder(_), _)),
                 _,
             )) => self.try_report_trait_placeholder_mismatch(
                 Some(ty::Region::new_var(self.tcx(), *vid)),
-                cause,
+                &trace.cause,
                 Some(*sub_placeholder),
                 Some(*sup_placeholder),
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::SubSupConflict(
                 vid,
                 _,
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sub_placeholder @ Region(Interned(RePlaceholder(_), _)),
                 _,
                 _,
                 _,
             )) => self.try_report_trait_placeholder_mismatch(
                 Some(ty::Region::new_var(self.tcx(), *vid)),
-                cause,
+                &trace.cause,
                 Some(*sub_placeholder),
                 None,
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::SubSupConflict(
                 vid,
                 _,
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 _,
                 _,
                 sup_placeholder @ Region(Interned(RePlaceholder(_), _)),
                 _,
             )) => self.try_report_trait_placeholder_mismatch(
                 Some(ty::Region::new_var(self.tcx(), *vid)),
-                cause,
+                &trace.cause,
                 None,
                 Some(*sup_placeholder),
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::SubSupConflict(
@@ -149,65 +149,65 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
                 _,
                 _,
                 _,
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sup_placeholder @ Region(Interned(RePlaceholder(_), _)),
                 _,
             )) => self.try_report_trait_placeholder_mismatch(
                 Some(ty::Region::new_var(self.tcx(), *vid)),
-                cause,
+                &trace.cause,
                 None,
                 Some(*sup_placeholder),
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::UpperBoundUniverseConflict(
                 vid,
                 _,
                 _,
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sup_placeholder @ Region(Interned(RePlaceholder(_), _)),
             )) => self.try_report_trait_placeholder_mismatch(
                 Some(ty::Region::new_var(self.tcx(), *vid)),
-                cause,
+                &trace.cause,
                 None,
                 Some(*sup_placeholder),
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::ConcreteFailure(
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sub_region @ Region(Interned(RePlaceholder(_), _)),
                 sup_region @ Region(Interned(RePlaceholder(_), _)),
             )) => self.try_report_trait_placeholder_mismatch(
                 None,
-                cause,
+                &trace.cause,
                 Some(*sub_region),
                 Some(*sup_region),
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::ConcreteFailure(
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sub_region @ Region(Interned(RePlaceholder(_), _)),
                 sup_region,
             )) => self.try_report_trait_placeholder_mismatch(
                 (!sup_region.is_named(self.tcx())).then_some(*sup_region),
-                cause,
+                &trace.cause,
                 Some(*sub_region),
                 None,
-                values,
+                &trace.values,
             ),
 
             Some(RegionResolutionError::ConcreteFailure(
-                SubregionOrigin::Subtype(TypeTrace { cause, values }),
+                SubregionOrigin::Subtype(trace),
                 sub_region,
                 sup_region @ Region(Interned(RePlaceholder(_), _)),
             )) => self.try_report_trait_placeholder_mismatch(
                 (!sub_region.is_named(self.tcx())).then_some(*sub_region),
-                cause,
+                &trace.cause,
                 None,
                 Some(*sup_region),
-                values,
+                &trace.values,
             ),
 
             _ => None,

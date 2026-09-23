@@ -568,6 +568,7 @@ pub(crate) fn type_alias_is_checked<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId)
     }
     struct HasTait;
     impl<'tcx> Visitor<'tcx> for HasTait {
+        type NestedFilter = hir::intravisit::IgnoreNested;
         type Result = ControlFlow<()>;
         fn visit_ty(&mut self, t: &'tcx hir::Ty<'tcx, AmbigArg>) -> Self::Result {
             if let hir::TyKind::OpaqueDef(..) = t.kind {

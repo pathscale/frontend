@@ -58,7 +58,7 @@ impl<'tcx, T> ArenaCached<'tcx> for Option<&'tcx T> {
         value: Option<T>,
     ) -> Self {
         // Don't store None in the arena, and wrap the allocated reference in Some.
-        try { do_alloc(tcx, typed_arena, value?) }
+        value.map(|value| do_alloc(tcx, typed_arena, value))
     }
 }
 
@@ -73,7 +73,7 @@ impl<'tcx, T> ArenaCached<'tcx> for Result<&'tcx T, ErrorGuaranteed> {
         value: Result<T, ErrorGuaranteed>,
     ) -> Self {
         // Don't store Err(ErrorGuaranteed) in the arena, and wrap the allocated reference in Ok.
-        try { do_alloc(tcx, typed_arena, value?) }
+        value.map(|value| do_alloc(tcx, typed_arena, value))
     }
 }
 

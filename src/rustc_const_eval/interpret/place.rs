@@ -6,13 +6,15 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`interp_and` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 
 use either::{Either, Left, Right};
 use crate::rustc_abi::{BackendRepr, HasDataLayout, Size};
@@ -577,7 +579,7 @@ where
         // However we have to call `check_misalign` first to make the borrow checker happy.
         let misalign_res = self.check_misalign(mplace.mplace.misaligned, CheckAlignMsg::BasedOn);
         // An error from get_ptr_alloc_mut takes precedence.
-        let (a, ()) = self.get_ptr_alloc_mut(mplace.ptr(), size).and(misalign_res)?;
+        let (a, ()) = self.get_ptr_alloc_mut(mplace.ptr(), size).interp_and(misalign_res)?;
         interp_ok(a)
     }
 

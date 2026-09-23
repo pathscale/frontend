@@ -464,7 +464,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
         generic_args.args.insert_many(
             0,
-            (start..end).map(|id| {
+            (start.as_usize()..end.as_usize()).map(|id| {
+                let id = NodeId::from_usize(id);
                 let l =
                     self.lower_lifetime_hidden_in_path(id, elided_lifetime_span, angle_brackets);
                 GenericArg::Lifetime(l)

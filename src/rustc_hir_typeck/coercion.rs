@@ -684,7 +684,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         let mut coercion = self.unify_and(
             coerce_target,
             target,
-            reborrow.map(|(deref, autoref)| [deref, autoref]).into_flat_iter(),
+            reborrow.map(|(deref, autoref)| [deref, autoref]).into_iter().flatten(),
             Adjust::Pointer(PointerCoercion::Unsize),
             ForceLeakCheck::No,
         )?;
@@ -1800,14 +1800,26 @@ impl<'tcx> CoerceMany<'tcx> {
                         );
                         unsized_return = self.is_return_ty_definitely_unsized(fcx);
                     }
-                    ObligationCauseCode::MatchExpressionArm(MatchExpressionArmCause {
-                        arm_span,
-                        arm_ty,
-                        prior_arm_ty,
-                        ref prior_non_diverging_arms,
-                        tail_defines_return_position_impl_trait: Some(rpit_def_id),
-                        ..
-                    }) => {
+                    ObligationCauseCode::MatchExpressionArm(ref arm_cause)
+                        if matches!(
+                            **arm_cause,
+                            MatchExpressionArmCause {
+                                tail_defines_return_position_impl_trait: Some(_),
+                                ..
+                            }
+                        ) =>
+                    {
+                        let MatchExpressionArmCause {
+                            arm_span,
+                            arm_ty,
+                            prior_arm_ty,
+                            ref prior_non_diverging_arms,
+                            tail_defines_return_position_impl_trait: Some(rpit_def_id),
+                            ..
+                        } = **arm_cause
+                        else {
+                            unreachable!()
+                        };
                         err = fcx.err_ctxt().report_mismatched_types(
                             cause,
                             fcx.param_env,

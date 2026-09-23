@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use core::cell::{Cell, RefCell};
 use core::cmp::max;
-use core::debug_assert_matches;
+use crate::debug_assert_matches;
 use core::ops::Deref;
 
 use crate::rustc_data_structures::fx::FxHashSet;

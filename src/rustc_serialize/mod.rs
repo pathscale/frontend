@@ -8,8 +8,6 @@
 // artifact write, and it is the surface this compiler is removing rather than porting: a
 // compiler answers a caller. The encoder itself is pure and stays; only its sink is std.
 #![allow(internal_features)]
-#![allow(rustc::internal)]
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //

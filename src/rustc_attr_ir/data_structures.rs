@@ -375,8 +375,9 @@ pub struct DebugVisualizer {
 }
 
 #[derive(Clone, Copy, Debug, Decodable, Encodable, Eq, PartialEq)]
-#[derive(StableHash, PrintAttribute)]
-#[derive_const(Default)]
+// Plain `Default`: `derive_const` (unstable) is dropped, so `RtsanSetting::default()` is no
+// longer callable in const context.
+#[derive(StableHash, PrintAttribute, Default)]
 pub enum RtsanSetting {
     Nonblocking,
     Blocking,

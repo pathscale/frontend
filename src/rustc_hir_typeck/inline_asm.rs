@@ -2,6 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -517,7 +518,7 @@ impl<'a, 'tcx> InlineAsmCtxt<'a, 'tcx> {
                                 features
                                     .iter()
                                     .map(|f| f.as_str())
-                                    .intersperse(", ")
+                                    .separated_by(", ")
                                     .collect::<String>(),
                             );
                             self.fcx.dcx().span_err(op_sp, msg);

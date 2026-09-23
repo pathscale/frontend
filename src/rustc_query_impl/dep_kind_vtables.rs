@@ -102,6 +102,7 @@ pub(crate) fn make_dep_kind_vtable_for_query<'tcx, Q>(
 ) -> DepKindVTable<'tcx>
 where
     Q: GetQueryVTable<'tcx>,
+    <Q::Cache as QueryCache>::Key: DepNodeKey<'tcx>,
 {
     // A query dep-node can only be forced or promoted if it can recover a key
     // from its key fingerprint.

@@ -250,8 +250,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             ExprKind::LoopMatch {
                 state,
                 region_scope,
-                match_data: LoopMatchMatchData { ref arms, span: match_span, scrutinee },
+                ref match_data,
             } => {
+                let LoopMatchMatchData { ref arms, span: match_span, scrutinee } = **match_data;
                 // Intuitively, this is a combination of a loop containing a labeled block
                 // containing a match.
                 //
@@ -592,14 +593,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 this.cfg.push_assign(block, source_info, destination, address_of);
                 block.unit()
             }
-            ExprKind::Adt(AdtExpr {
-                adt_def,
-                variant_index,
-                args,
-                ref user_ty,
-                ref fields,
-                ref base,
-            }) => {
+            ExprKind::Adt(ref adt_expr) => {
+                let AdtExpr { adt_def, variant_index, args, ref user_ty, ref fields, ref base } =
+                    **adt_expr;
                 // See the notes for `ExprKind::Array` in `as_rvalue` and for
                 // `ExprKind::Borrow` above.
                 let is_union = adt_def.is_union();
@@ -703,13 +699,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 );
                 block.unit()
             }
-            ExprKind::InlineAsm(InlineAsmExpr {
-                asm_macro,
-                template,
-                ref operands,
-                options,
-                line_spans,
-            }) => {
+            ExprKind::InlineAsm(ref inline_asm) => {
+                let InlineAsmExpr { asm_macro, template, ref operands, options, line_spans } =
+                    **inline_asm;
                 use crate::rustc_middle::{mir, thir};
 
                 let destination_block = this.cfg.start_new_block();

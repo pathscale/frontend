@@ -221,7 +221,10 @@ fn try_execute_query<'tcx, C: QueryCache, const INCR: bool>(
     span: Span,
     key: C::Key,
     dep_node: Option<DepNode>, // `None` for non-incremental, `Some` for incremental
-) -> (C::Value, Option<DepNodeIndex>) {
+) -> (C::Value, Option<DepNodeIndex>)
+where
+    C::Key: DepNodeKey<'tcx>,
+{
     let key_hash = sharded::make_hash(&key);
     let mut state_lock = query.state.active.lock_shard_by_hash(key_hash);
 
@@ -383,7 +386,10 @@ fn execute_job_non_incr<'tcx, C: QueryCache>(
     tcx: TyCtxt<'tcx>,
     key: C::Key,
     job_id: QueryJobId,
-) -> (C::Value, DepNodeIndex) {
+) -> (C::Value, DepNodeIndex)
+where
+    C::Key: DepNodeKey<'tcx>,
+{
     debug_assert!(!tcx.dep_graph.is_fully_enabled());
 
     let prof_timer = tcx.prof.query_provider();
@@ -419,7 +425,8 @@ fn execute_job_incr<'tcx, C: QueryCache>(
     if !query.eval_always {
         // The diagnostics for this query will be promoted to the current session during
         // `try_mark_green()`, so we can ignore them here.
-        if let Some(ret) = start_query(job_id, false, || try {
+        // The closure body returns `Option` directly in place of an unstable `try {}` block.
+        if let Some(ret) = start_query(job_id, false, || {
             let (prev_index, dep_node_index) = dep_graph_data.try_mark_green(tcx, &dep_node)?;
             let value = load_from_disk_or_invoke_provider_green(
                 tcx,
@@ -430,7 +437,7 @@ fn execute_job_incr<'tcx, C: QueryCache>(
                 prev_index,
                 dep_node_index,
             );
-            (value, dep_node_index)
+            Some((value, dep_node_index))
         }) {
             return ret;
         }
@@ -482,7 +489,8 @@ fn load_from_disk_or_invoke_provider_green<'tcx, C: QueryCache>(
     };
     let (value, verify) = match try_value {
         Some(value) => {
-            if core::intrinsics::unlikely(tcx.sess.opts.unstable_opts.query_dep_graph) {
+            // No `intrinsics::unlikely` hint: that is `core_intrinsics`.
+            if tcx.sess.opts.unstable_opts.query_dep_graph {
                 dep_graph_data.mark_debug_loaded_from_disk(*dep_node)
             }
 
@@ -572,7 +580,10 @@ pub(super) fn execute_query_non_incr_inner<'tcx, C: QueryCache>(
     tcx: TyCtxt<'tcx>,
     span: Span,
     key: C::Key,
-) -> C::Value {
+) -> C::Value
+where
+    C::Key: DepNodeKey<'tcx>,
+{
     try_execute_query::<C, false>(query, tcx, span, key, None).0
 }
 
@@ -585,7 +596,10 @@ pub(super) fn execute_query_incr_inner<'tcx, C: QueryCache>(
     span: Span,
     key: C::Key,
     mode: QueryMode,
-) -> Option<C::Value> {
+) -> Option<C::Value>
+where
+    C::Key: DepNodeKey<'tcx>,
+{
     let dep_node = DepNode::construct(tcx, query.dep_kind, &key);
 
     // Check if query execution can be skipped, for `ensure_ok`.
@@ -611,7 +625,10 @@ pub(crate) fn force_query_dep_node<'tcx, C: QueryCache>(
     tcx: TyCtxt<'tcx>,
     query: &'tcx QueryVTable<'tcx, C>,
     dep_node: DepNode,
-) -> bool {
+) -> bool
+where
+    C::Key: DepNodeKey<'tcx>,
+{
     let Some(key) = C::Key::try_recover_key(tcx, &dep_node) else {
         // We couldn't recover a key from the node's key fingerprint.
         // Tell the caller that we couldn't force the node.

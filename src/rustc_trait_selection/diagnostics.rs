@@ -682,6 +682,8 @@ impl Subdiagnostic for AddLifetimeParamsSuggestion<'_> {
             }
 
             impl<'v> Visitor<'v> for ImplicitLifetimeFinder {
+                type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                type Result = ();
                 fn visit_ty(&mut self, ty: &'v hir::Ty<'v, AmbigArg>) {
                     match ty.kind {
                         hir::TyKind::Path(hir::QPath::Resolved(_, path)) => {

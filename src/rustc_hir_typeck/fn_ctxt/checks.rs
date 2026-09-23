@@ -2,6 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -1538,6 +1539,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 pat_hir_ids: Vec<hir::HirId>,
             }
             impl<'tcx> Visitor<'tcx> for OverwritePatternsWithError {
+                type NestedFilter = crate::rustc_hir::intravisit::IgnoreNested;
+                type Result = ();
                 fn visit_pat(&mut self, p: &'tcx hir::Pat<'tcx>) {
                     self.pat_hir_ids.push(p.hir_id);
                     hir::intravisit::walk_pat(self, p);
@@ -2012,7 +2015,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 debug_assert_eq!(params_with_generics.len(), matched_inputs.len());
             }
             for (idx, (generic_param, _)) in params_with_generics.iter_enumerated() {
-                if matched_inputs.get(idx).flatten_ref().is_none() {
+                if matched_inputs.get(idx).and_then(Option::as_ref).is_none() {
                     continue;
                 }
 
@@ -2034,7 +2037,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         let Some(other_generic_param) = other_generic_param else {
                             return false;
                         };
-                        if matched_inputs.get(other_idx).flatten_ref().is_some() {
+                        if matched_inputs.get(other_idx).and_then(Option::as_ref).is_some() {
                             return false;
                         }
                         other_generic_param == generic_param
@@ -2147,8 +2150,9 @@ struct FindClosureArg<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for FindClosureArg<'tcx> {
     type NestedFilter = crate::rustc_middle::hir::nested_filter::All;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -3186,7 +3190,7 @@ impl<'a, 'tcx> ArgMatchingCtxt<'a, 'tcx> {
         if let Some((assoc, fn_sig)) = self.similar_assoc(call_name)
             && fn_sig.inputs()[1..]
                 .iter()
-                .eq_by(input_types, |expected, found| self.may_coerce(*expected, found))
+                .eq_with(input_types, |expected, found| self.may_coerce(*expected, found))
         {
             let assoc_name = assoc.name();
             err.span_suggestion_verbose(

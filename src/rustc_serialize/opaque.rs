@@ -185,7 +185,8 @@ impl<'a> FileEncoder<'a> {
             self.finished = false;
         }
         let flush_threshold = const { BUF_SIZE.checked_sub(N).unwrap() };
-        if core::intrinsics::unlikely(self.buffered > flush_threshold) {
+        // No `intrinsics::unlikely` hint: that is `core_intrinsics`.
+        if self.buffered > flush_threshold {
             self.flush();
         }
         // SAFETY: We checked above that N < self.buffer_empty().len(),
@@ -278,6 +279,14 @@ impl Encoder for FileEncoder<'_> {
     #[inline]
     fn emit_raw_bytes(&mut self, s: &[u8]) {
         self.write_all(s);
+    }
+
+    // A `u8` encodes as itself here, so a byte slice (and `Vec<u8>`, which encodes through
+    // its slice) is written in one call. This used to be a specialized `Encodable` impl for
+    // `[u8]`; stable Rust cannot specialize, so it is an encoder hook instead.
+    #[inline]
+    fn emit_u8_slice(&mut self, s: &[u8]) {
+        self.emit_raw_bytes(s);
     }
 }
 
@@ -423,6 +432,14 @@ impl<'a> Decoder for MemDecoder<'a> {
         }
     }
 
+    // A `u8` decodes as itself here, so a `Vec<u8>` (and `Box<[u8]>`, which decodes through
+    // `Vec`) is read in one call. This used to be a specialized `Decodable` impl for
+    // `Vec<u8>`; stable Rust cannot specialize, so it is a decoder hook instead.
+    #[inline]
+    fn read_u8_vec(&mut self, len: usize) -> Vec<u8> {
+        self.read_raw_bytes(len).to_owned()
+    }
+
     #[inline]
     fn peek_byte(&self) -> u8 {
         if self.current == self.end {
@@ -437,29 +454,6 @@ impl<'a> Decoder for MemDecoder<'a> {
     fn position(&self) -> usize {
         // SAFETY: This type guarantees start <= current
         unsafe { self.current.offset_from_unsigned(self.start) }
-    }
-}
-
-// Specializations for contiguous byte sequences follow. The default implementations for slices
-// encode and decode each element individually. This isn't necessary for `u8` slices when using
-// opaque encoders and decoders, because each `u8` is unchanged by encoding and decoding.
-// Therefore, we can use more efficient implementations that process the entire sequence at once.
-
-// Specialize encoding byte slices. This specialization also applies to encoding `Vec<u8>`s, etc.,
-// since the default implementations call `encode` on their slices internally.
-impl Encodable<FileEncoder<'_>> for [u8] {
-    fn encode(&self, e: &mut FileEncoder<'_>) {
-        Encoder::emit_usize(e, self.len());
-        e.emit_raw_bytes(self);
-    }
-}
-
-// Specialize decoding `Vec<u8>`. This specialization also applies to decoding `Box<[u8]>`s, etc.,
-// since the default implementations call `decode` to produce a `Vec<u8>` internally.
-impl<'a> Decodable<MemDecoder<'a>> for Vec<u8> {
-    fn decode(d: &mut MemDecoder<'a>) -> Self {
-        let len = Decoder::read_usize(d);
-        d.read_raw_bytes(len).to_owned()
     }
 }
 

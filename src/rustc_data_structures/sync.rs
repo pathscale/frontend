@@ -75,8 +75,6 @@ mod atomic {
 mod mode {
     use core::sync::atomic::{AtomicU8, Ordering};
 
-    use crate::rustc_data_structures::sync::{DynSend, DynSync};
-
     const UNINITIALIZED: u8 = 0;
     const DYN_NOT_THREAD_SAFE: u8 = 1;
     const DYN_THREAD_SAFE: u8 = 2;
@@ -135,11 +133,11 @@ mod mode {
         }
     }
 
-    // `FromDyn` is `Send` if `T` is `DynSend`, since it ensures that sync::is_dyn_thread_safe() is true.
-    unsafe impl<T: DynSend> Send for FromDyn<T> {}
-
-    // `FromDyn` is `Sync` if `T` is `DynSync`, since it ensures that sync::is_dyn_thread_safe() is true.
-    unsafe impl<T: DynSync> Sync for FromDyn<T> {}
+    // Upstream: `unsafe impl<T: DynSend> Send for FromDyn<T>` and the `DynSync`/`Sync`
+    // counterpart. `DynSend`/`DynSync` are now implemented for every type (see
+    // `marker.rs`), so those impls would make every `FromDyn<T>` `Send + Sync`, which is
+    // unsound for a public type. Without them `FromDyn<T>` gets the ordinary auto impls,
+    // `Send` iff `T: Send`; nothing in this single-threaded crate relied on more.
 
     impl<T> core::ops::Deref for FromDyn<T> {
         type Target = T;

@@ -85,6 +85,8 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         }
 
         impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for HighlightBuilder<'tcx> {
+            type Result = ();
+
             fn visit_region(&mut self, r: ty::Region<'tcx>) {
                 if !r.is_named(self.tcx) && self.counter <= 3 {
                     self.highlight.highlighting_region(r, self.counter);
@@ -194,8 +196,9 @@ struct TypeParamSpanVisitor<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for TypeParamSpanVisitor<'tcx> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

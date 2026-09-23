@@ -1300,7 +1300,8 @@ impl<'tcx> Visitor<'tcx> for EnsureCoroutineFieldAssignmentsNeverAlias<'_> {
 
     fn visit_statement(&mut self, statement: &Statement<'tcx>, location: Location) {
         match &statement.kind {
-            StatementKind::Assign((lhs, rhs)) => {
+            StatementKind::Assign(assign) => {
+                let (lhs, rhs) = &**assign;
                 self.check_assigned_place(*lhs, |this| this.visit_rvalue(rhs, location));
             }
 

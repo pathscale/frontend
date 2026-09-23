@@ -637,10 +637,6 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
         items_to_check
     }
 
-    #[expect(
-        rustc::potential_query_instability,
-        reason = "The order of the unsolved items is not important, so we can just collect them into a vector."
-    )]
     fn mark_live_symbols_and_ignored_derived_traits(
         &mut self,
         defer_seeds_come_from_allow: bool,
@@ -693,6 +689,7 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
     type Result = ControlFlow<ErrorGuaranteed>;
 
     fn visit_nested_body(&mut self, body: hir::BodyId) -> Self::Result {

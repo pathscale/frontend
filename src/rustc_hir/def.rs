@@ -687,8 +687,9 @@ impl IntoDiagArg for Namespace {
 }
 
 /// Just a helper ‒ separate structure for each namespace.
-#[derive(Copy, Clone, Debug, StableHash)]
-#[derive_const(Default)]
+// Plain `Default`: `derive_const` (unstable) is dropped, so `PerNS::default()` is no longer
+// callable in const context.
+#[derive(Copy, Clone, Debug, StableHash, Default)]
 pub struct PerNS<T> {
     pub value_ns: T,
     pub type_ns: T,
@@ -895,10 +896,13 @@ impl<Id> Res<Id> {
 
     #[track_caller]
     pub fn expect_non_local<OtherId>(self) -> Res<OtherId> {
-        self.map_id(
-            #[track_caller]
-            |_| panic!("unexpected `Res::Local`"),
-        )
+        // The panic moves out of the closure because `#[track_caller]` on a closure is unstable
+        // (`closure_track_caller`). Raised here it still reports this fn's caller, and `map_id`
+        // calls its closure only for `Res::Local`, so the closure below never runs.
+        if let Res::Local(_) = self {
+            panic!("unexpected `Res::Local`");
+        }
+        self.map_id(|_| unreachable!())
     }
 
     pub fn macro_kinds(self) -> Option<MacroKinds> {

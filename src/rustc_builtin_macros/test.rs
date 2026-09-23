@@ -11,7 +11,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{assert_matches, iter};
+use core::iter;
+use crate::assert_matches;
 
 use crate::rustc_ast::{self as ast, GenericParamKind, attr, join_path_idents};
 use crate::rustc_ast_pretty::pprust;
@@ -64,10 +65,14 @@ pub(crate) fn expand_test_case(
 
     // `#[test_case]` is valid on functions, consts, and statics. Only modify
     // the item in those cases.
-    match &mut item.kind {
-        ast::ItemKind::Fn(ast::Fn { ident, .. })
-        | ast::ItemKind::Const(ast::ConstItem { ident, .. })
-        | ast::ItemKind::Static(ast::StaticItem { ident, .. }) => {
+    let ident = match &mut item.kind {
+        ast::ItemKind::Fn(f) => Some(&mut f.ident),
+        ast::ItemKind::Const(c) => Some(&mut c.ident),
+        ast::ItemKind::Static(s) => Some(&mut s.ident),
+        _ => None,
+    };
+    match ident {
+        Some(ident) => {
             ident.span = ident.span.with_ctxt(sp.ctxt());
             let test_path_symbol = Symbol::intern(&item_path(
                 // skip the name of the root module
@@ -77,7 +82,7 @@ pub(crate) fn expand_test_case(
             item.vis = ast::Visibility { span: item.vis.span, kind: ast::VisibilityKind::Public };
             item.attrs.push(ecx.attr_name_value_str(sym::rustc_test_marker, test_path_symbol, sp));
         }
-        _ => {}
+        None => {}
     }
 
     let ret = if is_stmt {
@@ -119,7 +124,10 @@ pub(crate) fn expand_test_or_bench(
 ) -> Vec<Annotatable> {
     let (item, is_stmt) = match item {
         Annotatable::Item(i) => (i, false),
-        Annotatable::Stmt(ast::Stmt { kind: ast::StmtKind::Item(i), .. }) => (i, true),
+        Annotatable::Stmt(stmt) if matches!(stmt.kind, ast::StmtKind::Item(_)) => {
+            let ast::Stmt { kind: ast::StmtKind::Item(i), .. } = *stmt else { unreachable!() };
+            (i, true)
+        }
         other => {
             not_testable_error(cx, is_bench, attr_sp, None);
             return vec![other];

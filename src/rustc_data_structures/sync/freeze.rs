@@ -9,13 +9,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::UnsafeCell;
-use core::hint;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::rustc_data_structures::sync::{DynSend, DynSync, ReadGuard, RwLock, WriteGuard};
+use crate::rustc_data_structures::sync::{ReadGuard, RwLock, WriteGuard};
 
 /// A type which allows mutation using a lock until
 /// the value is frozen and can be accessed lock-free.
@@ -30,7 +29,8 @@ pub struct FreezeLock<T> {
     lock: RwLock<()>,
 }
 
-unsafe impl<T: DynSync + DynSend> DynSync for FreezeLock<T> {}
+// The `DynSync` impl that was here now comes from the blanket impl in `marker.rs` (auto
+// traits are unstable); a second impl would conflict.
 
 impl<T> FreezeLock<T> {
     #[inline]
@@ -74,7 +74,9 @@ impl<T> FreezeLock<T> {
             // SAFETY: This is frozen so the data cannot be modified.
             unsafe { Some(&*self.data.get()) }
         } else {
-            hint::cold_path();
+            // A call to a `#[cold]` function marks this path cold, as the unstable
+            // `hint::cold_path` would.
+            crate::rustc_data_structures::outline(|| ());
             None
         }
     }

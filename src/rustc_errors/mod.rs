@@ -40,7 +40,8 @@ use core::ops::DerefMut;
 use eko::path::{Path, PathBuf};
 use eko::thread::ThreadId;
 use core::fmt::Write as _;
-use core::{assert_matches, fmt, mem};
+use core::{fmt, mem};
+use crate::assert_matches;
 
 use Level::*;
 // The `anstyle` re-export went with the colouring. It was here for external consumers such as
@@ -66,7 +67,7 @@ use crate::rustc_ast::attr::version::RustcVersion;
 use crate::rustc_data_structures::AtomicRef;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::stable_hash::StableHasher;
-use crate::rustc_data_structures::sync::{DynSend, Lock};
+use crate::rustc_data_structures::sync::Lock;
 pub use crate::rustc_error_messages::{
     DiagArg, DiagArgFromDisplay, DiagArgMap, DiagArgName, DiagArgValue, DiagMessage, IntoDiagArg,
     LongTyPath, MultiSpan, SpanLabel, into_diag_arg_using_display,
@@ -521,7 +522,8 @@ impl DiagCtxt {
         inner.emitter = Box::new(emitter::SilentEmitter {});
     }
 
-    pub fn set_emitter(&self, emitter: Box<dyn Emitter + DynSend>) {
+    // `+ DynSend` dropped: no longer an auto trait (see `rustc_data_structures/marker.rs`).
+    pub fn set_emitter(&self, emitter: Box<dyn Emitter>) {
         self.inner.borrow_mut().emitter = emitter;
     }
 

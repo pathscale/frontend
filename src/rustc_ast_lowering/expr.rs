@@ -84,6 +84,8 @@ impl<'a> MoveExprInitializerFinder<'a> {
 }
 
 impl<'a> Visitor<'a> for MoveExprInitializerFinder<'a> {
+    type Result = ();
+
     fn visit_expr(&mut self, expr: &'a Expr) {
         match &expr.kind {
             ExprKind::Move(inner, move_kw_span) => {
@@ -198,7 +200,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
             //
             // This also needs special handling because the HirId of the returned `hir::Expr` will not
             // correspond to the `e.id`, so `lower_expr_for` handles attribute lowering itself.
-            ExprKind::ForLoop(ForLoop { pat, iter, body, label, kind }) => {
+            ExprKind::ForLoop(fl) => {
+                let ForLoop { pat, iter, body, label, kind } = &**fl;
                 return self.lower_expr_for(e, pat, iter, body, *label, *kind);
             }
             ExprKind::Closure(closure) => return self.lower_expr_closure_expr(e, closure),
@@ -225,7 +228,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     hir::ExprKind::Call(f, self.lower_exprs(args))
                 }
             }
-            ExprKind::MethodCall(MethodCall { seg, receiver, args, span }) => {
+            ExprKind::MethodCall(mc) => {
+                let MethodCall { seg, receiver, args, span } = &**mc;
                 let hir_seg = self.arena.alloc(self.lower_path_segment(
                     e.span,
                     seg,

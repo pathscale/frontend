@@ -81,8 +81,9 @@ impl<'hir> FindExprBySpan<'hir> {
 
 impl<'v> Visitor<'v> for FindExprBySpan<'v> {
     type NestedFilter = crate::rustc_middle::hir::nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'v> {
         self.tcx
     }
 

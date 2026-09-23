@@ -44,6 +44,7 @@
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -1950,7 +1951,7 @@ impl<S: SpanEncoder> Encodable<S> for SourceFile {
                 0
             } else {
                 lines
-                    .array_windows()
+                    .windows_array()
                     .map(|&[fst, snd]| snd - fst)
                     .map(|bp| bp.to_usize())
                     .max()
@@ -1970,7 +1971,7 @@ impl<S: SpanEncoder> Encodable<S> for SourceFile {
             assert_eq!(lines[0], RelativeBytePos(0));
 
             // Encode the difference list.
-            let diff_iter = lines.array_windows().map(|&[fst, snd]| snd - fst);
+            let diff_iter = lines.windows_array().map(|&[fst, snd]| snd - fst);
             let num_diffs = lines.len() - 1;
             let mut raw_diffs;
             match bytes_per_diff {

@@ -11,8 +11,6 @@
 
 // This allows derive macros to reference this crate
 #![allow(internal_features)]
-#![allow(rustc::default_hash_types)]
-#![allow(rustc::potential_query_instability)]
 #![cfg_attr(test, feature(test))]
 #![deny(unsafe_op_in_unsafe_fn)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
@@ -66,6 +64,7 @@ pub mod frozen;
 pub mod fx;
 pub mod graph;
 pub mod intern;
+pub mod iter_ext;
 pub mod marker;
 pub mod memmap;
 pub mod obligation_forest;
@@ -91,6 +90,7 @@ pub mod union_find;
 pub mod unord;
 pub mod vec_cache;
 
+mod assert_matches;
 mod atomic_ref;
 
 /// This calls the passed function while ensuring it won't be inlined into the caller.
@@ -147,6 +147,20 @@ pub fn make_display(f: impl Fn(&mut fmt::Formatter<'_>) -> fmt::Result) -> impl 
 // See comment in compiler/rustc_middle/src/tests.rs and issue #27438.
 #[doc(hidden)]
 pub fn __noop_fix_for_windows_dllimport_issue() {}
+
+/// Stable stand-in for `${ignore($x)}` (unstable `macro_metavar_expr`).
+///
+/// Inside `$( ... )?` a repetition is driven by the metavariables it mentions, and `${ignore}`
+/// mentioned one without emitting it. `$crate::metavar_ignore!([$x] tokens)` mentions `$x` in
+/// the brackets and expands to just `tokens`. Being a macro call, it only works where a macro
+/// call is allowed: item, statement, expression, pattern and type positions.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! metavar_ignore {
+    ([$($ignored:tt)*] $($keep:tt)*) => {
+        $($keep)*
+    };
+}
 
 #[macro_export]
 macro_rules! external_bitflags_debug {

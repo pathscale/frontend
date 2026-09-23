@@ -2,6 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -86,7 +87,7 @@ pub(super) fn extract_refined_covspans<'tcx>(
     // Otherwise, add a fake span at the start of the body, to avoid an ugly
     // gap between the start of the body and the first real span.
     // FIXME: Find a more principled way to solve this problem.
-    if let Some(span) = node.fn_sig_span.or_else(|| try { node.body_span?.shrink_to_lo() }) {
+    if let Some(span) = node.fn_sig_span.or_else(|| node.body_span.map(|span| span.shrink_to_lo())) {
         covspans.push(Covspan { span, bcb: START_BCB });
     }
 
@@ -169,7 +170,7 @@ fn single_covspan_for_child_context(
 fn discard_spans_overlapping_holes(covspans: &mut Vec<Covspan>, holes: &[Hole]) {
     debug_assert!(covspans.is_sorted_by(|a, b| compare_spans(a.span, b.span).is_le()));
     debug_assert!(holes.is_sorted_by(|a, b| compare_spans(a.span, b.span).is_le()));
-    debug_assert!(holes.array_windows().all(|[a, b]| !a.span.overlaps_or_adjacent(b.span)));
+    debug_assert!(holes.windows_array().all(|[a, b]| !a.span.overlaps_or_adjacent(b.span)));
 
     let mut curr_hole = 0usize;
     let mut overlaps_hole = |covspan: &Covspan| -> bool {
@@ -268,18 +269,19 @@ fn ensure_non_empty_span(source_map: &SourceMap, span: Span) -> Option<Span> {
 
     // The span is empty, so try to enlarge it to cover an adjacent '{' or '}'.
     source_map
-        .span_to_source(span, |src, start, end| try {
+        // The closure body was a `try {}` block with no `?`, which is just `Ok(..)`.
+        .span_to_source(span, |src, start, end| {
             // Adjusting span endpoints by `BytePos(1)` is normally a bug,
             // but in this case we have specifically checked that the character
             // we're skipping over is one of two specific ASCII characters, so
             // adjusting by exactly 1 byte is correct.
-            if src.as_bytes().get(end).copied() == Some(b'{') {
+            Ok(if src.as_bytes().get(end).copied() == Some(b'{') {
                 Some(span.with_hi(span.hi() + BytePos(1)))
             } else if start > 0 && src.as_bytes()[start - 1] == b'}' {
                 Some(span.with_lo(span.lo() - BytePos(1)))
             } else {
                 None
-            }
+            })
         })
         .ok()?
 }

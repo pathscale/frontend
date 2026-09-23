@@ -97,7 +97,7 @@ where
         Self { transitions: [(start, f(accept))].into_iter().collect(), start, accept }
     }
 
-    pub(crate) fn from_tree(tree: Tree<!, R, T>) -> Result<Self, Uninhabited> {
+    pub(crate) fn from_tree(tree: Tree<crate::Never, R, T>) -> Result<Self, Uninhabited> {
         Ok(match tree {
             Tree::Byte(b) => Self::from_byte(b),
             Tree::Ref(r) => Self::from_ref(r),
@@ -259,14 +259,16 @@ where
         self.transitions
             .get(&start)
             .map(|transitions| transitions.byte_transitions.iter())
-            .into_flat_iter()
+            .into_iter()
+            .flatten()
     }
 
     pub(crate) fn refs_from(&self, start: State) -> impl Iterator<Item = (Reference<R, T>, State)> {
         self.transitions
             .get(&start)
             .map(|transitions| transitions.ref_transitions.iter())
-            .into_flat_iter()
+            .into_iter()
+            .flatten()
             .map(|(r, s)| (*r, *s))
     }
 

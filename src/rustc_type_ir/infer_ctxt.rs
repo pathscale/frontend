@@ -67,9 +67,7 @@ impl TypingModeErasedStatus for MayBeErased {}
 #[cfg_attr(
     feature = "nightly",
     derive(Encodable_NoContext, Decodable_NoContext, StableHash_NoContext)
-)]
-#[cfg_attr(feature = "nightly", rustc_must_match_exhaustively)]
-pub enum TypingMode<I: Interner, S: TypingModeErasedStatus = MayBeErased> {
+)]pub enum TypingMode<I: Interner, S: TypingModeErasedStatus = MayBeErased> {
     /// When checking whether impls overlap, we check whether any obligations
     /// are guaranteed to never hold when unifying the impls. This requires us
     /// to be complete: we must never fail to prove something which may actually
@@ -380,7 +378,6 @@ impl<I: Interner> From<TypingMode<I, CantBeErased>> for TypingMode<I, MayBeErase
 /// [solverdelegate-doc]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_next_trait_solver/delegate/trait.SolverDelegate.html
 /// [inferctxt-wrapper-doc]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_trait_selection/solve/delegate/struct.SolverDelegate.html
 /// [dev-guide]: https://rustc-dev-guide.rust-lang.org/solve/sharing-crates-with-rust-analyzer.html#trait-inferctxtlike-and-trait-solverdelegate
-#[cfg_attr(feature = "nightly", rustc_diagnostic_item = "type_ir_infer_ctxt_like")]
 pub trait InferCtxtLike: Sized {
     type Interner: Interner;
     fn cx(&self) -> Self::Interner;

@@ -6,13 +6,15 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::assert_matches;
+use crate::assert_matches;
 use core::fmt::Formatter;
 
 use crate::rustc_abi::{BackendRepr, FIRST_VARIANT, FieldIdx, Size, VariantIdx};
@@ -103,6 +105,8 @@ struct ConstAnalysis<'a, 'tcx> {
 }
 
 impl<'tcx> Analysis<'tcx> for ConstAnalysis<'_, 'tcx> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = State<FlatSet<Scalar>>;
 
     const NAME: &'static str = "ConstAnalysis";
@@ -188,7 +192,8 @@ impl<'a, 'tcx> ConstAnalysis<'a, 'tcx> {
 
     fn handle_statement(&self, statement: &Statement<'tcx>, state: &mut State<FlatSet<Scalar>>) {
         match &statement.kind {
-            StatementKind::Assign((place, rvalue)) => {
+            StatementKind::Assign(assign) => {
+                let (place, rvalue) = &**assign;
                 self.handle_assign(*place, rvalue, state);
             }
             StatementKind::SetDiscriminant { place, variant_index } => {
@@ -367,7 +372,8 @@ impl<'a, 'tcx> ConstAnalysis<'a, 'tcx> {
                     }
                 }
             }
-            Rvalue::BinaryOp(op, (left, right)) if op.is_overflowing() => {
+            Rvalue::BinaryOp(op, operands) if op.is_overflowing() => {
+                let (left, right) = &**operands;
                 // Flood everything now, so we can use `insert_value_idx` directly later.
                 state.flood(target.as_ref(), &self.map);
 
@@ -455,7 +461,8 @@ impl<'a, 'tcx> ConstAnalysis<'a, 'tcx> {
                     FlatSet::Top => FlatSet::Top,
                 }
             }
-            Rvalue::BinaryOp(op, (left, right)) if !op.is_overflowing() => {
+            Rvalue::BinaryOp(op, operands) if !op.is_overflowing() => {
+                let (left, right) = &**operands;
                 // Overflows must be ignored here.
                 // The overflowing operators are handled in `handle_assign`.
                 let (val, _overflow) = self.binary_op(state, *op, left, right);
@@ -959,7 +966,8 @@ impl<'tcx> ResultsVisitor<'tcx, ConstAnalysis<'_, 'tcx>> for Collector<'_, 'tcx>
         location: Location,
     ) {
         match &statement.kind {
-            StatementKind::Assign((_, rvalue)) => {
+            StatementKind::Assign(assign) => {
+                let (_, rvalue) = &**assign;
                 OperandCollector { state, visitor: self }.visit_rvalue(rvalue, location);
             }
             _ => (),
@@ -974,10 +982,13 @@ impl<'tcx> ResultsVisitor<'tcx, ConstAnalysis<'_, 'tcx>> for Collector<'_, 'tcx>
         location: Location,
     ) {
         match statement.kind {
-            StatementKind::Assign((_, Rvalue::Use(Operand::Constant(_), _))) => {
+            StatementKind::Assign(ref assign)
+                if matches!(**assign, (_, Rvalue::Use(Operand::Constant(_), _))) =>
+            {
                 // Don't overwrite the assignment if it already uses a constant (to keep the span).
             }
-            StatementKind::Assign((place, _)) => {
+            StatementKind::Assign(ref assign) => {
+                let (place, _) = **assign;
                 if let Some(value) = self.try_make_constant(place, state) {
                     self.patch.assignments.insert(location, value);
                 }
@@ -1004,7 +1015,8 @@ impl<'tcx> MutVisitor<'tcx> for Patch<'tcx> {
     fn visit_statement(&mut self, statement: &mut Statement<'tcx>, location: Location) {
         if let Some(value) = self.assignments.get(&location) {
             match &mut statement.kind {
-                StatementKind::Assign((_, rvalue)) => {
+                StatementKind::Assign(assign) => {
+                    let (_, rvalue) = &mut **assign;
                     let old_retag = match rvalue {
                         Rvalue::Use(_, retag) => *retag,
                         _ => WithRetag::Yes,

@@ -11,11 +11,10 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
+use core::marker::PhantomData;
 use core::ops::Deref;
 use core::{fmt, iter, mem, ptr, slice};
 
-use crate::rustc_data_structures::aligned::{Aligned, align_of};
-use crate::rustc_data_structures::sync::DynSync;
 use crate::rustc_serialize::{Encodable, Encoder};
 use crate::rustc_type_ir::FlagComputation;
 
@@ -48,17 +47,20 @@ pub type List<T> = RawList<(), T>;
 pub struct RawList<H, T> {
     skel: ListSkeleton<H, T>,
 
-    // `List`/`RawList` is variable-sized. So we want it to be an unsized
-    // type because calling `size_of::<List<Foo>>` would be dangerous.
+    // `List`/`RawList` is variable-sized, and `&List`/`&RawList` must be thin pointers.
     //
-    // We also want `&List`/`&RawList` to be thin pointers.
+    // Upstream ends the struct in an extern type, which makes it unsized (so
+    // `size_of::<List<Foo>>` does not compile) while keeping references thin. Extern
+    // types are unstable, so `RawList` is now a `Sized` struct whose size is the skeleton
+    // alone: references are still thin, the layout and alignment are unchanged, and the
+    // elements still live past the end as laid out by `from_arena`. What is lost is the
+    // compile-time refusal of `size_of::<RawList<..>>()`, which would now report the
+    // skeleton's size, and of moving a `RawList` by value; nothing does either, and the
+    // type is neither `Copy` nor `Clone`, so a move out of a `&RawList` still fails.
     //
-    // A field with an extern type is a hacky way to achieve this. (See
-    // https://github.com/rust-lang/rust/pull/154399#issuecomment-4157036415
-    // for some discussion.) This field is never directly manipulated because
-    // `RawList` instances are created with manual memory layout in
-    // `from_arena`.
-    _extern_ty: ExternTy,
+    // The extern type also made `RawList` `!Send`; this marker keeps it so. (`Sync` is
+    // granted explicitly below, as before.)
+    _not_send: PhantomData<*const ()>,
 }
 
 /// A [`RawList`] without the unsized tail. This type is used for layout computation
@@ -69,7 +71,7 @@ struct ListSkeleton<H, T> {
     len: usize,
     /// Although this claims to be a zero-length array, in practice `len`
     /// elements are actually present. This is achieved with manual memory
-    /// layout in `from_arena`. See also the comment on `RawList::_extern_ty`.
+    /// layout in `from_arena`. See also the comment on `RawList::_not_send`.
     data: [T; 0],
 }
 
@@ -77,10 +79,6 @@ impl<T> Default for &List<T> {
     fn default() -> Self {
         List::empty()
     }
-}
-
-unsafe extern "C" {
-    type ExternTy;
 }
 
 impl<H, T> RawList<H, T> {
@@ -116,6 +114,10 @@ impl<H, T> RawList<H, T> {
     // the signatures `[T]` has, in the one file that owns the type. The alternative the compiler
     // suggests is importing `SliceLike` into each caller, which is ninety-seven files and a
     // different trait with a `T: Copy` bound and by-value returns.
+    //
+    // Update: `sized_hierarchy` and the extern type are both gone now (stable Rust has
+    // neither), so `RawList` is `Sized` and autoderef reaches `[T]` again. These methods are
+    // redundant but have the same signatures as the slice ones, so they are left in place.
 
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
@@ -258,7 +260,7 @@ macro_rules! impl_list_empty {
                 static EMPTY: ListSkeleton<$header_ty, MaxAlign> =
                     ListSkeleton { header: $header_init, len: 0, data: [] };
 
-                assert!(align_of::<T>() <= align_of::<MaxAlign>());
+                assert!(core::mem::align_of::<T>() <= core::mem::align_of::<MaxAlign>());
 
                 // SAFETY: `EMPTY` is sufficiently aligned to be an empty list for all
                 // types with `align_of(T) <= align_of(MaxAlign)`, which we checked above.
@@ -360,16 +362,14 @@ impl<'a, H, T: Copy> IntoIterator for &'a RawList<H, T> {
 
 unsafe impl<H: Sync, T: Sync> Sync for RawList<H, T> {}
 
-// We need this because `List` uses the extern type `ExternTy`.
-unsafe impl<H: DynSync, T: DynSync> DynSync for RawList<H, T> {}
+// Upstream grants `DynSync` here because the extern type opts `RawList` out of the auto
+// impls. `DynSync` is now blanket-implemented (see `rustc_data_structures/marker.rs`), so
+// a second impl would conflict.
 
-// Safety:
-// Layouts of `ListSkeleton<H, T>` and `RawList<H, T>` are the same, modulo the
-// `_extern_ty` field (which is never instantiated in practice). Therefore,
-// aligns of `ListSkeleton<H, T>` and `RawList<H, T>` must be the same.
-unsafe impl<H, T> Aligned for RawList<H, T> {
-    const ALIGN: mem::Alignment = align_of::<ListSkeleton<H, T>>();
-}
+// Upstream implements `Aligned` here as `align_of::<ListSkeleton<H, T>>()`. `RawList` is now
+// `Sized` with the skeleton's alignment, so the blanket `impl<T> Aligned for T` in
+// `rustc_data_structures/aligned.rs` already gives the same value and a second impl would
+// conflict.
 
 /// A [`List`] that additionally stores type information inline to speed up
 /// [`TypeVisitableExt`](super::TypeVisitableExt) operations.

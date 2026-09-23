@@ -37,6 +37,8 @@ impl<'a> MaybeStorageLive<'a> {
 }
 
 impl<'a, 'tcx> Analysis<'tcx> for MaybeStorageLive<'a> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
 
     const NAME: &'static str = "maybe_storage_live";
@@ -79,6 +81,8 @@ impl<'a> MaybeStorageDead<'a> {
 }
 
 impl<'a, 'tcx> Analysis<'tcx> for MaybeStorageDead<'a> {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
 
     const NAME: &'static str = "maybe_storage_dead";
@@ -157,6 +161,8 @@ impl MaybeRequiresStorage {
 }
 
 impl<'tcx> Analysis<'tcx> for MaybeRequiresStorage {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
 
     const NAME: &'static str = "requires_storage";
@@ -186,8 +192,8 @@ impl<'tcx> Analysis<'tcx> for MaybeRequiresStorage {
         match &stmt.kind {
             StatementKind::StorageDead(l) => state.kill(*l),
 
-            StatementKind::Assign((place, _)) => {
-                state.gen_(place.local);
+            StatementKind::Assign(assign) => {
+                state.gen_(assign.0.local);
             }
             StatementKind::SetDiscriminant { place, .. } => {
                 state.gen_(place.local);
@@ -220,8 +226,8 @@ impl<'tcx> Analysis<'tcx> for MaybeRequiresStorage {
             // If a place is assigned to in a statement, it needs storage after that statement.
             // Even if the place was moved from in the rvalue (e.g. `x = x + 1` or `x = f(move x)`),
             // the assignment restores a valid value into the place.
-            StatementKind::Assign((place, _)) => {
-                state.gen_(place.local);
+            StatementKind::Assign(assign) => {
+                state.gen_(assign.0.local);
             }
             StatementKind::SetDiscriminant { place, .. } => {
                 state.gen_(place.local);

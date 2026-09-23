@@ -38,8 +38,12 @@ impl RustcVersion {
     const DEFAULT_RELEASE: &'static str = "1.100.0-dev";
 
     fn parse_cfg_release(env_var: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let value = proc_macro::tracked::env_var(env_var)
-            .unwrap_or_else(|_| Self::DEFAULT_RELEASE.to_string());
+        // `std::env::var`, not `proc_macro::tracked::env_var`: the tracked form is nightly-only.
+        // The cost is that cargo is not told this variable feeds the expansion, so changing
+        // `CFG_RELEASE` alone does not rebuild the crates that use this macro; a crate that
+        // cares declares `cargo:rerun-if-env-changed=CFG_RELEASE` in its own build script.
+        let value =
+            std::env::var(env_var).unwrap_or_else(|_| Self::DEFAULT_RELEASE.to_string());
 
         Self::parse_str(&value)
             .ok_or_else(|| format!("failed to parse rustc version: {:?}", value).into())

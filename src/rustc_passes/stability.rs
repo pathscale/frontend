@@ -452,8 +452,9 @@ impl<'tcx> MissingStabilityAnnotations<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'tcx> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -562,11 +563,12 @@ struct Checker<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for Checker<'tcx> {
     type NestedFilter = nested_filter::OnlyBodies;
+    type Result = ();
 
     /// Because stability levels are scoped lexically, we want to walk
     /// nested items in the context of the outer item, so enable
     /// deep-walking.
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -916,6 +918,8 @@ struct CheckTraitImplStable<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for CheckTraitImplStable<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_path(&mut self, path: &hir::Path<'tcx>, _id: hir::HirId) {
         if let Some(def_id) = path.res.opt_def_id()
             && let Some(stab) = self.tcx.lookup_stability(def_id)
@@ -1117,7 +1121,8 @@ pub fn check_unused_or_stable_features(tcx: TyCtxt<'_>) {
                 .iter()
                 .flat_map(|&cnum| {
                     find_attr!(tcx, cnum.as_def_id(), UnstableRemoved(rem_features) => rem_features)
-                        .into_flat_iter()
+                        .into_iter()
+                        .flatten()
                 })
                 .collect::<Vec<_>>();
 

@@ -126,7 +126,8 @@ impl<'tcx> ToUniverseInfo<'tcx> for CanonicalTypeOpAscribeUserTypeGoal<'tcx> {
     }
 }
 
-impl<'tcx> ToUniverseInfo<'tcx> for ! {
+// `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+impl<'tcx> ToUniverseInfo<'tcx> for crate::Never {
     fn to_universe_info(self, _base_universe: ty::UniverseIndex) -> UniverseInfo<'tcx> {
         self
     }

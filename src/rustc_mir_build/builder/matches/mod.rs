@@ -10,7 +10,8 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use core::borrow::Borrow;
 use alloc::sync::Arc;
-use core::{debug_assert_matches, mem};
+use core::mem;
+use crate::debug_assert_matches;
 
 use itertools::Itertools;
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
@@ -596,7 +597,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.cfg.push_fake_read(block, source_info, FakeReadCause::ForLet(None), place);
 
                 let ascriptions: &[_] =
-                    try { irrefutable_pat.extra.as_deref()?.ascriptions.as_slice() }
+                    irrefutable_pat.extra.as_deref().map(|extra| extra.ascriptions.as_slice())
                         .unwrap_or_default();
                 for thir::Ascription { annotation, variance: _ } in ascriptions {
                     let ty_source_info = self.source_info(annotation.span);

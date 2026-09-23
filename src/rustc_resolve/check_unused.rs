@@ -254,6 +254,8 @@ impl<'a, 'ra, 'tcx> UnusedImportCheckVisitor<'a, 'ra, 'tcx> {
 }
 
 impl<'a, 'ra, 'tcx> Visitor<'a> for UnusedImportCheckVisitor<'a, 'ra, 'tcx> {
+    type Result = ();
+
     fn visit_item(&mut self, item: &'a ast::Item) {
         self.item_span = item.span_with_attributes();
         match &item.kind {

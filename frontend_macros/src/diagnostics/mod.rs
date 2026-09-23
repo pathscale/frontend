@@ -7,6 +7,7 @@ mod subdiagnostic;
 mod utils;
 
 use diagnostic::DiagnosticDerive;
+use error::with_emitted_errors;
 pub(super) use msg_macro::msg_macro;
 use proc_macro2::TokenStream;
 use subdiagnostic::SubdiagnosticDerive;
@@ -48,7 +49,8 @@ use synstructure::Structure;
 /// See rustc dev guide for more examples on using the `#[derive(Diagnostic)]`:
 /// <https://rustc-dev-guide.rust-lang.org/diagnostics/diagnostic-structs.html>
 pub(super) fn diagnostic_derive(s: Structure<'_>) -> TokenStream {
-    DiagnosticDerive::new(s).into_tokens()
+    // Errors are recorded during the expansion and appended to it here; see `error.rs`.
+    with_emitted_errors(|| DiagnosticDerive::new(s).into_tokens())
 }
 
 /// Implements `#[derive(Subdiagnostic)]`, which allows for labels, notes, helps and
@@ -78,5 +80,5 @@ pub(super) fn diagnostic_derive(s: Structure<'_>) -> TokenStream {
 /// }
 /// ```
 pub(super) fn subdiagnostic_derive(s: Structure<'_>) -> TokenStream {
-    SubdiagnosticDerive::new().into_tokens(s)
+    with_emitted_errors(|| SubdiagnosticDerive::new().into_tokens(s))
 }

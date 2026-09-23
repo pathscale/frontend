@@ -9,6 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use crate::rustc_index::Idx;
 use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_index::interval::IntervalSet;
 use crate::rustc_infer::infer::canonical::QueryRegionConstraints;
@@ -363,7 +364,7 @@ impl<'a, 'typeck, 'tcx> LivenessResults<'a, 'typeck, 'tcx> {
         debug_assert_eq!(self.cx.body().terminator_loc(term_location.block), term_location,);
         let block = term_location.block;
         let entry_point = self.cx.location_map.entry_point(term_location.block);
-        for p in (entry_point..term_point).rev() {
+        for p in (entry_point.index()..term_point.index()).rev().map(PointIndex::new) {
             debug!(
                 "compute_drop_live_points_for_block: p = {:?}",
                 self.cx.location_map.to_location(p)

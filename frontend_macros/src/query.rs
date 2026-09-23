@@ -466,8 +466,13 @@ pub(super) fn rustc_queries(input: TokenStream) -> TokenStream {
         /// Higher-order macro that invokes the specified macro with (a) a list of all query
         /// signatures (including modifiers), and (b) a list of non-query names. This allows
         /// multiple simpler macros to each have access to these lists.
-        #[rustc_macro_transparency = "semiopaque"] // Use `macro_rules!` hygiene.
-        pub macro rustc_with_all_queries {
+        //
+        // Upstream emits a `pub macro` (decl_macro, unstable). This is `macro_rules!` plus a
+        // `pub(crate) use` so the old `crate::rustc_middle::queries::rustc_with_all_queries!`
+        // path keeps resolving. It cannot be `#[macro_export]`: a macro-expanded exported macro
+        // may not be named by an absolute path from its own crate. `$macro` is always a local
+        // `macro_rules!` of the caller, which call-site resolution finds.
+        macro_rules! rustc_with_all_queries {
             (
                 // The macro to invoke once, on all queries and non-queries.
                 $macro:ident!
@@ -478,6 +483,8 @@ pub(super) fn rustc_queries(input: TokenStream) -> TokenStream {
                 }
             }
         }
+        #[allow(unused_imports)]
+        pub(crate) use rustc_with_all_queries;
 
         // Add hints for rust-analyzer
         mod _analyzer_hints {

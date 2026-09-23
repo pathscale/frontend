@@ -78,7 +78,8 @@ where
         && let Some(error_info) = error_info
     {
         let universe_info = error_info.to_universe_info(old_universe);
-        for u in (old_universe + 1)..=universe {
+        for u in (old_universe + 1).as_u32()..=universe.as_u32() {
+            let u = ty::UniverseIndex::from_u32(u);
             constraints.universe_causes.insert(u, universe_info.clone());
         }
     }

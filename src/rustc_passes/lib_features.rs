@@ -96,8 +96,9 @@ impl<'tcx> LibFeatureCollector<'tcx> {
 
 impl<'tcx> Visitor<'tcx> for LibFeatureCollector<'tcx> {
     type NestedFilter = nested_filter::All;
+    type Result = ();
 
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+    fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

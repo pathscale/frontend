@@ -63,6 +63,8 @@ struct ReachableContext<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for ReachableContext<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
     fn visit_nested_body(&mut self, body: hir::BodyId) {
         let old_maybe_typeck_results =
             self.maybe_typeck_results.replace(self.tcx.typeck_body(body));

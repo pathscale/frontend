@@ -59,7 +59,6 @@ impl GatedSpans {
         let mut inner = self.spans.borrow_mut();
         // The entries will be moved to another map so the drain order does not
         // matter.
-        #[allow(rustc::potential_query_instability)]
         for (gate, mut gate_spans) in inner.drain() {
             spans.entry(gate).or_default().append(&mut gate_spans);
         }
@@ -220,7 +219,8 @@ impl ParseSess {
     /// This is what `interface::Config::psess_created` exists for from a server's point of view:
     /// a diagnostic is a `DiagInner` until an emitter renders it, and a server wants the record
     /// rather than the rendering. See
-    pub fn set_emitter(&self, emitter: Box<dyn crate::rustc_errors::emitter::Emitter + DynSend>) {
+    // `+ DynSend` dropped: no longer an auto trait (see `rustc_data_structures/marker.rs`).
+    pub fn set_emitter(&self, emitter: Box<dyn crate::rustc_errors::emitter::Emitter>) {
         self.dcx.set_emitter(emitter);
     }
 }

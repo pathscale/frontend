@@ -5,6 +5,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::marker::PhantomData;
 use core::ops::{Bound, Range};
 use core::{fmt, mem};
 
@@ -17,15 +18,16 @@ use crate::rustc_proc_macro::bridge::{
 
 pub(crate) struct TokenStream {
     handle: handle::Handle,
+    // Upstream: `impl !Send` and `impl !Sync` (unstable negative impls). A raw-pointer
+    // marker makes the type neither, on stable. The public `TokenStream`, `Group` and
+    // `TokenTree` contain this one and inherit it.
+    _not_send_sync: PhantomData<*const ()>,
 }
-
-impl !Send for TokenStream {}
-impl !Sync for TokenStream {}
 
 // Forward `Drop::drop` to the inherent `drop` method.
 impl Drop for TokenStream {
     fn drop(&mut self) {
-        Methods::ts_drop(TokenStream { handle: self.handle });
+        Methods::ts_drop(TokenStream { handle: self.handle, _not_send_sync: PhantomData });
     }
 }
 
@@ -46,7 +48,7 @@ impl<S> Encode<S> for &TokenStream {
 impl<S> Decode<'_, '_, S> for TokenStream {
     #[inline]
     fn decode(r: &mut &[u8], s: &mut S) -> Self {
-        TokenStream { handle: handle::Handle::decode(r, s) }
+        TokenStream { handle: handle::Handle::decode(r, s), _not_send_sync: PhantomData }
     }
 }
 
@@ -67,10 +69,10 @@ impl Decode<'_, '_, ()> for crate::rustc_proc_macro::TokenStream {
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Span {
     handle: handle::Handle,
+    // Upstream: `impl !Send` and `impl !Sync` (unstable negative impls); see `TokenStream`.
+    // The public `Span`, `Punct`, `Ident` and `Literal` contain this one and inherit it.
+    _not_send_sync: PhantomData<*const ()>,
 }
-
-impl !Send for Span {}
-impl !Sync for Span {}
 
 impl<S> Encode<S> for Span {
     #[inline]
@@ -82,7 +84,7 @@ impl<S> Encode<S> for Span {
 impl<S> Decode<'_, '_, S> for Span {
     #[inline]
     fn decode(r: &mut &[u8], s: &mut S) -> Self {
-        Span { handle: handle::Handle::decode(r, s) }
+        Span { handle: handle::Handle::decode(r, s), _not_send_sync: PhantomData }
     }
 }
 
@@ -161,8 +163,8 @@ struct Bridge<'a> {
     globals: ExpnGlobals<Span>,
 }
 
-impl<'a> !Send for Bridge<'a> {}
-impl<'a> !Sync for Bridge<'a> {}
+// Upstream also wrote `impl !Send` / `impl !Sync` here (unstable negative impls). They are
+// redundant: `closure::Closure` holds a raw-pointer marker, so `Bridge` is neither already.
 
 #[allow(unsafe_code)]
 mod state {

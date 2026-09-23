@@ -616,7 +616,7 @@ pub fn evaluate_const<'tcx>(
     ct: ty::Const<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
 ) -> ty::Const<'tcx> {
-    match try_evaluate_const(infcx, ct, param_env, |v| Ok::<_, !>(v.skip_norm_wip())) {
+    match try_evaluate_const(infcx, ct, param_env, |v| Ok::<_, crate::Never>(v.skip_norm_wip())) {
         Ok(ct) => ct,
         Err(EvaluateConstErr::EvaluationFailure(e) | EvaluateConstErr::InvalidConstParamTy(e)) => {
             ty::Const::new_error(infcx.tcx, e)

@@ -317,16 +317,9 @@ pub struct EarlyBinder<I: Interner, T> {
 impl<I: Interner, T: Eq> Eq for EarlyBinder<I, T> {}
 
 // FIXME(154045): Recommended as per https://github.com/rust-lang/rust/issues/154045, this is so sad :((
-#[cfg(feature = "nightly")]
-macro_rules! generate { ($( $tt:tt )*) => { $( $tt )* } }
-
-#[cfg(feature = "nightly")]
-generate!(
-    /// For early binders, you should first call `instantiate` before using any visitors.
-    impl<I: Interner, T> !TypeFoldable<I> for ty::EarlyBinder<I, T> {}
-    /// For early binders, you should first call `instantiate` before using any visitors.
-    impl<I: Interner, T> !TypeVisitable<I> for ty::EarlyBinder<I, T> {}
-);
+// Upstream generated `impl !TypeFoldable` and `impl !TypeVisitable` for `EarlyBinder` here
+// (unstable negative impls): for early binders you should first call `instantiate` before
+// using any visitors. On stable the rule is kept by not writing either impl.
 
 impl<I: Interner, T: TypeFoldable<I>> EarlyBinder<I, T> {
     pub fn bind(cx: I, value: T) -> EarlyBinder<I, T> {

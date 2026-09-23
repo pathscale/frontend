@@ -214,7 +214,8 @@ where
 
         impl<'tcx> ObligationProcessor for DrainProcessor<'_, 'tcx> {
             type Obligation = PendingPredicateObligation<'tcx>;
-            type Error = !;
+            // `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+            type Error = crate::Never;
             type OUT = Outcome<Self::Obligation, Self::Error>;
 
             fn needs_process_obligation(&self, pending_obligation: &Self::Obligation) -> bool {
@@ -257,7 +258,7 @@ where
             fn process_obligation(
                 &mut self,
                 pending_obligation: &mut PendingPredicateObligation<'tcx>,
-            ) -> ProcessResult<PendingPredicateObligation<'tcx>, !> {
+            ) -> ProcessResult<PendingPredicateObligation<'tcx>, crate::Never> {
                 assert!(self.needs_process_obligation(pending_obligation));
                 self.removed_predicates.push(pending_obligation.obligation.clone());
                 ProcessResult::Changed(Default::default())
@@ -267,7 +268,7 @@ where
                 &mut self,
                 cycle: I,
                 _marker: PhantomData<&'c PendingPredicateObligation<'tcx>>,
-            ) -> Result<(), !>
+            ) -> Result<(), crate::Never>
             where
                 I: Clone + Iterator<Item = &'c PendingPredicateObligation<'tcx>>,
             {
@@ -774,7 +775,7 @@ impl<'a, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'tcx> {
                                 self.selcx.infcx,
                                 c,
                                 obligation.param_env,
-                                |ty| Ok::<_, !>(ty.skip_norm_wip()),
+                                |ty| Ok::<_, crate::Never>(ty.skip_norm_wip()),
                             ) {
                                 Ok(val) => Ok(val),
                                 e @ Err(EvaluateConstErr::HasGenericsOrInfers) => {

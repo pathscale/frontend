@@ -83,7 +83,7 @@ impl MultiItemModifier for Expander {
                 };
 
                 // Do not configure or clone items unless necessary.
-                if let [first, others @ ..] = &mut resolutions {
+                if let [first, others @ ..] = &mut resolutions[..] {
                     first.item =
                         cfg_eval(sess, features, item.clone(), ecx.current_expansion.lint_node_id);
                     for other in others {

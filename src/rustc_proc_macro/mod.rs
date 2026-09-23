@@ -11,9 +11,7 @@
 
 #![deny(missing_docs)]
 #![allow(internal_features)]
-#![deny(ffi_unwind_calls)]
-#![allow(rustc::internal)] // Can't use FxHashMap when compiled as part of the standard library
-// `no_std`. This crate is linked into the final binary, so it is subject to the ban like everything else.
+#![deny(ffi_unwind_calls)]// `no_std`. This crate is linked into the final binary, so it is subject to the ban like everything else.
 // It was the last crate reaching `std`, and it did so without ever spelling `std::` more than ten
 // times: omitting `#![no_std]` is enough, because then the std prelude supplies `Vec`, `String`,
 // `Box` and `format!` with no path to match. `scripts/no-std-ban.sh` could not see it either -
@@ -37,6 +35,7 @@ mod escape;
 mod to_tokens;
 
 use core::convert::From;
+use core::marker::PhantomData;
 use core::ops::BitOr;
 use alloc::borrow::Cow;
 // `CStr` borrows and so is `core::ffi`; only `CString`, which owns, needs `alloc`.
@@ -217,19 +216,27 @@ pub fn is_available() -> bool {
 ///
 /// This is both the input and output of `#[proc_macro]`, `#[proc_macro_attribute]`
 /// and `#[proc_macro_derive]` definitions.
-#[cfg_attr(feature = "rustc-dep-of-std", rustc_diagnostic_item = "TokenStream")]
+// The `#[derive(Clone)]` below had been glued onto the end of the doc line above, which made
+// it doc text and left `TokenStream` without `Clone`; it is an attribute again.
+//
+// Upstream: `impl !Send` / `impl !Sync` (unstable negative impls). Not needed on stable:
+// `bridge::client::TokenStream` carries a raw-pointer marker, so this type is neither.
 #[derive(Clone)]
 pub struct TokenStream(Option<bridge::client::TokenStream>);
-
-impl !Send for TokenStream {}
-impl !Sync for TokenStream {}
 
 /// Error returned from `TokenStream::from_str`.
 ///
 /// The contained error message is explicitly not guaranteed to be stable in any way,
 /// and may change between Rust versions or across compilations.
-#[derive(Debug)]
-pub struct LexError(String);
+// The second field replaces upstream's `impl !Send` / `impl !Sync` (unstable negative
+// impls). `Debug` is written by hand so the marker does not show in the output.
+pub struct LexError(String, PhantomData<*const ()>);
+
+impl fmt::Debug for LexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("LexError").field(&self.0).finish()
+    }
+}
 
 impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -239,13 +246,18 @@ impl fmt::Display for LexError {
 
 impl error::Error for LexError {}
 
-impl !Send for LexError {}
-impl !Sync for LexError {}
-
 /// Error returned from `TokenStream::expand_expr`.
+// The field replaces upstream's `impl !Send` / `impl !Sync` (unstable negative impls).
+// `#[non_exhaustive]` already kept other crates from building one, so only this crate's
+// constructors change. `Debug` is written by hand to print as the unit struct did.
 #[non_exhaustive]
-#[derive(Debug)]
-pub struct ExpandError;
+pub struct ExpandError(PhantomData<*const ()>);
+
+impl fmt::Debug for ExpandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ExpandError")
+    }
+}
 
 impl fmt::Display for ExpandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -254,10 +266,6 @@ impl fmt::Display for ExpandError {
 }
 
 impl error::Error for ExpandError {}
-
-impl !Send for ExpandError {}
-
-impl !Sync for ExpandError {}
 
 impl TokenStream {
     /// Returns an empty `TokenStream` containing no token trees.
@@ -281,10 +289,10 @@ impl TokenStream {
     /// specific behavior for any error condition, and what conditions are
     /// considered errors, is unspecified and may change in the future.
     pub fn expand_expr(&self) -> Result<TokenStream, ExpandError> {
-        let stream = self.0.as_ref().ok_or(ExpandError)?;
+        let stream = self.0.as_ref().ok_or(ExpandError(PhantomData))?;
         match BridgeMethods::ts_expand_expr(stream) {
             Ok(stream) => Ok(TokenStream(Some(stream))),
-            Err(_) => Err(ExpandError),
+            Err(_) => Err(ExpandError(PhantomData)),
         }
     }
 }
@@ -300,7 +308,7 @@ impl FromStr for TokenStream {
     type Err = LexError;
 
     fn from_str(src: &str) -> Result<TokenStream, LexError> {
-        Ok(TokenStream(Some(BridgeMethods::ts_from_str(src).map_err(LexError)?)))
+        Ok(TokenStream(Some(BridgeMethods::ts_from_str(src).map_err(|msg| LexError(msg, PhantomData))?)))
     }
 }
 
@@ -535,27 +543,19 @@ pub mod token_stream {
     }
 }
 
-/// `quote!(..)` accepts arbitrary tokens and expands into a `TokenStream` describing the input.
-/// For example, `quote!(a + b)` will produce an expression, that, when evaluated, constructs
-/// the `TokenStream` `[Ident("a"), Punct('+', Alone), Ident("b")]`.
-///
-/// Unquoting is done with `$`, and works by taking the single next ident as the unquoted term.
-/// To quote `$` itself, use `$$`.
-#[allow_internal_unstable(proc_macro_def_site, proc_macro_internals, proc_macro_totokens)]
-#[rustc_builtin_macro]
-pub macro quote($($t:tt)*) {
-    /* compiler built-in */
-}
-
+// The `quote!` macro that lived here was a `#[rustc_builtin_macro]` stub declared with `macro`
+// (decl_macro): its body was supplied by the host compiler, which stable Rust does not allow.
+// Nothing in this crate invoked it. The expansion logic it named is the `quote` function in
+// `quote.rs`, which is kept and is what `rustc_builtin_macros` registers for the compiled
+// language.
 #[doc(hidden)]
 mod quote;
 
 /// A region of source code, along with macro expansion information.
 #[derive(Copy, Clone)]
+// Upstream: `impl !Send` / `impl !Sync` (unstable negative impls). Not needed on stable:
+// `bridge::client::Span` carries a raw-pointer marker, so this type is neither.
 pub struct Span(bridge::client::Span);
-
-impl !Send for Span {}
-impl !Sync for Span {}
 
 macro_rules! diagnostic_method {
     ($name:ident, $level:expr) => {
@@ -721,8 +721,8 @@ pub enum TokenTree {
     Literal(Literal),
 }
 
-impl !Send for TokenTree {}
-impl !Sync for TokenTree {}
+// Upstream: `impl !Send` / `impl !Sync`. Every variant holds a `bridge::client::Span`,
+// whose raw-pointer marker makes this type neither on stable.
 
 impl TokenTree {
     /// Returns the span of this tree, delegating to the `span` method of
@@ -817,8 +817,8 @@ impl fmt::Display for TokenTree {
 #[derive(Clone)]
 pub struct Group(bridge::Group<bridge::client::TokenStream, bridge::client::Span>);
 
-impl !Send for Group {}
-impl !Sync for Group {}
+// Upstream: `impl !Send` / `impl !Sync`. The client `TokenStream` and `Span` inside carry
+// raw-pointer markers, which make this type neither on stable.
 
 /// Describes how a sequence of token trees is delimited.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -944,8 +944,8 @@ impl fmt::Debug for Group {
 #[derive(Clone)]
 pub struct Punct(bridge::Punct<bridge::client::Span>);
 
-impl !Send for Punct {}
-impl !Sync for Punct {}
+// Upstream: `impl !Send` / `impl !Sync`. The client `Span` inside carries a raw-pointer
+// marker, which makes this type neither on stable.
 
 /// Indicates whether a `Punct` token can join with the following token
 /// to form a multi-character operator.
@@ -1531,7 +1531,8 @@ impl Literal {
                     // programs with many long strings containing escapes.
                     unescape_str(
                         symbol,
-                        #[inline(always)]
+                        // Upstream's `#[inline(always)]` here is an attribute on an expression
+                        // (`stmt_expr_attributes`, unstable); it was only an inlining hint.
                         |_, c| match c {
                             Ok(c) => buf.push(c),
                             Err(err) => {
@@ -1630,7 +1631,6 @@ impl Literal {
     }
 
     float_values! {
-        f16 => f16_value,
         f32 => f32_value,
         f64 => f64_value,
         // FIXME: `f128` doesn't implement `FromStr` for the moment so we cannot obtain it from
@@ -1709,7 +1709,7 @@ impl FromStr for Literal {
     fn from_str(src: &str) -> Result<Self, LexError> {
         match BridgeMethods::literal_from_str(src) {
             Ok(literal) => Ok(Literal(literal)),
-            Err(msg) => Err(LexError(msg)),
+            Err(msg) => Err(LexError(msg, PhantomData)),
         }
     }
 }

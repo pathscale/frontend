@@ -81,7 +81,8 @@ mod monotonic {
         }
     }
 
-    impl<T> !DerefMut for MonotonicVec<T> {}
+    // Upstream: `impl<T> !DerefMut for MonotonicVec<T>` (unstable negative impl). The point,
+    // that the vector can only grow, is kept by never writing a `DerefMut` impl.
 }
 
 // _____________________________________________________________________________

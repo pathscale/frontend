@@ -371,23 +371,10 @@ impl<K: Eq + Hash, V> Extend<(K, V)> for SsoHashMap<K, V> {
         }
     }
 
-    #[inline]
-    fn extend_one(&mut self, (k, v): (K, V)) {
-        self.insert(k, v);
-    }
-
-    fn extend_reserve(&mut self, additional: usize) {
-        match self {
-            SsoHashMap::Array(array) => {
-                if SSO_ARRAY_SIZE < (array.len() + additional) {
-                    let mut map: FxHashMap<K, V> = array.drain(..).collect();
-                    map.extend_reserve(additional);
-                    *self = SsoHashMap::Map(map);
-                }
-            }
-            SsoHashMap::Map(map) => map.extend_reserve(additional),
-        }
-    }
+    // No `extend_one` or `extend_reserve`: overriding them is the unstable `extend_one`. The
+    // provided `extend_one` goes through `extend` to the same `insert`, and `insert` already
+    // spills the array into a map when it fills, so the early spill in `extend_reserve` was
+    // only a capacity hint.
 }
 
 impl<'a, K, V> Extend<(&'a K, &'a V)> for SsoHashMap<K, V>
@@ -397,16 +384,6 @@ where
 {
     fn extend<T: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: T) {
         self.extend(iter.into_iter().map(|(k, v)| (*k, *v)))
-    }
-
-    #[inline]
-    fn extend_one(&mut self, (&k, &v): (&'a K, &'a V)) {
-        self.insert(k, v);
-    }
-
-    #[inline]
-    fn extend_reserve(&mut self, additional: usize) {
-        Extend::<(K, V)>::extend_reserve(self, additional)
     }
 }
 

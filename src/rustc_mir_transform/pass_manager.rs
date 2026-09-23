@@ -159,8 +159,10 @@ impl PassPolicy {
 /// pass will be named after the type, and it will consist of a main
 /// loop that goes over each available MIR and applies `run_pass`.
 pub(super) trait MirPass<'tcx> {
+    // Computed at run time rather than in a `const` block: `type_name` in const context is the
+    // unstable `const_type_name`. The result is the same `&'static str`.
     fn name(&self) -> &'static str {
-        const { simplify_pass_type_name(core::any::type_name::<Self>()) }
+        simplify_pass_type_name(core::any::type_name::<Self>())
     }
 
     fn profiler_name(&self) -> &'static str {
@@ -180,8 +182,9 @@ pub(super) trait MirPass<'tcx> {
 /// Just like `MirPass`, except it cannot mutate `Body`, and MIR dumping is
 /// disabled (via the `Lint` adapter).
 pub(super) trait MirLint<'tcx> {
+    // At run time for the same reason as `MirPass::name`.
     fn name(&self) -> &'static str {
-        const { simplify_pass_type_name(core::any::type_name::<Self>()) }
+        simplify_pass_type_name(core::any::type_name::<Self>())
     }
 
     fn run_lint(&self, tcx: TyCtxt<'tcx>, body: &Body<'tcx>);

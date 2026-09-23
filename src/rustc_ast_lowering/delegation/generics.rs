@@ -86,7 +86,7 @@ pub(super) struct GenericsGenerationResults<'hir> {
 }
 
 pub(super) struct DelegationGenericArgsIterator<'hir> {
-    index: usize = Default::default(),
+    index: usize,
     params: &'hir [hir::GenericParam<'hir>],
 }
 
@@ -185,7 +185,7 @@ impl<'hir> HirOrTyGenerics<'hir> {
                 bug!("attempting to get generic args before uplifting to HIR")
             }
             HirOrTyGenerics::Hir(hir) => {
-                DelegationGenericArgsIterator { params: hir.data.params, .. }
+                DelegationGenericArgsIterator { index: 0, params: hir.data.params }
             }
         }
     }
@@ -335,7 +335,7 @@ impl<'hir> DelegationResolver<'_, 'hir> {
 
     fn get_user_args<'a>(&self, segment: &'a PathSegment) -> Option<&'a AngleBracketedArgs> {
         let Some(args) = &segment.args else { return None };
-        let GenericArgs::AngleBracketed(args) = args else {
+        let GenericArgs::AngleBracketed(args) = &**args else {
             self.tcx().dcx().span_delayed_bug(
                 segment.span(),
                 "expected angle-bracketed generic args in delegation segment",

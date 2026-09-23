@@ -212,7 +212,8 @@ impl interpret::MayLeak for MemoryKind {
     }
 }
 
-impl interpret::MayLeak for ! {
+// `crate::Never` is `!` spelled on stable; see its definition in `lib.rs`.
+impl interpret::MayLeak for crate::Never {
     #[inline(always)]
     fn may_leak(self) -> bool {
         // `self` is uninhabited
@@ -264,7 +265,7 @@ impl<'tcx> CompileTimeInterpCx<'tcx> {
             let msg = Symbol::intern(self.read_str(&msg_place)?);
             let span = self.find_closest_untracked_caller_location();
             let (file, line, col) = self.location_triple_for_span(span);
-            return Err(ConstEvalErrKind::Panic { msg, file, line, col }).into();
+            return Err(ConstEvalErrKind::Panic { msg, file, line, col }.into());
         } else if self.tcx.is_lang_item(def_id, LangItem::PanicFmt) {
             // For panic_fmt, call const_panic_fmt instead.
             let const_def_id = self.tcx.require_lang_item(LangItem::ConstPanicFmt, self.tcx.span);
@@ -474,7 +475,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
         let msg = Symbol::intern(msg);
         let span = ecx.find_closest_untracked_caller_location();
         let (file, line, col) = ecx.location_triple_for_span(span);
-        Err(ConstEvalErrKind::Panic { msg, file, line, col }).into()
+        Err(ConstEvalErrKind::Panic { msg, file, line, col }.into())
     }
 
     fn call_intrinsic(
@@ -913,7 +914,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
             NullReferenceConstructed => NullReferenceConstructed,
             InvalidEnumConstruction(source) => InvalidEnumConstruction(eval_to_int(source)?),
         };
-        Err(ConstEvalErrKind::AssertFailure(err)).into()
+        Err(ConstEvalErrKind::AssertFailure(err).into())
     }
 
     #[inline(always)]
@@ -1042,7 +1043,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
             // Write access. These are never allowed, but we give a targeted error message.
             match alloc.mutability {
                 Mutability::Not => throw_ub!(WriteToReadOnly(alloc_id)),
-                Mutability::Mut => Err(ConstEvalErrKind::ModifiedGlobal).into(),
+                Mutability::Mut => Err(ConstEvalErrKind::ModifiedGlobal.into()),
             }
         } else {
             // Read access. These are usually allowed, with some exceptions.
@@ -1052,7 +1053,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
             } else if alloc.mutability == Mutability::Mut {
                 // Machine configuration does not allow us to read statics (e.g., `const`
                 // initializer).
-                Err(ConstEvalErrKind::ConstAccessesMutGlobal).into()
+                Err(ConstEvalErrKind::ConstAccessesMutGlobal.into())
             } else {
                 // Immutable global, this read is fine.
                 assert_eq!(alloc.mutability, Mutability::Not);
@@ -1118,7 +1119,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
         }
         // Reject writes through immutable pointers.
         if immutable {
-            return Err(ConstEvalErrKind::WriteThroughImmutablePointer).into();
+            return Err(ConstEvalErrKind::WriteThroughImmutablePointer.into());
         }
         // Everything else is fine.
         interp_ok(())
@@ -1135,7 +1136,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
         }
         // Check if this is the currently evaluated static.
         if Some(alloc_id) == machine.static_root_ids.map(|(id, _)| id) {
-            return Err(ConstEvalErrKind::RecursiveStatic).into();
+            return Err(ConstEvalErrKind::RecursiveStatic.into());
         }
         // If this is another static, make sure we fire off the query to detect cycles.
         // But only do that when checks for static recursion are enabled.

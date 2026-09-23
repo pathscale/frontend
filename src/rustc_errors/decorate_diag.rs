@@ -22,12 +22,9 @@ use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
 pub struct DecorateDiagCompat(
     /// The third argument of the closure is a `Session`. However, due to the dependency tree,
     /// we don't have access to `rustc_session` here, so we downcast it when needed.
-    pub  Box<
-        dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()>
-            + DynSync
-            + DynSend
-            + 'static,
-    >,
+    // `+ DynSync + DynSend` dropped: they are no longer auto traits, so a trait object
+    // cannot name them (see `rustc_data_structures/marker.rs`).
+    pub  Box<dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()> + 'static>,
 );
 
 impl core::fmt::Debug for DecorateDiagCompat {

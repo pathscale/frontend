@@ -10,6 +10,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+// `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
+use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -20,7 +22,8 @@ use alloc::borrow::Cow;
 use core::borrow::Borrow;
 use core::cell::Cell;
 use alloc::collections::VecDeque;
-use core::{assert_matches, fmt, ptr};
+use core::{fmt, ptr};
+use crate::assert_matches;
 
 use crate::rustc_abi::{Align, HasDataLayout, Size};
 use crate::rustc_ast::Mutability;
@@ -352,12 +355,12 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
     {
         let (alloc_id, offset, _) = self.ptr_get_alloc_id(ptr, 0)?;
         if offset.bytes() != 0 {
-            return Err(ConstEvalErrKind::ConstMakeGlobalWithOffset(ptr)).into();
+            return Err(ConstEvalErrKind::ConstMakeGlobalWithOffset(ptr).into());
         }
 
         if self.tcx.try_get_global_alloc(alloc_id).is_some() {
             // This points to something outside the current interpreter.
-            return Err(ConstEvalErrKind::ConstMakeGlobalPtrIsNonHeap(ptr)).into();
+            return Err(ConstEvalErrKind::ConstMakeGlobalPtrIsNonHeap(ptr).into());
         }
 
         // If we can't find it in `alloc_map` it must be dangling (because we don't use
@@ -370,12 +373,11 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         // Ensure this is actually a *heap* allocation, and record it as made-global.
         match kind {
             MemoryKind::Stack | MemoryKind::CallerLocation => {
-                return Err(ConstEvalErrKind::ConstMakeGlobalPtrIsNonHeap(ptr)).into();
+                return Err(ConstEvalErrKind::ConstMakeGlobalPtrIsNonHeap(ptr).into());
             }
             MemoryKind::Machine(crate::rustc_const_eval::const_eval::MemoryKind::Heap { was_made_global }) => {
                 if *was_made_global {
-                    return Err(ConstEvalErrKind::ConstMakeGlobalPtrAlreadyMadeGlobal(alloc_id))
-                        .into();
+                    return Err(ConstEvalErrKind::ConstMakeGlobalPtrAlreadyMadeGlobal(alloc_id).into());
                 }
                 *was_made_global = true;
             }
@@ -419,8 +421,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                     err_ub_format!("deallocating {alloc_id}, which is static memory")
                 }
                 None => err_ub!(PointerUseAfterFree(alloc_id, CheckInAllocMsg::MemoryAccess)),
-            })
-            .into();
+            }
+            .into());
         };
 
         if alloc.mutability.is_not() {
@@ -1033,7 +1035,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         }
         self.get_fn_alloc(alloc_id)
             .ok_or_else(|| err_ub!(InvalidFunctionPointer(Pointer::new(alloc_id, offset))))
-            .into()
+            .map_err(Into::into)
     }
 
     pub fn get_ptr_va_list(
@@ -1353,7 +1355,7 @@ impl<'a, 'tcx, Prov: Provenance, Extra, Bytes: AllocBytes>
         self.alloc
             .write_scalar(&self.tcx, range, val)
             .map_err(|e| e.to_interp_error(self.alloc_id))
-            .into()
+            .map_err(Into::into)
     }
 
     /// `offset` is relative to this allocation reference, not the base of the allocation.
@@ -1390,7 +1392,7 @@ impl<'a, 'tcx, Prov: Provenance, Extra, Bytes: AllocBytes> AllocRef<'a, 'tcx, Pr
         self.alloc
             .read_scalar(&self.tcx, range, read_provenance)
             .map_err(|e| e.to_interp_error(self.alloc_id))
-            .into()
+            .map_err(Into::into)
     }
 
     /// `range` is relative to this allocation reference, not the base of the allocation.
@@ -1411,7 +1413,7 @@ impl<'a, 'tcx, Prov: Provenance, Extra, Bytes: AllocBytes> AllocRef<'a, 'tcx, Pr
         self.alloc
             .get_bytes_strip_provenance(&self.tcx, self.range)
             .map_err(|e| e.to_interp_error(self.alloc_id))
-            .into()
+            .map_err(Into::into)
     }
 
     /// Returns whether the allocation has provenance anywhere in the range of the `AllocRef`.
@@ -1567,7 +1569,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         )?;
         // Yes we do overwrite all bytes in `dest_bytes`.
         let dest_bytes =
-            dest_alloc.get_bytes_unchecked_for_overwrite_ptr(&tcx, dest_range).as_mut_ptr();
+            dest_alloc.get_bytes_unchecked_for_overwrite_ptr(&tcx, dest_range).cast::<u8>();
 
         if init.no_bytes_init() {
             // Fast path: If all bytes are `uninit` then there is nothing to copy. The target range
@@ -1736,6 +1738,6 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                     msg: CheckInAllocMsg::Dereferenceable("pointer")
                 })
             })
-            .into()
+            .map_err(Into::into)
     }
 }

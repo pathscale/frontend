@@ -180,6 +180,8 @@ impl LateBoundRegionsCollector<'_> {
 }
 
 impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector<'tcx> {
+    type Result = ();
+
     fn visit_binder<T: TypeVisitable<TyCtxt<'tcx>>>(&mut self, t: &Binder<'tcx, T>) {
         self.current_index.shift_in(1);
         t.super_visit_with(self);

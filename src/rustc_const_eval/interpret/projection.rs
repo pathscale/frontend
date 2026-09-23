@@ -216,7 +216,16 @@ where
         base: &P,
         fields: [FieldIdx; N],
     ) -> InterpResult<'tcx, [P; N]> {
-        fields.try_map(|field| self.project_field(base, field))
+        // Fields in order, stopping at the first error, which is what the unstable
+        // `array::try_map` did. `ArrayVec` gives the array back without a `Default` bound on `P`.
+        let mut projected = arrayvec::ArrayVec::<P, N>::new();
+        for field in fields {
+            projected.push(self.project_field(base, field)?);
+        }
+        match projected.into_inner() {
+            Ok(array) => interp_ok(array),
+            Err(_) => unreachable!("one projection was pushed per field"),
+        }
     }
 
     /// Downcasting to an enum variant.

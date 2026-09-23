@@ -222,7 +222,6 @@ impl StableHash for AdtDefData {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, StableHash)]
-#[rustc_pass_by_value]
 pub struct AdtDef<'tcx>(pub Interned<'tcx, AdtDefData>);
 
 impl<'tcx> AdtDef<'tcx> {

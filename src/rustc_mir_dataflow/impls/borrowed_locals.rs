@@ -14,8 +14,8 @@ pub struct MaybeBorrowedLocals;
 
 impl MaybeBorrowedLocals {
     pub(super) fn gen_statement(state: &mut DenseBitSet<Local>, stmt: &Statement<'_>) {
-        if let StatementKind::Assign((_, rvalue)) = &stmt.kind {
-            match rvalue {
+        if let StatementKind::Assign(assign) = &stmt.kind {
+            match &assign.1 {
                 // We ignore fake borrows as these get removed after analysis and shouldn't effect
                 // the layout of generators.
                 Rvalue::RawPtr(_, borrowed_place)
@@ -76,6 +76,8 @@ impl MaybeBorrowedLocals {
 }
 
 impl<'tcx> Analysis<'tcx> for MaybeBorrowedLocals {
+    type Direction = crate::rustc_mir_dataflow::Forward;
+    type SwitchIntData = crate::Never;
     type Domain = DenseBitSet<Local>;
     const NAME: &'static str = "maybe_borrowed_locals";
 

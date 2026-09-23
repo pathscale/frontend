@@ -78,7 +78,7 @@ pub fn is_const_evaluatable<'tcx>(
             }
             ty::ConstKind::Alias(_, _) => {
                 match crate::rustc_trait_selection::traits::try_evaluate_const(infcx, unexpanded_ct, param_env, |ty| {
-                    Ok::<_, !>(ty.skip_norm_wip())
+                    Ok::<_, crate::Never>(ty.skip_norm_wip())
                 }) {
                     Err(EvaluateConstErr::HasGenericsOrInfers) => {
                         Err(NotConstEvaluatable::Error(infcx.dcx().span_delayed_bug(
@@ -111,7 +111,7 @@ pub fn is_const_evaluatable<'tcx>(
         };
 
         match crate::rustc_trait_selection::traits::try_evaluate_const(infcx, unexpanded_ct, param_env, |ty| {
-            Ok::<_, !>(ty.skip_norm_wip())
+            Ok::<_, crate::Never>(ty.skip_norm_wip())
         }) {
             // If we're evaluating a generic foreign constant, under a nightly compiler while
             // the current crate does not enable `feature(generic_const_exprs)`, abort
@@ -183,6 +183,8 @@ fn satisfied_from_param_env<'tcx>(
     }
 
     impl<'a, 'tcx> TypeVisitor<TyCtxt<'tcx>> for Visitor<'a, 'tcx> {
+        type Result = ();
+
         fn visit_const(&mut self, c: ty::Const<'tcx>) {
             debug!("is_const_evaluatable: candidate={:?}", c);
             if self.infcx.probe(|_| {

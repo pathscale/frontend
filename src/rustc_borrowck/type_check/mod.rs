@@ -580,7 +580,6 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         //
         // add_location doesn't care about ordering so not a problem for the live regions to be
         // unordered.
-        #[allow(rustc::potential_query_instability)]
         for region in liveness_constraints.live_regions_unordered() {
             self.constraints.liveness_constraints.add_location(region, location);
         }
@@ -620,7 +619,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
         self.super_statement(stmt, location);
         let tcx = self.tcx();
         match &stmt.kind {
-            StatementKind::Assign((place, rv)) => {
+            StatementKind::Assign(assign) => {
+                let (place, rv) = &**assign;
                 // Assignments to temporaries are not "interesting";
                 // they are not caused by the user, but rather artifacts
                 // of lowering. Assignments to other sorts of places *are* interesting
@@ -711,7 +711,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                     );
                 }
             }
-            StatementKind::AscribeUserType((place, projection), variance) => {
+            StatementKind::AscribeUserType(ascription, variance) => {
+                let (place, projection) = &**ascription;
                 let place_ty = place.ty(self.body, tcx).ty;
                 if let Err(terr) = self.relate_type_and_user_type(
                     place_ty,
@@ -732,8 +733,13 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                     );
                 }
             }
-            StatementKind::Intrinsic(NonDivergingIntrinsic::Assume(..))
-            | StatementKind::FakeRead(..)
+            StatementKind::Intrinsic(intrinsic) => match &**intrinsic {
+                NonDivergingIntrinsic::Assume(..) => {}
+                NonDivergingIntrinsic::CopyNonOverlapping(..) => {
+                    bug!("Statement not allowed in this MIR phase")
+                }
+            },
+            StatementKind::FakeRead(..)
             | StatementKind::StorageLive(..)
             | StatementKind::StorageDead(..)
             | StatementKind::Coverage(..)
@@ -741,8 +747,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
             | StatementKind::PlaceMention(..)
             | StatementKind::BackwardIncompatibleDropHint { .. }
             | StatementKind::Nop => {}
-            StatementKind::Intrinsic(NonDivergingIntrinsic::CopyNonOverlapping(..))
-            | StatementKind::SetDiscriminant { .. } => {
+            StatementKind::SetDiscriminant { .. } => {
                 bug!("Statement not allowed in this MIR phase")
             }
         }
@@ -944,7 +949,12 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
         self.super_local_decl(local, local_decl);
 
         for user_ty in
-            local_decl.user_ty.as_deref().map(UserTypeProjections::projections).into_flat_iter()
+            local_decl
+                .user_ty
+                .as_deref()
+                .map(UserTypeProjections::projections)
+                .into_iter()
+                .flatten()
         {
             let span = self.user_type_annotations[user_ty.base].span;
 
@@ -1636,8 +1646,9 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
 
             Rvalue::BinaryOp(
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
-                (left, right),
+                operands,
             ) => {
+                let (left, right) = &**operands;
                 let ty_left = left.ty(self.body, tcx);
                 match ty_left.kind() {
                     // Types with regions are comparable if they have a common super-type.

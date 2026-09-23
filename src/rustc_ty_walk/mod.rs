@@ -26,7 +26,8 @@ use crate::rustc_span::Span;
 use tracing::{instrument, trace};
 
 pub trait SpannedTypeVisitor<'tcx> {
-    type Result: VisitorResult = ();
+    // Stable Rust has no associated type defaults, so every impl names this type.
+    type Result: VisitorResult;
     fn visit(&mut self, span: Span, value: impl TypeVisitable<TyCtxt<'tcx>>) -> Self::Result;
 }
 

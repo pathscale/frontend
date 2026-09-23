@@ -110,15 +110,16 @@ fn find_unreachable_code_from<'tcx>(
     for stmt in &bbdata.statements {
         match &stmt.kind {
             // Ignore the implicit `()` return place assignment for unit functions/blocks
-            StatementKind::Assign((_, Rvalue::Use(Operand::Constant(const_), _)))
-                if const_.ty().is_unit() =>
+            StatementKind::Assign(assign)
+                if let (_, Rvalue::Use(Operand::Constant(const_), _)) = &**assign
+                    && const_.ty().is_unit() =>
             {
                 continue;
             }
             // Ignore return value plumbing. After a call returning a non-`!`
             // uninhabited type, a tail expression can be unreachable while
             // still being needed to satisfy the surrounding return type.
-            StatementKind::Assign((place, _)) if place.as_local() == Some(RETURN_PLACE) => {
+            StatementKind::Assign(assign) if assign.0.as_local() == Some(RETURN_PLACE) => {
                 continue;
             }
             // Ignore statements inserted by MIR building that do not correspond to user code.

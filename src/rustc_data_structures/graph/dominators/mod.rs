@@ -13,6 +13,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -136,7 +137,7 @@ fn dominators_impl<G: ControlFlowGraph>(graph: &G) -> Inner<G::Node> {
     // preorder number such that there exists a path from v to w in which all elements (other than w) have
     // preorder numbers greater than w (i.e., this path is not the tree path to
     // w).
-    for w in (PreorderIndex::new(1)..PreorderIndex::new(reachable_vertices)).rev() {
+    for w in (1..reachable_vertices).rev().map(PreorderIndex::new) {
         // Optimization: process buckets just once, at the start of the
         // iteration. Do not explicitly empty the bucket (even though it will
         // not be used again), to save some instructions.
@@ -267,7 +268,7 @@ fn dominators_impl<G: ControlFlowGraph>(graph: &G) -> Inner<G::Node> {
     // into idom[w]. It is known to be our 'relative dominator', which means
     // that it's one of w's ancestors and has the same immediate dominator as w,
     // so use that idom.
-    for w in PreorderIndex::new(1)..PreorderIndex::new(reachable_vertices) {
+    for w in (1..reachable_vertices).map(PreorderIndex::new) {
         if idom[w] != semi[w] {
             idom[w] = idom[idom[w]];
         }
@@ -338,7 +339,7 @@ fn compress(
     }
 
     // Then in reverse order, popping the stack
-    for &[v, u] in stack.array_windows().rev() {
+    for &[v, u] in stack.windows_array().rev() {
         if semi[label[u]] < semi[label[v]] {
             label[v] = label[u];
         }

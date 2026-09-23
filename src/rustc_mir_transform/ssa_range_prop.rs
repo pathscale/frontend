@@ -150,8 +150,9 @@ impl<'tcx> MutVisitor<'tcx> for RangeSet<'tcx, '_, '_> {
     fn visit_statement(&mut self, statement: &mut Statement<'tcx>, location: Location) {
         self.super_statement(statement, location);
         match &statement.kind {
-            StatementKind::Intrinsic(NonDivergingIntrinsic::Assume(operand))
-                if let Some(place) = operand.place()
+            StatementKind::Intrinsic(intrinsic)
+                if let NonDivergingIntrinsic::Assume(operand) = &**intrinsic
+                    && let Some(place) = operand.place()
                     && self.is_ssa(place) =>
             {
                 let successor = location.successor_within_block();

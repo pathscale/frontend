@@ -283,9 +283,9 @@ pub(crate) struct NameResolution<'ra> {
     /// Imports are arena-allocated, so it's ok to use pointers as keys.
     pub single_imports: FxIndexSet<Import<'ra>>,
     /// The non-glob declaration for this name, if it is known to exist.
-    pub non_glob_decl: Option<Decl<'ra>> = None,
+    pub non_glob_decl: Option<Decl<'ra>>,
     /// The glob declaration for this name, if it is known to exist.
-    pub glob_decl: Option<Decl<'ra>> = None,
+    pub glob_decl: Option<Decl<'ra>>,
     pub orig_ident_span: Span,
 }
 
@@ -295,7 +295,12 @@ pub(crate) type NameResolutionRef<'ra> = Interned<'ra, CmRefCell<NameResolution<
 
 impl<'ra> NameResolution<'ra> {
     pub(crate) fn new(orig_ident_span: Span) -> Self {
-        NameResolution { single_imports: FxIndexSet::default(), orig_ident_span, .. }
+        NameResolution {
+            single_imports: FxIndexSet::default(),
+            non_glob_decl: None,
+            glob_decl: None,
+            orig_ident_span,
+        }
     }
 
     /// Returns the best declaration if it is not going to change, and `None` if the best

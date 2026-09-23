@@ -70,9 +70,7 @@ declare_lint! {
 
 declare_lint_pass!(StaticMutRefs => [STATIC_MUT_REFS]);
 
-impl<'tcx> LateLintPass<'tcx> for StaticMutRefs {
-    #[allow(rustc::usage_of_ty_tykind)]
-    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'_>) {
+impl<'tcx> LateLintPass<'tcx> for StaticMutRefs {    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'_>) {
         let err_span = expr.span;
         match expr.kind {
             hir::ExprKind::AddrOf(borrow_kind, m, ex)

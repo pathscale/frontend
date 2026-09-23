@@ -2764,10 +2764,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
         use DirectConstArgContext::*;
         // Note the only stable case is currently ExprKind::Path
         match (&expr.kind, context) {
-            (
-                ExprKind::Call(Expr { kind: ExprKind::Path(_, _), .. }, args),
-                MacrolessMinGenericConstArgs,
-            ) => {
+            (ExprKind::Call(callee, args), MacrolessMinGenericConstArgs)
+                if matches!(callee.kind, ExprKind::Path(_, _)) =>
+            {
                 for arg in args {
                     self.can_lower_expr_to_const_arg_direct(arg, context)?;
                 }

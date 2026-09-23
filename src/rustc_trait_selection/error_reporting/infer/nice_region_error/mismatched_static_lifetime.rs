@@ -38,9 +38,10 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         if !sub.is_static() {
             return None;
         }
-        let SubregionOrigin::Subtype(TypeTrace { ref cause, .. }) = origin else {
+        let SubregionOrigin::Subtype(ref trace) = origin else {
             return None;
         };
+        let TypeTrace { ref cause, .. } = **trace;
         // If we added a "points at argument expression" obligation, we remove it here, we care
         // about the original obligation only.
         let ObligationCauseCode::MatchImpl(parent, impl_def_id) = cause.code() else {

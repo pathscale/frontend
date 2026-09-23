@@ -25,7 +25,7 @@ impl AttributeParser for OpaqueParser {
             template!(Word),
             AttributeStability::Stable, // Unstable, stability checked manually below
             |this, cx, args| {
-                gate_diagnostic_attr!(diagnostic_opaque);
+                gate_diagnostic_attr!(cx, args, diagnostic_opaque);
                 this.parse(cx, args);
             },
         ),

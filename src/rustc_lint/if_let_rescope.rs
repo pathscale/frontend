@@ -358,7 +358,7 @@ impl Subdiagnostic for IfLetRescopeRewrite {
             closing_brackets
                 .empty_alt
                 .then_some(" _ => {}".chars())
-                .into_flat_iter()
+                .into_iter().flatten()
                 .chain(repeat_n('}', closing_brackets.count))
                 .collect(),
         ));
@@ -455,6 +455,7 @@ impl<'tcx> FindSignificantDropper<'_, 'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for FindSignificantDropper<'_, 'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
     type Result = ControlFlow<(Span, SmallVec<[Ty<'tcx>; 4]>)>;
 
     fn visit_block(&mut self, b: &'tcx hir::Block<'tcx>) -> Self::Result {

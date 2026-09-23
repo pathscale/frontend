@@ -55,7 +55,8 @@ macro_rules! parse_by_kind {
                 } => $call_expr,
             )*
             $(
-                ExprKind::Adt(AdtExpr { adt_def, variant_index, .. }) if {
+                ExprKind::Adt(adt_expr) if {
+                    let AdtExpr { adt_def, variant_index, .. } = &**adt_expr;
                     $self.tcx.is_diagnostic_item(crate::rustc_span::sym::$adt, adt_def.did()) &&
                     adt_def.variants()[*variant_index].name == crate::rustc_span::sym::$variant
                 } => $variant_expr,

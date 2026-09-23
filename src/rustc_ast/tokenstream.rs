@@ -6,6 +6,7 @@
 
 use alloc::vec::Vec;
 use alloc::borrow::Cow;
+use crate::rustc_data_structures::iter_ext::{IterExt as _, SliceExt as _};
 use core::hash::Hash;
 use core::ops::Range;
 use alloc::sync::Arc;
@@ -53,7 +54,7 @@ impl TokenTree {
         match (self, other) {
             (TokenTree::Token(token, _), TokenTree::Token(token2, _)) => token.kind == token2.kind,
             (TokenTree::Delimited(.., delim, tts), TokenTree::Delimited(.., delim2, tts2)) => {
-                delim == delim2 && tts.iter().eq_by(tts2.iter(), |a, b| a.eq_unspanned(b))
+                delim == delim2 && tts.iter().eq_with(tts2.iter(), |a, b| a.eq_unspanned(b))
             }
             _ => false,
         }
@@ -269,7 +270,7 @@ impl LazyAttrTokenStreamInner {
 
                     #[cfg(debug_assertions)]
                     for [(node_range, tokens), (next_node_range, next_tokens)] in
-                        node_replacements.array_windows()
+                        node_replacements.windows_array()
                     {
                         assert!(
                             node_range.0.end <= next_node_range.0.start

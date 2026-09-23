@@ -8,7 +8,7 @@
 # into `create_and_enter_global_ctxt`. Across a crate boundary it behaves as it always has.
 [package]
 name = "frontend_arena"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 description = "the typed and dropless arenas the frontend allocates into"
@@ -16,4 +16,4 @@ repository = "https://github.com/pathscale/frontend"
 publish = true
 
 [dependencies]
-smallvec = { version = "1.8.1", features = ["union", "may_dangle"] }
+smallvec = { version = "1.8.1", features = ["union"] }

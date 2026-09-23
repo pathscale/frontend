@@ -107,7 +107,9 @@ fn recurse_build<'tcx>(
         // }
         // ```
         ExprKind::Block { block } => {
-            if let thir::Block { stmts: [], expr: Some(e), .. } = &body.blocks[*block] {
+            if let thir::Block { stmts, expr: Some(e), .. } = &body.blocks[*block]
+                && stmts.is_empty()
+            {
                 recurse_build(tcx, body, *e, root_span)?
             } else {
                 maybe_supported_error(GenericConstantTooComplexSub::BlockNotSupported(node.span))?
@@ -225,7 +227,7 @@ fn error(
     tcx: TyCtxt<'_>,
     sub: GenericConstantTooComplexSub,
     root_span: Span,
-) -> Result<!, ErrorGuaranteed> {
+) -> Result<crate::Never, ErrorGuaranteed> {
     let reported = tcx.dcx().emit_err(GenericConstantTooComplex {
         span: root_span,
         maybe_supported: false,
@@ -239,7 +241,7 @@ fn maybe_supported_error(
     tcx: TyCtxt<'_>,
     sub: GenericConstantTooComplexSub,
     root_span: Span,
-) -> Result<!, ErrorGuaranteed> {
+) -> Result<crate::Never, ErrorGuaranteed> {
     let reported = tcx.dcx().emit_err(GenericConstantTooComplex {
         span: root_span,
         maybe_supported: true,

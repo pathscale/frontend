@@ -223,7 +223,8 @@ fn layout_of_uncached<'tcx>(
     let scalar = |value: Primitive| tcx.mk_layout(LayoutData::scalar(cx, scalar_unit(value)));
 
     let univariant = |tys: &[Ty<'tcx>], kind| {
-        let fields = tys.iter().map(|ty| cx.layout_of(*ty)).try_collect::<IndexVec<_, _>>()?;
+        let fields =
+            tys.iter().map(|ty| cx.layout_of(*ty)).collect::<Result<IndexVec<_, _>, _>>()?;
         let repr = ReprOptions::default();
         map_layout(cx.calc.univariant(&fields, &repr, kind))
     };
@@ -565,14 +566,14 @@ fn layout_of_uncached<'tcx>(
                         Ty::new_maybe_uninit(tcx, field_ty.instantiate(tcx, args).skip_norm_wip());
                     cx.spanned_layout_of(uninit_ty, local.source_info.span)
                 })
-                .try_collect::<IndexVec<_, _>>()?;
+                .collect::<Result<IndexVec<_, _>, _>>()?;
 
             let prefix_layouts = args
                 .as_coroutine()
                 .upvar_tys()
                 .iter()
                 .map(|ty| cx.layout_of(ty))
-                .try_collect::<IndexVec<_, _>>()?;
+                .collect::<Result<IndexVec<_, _>, _>>()?;
 
             let layout = cx
                 .calc
@@ -686,9 +687,9 @@ fn layout_of_uncached<'tcx>(
                     v.fields
                         .iter()
                         .map(|field| cx.layout_of(field.ty(tcx, args).skip_norm_wip()))
-                        .try_collect::<IndexVec<_, _>>()
+                        .collect::<Result<IndexVec<_, _>, _>>()
                 })
-                .try_collect::<IndexVec<VariantIdx, _>>()?;
+                .collect::<Result<IndexVec<VariantIdx, _>, _>>()?;
 
             if def.is_union() {
                 if def.repr().pack.is_some() && def.repr().align.is_some() {
@@ -712,7 +713,8 @@ fn layout_of_uncached<'tcx>(
             let discriminants_iter = || {
                 def.is_enum()
                     .then(|| def.discriminants(tcx).map(|(v, d)| (v, d.val)))
-                    .into_flat_iter()
+                    .into_iter()
+                    .flatten()
             };
 
             let maybe_unsized = def.is_struct()

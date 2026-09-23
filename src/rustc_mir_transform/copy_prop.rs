@@ -158,8 +158,8 @@ impl<'tcx> MutVisitor<'tcx> for Replacer<'_, 'tcx> {
         self.super_statement(stmt, loc);
 
         // Do not leave tautological assignments around.
-        if let StatementKind::Assign((lhs, ref rhs)) = stmt.kind
-            && let Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _) = *rhs
+        if let StatementKind::Assign(assign) = &stmt.kind
+            && let (lhs, Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs), _)) = &**assign
             && lhs == rhs
         {
             stmt.make_nop(true);

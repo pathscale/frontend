@@ -33,7 +33,13 @@ fn float_vars_since_snapshot(
     snapshot_var_len: usize,
 ) -> (Range<FloatVid>, Vec<FloatVariableOrigin>) {
     let range = vars_since_snapshot(&inner.float_unification_table(), snapshot_var_len);
-    (range.clone(), range.map(|index| inner.float_origin_origin_storage[index]).collect())
+    (
+        range.clone(),
+        (range.start.index()..range.end.index())
+            .map(FloatVid::from_usize)
+            .map(|index| inner.float_origin_origin_storage[index])
+            .collect(),
+    )
 }
 
 fn const_vars_since_snapshot<'tcx>(
@@ -45,7 +51,8 @@ fn const_vars_since_snapshot<'tcx>(
 
     (
         range.clone(),
-        range
+        (range.start.index()..range.end.index())
+            .map(ConstVid::from_usize)
             .map(|index| match table.probe_value(index) {
                 ConstVariableValue::Known { value: _ } => {
                     ConstVariableOrigin { param_def_id: None, span: crate::rustc_span::DUMMY_SP }

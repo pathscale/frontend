@@ -1,4 +1,4 @@
-use core::assert_matches;
+use crate::assert_matches;
 
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;

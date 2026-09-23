@@ -591,6 +591,8 @@ pub fn suggest_constraining_type_params<'a>(
 pub(crate) struct TraitObjectVisitor<'tcx>(pub(crate) Vec<&'tcx hir::Ty<'tcx>>);
 
 impl<'v> hir::intravisit::Visitor<'v> for TraitObjectVisitor<'v> {
+    type NestedFilter = hir::intravisit::IgnoreNested;
+    type Result = ();
     fn visit_ty(&mut self, ty: &'v hir::Ty<'v, AmbigArg>) {
         match ty.kind {
             hir::TyKind::TraitObject(_, tagged_ptr)

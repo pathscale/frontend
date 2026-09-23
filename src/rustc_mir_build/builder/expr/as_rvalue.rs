@@ -243,13 +243,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                 block.and(Rvalue::Aggregate(Box::new(AggregateKind::Tuple), fields))
             }
-            ExprKind::Closure(ClosureExpr {
-                closure_id,
-                args,
-                ref upvars,
-                ref fake_reads,
-                movability: _,
-            }) => {
+            ExprKind::Closure(ref closure_expr) => {
+                let ClosureExpr { closure_id, args, ref upvars, ref fake_reads, movability: _ } =
+                    **closure_expr;
                 // Convert the closure fake reads, if any, from `ExprRef` to mir `Place`
                 // and push the fake reads.
                 // This must come before creating the operands. This is required in case

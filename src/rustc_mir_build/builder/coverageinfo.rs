@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::borrow::ToOwned;
-use core::assert_matches;
+use crate::assert_matches;
 use hashbrown::hash_map::Entry;
 
 use crate::rustc_data_structures::fx::FxHashMap;

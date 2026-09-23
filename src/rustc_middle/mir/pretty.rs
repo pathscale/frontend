@@ -548,7 +548,8 @@ fn write_scope_tree(
 
 impl Debug for VarDebugInfo<'_> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
-        if let Some(VarDebugInfoFragment { ty, ref projection }) = self.composite {
+        if let Some(ref fragment) = self.composite {
+            let VarDebugInfoFragment { ty, ref projection } = **fragment;
             pre_fmt_projection(&projection[..], fmt)?;
             write!(fmt, "({}: {})", self.name, ty)?;
             post_fmt_projection(&projection[..], fmt)?;
@@ -867,8 +868,12 @@ impl Debug for StatementKind<'_> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
         use self::StatementKind::*;
         match *self {
-            Assign((ref place, ref rv)) => write!(fmt, "{place:?} = {rv:?}"),
-            FakeRead((ref cause, ref place)) => {
+            Assign(ref assign) => {
+                let (ref place, ref rv) = **assign;
+                write!(fmt, "{place:?} = {rv:?}")
+            }
+            FakeRead(ref fake_read) => {
+                let (ref cause, ref place) = **fake_read;
                 write!(fmt, "FakeRead({cause:?}, {place:?})")
             }
             StorageLive(ref place) => write!(fmt, "StorageLive({place:?})"),
@@ -879,7 +884,8 @@ impl Debug for StatementKind<'_> {
             PlaceMention(ref place) => {
                 write!(fmt, "PlaceMention({place:?})")
             }
-            AscribeUserType((ref place, ref c_ty), ref variance) => {
+            AscribeUserType(ref ascription, ref variance) => {
+                let (ref place, ref c_ty) = **ascription;
                 write!(fmt, "AscribeUserType({place:?}, {variance:?}, {c_ty:?})")
             }
             Coverage(ref kind) => write!(fmt, "Coverage::{kind:?}"),
@@ -1154,7 +1160,10 @@ impl<'tcx> Debug for Rvalue<'tcx> {
             Cast(ref kind, ref place, ref ty) => {
                 with_no_trimmed_paths!(write!(fmt, "{place:?} as {ty} ({kind:?})"))
             }
-            BinaryOp(ref op, (ref a, ref b)) => write!(fmt, "{op:?}({a:?}, {b:?})"),
+            BinaryOp(ref op, ref operands) => {
+                let (ref a, ref b) = **operands;
+                write!(fmt, "{op:?}({a:?}, {b:?})")
+            }
             UnaryOp(ref op, ref a) => write!(fmt, "{op:?}({a:?})"),
             Discriminant(ref place) => write!(fmt, "discriminant({place:?})"),
             ThreadLocalRef(did) => ty::tls::with(|tcx| {
