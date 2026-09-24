@@ -2260,6 +2260,12 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
             }
         }
 
+        // Nothing to take (the common case, a node with no attributes): the closure below
+        // would return without touching the attributes.
+        if cfg_pos.is_none() && attr_pos.is_none() {
+            return None;
+        }
+
         item.visit_attrs(|attrs| {
             attr = Some(match (cfg_pos, attr_pos) {
                 (Some(pos), _) => (attrs.remove(pos), pos, Vec::new()),
