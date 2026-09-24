@@ -1,14 +1,14 @@
 # Late name resolution as a per-item stage
 
-Status: the walk is cut into per-item units with owned outputs and an in-order merge, and it
-runs serially, one unit after another, through the same per-unit function a stage would call.
-It is not a stage yet: every unit still resolves through `&mut Resolver`. This note records
-what landed, every write late resolution makes into shared resolver state (with file and line),
-what each write has to become before the unit loop can be `run_stage`, and what cannot be made
-parallel and why.
+Status: late resolution runs its units as a stage (`run_stage`) over a frozen, shared
+`&Resolver`, each unit writing only into state it owns, merged serially in unit order. Steps 1
+to 5 of "Turning the loop into a stage" below are all in the tree. When external crates are
+reachable or doc links are on, the same units run through the same function in a serial loop
+instead (see "When it stays serial").
 
 Nothing here has been built or measured by the agent that wrote it (building is the main
-session's job). The section "Checking it" says what to run.
+session's job, and this pass was source only). "Unsure it compiles" lists every place worth a
+first look when the build fails; "Checking it" says what to run.
 
 ## Why
 
@@ -19,34 +19,41 @@ error-suggestion search (`edit_distance`, `lookup_import_candidates_from_module`
 `try_lookup_name_relaxed`), because the corpus, read with no sysroot, has many unresolved
 names.
 
-One finding matters for the whole plan: the expensive suggestion searches are already `&self`
-on the resolver. `lookup_import_candidates` (`src/rustc_resolve/diagnostics/impls.rs:1866`),
-`lookup_import_candidates_from_module` (`:1629`), `add_scope_set_candidates` (`:1497`),
-`add_module_candidates` (`:777`), `add_typo_suggestion` (`:2243`), `into_struct_error` (`:804`)
-and `report_error` (`:796`) take `&self`. What makes late resolution need `&mut Resolver` is
-the bookkeeping around resolution, not the searching: recording uses, errors and resolutions,
-and a handful of lazily filled tables inside the module graph. That bookkeeping is small in
-count and every piece of it is listed below.
+The expensive suggestion searches were already `&self` on the resolver
+(`lookup_import_candidates`, `lookup_import_candidates_from_module`, `add_scope_set_candidates`,
+`add_module_candidates`, `add_typo_suggestion`, `into_struct_error`, `report_error`, all in
+`diagnostics/impls.rs`). What made late resolution need `&mut Resolver` was the bookkeeping
+around resolution: recording uses, errors and resolutions, and a handful of lazily filled tables
+inside the module graph. Every piece of it is listed below with where it goes now.
 
-## What landed
+## The shape
 
-All in `src/rustc_resolve/late.rs`.
+`Resolver::late_resolve_crate` (`late.rs`):
 
-- `LateUnit` (`late.rs:5810`), `collect_late_units` / `collect_late_units_in` (`:5882`,
-  `:5903`): the unit list, built once before any unit runs.
-- `resolve_late_unit` (`:5956`): one unit, with a `LateResolutionVisitor` of its own, started
-  from state rebuilt out of the module graph.
-- `LateUnitOutput` (`:5834`) and `merge_late_units` (`:5999`): what a unit produces into tables
-  nothing reads during resolution, owned by the unit and merged in unit order.
-- `late_resolve_crate` (`:5853`) runs `ItemInfoCollector`, builds the units, runs them in a
-  plain loop, and merges.
-- `LateResolutionVisitor::new` now takes the `ParentScope` to start at; the visitor gains `out`
-  and `defer_children_of`, and `into_output`.
-- The `ItemKind::Mod` arm of `resolve_item` (`:2989`) stops at a unit `mod`'s items and visits
-  only its visibility; `leaks_macro_rules` (`:5785`) is the `#[macro_use]` rule, shared by that
-  arm and the unit builder.
+1. `ItemInfoCollector`, serial, inside `with_owner(CRATE_NODE_ID)` as before.
+2. `collect_late_units`: the unit list and each unit's `macro_rules` scope (unchanged).
+3. If `late_resolution_can_freeze()`: `prepare_frozen_late_resolution()` (every lazy write the
+   units could make, done up front), set `FrozenFlag`, `run_stage(&units[..], units.len(),
+   |units, i| this.resolve_late_unit(.., units, i, LateDocLinks::default()))` with
+   `this: &Resolver`, clear the flag. Otherwise the plain loop, with the same
+   `resolve_late_unit`, moving the doc link tables from each unit to the next.
+4. `merge_late_units`: serial, in unit order.
 
-### The unit, and why that granularity
+A unit (`resolve_late_unit`, `&self`) builds a `LateResolutionVisitor` whose `r` is
+`&'a Resolver`. Everything the visitor writes goes to three places it owns:
+
+- `sink: LateSink<'ra>` (`mod.rs`): every write the name lookups in `ident.rs`, `mod.rs` and
+  `diagnostics/impls.rs` make, reached through `CmResolver::Late(&Resolver, &mut LateSink)`.
+  The visitor builds that with `late_cm!(self)` (`late.rs`, a macro so it borrows only the `r`
+  and `sink` fields and the ribs and scope can be passed alongside).
+- `current_owner: LateOwner` (`late.rs`): the owner tables (section A).
+- `out: LateUnitOutput` (`late.rs`): the visitor's own writes (sections C and D, and what was
+  already moved there).
+
+`LateResolutionVisitor::r` being `&'a Resolver` is what makes this checkable: any write that was
+missed is a type error, not a silent race.
+
+## The unit, and why that granularity
 
 A unit is every item directly in a module (the crate root's and every `mod` item's, found by
 descending through `mod` items and nothing else), plus unit 0 for the crate root's own
@@ -77,47 +84,19 @@ of a module the old visitor held only:
 | `diag_metadata` (all but `unused_labels`) | as `Default`, every field set and restored by the item that set it | `new` |
 | `lifetime_uses`               | only entries of earlier items' parameters, never read again | `new` |
 | `last_block_rib`              | the last block of an earlier item          | not carried: see below  |
-| `current_owner`               | the crate's tables (inside `with_owner(CRATE_NODE_ID)`) | unchanged: the loop runs inside the same `with_owner` |
+| current owner                 | the crate's tables                         | `new` enters `owners[CRATE_NODE_ID]` |
 
 The `macro_rules` scope is the one piece of walk state that depends on earlier items, and it
 depends only on `macro_rules!` items and `#[macro_use]` modules, reading
 `Resolver::macro_rules_scopes`, which early resolution finished. So the whole sequence is known
-before any unit runs: `collect_late_units_in` applies the two rules `resolve_item` applies (a
-`macro_rules!` item moves the scope to `macro_rules_scopes[its def id]`, `late.rs` MacroDef arm;
-a module restores the scope from before it unless it is `#[macro_use]`/`#[macro_escape]`).
+before any unit runs.
 
-Owner tables: the old walk kept every enclosing `mod`'s `PerOwnerResolverData` on the stack
-(as `current_owner`, swapped out by the child's `with_owner`) while its items ran. Now each
-`mod` unit's tables are back in `owners` before its items run. Nothing a child does reads
-`owners[&enclosing mod]` (it would have panicked before, `Resolver::owner_def_id`,
-`mod.rs:1667`), and nothing writes an enclosing owner's tables (writes go to `current_owner`,
-the child's own), so this changes nothing observable.
-
-### Moved into `LateUnitOutput`
-
-Writes that happen during late resolution, are only ever read after it, and are therefore owned
-by the unit and merged afterwards:
-
-| write (now)                                   | was                                        | merge rule |
-|-----------------------------------------------|--------------------------------------------|------------|
-| `out.use_injections.push` `late.rs:4679`, `:4783` | visitor field `use_injections`          | concatenate in unit order (consumed by `report_with_use_injections`, `diagnostics/impls.rs:406`) |
-| `diag_metadata.unused_labels` (`:5123` insert, `:5282` and `late/diagnostics.rs:1424` `swap_remove`) | one crate-wide map | moved out by `into_output`, buffered as `UNUSED_LABELS` in unit order after every unit ran |
-| `out.confused_type_with_std_module.push` `:4863`, `:4864` | `Resolver::confused_type_with_std_module.insert` | replay the inserts in unit order: an `IndexMap` insert of an existing key keeps its position and takes the new value, so the replay ends where the walk ended |
-| `out.potentially_unnecessary_qualifications.push` `:5619` | `Resolver::...push` (read by `check_unused.rs:601`) | concatenate in unit order |
-| `out.delegation_infos.push` `:4018`             | `Resolver::delegation_infos.insert` (read by lowering) | insert in unit order; keyed by the delegation's own owner, so no two units share a key |
-
-The unused-label order: the old map was crate-wide with `swap_remove`, so its iteration order
-depended on history across items. The per-unit maps concatenate to the same set in a different
-order. That order does not reach output: `LintBuffer` (`rustc_errors/decorate_diag.rs:62`) is
-keyed by node, the early lint pass takes lints per node, and a label's node gets exactly one
-unused-label lint, buffered after every other lint on it, as before.
-
-### The one intended output change
+### The one intended output change (from the previous pass)
 
 `last_block_rib` is the last block rib the walk popped; `smart_resolve_report_errors`
-(`late/diagnostics.rs:1153`) uses it for "the binding `x` is available in a different scope in
-the same function". A function resets it on entry to its body (`late.rs:1204`, in `visit_fn`), but
-nothing reset it at item boundaries, so in
+(`late/diagnostics.rs`) uses it for "the binding `x` is available in a different scope in the
+same function". A function resets it on entry to its body, but nothing reset it at item
+boundaries, so in
 
 ```rust
 fn f() { let x = 1; }
@@ -125,227 +104,225 @@ static S: i32 = x;
 ```
 
 the error on `x` in `S` got that help, naming a block of `f`, and calling it the same function.
-Each unit now starts with `last_block_rib: None`, so that help no longer appears across items.
-Carrying it from unit to unit would make every unit depend on the one before it, which is
-exactly what the split removes. This is the only serial output difference I know of. If byte
-identity with the old compiler is required even there, the unit loop can pass the previous
-unit's `last_block_rib` in (serial only), at the price of that chain.
+Each unit starts with `last_block_rib: None`. This pass changes nothing further: the stage's
+output is meant to be byte-identical to the serial unit loop, which was already the reference.
 
-## What late resolution writes, all of it
+## Every write, and where it goes now
 
-Everything a unit does to state outside its own visitor. "Unit-local key" means the key is a
-`NodeId` or owner inside the unit, so units never write the same entry.
+"Unit-local key" means the key is a `NodeId` or owner inside the unit, so units never write the
+same entry.
 
-### A. Owner tables (`PerOwnerResolverData`, swapped in by `with_owner`)
+### A. Owner tables (step 1)
 
-Already per owner, and each owner belongs to exactly one unit:
+Late resolution writes five fields of `PerOwnerResolverData` and nothing else writes them:
+`lifetimes_res_map`, `lifetime_elision_allowed`, `label_res_map`, `trait_map`,
+`extra_lifetime_params_map`. The visitor now holds `current_owner: LateOwner<'a, 'tcx>`: the
+owner's `id`, `def_id` and `&node_id_to_def_id`, read in place from the frozen
+`Resolver::owners`, plus those five tables, owned. `LateResolutionVisitor::with_owner` replaces
+the free `with_owner` for every late call site (items, foreign items, trait items, impl items):
+it enters `LateOwner::enter(&r.owners[&owner])`, runs the work, and pushes
+`(owner, LateOwnerTables)` onto `out.owners`. Each unit starts in the crate's owner, whose
+tables go out last from `into_output`.
 
-- `current_owner.lifetimes_res_map.insert` `late.rs:2482`
-- `current_owner.lifetime_elision_allowed = true` `late.rs:2511`
-- `current_owner.extra_lifetime_params_map` `late.rs:2220`
-- `current_owner.label_res_map.insert` `late.rs:5281`
-- `current_owner.trait_map.insert` `late.rs:5474` (via `record_traits_in_scope`)
-- `owners.remove` / `owners.insert` in `with_owner_tables` `mod.rs:2754`, `:2771`, entered from
-  `late.rs:893` (items), `:1109` (foreign items), `:3421` (trait items), `:3629` (impl items)
+Every former `r.current_owner.*` read and write in `late.rs` now names `current_owner`, and
+the two readers outside the visitor take it as an argument: `MaybeExported::eval(r,
+&current_owner)`, and `FindReferenceVisitor` holds `&current_owner.lifetimes_res_map`.
+`Resolver::local_def_id` from late resolution is `LateResolutionVisitor::local_def_id`.
 
-Read back during the unit only for the unit's own owners. Also read through Resolver methods:
-`opt_local_def_id` / `local_def_id` (`mod.rs:1679`, `:1684`) read `self.current_owner`, and
-`MaybeExported::eval` (`late.rs:723`).
+**Deviation from the plan, and why.** The plan said "take the unit's owners' tables out of
+`owners` before the stage and put them back in the merge". A stage item gets its input by
+shared reference (`Fn(&In, usize)`), so moving a table out of the input into the unit needs a
+take-once cell per table, which is shared mutable state with a synchronisation primitive on it,
+against the house rules. Nothing needs the move: the fields def collection wrote are only read,
+and the fields late resolution writes start empty. So the frozen entry stays in `owners` and
+is read in place, and the unit owns the five written tables outright; the merge
+(`merge_late_owner_tables`) extends the entry's maps with them. Merge order does not matter
+(disjoint keys; the crate owner's tables come from several units, still with disjoint keys).
 
-To become a stage: take the unit's owners' tables out of `owners` before the stage (they are
-the unit's input), let the visitor hold its current owner by value instead of the resolver, and
-hand the tables back as output; `merge` puts them back into `owners`. Merge order does not
-matter (disjoint keys). `owner_def_id` (`mod.rs:1667`) must then read a frozen
-`NodeId -> LocalDefId` map of owners rather than the tables themselves, since other units'
-tables are out.
+One diagnostic observed which owners were out of `owners`: `late/diagnostics.rs`, the
+delegation case of the associated item suggestions, read `r.owners.get(&assoc_item.id)`, which
+returned `None` for the owner being resolved and every owner around it (and the crate, which
+`late_resolve_crate` had out). `LateResolutionVisitor::open_owner_tables` reproduces that
+exactly: `None` for `CRATE_NODE_ID`, `current_owner.id` and every id on `enclosing_owners`
+(the stack `with_owner` keeps), the frozen entry otherwise.
 
-### B. Resolution maps keyed by unit-local nodes, still written into `Resolver`
+### B. Resolution maps keyed by unit-local nodes (step 2)
 
-- `partial_res_map` via `record_partial_res` (`mod.rs:2489`): `late.rs:1001`, `:3239`, `:3316`,
-  `:3925`, `:4314`, `:4884`; direct insert `late.rs:5081`; from name lookup
-  `ident.rs:1906` (`record_segment_res`, which also reads `contains_key` first).
-  Read during late resolution at `late.rs:971`, `:2720`, `:2753`, `:4003`, `:4118`, `:4395`,
-  `:5613`, `late/diagnostics.rs:263`, `:311`, `:1221`, `:1968`, `:1976`, `:1996`, `:2827`, and
-  `Resolver::legacy_const_generic_args` (`mod.rs:2691`). Every one of those reads a node of the
-  item being resolved (its own paths, its `Self` type, its bounds), so the reads can go to the
-  unit's own map.
-- `pat_span_map` via `record_pat_span` (`mod.rs:2496`): `late.rs:4315`. Read by
-  `diagnostics/impls.rs:3221` while reporting an error in the same unit.
+- `partial_res_map`: `LateSink::partial_res_map`. Writes: `LateSink::record_partial_res` (with
+  the "resolved multiple times" panic checked against the sink and the frozen resolver), from
+  the visitor's `record_partial_res` (six sites in `late.rs`) and from
+  `CmResolver::record_partial_res` (`ident.rs`, `record_segment_res`, whose `contains_key` is
+  now `CmResolver::partial_res(id).is_none()`); the one overwriting insert (`resolve_qpath`,
+  primitive type fix-up) goes to `sink.partial_res_map.insert`. Reads: the visitor's
+  `partial_res(id)` (sink, then frozen resolver) at every former `r.partial_res_map` read in
+  `late.rs` and `late/diagnostics.rs`, `SelfVisitor` through `LateSink::partial_res`, and
+  `Resolver::legacy_const_generic_args`, which now takes the sink. Merge: extend (disjoint
+  keys; the overwrite wins there too, as it did).
+- `pat_span_map`: `LateSink::pat_span_map`, written by `LateSink::record_pat_span` (the only
+  writer was late resolution, so `Resolver::record_pat_span` is gone). Read by
+  `report_path_resolution_error`, now `CmResolver::report_path_resolution_error(&self)`, as
+  `self.pat_span(id)` (sink, then resolver). Merge: extend.
 
-To become a stage: a per-unit `NodeMap<PartialRes>` and `NodeMap<Span>` in the output, read
-through the unit during the unit, extended into the resolver after. Order does not matter
-(disjoint keys); the "resolved twice" panic in `record_partial_res` stays per unit.
+### C. Order-dependent sinks (step 2)
 
-### C. Order-dependent sinks
+Every one of these is a `LateSink` field with a `CmResolver` accessor that names the resolver
+in the `Mut` case and the sink in the `Late` case (`lint_buffer_mut`, `privacy_errors_mut`,
+`privacy_errors_len`, `macro_expanded_macro_export_errors_mut`, `import_use_map_mut`,
+`used_imports_mut`, `glob_map_mut`, `maybe_unused_trait_imports_mut`,
+`set_issue_145575_hack_applied`, `push_ambiguity_error`, `record_partial_res`, `partial_res`,
+`pat_span`). `Ref` panics on a write, as `get_mut` did.
 
-These are where serial order is observable, and each needs a stated merge rule.
+- `ambiguity_errors`: `LateSink::ambiguity_errors: Vec<(AmbiguityError, bool)>`, the flag saying
+  whether the push was deduplicated. `record_use` deduplicates (`push_ambiguity_error(e, true)`:
+  skipped if equal to one in the frozen resolver or already in the sink);
+  `maybe_push_glob_vs_glob_vis_ambiguity` and `maybe_push_ambiguity` (now `CmResolver` methods)
+  do not (`push_ambiguity_error(e, false)`). Merge: in unit order, a deduplicated entry is
+  dropped if equal to anything merged so far, the others are pushed. Equality
+  (`same_ambiguity_error`) is an equivalence, so "keep the first of its kind" applied inside a
+  unit and again across units keeps exactly what the walk kept, and the raw pushes stay where
+  they were.
+- `issue_145575_hack_applied`: a write the old inventory missed (`maybe_push_ambiguity`, the
+  #145575 and #149681 cases, reachable in late resolution through `ModuleGlobs`). Only ever set:
+  merged by `|=`. Nothing reads it after import resolution.
+- `privacy_errors`: sink vector. `resolve_path_with_ribs` takes `privacy_errors_len()` on entry
+  and rewrites `privacy_errors_mut()[len..]`, the unit's own tail; `resolve_qpath` takes the
+  sink's length and truncates the sink. Merge: concatenate in unit order.
+- `macro_expanded_macro_export_errors` (`finalize_module_binding`): a `BTreeSet`, merged by
+  union.
+- `lint_buffer`: every late lint (`ident.rs` derive fallback lints, `record_use`'s
+  `PRIVATE_MACRO_USE`, `lint_if_path_starts_with_module`, `ELIDED_LIFETIMES_IN_PATHS`,
+  `SINGLE_USE_LIFETIMES`, `UNUSED_LIFETIMES`) goes to `sink.lint_buffer`. Merge: in unit order,
+  each node's vector appended to the resolver's (`LintBuffer::map` is public). The key order of
+  the `IndexMap` is first-insertion order, and replaying units in order reproduces it; so does
+  each node's vector, including a node in another unit (`PRIVATE_MACRO_USE` is buffered on the
+  import's `root_id`). `UNUSED_LABELS` are buffered after every unit's sink, as the previous
+  loop did (it buffered every other lint while the units ran and the unused labels in its
+  merge).
+- `import_use_map` (entry, keep the larger `Used`), `used_imports`, `glob_map`,
+  `maybe_unused_trait_imports`: written by `CmResolver::record_use`, `add_to_glob_map` and
+  `find_transitive_imports`. Merge: the same entry-and-max, union, and in-order replay into the
+  `IndexMap`/`IndexSet`s, which keeps their first-insertion order. The two hash tables are only
+  probed afterwards (`get`, `contains`), never iterated.
+- `trait_impls`: another write the old inventory missed (`late.rs`, impl with a trait). Now
+  `out.trait_impls.push((trait, impl))`, replayed in unit order.
+- `doc_link_resolutions` / `doc_link_traits_in_scope`: see "When it stays serial". The visitor
+  owns `doc_links: LateDocLinks`; the merge unions first-wins in unit order (a no-op in both
+  modes today: serially the tables travel from unit to unit and go back to the resolver after
+  the loop, and the stage only runs with doc links off).
+- Already in `LateUnitOutput` from the previous pass: `use_injections`, `unused_labels`,
+  `confused_type_with_std_module`, `potentially_unnecessary_qualifications`,
+  `delegation_infos`.
 
-- `ambiguity_errors`: pushed by `maybe_push_glob_vs_glob_vis_ambiguity` (`ident.rs:824`, push at
-  `:835`) and `maybe_push_ambiguity` (`ident.rs:848`, push at `:967`), reached from
-  `ident.rs:515`, `:524`; and by `record_use` (`mod.rs:2336`), which first scans the whole
-  vector for an equal error (`matches_previous_ambiguity_error`, `mod.rs:2321`) and skips it.
-  Rule: per-unit vector with the same dedup against the unit's own entries, then at merge the
-  same dedup against everything merged so far, in unit order. Equality-based "first wins"
-  applied in serial order gives the same vector the walk built. Reported after the walk, in
-  vector order (`report_errors`), so the order is the serial one.
-- `privacy_errors`: pushed by `finalize_module_binding` (`ident.rs:1393`); then
-  `resolve_path_with_ribs` remembers `privacy_errors.len()` on entry and rewrites every error
-  pushed since (`ident.rs:2089`). Rule: per-unit vector (the rewrite only touches the unit's own
-  tail), concatenated in unit order; deduplicated at report time as today.
-- `macro_expanded_macro_export_errors.insert` (`ident.rs:1412`): a `BTreeSet`, so merge by union;
-  order is the set's.
-- `lint_buffer`: `ident.rs:666`, `:717` (derive fallback), `record_use` (`mod.rs`, private
-  `macro_use`), `lint_if_path_starts_with_module` (`diagnostics/impls.rs:701`, buffered at
-  `:745`, called from `ident.rs:2122`, `:2230`), `late.rs:2427`, `late/diagnostics.rs:3706`,
-  `:3758`, and the unused labels. Rule: per-unit `LintBuffer`, merged in unit order by appending
-  each node's vector. Only the order within one node's vector reaches output, and a node's lints
-  all come from its own unit, so appending in unit order is the serial order.
-- `import_use_map` (entry, max of `Used`), `used_imports` (insert), `glob_map` (entry, insert),
-  all in `record_use` (`mod.rs:2336`, called from `ident.rs` `finalize_module_binding`,
-  `late.rs:4494`, `:4509`); `maybe_unused_trait_imports.insert` and `glob_map` in
-  `find_transitive_imports` (`mod.rs:2256`, from `traits_in_scope`). Rule: per-unit sets and
-  maps, merged by union (and max for `import_use_map`). All are monotone and commutative, so
-  merge order does not matter for their contents; `check_unused` reads them only after
-  resolution. `IndexSet`/`IndexMap` insertion order can differ from the walk's if merged in a
-  different order, so merge in unit order anyway.
-- `doc_link_resolutions` / `doc_link_traits_in_scope` (`late.rs:5481`..`:5498`,
-  `:5566`..`:5583`): per-module maps used as a cache across items of one module (the code's own
-  FIXME says the caching "may be incorrect" with shadowing `macro_rules`). Rule: each unit
-  resolves its own links and returns its entries; merge with first-wins in unit order, which is
-  the value the walk kept. The difference is only in the FIXME case: a later item that the walk
-  would have answered from an earlier item's entry resolves itself, and the prefixes it then
-  goes on to resolve can differ. Off by default (`ResolveDocLinks::None` returns at once), and
-  that case is the upstream bug the FIXME names; recorded, not fixed here.
+### D. The node id counter (step 3)
 
-### D. A global counter
+`LateResolutionVisitor::next_node_id` / `next_node_ids` replace the resolver's for the three
+late sites (`resolve_elided_lifetime`, `create_fresh_lifetime`,
+`resolve_elided_lifetimes_in_path`). Every unit numbers from the resolver's frozen
+`next_node_id`, which is above every existing id, so a unit's ids never collide with real ones,
+and returns how many it used (`LateUnitOutput::node_ids`). `merge_late_units` gives unit `i`
+the offset `sum of counts before i`, advances the resolver's counter by the unit's count
+(`Resolver::next_node_ids`, same overflow check), and `merge_late_owner_tables` adds the offset
+to every id at or above the frozen start in the three places a conjured id is stored: keys of
+`lifetimes_res_map`, `LifetimeRes::Fresh { param }` and `ElidedAnchor { start, end }` in its
+values (and `Param { binder }`, a no-op since binders are real ids), and the parameter id in
+`extra_lifetime_params_map`. Unit 0 has offset 0 and its maps move as they are. Nothing else
+allocates node ids during late resolution, so the ids come out as the single walk numbered them.
+A new place a conjured id is stored has to be added to `merge_late_owner_tables`.
 
-- `next_node_id` / `next_node_ids` (`mod.rs:2001`, `:2008`), from `late.rs:2194`, `:2216`
-  (fresh lifetime parameters) and `:2281` (elided lifetimes in paths). The ids end up in
-  `lifetimes_res_map` (`LifetimeRes::Fresh { param, .. }`), `extra_lifetime_params_map`, and
-  `LifetimeElisionCandidate`s, and lowering creates definitions for them.
+### E. Lazily filled state inside the module graph (step 4)
 
-Rule, and it keeps serial numbering identical: each unit allocates from its own counter
-starting at zero and returns how many it used; the merge gives unit `i` the base
-`next_node_id + sum of counts of units before i` and adds it to every fresh id in that unit's
-tables. Since nothing else allocates node ids during late resolution, the ids come out exactly
-as the single walk numbered them. The remap has to touch every place a fresh id is stored,
-which are the three maps above; that list is what to check when adding a new one.
-
-### E. Lazily filled state inside the module graph
-
-These are the writes that make the "frozen" module graph not frozen. Each is a memo of a value
-that is fully determined once expansion and import resolution are done.
-
-- Tracked `RefCell` borrows. `CmRefCell::borrow_checked` (`mod.rs:3131`) takes a real
-  `RefCell::borrow()` when the resolver is not speculative, which increments and decrements a
-  non-atomic counter on every `NameResolution` read. In a parallel stage that is a data race
-  even though nothing is written. Rule: late resolution runs in a mode where `borrow_checked`
-  returns `CmRef::Untracked` (what speculative mode already does) and every `borrow_mut` asserts
-  it is not in that mode. The existing `SpeculativeFlag` has the right semantics for reads but
-  `cm_mut()` asserts it is off, so a distinct "frozen" state is needed.
-- `ModuleData::traits`, filled by `ensure_traits` (`mod.rs:845`, `borrow_mut_checked`), from
-  `traits_in_module` (`mod.rs:2218`) from `traits_in_scope` (`mod.rs:2170`), which late calls
-  at `late.rs:5468` and `:5571`. Rule: compute it for every module before the stage (a stage of
-  its own, one item per module, reading only resolutions). That is eager work for modules no
-  path asks about; for local modules it is one pass over each module's children.
-- `macro_rules` path compression in `visit_scopes` (`ident.rs:161`, `Cell::set` on a
-  `MacroRulesScopeRef`): rewrites an invocation scope to what it expanded to. Rule: compress
-  every scope once, after expansion, before the stage; or have frozen mode skip the `set` and
-  walk the chain. Both give the same answer.
-- `extern_module_map` (`build_reduced_graph.rs:124`, `borrow_mut` at `:137`) and
-  `extern_macro_map` (`build_reduced_graph.rs:216`): external crates' modules and macros are
-  materialised on first lookup; `Resolutions::Extern` is a `OnceLock` (`mod.rs:671`), already
-  thread-safe. With no sysroot named (this crate's default, see `AGENTS.md`) there are no
-  external crates and these are never touched. With a sysroot they are, and there is no bound
-  on what to materialise up front. See "What cannot be parallel".
-- `hir_arena.alloc_slice` in `traits_in_scope` and `find_transitive_imports`: a `WorkerLocal`
-  arena (`rustc_middle/ty/context.rs:741`), so allocation from a worker is fine; the slices are
-  referenced from the owner tables that come back as output.
+- Tracked `RefCell` borrows. `FrozenFlag` (`mod.rs`, `ref_mut::frozen`) is a flag of its own,
+  not the speculative one: `CmRefCell::borrow_checked` returns `CmRef::Untracked` when either is
+  set, and `writes_allowed` (neither set) is asserted by `CmRefCell::try_borrow_mut_checked`
+  (and so `borrow_mut_checked`), `CmRefCell::take` and `CmCell::set_checked`. The `&mut Resolver`
+  write paths (`borrow_mut`, `borrow`, `CmCell::set`) cannot be reached from a `&Resolver`.
+  Late resolution's reads in `late/diagnostics.rs` that used `CmRefCell::borrow(&mut Resolver)`
+  now use `borrow_checked`.
+- `ModuleData::traits`: `ensure_traits` now reads first and takes the mutable borrow only when
+  empty; `prepare_frozen_late_resolution` calls it for every module in `local_modules` (blocks
+  included) before the stage, so `CmResolver::traits_in_module` writes nothing there.
+- `macro_rules` path compression: `compress_macro_rules_scopes` (`late.rs`) compresses every
+  scope late resolution can reach before the stage, walking from `macro_rules_scopes`,
+  `output_macro_rules_scopes`, `invocation_parent_scopes` and every import's parent scope by the
+  steps `visit_scopes` takes (definition to its parent scope, unexpanded invocation to its
+  invocation scope), each scope once. `visit_scopes` keeps compressing lazily everywhere else and
+  asserts (a hard `assert!`, not a debug one) that it never rewrites a scope while frozen:
+  skipping the rewrite would change what the rest of the walk reads, and doing it would be a
+  write other threads race with.
+- External modules and macros (`get_module`, `get_macro_by_def_id`,
+  `extern_prelude_get_flag`): `debug_assert!`s that none of them is reached while frozen. They
+  cannot be: the stage only runs when no crate is loaded and no `--extern` flag is pending.
+- `hir_arena.alloc_slice` (`traits_in_scope`, `find_transitive_imports`) and the resolver's
+  `arenas`: both `WorkerLocal`, so allocation from a worker is fine.
 
 ### F. Diagnostics
 
-`report_error` (`late.rs:4907`, `diagnostics/impls.rs:796`), `report_path_resolution_error`
-(`diagnostics/impls.rs:2988`), `span_delayed_bug`, and every `emit()` in `late/diagnostics.rs`
-go to the session `DiagCtxt`. Inside a stage item they are collected by the item hook
-(`rustc_interface/util.rs` `DIAGNOSTICS_HOOK`, `rustc_errors/item_scope.rs`) and replayed in
-item order, so they need nothing here. Stashed diagnostics (`StashKey`) are keyed globally;
-a unit that stashes and a later unit that steals would be a cross-unit dependency. I found none
-in late resolution, but the stash is not per unit, so it is worth a check when this becomes a
-stage.
+Emitted through the session `DiagCtxt`; inside a stage item they are collected by the item hook
+and replayed in item order. Stashed diagnostics (`late.rs`, `StashKey::CallAssocMethod` and
+`StashKey::AssociatedTypeSuggestion`) are only stolen by later passes, not by another unit.
 
-### G. `&mut` that writes nothing
+### G. `&mut` that wrote nothing
 
-Several `&mut self` receivers are there for the type, not a write, and would simply become
-`&self` in a frozen mode: `resolve_ident_in_lexical_scope` (`ident.rs:321`, it calls
-`cm_mut()` at `:363` and `:379` even with no `Finalize`), `report_path_resolution_error`
-(`diagnostics/impls.rs:2988`, which calls the former), `legacy_const_generic_args`
-(`mod.rs:2691`, reads only), and `resolve_path_with_ribs`, which calls `get_mut()` for the
-lexical lookup at `ident.rs:2046` whatever `finalize` is.
+`resolve_ident_in_lexical_scope` is a `CmResolver` method now (`ident.rs`); with no `Finalize`
+it writes nothing, so `report_path_resolution_error` calls it through `cm()`.
+`report_path_resolution_error` is `CmResolver::report_path_resolution_error(&self)`, only for
+the `pat_span` read. `legacy_const_generic_args` is `&self` and takes the sink.
 
 ## What late resolution reads (the frozen view)
 
-Everything below is written by the time `late_resolve_crate` starts and not written by it
-(except as listed above): the module arenas and every `ModuleData` (resolutions, parents,
-`no_implicit_prelude`, glob importers), `graph_root`, `empty_module`, `local_module_map`,
-`block_map`, `prelude`, `extern_prelude`, `macro_use_prelude`, `builtin_type_decls`,
-`builtin_attr_decls`, `registered_attr_tool_decls`, `macro_rules_scopes`,
-`output_macro_rules_scopes`, `local_macro_map`, `field_names`, `field_defaults`,
-`field_visibility_spans`, `struct_ctors`, `struct_generics`, `item_generics_num_lifetimes`,
-`item_required_generic_args_suggestions`, `delegation_fn_sigs` (the last three written by
-`ItemInfoCollector` just before the units), `effective_visibilities`, `mods_with_parse_errors`,
-`glob_error`, `proc_macros`, `stripped_cfg_items`, `on_unknown_data`, `features`, `arenas`, and
-`tcx` (queries, which are parallel-safe on their own terms).
+Everything below is written by the time the stage starts and not written by it: the module
+arenas and every `ModuleData` (resolutions, parents, `no_implicit_prelude`, glob importers,
+`traits` after the prepare step), `graph_root`, `empty_module`, `local_modules`,
+`local_module_map`, `block_map`, `prelude`, `extern_prelude`, `macro_use_prelude`,
+`builtin_type_decls`, `builtin_attr_decls`, `registered_attr_tool_decls`, `macro_rules_scopes`
+(and every scope cell, compressed), `output_macro_rules_scopes`, `invocation_parent_scopes`,
+`local_macro_map`, `field_names`, `field_defaults`, `field_visibility_spans`, `struct_ctors`,
+`struct_generics`, `item_generics_num_lifetimes`, `item_required_generic_args_suggestions`,
+`delegation_fn_sigs`, `owners` (read in place), `partial_res_map`, `pat_span_map` and
+`ambiguity_errors` as early resolution left them (read after the unit's own), `next_node_id`,
+`effective_visibilities`, `mods_with_parse_errors`, `glob_error`, `proc_macros`,
+`stripped_cfg_items`, `on_unknown_data`, `features`, `arenas`, and `tcx`.
 
-## Turning the loop into a stage
+## When it stays serial
 
-In order; each step keeps the serial output unchanged and is checkable on its own.
+`Resolver::late_resolution_can_freeze` is true when all of:
 
-1. **Owner tables into the unit** (section A). The visitor owns its current owner's tables
-   instead of `Resolver::current_owner`; `with_owner` becomes a visitor method; tables come out
-   of `owners` into the units before the loop and back in the merge. Resolver methods that read
-   `current_owner` (`opt_local_def_id`, `local_def_id`, `MaybeExported::eval`) take the tables
-   as an argument when called from late resolution.
-2. **A late sink.** A `LateSink` holding the unit's parts of section B and C (partial
-   resolutions, pattern spans, privacy and ambiguity errors, lint buffer, use maps, glob map,
-   trait imports, export errors), added to `LateUnitOutput`, with the merge rules above.
-   `CmResolver` (`mod.rs:2933`, today `RefOrMut<Resolver>`) grows a third case, a shared
-   resolver plus `&mut LateSink`, and each write site in `ident.rs` (the `get_mut()` calls at
-   `:515`, `:524`, `:666`, `:717`, `:1147`, `:1189`, `:1255`, `:1906`, `:2046`, `:2089`,
-   `:2122`, `:2210`, `:2230`), `record_use` and `find_transitive_imports` writes to whichever
-   the case names. The reads of sink state (`partial_res_map.contains_key`,
-   `privacy_errors.len()`, the ambiguity dedup) read the same place. Early resolution keeps
-   the resolver case and is untouched.
-3. **Per-unit node ids** (section D), renumbered in the merge.
-4. **Frozen mode** (section E): untracked `CmRefCell` reads, `ensure_traits` for every module
-   and `macro_rules` compression done before the stage, `debug_assert`s on every lazy write
-   path that the mode is off.
-5. **The stage.** `LateResolutionVisitor::r` becomes `&'a Resolver`; the unit function becomes
-   `|units, index| resolve_late_unit(&resolver, krate, root_scope, units, index)`; the loop in
-   `late_resolve_crate` becomes `run_stage(&units[..], units.len(), ...)`, whose serial mode is
-   this loop, and the merge is unchanged. `ItemInfoCollector`, `collect_late_units` and
-   `merge_late_units` stay serial before and after it.
+- no external crate is loaded (`CStore::iter_crate_data` is empty) and no `--extern` flag is in
+  the extern prelude: external modules and macros are materialised on first use, and a frozen
+  view would have to materialise everything reachable up front (unbounded, it is the whole of
+  `std`) or keep a synchronised on-demand table (a cache with a lock). With no sysroot named,
+  the default, there is nothing external.
+- doc links are off (`ResolveDocLinks::None`, the default): `resolve_doc_links` uses
+  `doc_link_resolutions` and `doc_link_traits_in_scope` as a cache across the items of a module,
+  and in the case its own FIXME names (shadowing `macro_rules`) a later item answers from an
+  earlier item's entry where resolving it again could differ, which changes which prefixes get
+  resolved and so the tables' contents. To stay byte-identical, the serial loop moves the tables
+  from each unit into the next, which is exactly the single walk's cache.
 
-Step 2 is where most of the edits are, and it is mechanical: about 25 sites in `late.rs` and
-`late/diagnostics.rs`, the 13 in `ident.rs`, `record_use`, `find_transitive_imports`, and
-`lint_if_path_starts_with_module`. It was not attempted in this pass because none of it can be
-checked without a build, and a half-routed sink (some writes in the sink, their reads still on
-the resolver) is wrong in ways the type checker does not see.
+Otherwise the loop runs the same `resolve_late_unit` in order, with the resolver shared, not
+frozen (tracked borrows, lazy writes allowed), writing into the same sinks, merged the same way.
+
+## Turning the loop into a stage: the five steps, done
+
+1. **Owner tables into the unit** (A): `LateOwner`, `LateOwnerTables`, the visitor's
+   `with_owner`, `merge_late_owner_tables`.
+2. **A late sink** (B, C): `LateSink`, `CmResolver::Late`, the accessors, `merge_late_sink`.
+3. **Per-unit node ids** (D): the visitor's counter, `LateUnitOutput::node_ids`, the renumbering.
+4. **Frozen mode** (E): `FrozenFlag`, `prepare_frozen_late_resolution`, the asserts.
+5. **The stage**: `LateResolutionVisitor::r: &'a Resolver`, `resolve_late_unit(&self, ..)`,
+   `run_stage(&units[..], units.len(), ..)` in `late_resolve_crate`, the merge serial and in
+   unit order.
 
 ## What cannot be parallel, and why
 
 - **`ItemInfoCollector`**: writes per-item facts every unit reads (lifetime counts of other
-  items, delegation signatures). A whole-crate pre-pass by design, and cheap (no lookups). It
-  could itself be a stage over the units, with its writes as outputs, but its cost is small.
-- **Building the units and the `macro_rules` sequence**: a serial prefix scan, inherently; it
-  touches only module-level items and one hash lookup per `macro_rules!` item.
-- **The merge, `report_errors`, `check_unused`**: they consume the merged, ordered result.
-  `report_with_use_injections` deduplicates `use` suggestions across the crate and
-  `report_privacy_error` across errors, which is cross-unit by definition. They run once.
-- **External modules with a sysroot**: materialised on demand, so a frozen view either
-  materialises everything reachable up front (unbounded, it is the whole of `std`'s module
-  tree) or keeps a synchronised on-demand table, which is a cache with a lock and against the
-  house rules. With no sysroot, the default, there is nothing external and the view is
-  complete. With one, late resolution stays serial until there is an answer to that.
+  items, delegation signatures). A whole-crate pre-pass by design, and cheap (no lookups).
+- **Building the units and the `macro_rules` sequence**: a serial prefix scan.
+- **The prepare step, the merge, `report_errors`, `check_unused`**: they produce the frozen view
+  or consume the merged, ordered result. `report_with_use_injections` deduplicates `use`
+  suggestions across the crate and `report_privacy_error` across errors, which is cross-unit by
+  definition.
+- **External crates and doc links**: see "When it stays serial".
 - **Within a unit**: a function body is resolved in order, each `let` changing the ribs of what
   follows; nothing inside a unit is parallel.
 
@@ -360,26 +337,49 @@ exactly what `StageScope::stage` with `Slots::wait` is for). Not attempted here.
 
 ## Checking it
 
-Serial, which is what exists now:
-
-1. The corpus diagnostics before and after this change should be identical except for the
-   `last_block_rib` case above. Run `check_source` over the crate's own 1,423 files at one
-   worker on the parent commit and on this tree, and diff the rendered diagnostics.
-2. The `late_resolve_crate` timer (`mod.rs`, `resolve_crate`) should be unchanged within noise:
-   the units add a visitor construction and a few rib pushes per module-level item, and the
-   merge moves the moved outputs once.
-
-When it is a stage: the same diff at one worker and at N workers must be empty, and the timer
-is the measurement of what the split bought.
+1. Build (`cargo check`, and with the `parallel` feature).
+2. The corpus diagnostics must be identical to the parent commit's (the serial unit loop): run
+   `check_source` over the crate's own 1,423 files at one worker on the parent and on this tree,
+   and diff the rendered diagnostics. Then the same at N workers against one worker: the diff
+   must be empty.
+3. The same diff with a sysroot named (serial fallback) and with `-Zunstable-options
+   --resolve-doc-links=all` or rustdoc (serial fallback, doc links).
+4. A debug build of the corpus run exercises every frozen-mode `debug_assert!`; the
+   `macro_rules` compression assert is a hard one and runs in release too.
+5. The `late_resolve_crate` timer (`resolve_crate`) at one worker should be within noise of the
+   parent (the prepare step fills every module's trait list and compresses every scope, eagerly;
+   the merge moves each table once), and at N workers is the measurement of what the stage
+   bought.
 
 ## Unsure it compiles
 
-- `into_output` moves `unused_labels` out of `*diag_metadata` (a `Box<DiagMetadata>`); a
-  partial move out of a box by destructuring `*box` is allowed, but it is the first place in the
-  file that does it.
-- `ParentScope { module, macro_rules: unit.macro_rules, ..root_scope }` in `late.rs` builds a
-  struct defined in the parent module with private fields; allowed from a child module.
-- `MacroRulesScopeRef` is imported into `late.rs` through the private `use macros::{..}` in
-  `mod.rs`; a child module may name its parent's private imports.
-- The `ItemKind::Mod` arm returns early from inside the `with_rib` closures (`return;`), which
-  returns `()` from the closure, as intended.
+Places the type checker has to confirm, most likely first:
+
+- `run_stage(&units[..], units.len(), |units, index| this.resolve_late_unit(krate, root_scope,
+  units, index, LateDocLinks::default()))` in `late_resolve_crate`: `units` is `&&[LateUnit]`
+  there and relies on deref coercion to `&[LateUnit]`; the `'env` inference over a borrowed
+  slice, `&Resolver` and `&Crate` captures. Also whether `stages` needs a query context
+  (`ItemContext::capture`) that `resolve_crate` runs in; it should, as it runs under the
+  resolver query, but it is the first `run_stage` in `rustc_resolve`.
+- `late_cm!(self).method(.., &self.parent_scope, &self.ribs[ns], .., Some(&self.diag_metadata))`
+  (`late.rs`, `maybe_resolve_ident_in_lexical_scope`, `resolve_ident_in_lexical_scope`,
+  `resolve_path`, `record_traits_in_scope`): relies on the macro expanding to field borrows
+  (`&mut self.sink`, `self.r`) disjoint from the argument borrows.
+- The doc link traits closure in `resolve_doc_links`: `late_cm!(self)` and
+  `self.is_invalid_proc_macro_item_for_doc` inside one `or_insert_with` closure; the
+  `CmResolver` temporary is moved into `traits_in_scope` before the second borrow.
+- `CmResolver::record_use` (`mod.rs`): the `found_in_stdlib_prelude` closure reads `*self`
+  through `Deref` while `self` is `&mut CmResolver`, then `self.lint_buffer_mut()` after it.
+- `CmResolver::traits_in_module`: `module.traits.borrow_checked(&**self)` kept alive across
+  `self.find_transitive_imports` (`&mut self`); the `CmRef` borrows the module, not `self`.
+- `merge_late_owner_tables`: `UnordItems::map` with a `move` closure calling a `Copy`
+  `renumber` closure, and `ExtendUnord::extend_unord` inferring `(NodeId, V)`.
+- Method resolution where a `CmResolver` method shares a name with a `Resolver` one
+  (`record_use`, `record_partial_res`, `resolve_ident_in_lexical_scope`): inherent methods of
+  `CmResolver` are found before auto-deref reaches `Resolver`'s.
+- `CmResolver` and `LateSink` are private items of `rustc_resolve` with `pub(crate)` methods,
+  used from `late`, `late::diagnostics`, `ident`, `macros` and `diagnostics::impls`; the
+  previous `CmResolver` was a private alias of a `pub(crate)` enum.
+- From the previous pass, still true: `into_output` moves `unused_labels` out of
+  `*diag_metadata` (a `Box`), and `ParentScope { .., ..root_scope }` builds a parent-module
+  struct from a child module.

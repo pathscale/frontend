@@ -208,7 +208,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             if key.ident.name != assoc_name {
                 return None;
             }
-            let resolution = resolution.borrow(self.r);
+            let resolution = resolution.borrow_checked(self.r);
             let binding = resolution.best_decl()?;
             match binding.res() {
                 Res::Def(DefKind::AssocTy, def_id) => Some(def_id),
@@ -262,7 +262,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             let Some(trait_seg) = poly_trait_ref.trait_ref.path.segments.last() else {
                 return;
             };
-            let Some(partial_res) = this.r.partial_res_map.get(&trait_seg.id) else {
+            let Some(partial_res) = this.partial_res(trait_seg.id) else {
                 return;
             };
             let Some(trait_def_id) = partial_res.full_res().and_then(|res| res.opt_def_id()) else {
@@ -310,7 +310,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 };
 
                 // Only suggest for bounds that are explicitly on an in-scope type parameter.
-                let Some(partial_res) = this.r.partial_res_map.get(&where_bound.bounded_ty.id)
+                let Some(partial_res) = this.partial_res(where_bound.bounded_ty.id)
                 else {
                     continue;
                 };
@@ -1176,10 +1176,12 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
     }
 
     fn lookup_doc_alias_name(&mut self, path: &[Segment], ns: Namespace) -> Option<(DefId, Ident)> {
-        let find_doc_alias_name = |r: &mut Resolver<'ra, '_>, m: Module<'ra>, item_name: Symbol| {
+        let find_doc_alias_name = |r: &Resolver<'ra, '_>, m: Module<'ra>, item_name: Symbol| {
             for resolution in r.resolutions(m).values() {
-                let Some(did) =
-                    resolution.borrow(r).best_decl().and_then(|binding| binding.res().opt_def_id())
+                let Some(did) = resolution
+                    .borrow_checked(r)
+                    .best_decl()
+                    .and_then(|binding| binding.res().opt_def_id())
                 else {
                     continue;
                 };
@@ -1220,7 +1222,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 let Some(id) = seg.id else {
                     continue;
                 };
-                let Some(res) = self.r.partial_res_map.get(&id) else {
+                let Some(res) = self.partial_res(id) else {
                     continue;
                 };
                 if let Res::Def(DefKind::Mod, module) = res.expect_full_res()
@@ -1926,7 +1928,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                     .resolutions(module)
                     .iter()
                     .filter_map(|(key, resolution)| {
-                        let resolution = resolution.borrow(self.r);
+                        let resolution = resolution.borrow_checked(self.r);
                         resolution.best_decl().map(|binding| binding.res()).and_then(|res| {
                             if filter_fn(res) {
                                 Some((key.ident.name, resolution.orig_ident_span, res))
@@ -1967,7 +1969,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         // Confirm that the target is an associated type.
         let ast::TyKind::Path(Some(qself), path) = &bounded_ty.kind else { return false };
         // use this to verify that ident is a type param.
-        let Some(partial_res) = self.r.partial_res_map.get(&bounded_ty.id) else { return false };
+        let Some(partial_res) = self.partial_res(bounded_ty.id) else { return false };
         if !matches!(partial_res.full_res(), Some(Res::Def(DefKind::AssocTy, _))) {
             return false;
         }
@@ -1975,7 +1977,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         let peeled_ty = qself.ty.peel_refs();
         let ast::TyKind::Path(None, type_param_path) = &peeled_ty.kind else { return false };
         // Confirm that the `SelfTy` is a type parameter.
-        let Some(partial_res) = self.r.partial_res_map.get(&peeled_ty.id) else {
+        let Some(partial_res) = self.partial_res(peeled_ty.id) else {
             return false;
         };
         if !matches!(partial_res.full_res(), Some(Res::Def(DefKind::TyParam, _))) {
@@ -1995,7 +1997,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             return false;
         }
         if ident.span == span {
-            let Some(partial_res) = self.r.partial_res_map.get(&id) else {
+            let Some(partial_res) = self.partial_res(*id) else {
                 return false;
             };
             if !matches!(partial_res.full_res(), Some(Res::Def(..))) {
@@ -2788,7 +2790,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             .resolutions(*module)
             .iter()
             .filter_map(|(key, res)| {
-                res.borrow(self.r).best_decl().map(|binding| (key, binding.res()))
+                res.borrow_checked(self.r).best_decl().map(|binding| (key, binding.res()))
             })
             .filter(|(_, res)| match (kind, res) {
                 (AssocItemKind::Const(..), Res::Def(DefKind::AssocConst { .. }, _)) => true,
@@ -2826,7 +2828,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         // Fields are generally expected in the same contexts as locals.
         if filter_fn(Res::Local(ast::DUMMY_NODE_ID)) {
             if let Some(node_id) = self.diag_metadata.current_self_type.and_then(extract_node_id)
-                && let Some(resolution) = self.r.partial_res_map.get(&node_id)
+                && let Some(resolution) = self.partial_res(node_id)
                 && let Some(Res::Def(DefKind::Struct | DefKind::Union, did)) = resolution.full_res()
                 && let Some(fields) = self.r.field_idents(did)
                 && let Some(field) = fields.iter().find(|id| ident.name == id.name)
@@ -2850,9 +2852,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                         ast::AssocItemKind::Type(..) => AssocSuggestion::AssocType,
                         ast::AssocItemKind::Delegation(..)
                             if self
-                                .r
-                                .owners
-                                .get(&assoc_item.id)
+                                .open_owner_tables(assoc_item.id)
                                 .and_then(|o| self.r.delegation_fn_sigs.get(&o.def_id))
                                 .is_some_and(|sig| sig.has_self) =>
                         {
@@ -3650,7 +3650,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         for (param_index, param) in params.iter().enumerate() {
             let GenericParamKind::Lifetime = param.kind else { continue };
 
-            let def_id = self.r.local_def_id(param.id);
+            let def_id = self.local_def_id(param.id);
 
             let use_set = self.lifetime_uses.remove(&def_id);
             debug!(
@@ -3697,7 +3697,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                     let param_ident = param.ident;
                     let deletion_span =
                         if param.bounds.is_empty() { deletion_span() } else { None };
-                    self.r.lint_buffer.dyn_buffer_lint_any(
+                    self.sink.lint_buffer.dyn_buffer_lint_any(
                         SINGLE_USE_LIFETIMES,
                         param.id,
                         param_ident.span,
@@ -3749,7 +3749,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
 
                     // if the lifetime originates from expanded code, we won't be able to remove it #104432
                     if deletion_span.is_some_and(|sp| !sp.in_derive_expansion()) {
-                        self.r.lint_buffer.buffer_lint(
+                        self.sink.lint_buffer.buffer_lint(
                             UNUSED_LIFETIMES,
                             param.id,
                             param.ident.span,

@@ -48,6 +48,7 @@ pub use self::freeze::{FreezeLock, FreezeReadGuard, FreezeWriteGuard};
 pub use self::lock::{Lock, LockGuard, Mode};
 pub use self::mode::{
     FromDyn, SessionMode, check_dyn_thread_safe, enter_session_width, is_dyn_thread_safe,
+    is_parallel_here,
     set_dyn_thread_safe_mode,
 };
 #[cfg(feature = "parallel")]
@@ -175,7 +176,7 @@ mod mode {
     /// answers `false` instead of panicking when nothing has chosen a mode yet.
     #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
     #[inline]
-    pub(super) fn is_parallel_here() -> bool {
+    pub fn is_parallel_here() -> bool {
         match latched() {
             0 => DYN_THREAD_SAFE_MODE.load(Ordering::Relaxed) == DYN_THREAD_SAFE,
             1 => false,

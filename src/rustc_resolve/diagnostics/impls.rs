@@ -62,7 +62,8 @@ use crate::rustc_resolve::hygiene::Macros20NormalizedSyntaxContext;
 use crate::rustc_resolve::imports::{Import, ImportKind, UnresolvedImportError, import_path_to_string};
 use crate::rustc_resolve::late::{DiagMetadata, PatternSource, Rib};
 use crate::rustc_resolve::{
-    AmbiguityError, AmbiguityKind, AmbiguityWarning, BindingError, BindingKey, Decl, DeclKind,
+    AmbiguityError, AmbiguityKind, AmbiguityWarning, BindingError, BindingKey, CmResolver, Decl,
+    DeclKind,
     DelayedVisResolutionError, Finalize, ForwardGenericParamBanReason, HasGenericParams, IdentKey,
     LateDecl, MacroRulesScope, Module, ModuleKind, ModuleOrUniformRoot, ParentScope, PathResult,
     PrivacyError, Res, ResolutionError, Resolver, Scope, ScopeSet, Segment, UseError, Used,
@@ -697,7 +698,10 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         err.subdiagnostic(diagnostics::RemoveUnnecessaryImport { span });
     }
+}
 
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    /// Buffers its lint where this resolver writes (the resolver, or a late unit's sink).
     pub(crate) fn lint_if_path_starts_with_module(
         &mut self,
         finalize: Finalize,
@@ -742,7 +746,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             return;
         }
 
-        self.lint_buffer.dyn_buffer_lint_any(
+        self.lint_buffer_mut().dyn_buffer_lint_any(
             ABSOLUTE_PATHS_NOT_STARTING_WITH_CRATE,
             node_id,
             root_span,
@@ -773,7 +777,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             },
         );
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     pub(crate) fn add_module_candidates(
         &self,
         module: Module<'ra>,
@@ -2161,7 +2167,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             .local_macro_map
             .iter()
             .map(|(local_id, ext)| (local_id.to_def_id(), ext))
-            .chain(self.extern_macro_map.borrow().iter().map(|(id, d)| (*id, d)))
+            .chain(self.read_external(&self.extern_macro_map).iter().map(|(id, d)| (*id, d)))
         {
             for helper_attr in &ext.helper_attrs {
                 let item_name = self.tcx.item_name(def_id);
@@ -2973,8 +2979,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     .flat_map(|(_, module)| module.name()),
             )
             .chain(
-                self.extern_module_map
-                    .borrow()
+                self.read_external(&self.extern_module_map)
                     .iter()
                     .filter(|(_, module)| {
                         let module = module.to_module();
@@ -2988,9 +2993,14 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         candidates.dedup();
         find_best_match_for_name(&candidates, ident, None).filter(|sugg| *sugg != ident)
     }
+}
 
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    /// Writes nothing: its lookups pass no `Finalize`, so they go through a read-only
+    /// resolver (`cm`). It is a `CmResolver` method for one read, the span of a local binding,
+    /// which during late resolution is in the unit's sink.
     pub(crate) fn report_path_resolution_error(
-        &mut self,
+        &self,
         path: &[Segment],
         opt_ns: Option<Namespace>, // `None` indicates a module path in import
         parent_scope: &ParentScope<'ra>,
@@ -3148,7 +3158,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     && let Some(TypeNS | ValueNS) = opt_ns
                 {
                     assert!(ignore_import.is_none());
-                    match self.resolve_ident_in_lexical_scope(
+                    match self.cm().resolve_ident_in_lexical_scope(
                         ident,
                         ns_to_try,
                         parent_scope,
@@ -3200,7 +3210,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             // Check whether the name refers to an item in the value namespace.
             let binding = if let Some(ribs) = ribs {
                 assert!(ignore_import.is_none());
-                self.resolve_ident_in_lexical_scope(
+                self.cm().resolve_ident_in_lexical_scope(
                     ident,
                     ValueNS,
                     parent_scope,
@@ -3222,7 +3232,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 // }
                 // ```
                 Some(LateDecl::RibDef(Res::Local(id))) => {
-                    Some((*self.pat_span_map.get(&id).unwrap(), "a", "local binding"))
+                    Some((self.pat_span(id).unwrap(), "a", "local binding"))
                 }
                 // Name matches item from a local name binding
                 // created by `use` declaration. For example:
@@ -3319,7 +3329,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             }
         }
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn undeclared_module_suggest_declare(
         &self,
         ident: Ident,

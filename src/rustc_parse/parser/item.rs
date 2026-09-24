@@ -66,6 +66,18 @@ impl<'a> Parser<'a> {
         let attrs = self.parse_inner_attributes()?;
 
         let post_attr_lo = self.token.span;
+
+        // A whole file's items, in parallel chunks when the session is parallel and the file
+        // splits; `None` means this parser is untouched and the loop below parses them. See
+        // `item_chunks`.
+        if term.tok == token::Eof
+            && let Some(items) = self.parse_items_in_chunks()
+        {
+            let inject_use_span = post_attr_lo.data().with_hi(post_attr_lo.lo());
+            let mod_spans = ModSpans { inner_span: lo.to(self.prev_token.span), inject_use_span };
+            return Ok((attrs, items, mod_spans));
+        }
+
         let mut items: ThinVec<Box<_>> = ThinVec::new();
 
         // There shouldn't be any stray semicolons before or after items.

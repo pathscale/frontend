@@ -127,6 +127,86 @@ impl ParseSess {
         }
     }
 
+    /// A session for parsing one part of a file on its own, beside this one: this session's
+    /// source map and edition, `dcx` for its diagnostics, and empty state everywhere else,
+    /// including its own `AttrId`s from zero.
+    ///
+    /// What the part's parse leaves in it is that part's owned output, handed back with
+    /// [`ParseSess::absorb_part`] in the order the parts come in the file. The parallel parse of
+    /// a file's items (`rustc_parse::parser::item_chunks`) is the user;
+    /// `research/parallel-parse.md` lists every field and why its merge reproduces the serial
+    /// parse.
+    pub fn part(&self, dcx: DiagCtxt) -> ParseSess {
+        let mut part = ParseSess::with_dcx(dcx, Arc::clone(&self.source_map));
+        part.edition = self.edition;
+        part
+    }
+
+    /// Append what a part's parse left in `part` to this session, exactly as if this session's
+    /// own parse had written it at the point where the part begins. Parts are absorbed in file
+    /// order, each after everything this session already holds.
+    ///
+    /// `part` must have told its `DiagCtxt` nothing: a part whose parse reported anything is
+    /// discarded, not absorbed, and the caller parses serially instead. Its `AttrId` counter is
+    /// the caller's business (the ids are renumbered in the AST, and this session's counter is
+    /// advanced by the caller), so it is dropped here.
+    pub fn absorb_part(&self, part: ParseSess) {
+        // Destructured, so that a field added to `ParseSess` fails to compile here until its
+        // merge rule is written down.
+        let ParseSess {
+            dcx,
+            edition: _,
+            raw_identifier_spans,
+            bad_unicode_identifiers,
+            source_map: _,
+            buffered_lints,
+            ambiguous_block_expr_parse,
+            gated_spans,
+            symbol_gallery,
+            attr_id_generator: _,
+        } = part;
+        debug_assert!(dcx.handle().has_errors_or_delayed_bugs().is_none());
+        drop(dcx);
+
+        // Appended in order: the serial parse pushes each span as it reads it.
+        for span in raw_identifier_spans.iter() {
+            self.raw_identifier_spans.push(span);
+        }
+        // Keyed by first occurrence: an entry this session already has keeps its place and its
+        // earlier spans, and the part's spans follow them.
+        {
+            let mut mine = self.bad_unicode_identifiers.lock();
+            for (symbol, spans) in bad_unicode_identifiers.into_inner() {
+                mine.entry(symbol).or_default().extend(spans);
+            }
+        }
+        // Appended in order.
+        self.buffered_lints.lock().extend(buffered_lints.into_inner());
+        // Insertion order is the map's order; `insert` on a key already present replaces its
+        // value in place, as the serial parse's `insert` would have.
+        {
+            let mut mine = self.ambiguous_block_expr_parse.lock();
+            for (block, lhs) in ambiguous_block_expr_parse.into_inner() {
+                mine.insert(block, lhs);
+            }
+        }
+        // Per feature, in order. The map is only ever looked up by feature, so the order its
+        // keys were first inserted in is not observable.
+        {
+            let mut mine = self.gated_spans.spans.lock();
+            for (feature, spans) in gated_spans.spans.into_inner() {
+                mine.entry(feature).or_default().extend(spans);
+            }
+        }
+        // First occurrence wins, as in `SymbolGallery::insert`.
+        {
+            let mut mine = self.symbol_gallery.symbols.lock();
+            for (symbol, span) in symbol_gallery.symbols.into_inner() {
+                mine.entry(symbol).or_insert(span);
+            }
+        }
+    }
+
     pub fn emitter_with_note(note: String) -> Self {
         let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
         let emitter = Box::new(PlainEmitter::new());

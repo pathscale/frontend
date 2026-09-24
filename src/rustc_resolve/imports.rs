@@ -1365,7 +1365,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     // 2 segments, so the `resolve_path` above won't trigger it.
                     let mut full_path = import.module_path.clone();
                     full_path.push(Segment::from_ident(Ident::dummy()));
-                    self.lint_if_path_starts_with_module(finalize, &full_path, None);
+                    self.cm_mut().lint_if_path_starts_with_module(finalize, &full_path, None);
                 }
 
                 if let ModuleOrUniformRoot::Module(module) = module
@@ -1669,7 +1669,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             full_path.push(Segment::from_ident(ident));
             self.per_ns_mut(|this, ns| {
                 if let Some(binding) = bindings[ns].get().decl().map(|b| b.import_source()) {
-                    this.lint_if_path_starts_with_module(finalize, &full_path, Some(binding));
+                    this.cm_mut().lint_if_path_starts_with_module(finalize, &full_path, Some(binding));
                 }
             });
         }

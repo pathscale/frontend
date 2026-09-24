@@ -125,6 +125,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         match def_id.as_local() {
             Some(local_def_id) => self.local_module_map.get(&local_def_id).map(|m| m.to_module()),
             None => {
+                // External modules are materialised here on first use, a lazy write; late
+                // resolution never runs frozen when any external crate is loaded.
+                debug_assert!(!self.frozen_flag.is_frozen(), "external module read while frozen");
                 if let module @ Some(..) = self.extern_module_map.borrow().get(&def_id) {
                     return module.map(|m| m.to_module());
                 }
@@ -211,6 +214,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     pub(crate) fn get_macro_by_def_id(&self, def_id: DefId) -> &'ra Arc<SyntaxExtension> {
         // Local macros are always compiled.
+        // External macros are loaded here on first use, a lazy write; late resolution never runs
+        // frozen when any external crate is loaded.
+        debug_assert!(
+            def_id.is_local() || !self.frozen_flag.is_frozen(),
+            "external macro read while frozen"
+        );
         match def_id.as_local() {
             Some(local_def_id) => self.local_macro_map[&local_def_id],
             None => self.extern_macro_map.borrow_mut().entry(def_id).or_insert_with(|| {
