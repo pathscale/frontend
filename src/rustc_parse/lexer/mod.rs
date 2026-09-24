@@ -104,6 +104,8 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         token: Token::dummy(),
         diag_info: TokenTreeDiagInfo::default(),
         tree_buf: Vec::new(),
+        gallery_seen: Vec::new(),
+        gallery_new: Vec::new(),
     };
     let res = lexer.lex_token_trees(/* is_delimited */ false);
 
@@ -159,9 +161,44 @@ struct Lexer<'psess, 'src> {
     /// Scratch stack of the token trees of every open group, innermost last.
     /// See `lex_token_trees`.
     tree_buf: Vec<TokenTree>,
+
+    /// The session's `symbol_gallery` keeps each symbol's first occurrence, so of the
+    /// identifiers this lexer records only the first of each symbol can change it, and nothing
+    /// else touches the gallery while a lexer runs. A lexer therefore records a symbol once, in
+    /// `gallery_new`, marking it in `gallery_seen` (a bitset over symbol indices), and hands the
+    /// list to the gallery when it drops, in order, under one lock: the gallery ends as the
+    /// per-occurrence inserts left it, without a lock and a map probe per identifier.
+    gallery_seen: Vec<u64>,
+    gallery_new: Vec<(Symbol, Span)>,
+}
+
+impl Drop for Lexer<'_, '_> {
+    /// Also on unwinding (a fatal lexer error), so the gallery gets every symbol it would have
+    /// had from the per-occurrence inserts.
+    fn drop(&mut self) {
+        if !self.gallery_new.is_empty() {
+            self.psess.symbol_gallery.insert_all(self.gallery_new.drain(..));
+        }
+    }
 }
 
 impl<'psess, 'src> Lexer<'psess, 'src> {
+    /// `self.psess.symbol_gallery.insert(sym, span)`, deferred to the lexer's drop; see
+    /// `gallery_seen`.
+    #[inline]
+    fn record_symbol(&mut self, sym: Symbol, span: Span) {
+        let index = sym.as_u32() as usize;
+        let (word, bit) = (index / 64, 1u64 << (index % 64));
+        if word >= self.gallery_seen.len() {
+            self.gallery_seen.resize(word + 1, 0);
+        }
+        let seen = &mut self.gallery_seen[word];
+        if *seen & bit == 0 {
+            *seen |= bit;
+            self.gallery_new.push((sym, span));
+        }
+    }
+
     fn dcx(&self) -> DiagCtxtHandle<'psess> {
         self.psess.dcx()
     }
@@ -261,7 +298,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 crate::rustc_lexer::TokenKind::RawIdent => {
                     let sym = nfc_normalize_in(self.str_from(start + BytePos(2)), self.owner);
                     let span = self.mk_sp(start, self.pos);
-                    self.psess.symbol_gallery.insert(sym, span);
+                    self.record_symbol(sym, span);
                     if !sym.can_be_raw() {
                         self.dcx().emit_err(crate::rustc_parse::diagnostics::CannotBeRawIdent { span, ident: sym });
                     }
@@ -521,16 +558,17 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         }
     }
 
-    fn ident(&self, start: BytePos) -> TokenKind {
-        self.ident_text(start, self.str_from(start))
+    fn ident(&mut self, start: BytePos) -> TokenKind {
+        let text = self.str_from(start);
+        self.ident_text(start, text)
     }
 
     /// `ident(start)` given its text, `self.str_from(start)`.
     #[inline]
-    fn ident_text(&self, start: BytePos, text: &str) -> TokenKind {
+    fn ident_text(&mut self, start: BytePos, text: &str) -> TokenKind {
         let sym = nfc_normalize_in(text, self.owner);
         let span = self.mk_sp(start, self.pos);
-        self.psess.symbol_gallery.insert(sym, span);
+        self.record_symbol(sym, span);
         token::Ident(sym, IdentIsRaw::No)
     }
 
@@ -1250,6 +1288,43 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         let content_start = start + BytePos(prefix_len);
         let content_end = end - BytePos(postfix_len);
         let lit_content = self.str_from_to(content_start, content_end);
+        // `check_for_errors` decodes the literal char by char. In a `"..."` literal only a `\`
+        // sequence, a `"` or a `\r` can be an error (every other char unescapes to itself), and
+        // in an `r"..."` literal only a `\r`; all are ASCII, so a byte search finds them. With
+        // none present it would call back with no error, so it is skipped. Other modes also
+        // reject chars no byte search rules out, and always run it.
+        let may_have_errors = match mode {
+            Mode::Str => memchr::memchr3(b'\\', b'"', b'\r', lit_content.as_bytes()).is_some(),
+            Mode::RawStr => memchr::memchr(b'\r', lit_content.as_bytes()).is_some(),
+            _ => true,
+        };
+        if may_have_errors {
+            self.check_quoted(lit_content, mode, &mut kind, start, end, content_start);
+        }
+
+        // We normally exclude the quotes for the symbol, but for errors we
+        // include it because it results in clearer error messages.
+        let sym = if !matches!(kind, token::Err(_)) {
+            self.intern_src(lit_content)
+        } else {
+            self.symbol_from_to(start, end)
+        };
+        (kind, sym)
+    }
+
+    /// The error reporting of `cook_quoted`: every escape error of `lit_content`, the contents
+    /// of the literal `start..end` from `content_start`, is emitted, and a fatal one turns `kind`
+    /// into `token::Err`.
+    #[inline(never)]
+    fn check_quoted(
+        &self,
+        lit_content: &str,
+        mode: Mode,
+        kind: &mut token::LitKind,
+        start: BytePos,
+        end: BytePos,
+        content_start: BytePos,
+    ) {
         check_for_errors(lit_content, mode, |range, err| {
             let span_with_quotes = self.mk_sp(start, end);
             let (start, end) = (range.start as u32, range.end as u32);
@@ -1267,18 +1342,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 err,
             ) {
                 assert!(is_fatal);
-                kind = token::Err(guar);
+                *kind = token::Err(guar);
             }
         });
-
-        // We normally exclude the quotes for the symbol, but for errors we
-        // include it because it results in clearer error messages.
-        let sym = if !matches!(kind, token::Err(_)) {
-            self.intern_src(lit_content)
-        } else {
-            self.symbol_from_to(start, end)
-        };
-        (kind, sym)
     }
 }
 
@@ -1296,9 +1362,10 @@ fn nfc_normalize_in(string: &str, owner: Option<&Arc<String>>) -> Symbol {
         None => Symbol::intern(string),
     };
     // Every ASCII char is NFC_Quick_Check=Yes with canonical combining class 0, so
-    // `is_nfc_quick` answers `Yes` for any ASCII string: skip decoding it char by char.
-    if string.is_ascii() {
-        return as_is(string);
+    // `is_nfc_quick` answers `Yes` for any ASCII string: skip decoding it char by char, and
+    // intern it as is (`as_is`), testing for ASCII in the interner's hashing pass.
+    if let Some(sym) = Symbol::intern_if_ascii(string, owner) {
+        return sym;
     }
     match is_nfc_quick(string.chars()) {
         IsNormalized::Yes => as_is(string),

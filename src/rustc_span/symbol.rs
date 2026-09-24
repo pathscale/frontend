@@ -2716,6 +2716,17 @@ impl Symbol {
         })
     }
 
+    /// When `str` is ASCII, `intern_from_source(str, owner)` (or `intern(str)` with no owner);
+    /// otherwise `None`, having interned nothing. The ASCII test is made in the same pass over
+    /// the bytes as the interner's hash, for a caller (the lexer's NFC normalization) that
+    /// treats ASCII text differently from the rest.
+    #[inline]
+    pub fn intern_if_ascii(str: &str, owner: Option<&Arc<String>>) -> Option<Self> {
+        with_session_globals(|session_globals| {
+            session_globals.symbol_interner.intern_if_ascii(str.as_bytes(), owner).map(Symbol::new)
+        })
+    }
+
     /// Access the underlying string. Takes no lock: the interner's index to string table is
     /// read without it (see `SymbolStrs`).
     ///
@@ -2876,8 +2887,23 @@ pub(crate) struct Interner {
     indices: SymbolIndices,
 }
 
-/// Marks an empty slot of [`PredefinedSymbols::slots`].
+/// One past the largest predefined symbol index: a predefined index fits in the low 16 bits of
+/// a [`PredefinedSymbols::slots`] entry and is never `u16::MAX`.
 const EMPTY_SLOT: u16 = u16::MAX;
+
+/// Marks an empty entry of [`PredefinedSymbols::slots`]. A full entry is
+/// `predefined_tag(hash) << 16 | index` with `index < EMPTY_SLOT`, so its low half is never
+/// `0xFFFF` and it never equals this.
+const EMPTY_PREDEFINED_SLOT: u32 = u32::MAX;
+
+/// The 16-bit tag a [`PredefinedSymbols::slots`] entry keeps of its string's `symbol_hash`: the
+/// top bits, which the slot index (`hash & mask`, a mask far below 48 bits) does not use. Equal
+/// strings have equal hashes and so equal tags; a lookup compares strings only when the tags
+/// agree, so almost every occupied slot of a miss is passed over without reading its string.
+#[inline]
+const fn predefined_tag(hash: u64) -> u32 {
+    (hash >> 48) as u32
+}
 
 /// The hash of an interned string, for both the static table of predefined symbols and a
 /// session's own table. A `const fn`, so the static table is hashed at compile time by the same
@@ -2888,11 +2914,23 @@ const EMPTY_SLOT: u16 = u16::MAX;
 /// multiplication's well-mixed high bits down to where a table takes its slot index from.
 #[inline]
 const fn symbol_hash(bytes: &[u8]) -> u64 {
+    symbol_hash_and_bits(bytes).0
+}
+
+/// `(symbol_hash(bytes), bits)`, where `bits` is the OR of every word the hash reads. Each byte
+/// of `bytes` lands in exactly one of those words and the tail word's padding is zero, so `bits`
+/// has a byte's high bit set exactly when some byte of `bytes` does: `bits & 0x8080..80 == 0`
+/// is `bytes.is_ascii()`, found in the same pass as the hash.
+#[inline]
+const fn symbol_hash_and_bits(bytes: &[u8]) -> (u64, u64) {
     const K: u64 = 0xf1357aea2e62a9c5;
     let mut h = (bytes.len() as u64).wrapping_mul(K);
+    let mut bits = 0u64;
     let mut rest = bytes;
     while let Some((word, tail)) = rest.split_first_chunk::<8>() {
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(*word)).wrapping_mul(K);
+        let word = u64::from_le_bytes(*word);
+        bits |= word;
+        h = (h.rotate_left(5) ^ word).wrapping_mul(K);
         rest = tail;
     }
     if !rest.is_empty() {
@@ -2911,9 +2949,11 @@ const fn symbol_hash(bytes: &[u8]) -> u64 {
         if let Some((part, _)) = rest.split_first_chunk::<1>() {
             word |= (part[0] as u64) << shift;
         }
+        // Every part is shifted by a whole number of bytes, so each byte keeps a lane of its own.
+        bits |= word;
         h = (h.rotate_left(5) ^ word).wrapping_mul(K);
     }
-    h.rotate_left(26)
+    (h.rotate_left(26), bits)
 }
 
 /// The number of slots for `n` predefined symbols: a power of two, at least twice `n`, so the
@@ -2938,24 +2978,27 @@ const fn const_bytes_eq(a: &[u8], b: &[u8]) -> bool {
     true
 }
 
-/// Fill `slots` (all [`EMPTY_SLOT`], length a power of two at least twice `strs.len()`) with the
-/// index of every string of `strs`, by linear probing from `symbol_hash(s) & mask`. Panics on a
-/// duplicate string - at compile time for the static table.
-const fn fill_predefined_slots(strs: &[&str], slots: &mut [u16]) {
+/// Fill `slots` (all [`EMPTY_PREDEFINED_SLOT`], length a power of two at least twice
+/// `strs.len()`) with `predefined_tag(hash) << 16 | index` for every string of `strs`, by linear
+/// probing from `hash & mask`, `hash` being `symbol_hash(s)`. Panics on a duplicate string - at
+/// compile time for the static table.
+const fn fill_predefined_slots(strs: &[&str], slots: &mut [u32]) {
     assert!(strs.len() < EMPTY_SLOT as usize, "too many predefined symbols for a u16 slot");
     assert!(slots.len().is_power_of_two() && slots.len() >= strs.len() * 2);
     let mask = slots.len() - 1;
     let mut index = 0;
     while index < strs.len() {
         let bytes = strs[index].as_bytes();
-        let mut slot = symbol_hash(bytes) as usize & mask;
+        let hash = symbol_hash(bytes);
+        let mut slot = hash as usize & mask;
         loop {
-            let occupant = slots[slot];
-            if occupant == EMPTY_SLOT {
-                slots[slot] = index as u16;
+            let entry = slots[slot];
+            if entry == EMPTY_PREDEFINED_SLOT {
+                slots[slot] = predefined_tag(hash) << 16 | index as u32;
                 break;
             }
-            if const_bytes_eq(strs[occupant as usize].as_bytes(), bytes) {
+            let occupant = (entry & 0xFFFF) as usize;
+            if const_bytes_eq(strs[occupant].as_bytes(), bytes) {
                 panic!("duplicate symbol in the predefined symbol list");
             }
             slot = (slot + 1) & mask;
@@ -2966,8 +3009,8 @@ const fn fill_predefined_slots(strs: &[&str], slots: &mut [u16]) {
 
 const PREDEFINED_SLOT_COUNT: usize = predefined_slot_count(PREDEFINED_SYMBOLS_COUNT as usize);
 
-const fn predefined_slots() -> [u16; PREDEFINED_SLOT_COUNT] {
-    let mut slots = [EMPTY_SLOT; PREDEFINED_SLOT_COUNT];
+const fn predefined_slots() -> [u32; PREDEFINED_SLOT_COUNT] {
+    let mut slots = [EMPTY_PREDEFINED_SLOT; PREDEFINED_SLOT_COUNT];
     fill_predefined_slots(&PREDEFINED_SYMBOL_LIST, &mut slots);
     slots
 }
@@ -2976,32 +3019,42 @@ const fn predefined_slots() -> [u16; PREDEFINED_SLOT_COUNT] {
 static PREDEFINED_SYMBOL_STRS: [&str; PREDEFINED_SYMBOLS_COUNT as usize] = PREDEFINED_SYMBOL_LIST;
 
 /// String to index for the predefined symbols, built at compile time.
-static PREDEFINED_SYMBOL_SLOTS: [u16; PREDEFINED_SLOT_COUNT] = predefined_slots();
+static PREDEFINED_SYMBOL_SLOTS: [u32; PREDEFINED_SLOT_COUNT] = predefined_slots();
 
 /// The predefined symbols of every session: immutable, compile-time data.
 static PREDEFINED_SYMBOLS: PredefinedSymbols =
     PredefinedSymbols { strs: &PREDEFINED_SYMBOL_STRS, slots: &PREDEFINED_SYMBOL_SLOTS };
 
 /// A fixed set of symbols at indices `0..strs.len()`: `strs` maps index to string, and `slots`
-/// is an open-addressed table (built by [`fill_predefined_slots`]) mapping string to index.
+/// is an open-addressed table (built by [`fill_predefined_slots`]) mapping string to index, each
+/// full entry carrying a tag of its string's hash beside the index.
 pub(crate) struct PredefinedSymbols {
     strs: &'static [&'static str],
-    slots: &'static [u16],
+    slots: &'static [u32],
 }
 
 impl PredefinedSymbols {
     /// The index of `bytes` if it is one of these symbols; `hash` is `symbol_hash(bytes)`.
+    ///
+    /// Most identifiers of a source are not predefined, so most lookups miss and walk the whole
+    /// probe sequence. An entry whose tag differs from `bytes`'s cannot hold `bytes` (equal
+    /// strings hash equally), so it is passed over on the entry alone: the string table, a
+    /// separate array of fat pointers, and the string's bytes are only read on a tag match.
     #[inline]
     fn find(&self, bytes: &[u8], hash: u64) -> Option<u32> {
         let mask = self.slots.len() - 1;
+        let tag = predefined_tag(hash);
         let mut slot = hash as usize & mask;
         loop {
-            let occupant = self.slots[slot];
-            if occupant == EMPTY_SLOT {
+            let entry = self.slots[slot];
+            if entry == EMPTY_PREDEFINED_SLOT {
                 return None;
             }
-            if self.strs[occupant as usize].as_bytes() == bytes {
-                return Some(occupant as u32);
+            if entry >> 16 == tag {
+                let occupant = entry & 0xFFFF;
+                if self.strs[occupant as usize].as_bytes() == bytes {
+                    return Some(occupant);
+                }
             }
             slot = (slot + 1) & mask;
         }
@@ -3387,7 +3440,8 @@ impl Interner {
     #[cfg(test)]
     fn prefill(init: &[&'static str], extra: &[&'static str]) -> Self {
         let strs: &'static [&'static str] = init.to_vec().leak();
-        let slots: &'static mut [u16] = vec![EMPTY_SLOT; predefined_slot_count(init.len())].leak();
+        let slots: &'static mut [u32] =
+            vec![EMPTY_PREDEFINED_SLOT; predefined_slot_count(init.len())].leak();
         fill_predefined_slots(strs, slots);
         let predefined: &'static PredefinedSymbols =
             Box::leak(Box::new(PredefinedSymbols { strs, slots }));
@@ -3447,8 +3501,23 @@ impl Interner {
     /// `Symbol::intern_from_source`); it only decides where a new string's bytes live.
     #[inline]
     fn intern_inner(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> u32 {
-        let hash = symbol_hash(byte_str);
+        self.intern_hashed(byte_str, symbol_hash(byte_str), owner)
+    }
 
+    /// `intern_inner(byte_str, owner)` when `byte_str` is ASCII, else `None`, with the ASCII test
+    /// made in the hash's own pass over the bytes.
+    #[inline]
+    fn intern_if_ascii(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> Option<u32> {
+        let (hash, bits) = symbol_hash_and_bits(byte_str);
+        if bits & 0x8080_8080_8080_8080 != 0 {
+            return None;
+        }
+        Some(self.intern_hashed(byte_str, hash, owner))
+    }
+
+    /// `intern_inner` given `hash`, which is `symbol_hash(byte_str)`.
+    #[inline]
+    fn intern_hashed(&self, byte_str: &[u8], hash: u64, owner: Option<&Arc<String>>) -> u32 {
         if let Some(index) = self.predefined.find(byte_str, hash) {
             return index;
         }
@@ -3588,6 +3657,17 @@ pub mod sym {
     }
 }
 
+// `Symbol::is_reserved` returns `false` for any symbol above `kw::Try` without asking the
+// predicates, which is only right while each of their ranges ends at or below `kw::Try`.
+const _: () = {
+    let try_ = kw::Try.0.as_u32();
+    assert!(kw::Underscore.0.as_u32() <= try_);
+    assert!(kw::While.0.as_u32() <= try_);
+    assert!(kw::Yield.0.as_u32() <= try_);
+    assert!(kw::Dyn.0.as_u32() <= try_);
+    assert!(kw::Gen.0.as_u32() <= try_);
+};
+
 impl Symbol {
     fn is_special(self) -> bool {
         self <= kw::Underscore
@@ -3610,7 +3690,14 @@ impl Symbol {
             || self == kw::Try && edition().at_least_rust_2018()
     }
 
+    #[inline]
     pub fn is_reserved(self, edition: impl Copy + FnOnce() -> Edition) -> bool {
+        // Every symbol the predicates below accept is at most `kw::Try` (the assertion under
+        // this impl), so any later symbol, which is almost every identifier the parser asks
+        // about, is answered by one comparison.
+        if self > kw::Try {
+            return false;
+        }
         self.is_special()
             || self.is_used_keyword_always()
             || self.is_unused_keyword_always()
@@ -3672,6 +3759,7 @@ impl Ident {
     }
 
     /// Returns `true` if the token is either a special identifier or a keyword.
+    #[inline]
     pub fn is_reserved(self) -> bool {
         // Note: `span.edition()` is relatively expensive, don't call it unless necessary.
         self.name.is_reserved(|| self.span.edition())
