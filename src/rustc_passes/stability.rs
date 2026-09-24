@@ -2,7 +2,6 @@
 //! propagating default levels lexically from parent to children ast nodes.
 
 use alloc::vec::Vec;
-use alloc::string::ToString;
 use alloc::borrow::ToOwned;
 use core::num::NonZero;
 
@@ -1153,16 +1152,12 @@ pub fn check_unused_or_stable_features(tcx: TyCtxt<'_>) {
                 .collect::<Vec<_>>();
 
             for (feature, span) in remaining_lib_features {
-                if let Some(removed) =
-                    unstable_removed_features.iter().find(|removed| removed.feature == feature)
-                {
-                    tcx.dcx().emit_err(diagnostics::FeatureRemoved {
-                        span,
-                        feature,
-                        reason: removed.reason,
-                        link: removed.link,
-                        since: removed.since.to_string(),
-                    });
+                // A library feature this build has removed is not an error: frontend reads the
+                // source it is handed, including a library written for another compiler version.
+                // The feature is simply not enabled, as for a removed language feature
+                // (`rustc_expand::config::features`).
+                if unstable_removed_features.iter().any(|removed| removed.feature == feature) {
+                    continue;
                 } else {
                     let suggestion =
                         feature.find_similar(&valid_feature_names).map(|(actual_name, _)| {

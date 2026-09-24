@@ -1940,15 +1940,6 @@ pub(crate) struct DocAliasMalformed {
 }
 
 #[derive(Diagnostic)]
-#[diag("definition of an unknown lang item: `{$name}`", code = E0522)]
-pub(crate) struct UnknownLangItem {
-    #[primary_span]
-    #[label("definition of unknown lang item `{$name}`")]
-    pub span: Span,
-    pub name: Symbol,
-}
-
-#[derive(Diagnostic)]
 #[diag("target `{$current_target}` does not support `#[instruction_set({$instruction_set}::*)]`")]
 pub(crate) struct UnsupportedInstructionSet<'a> {
     #[primary_span]
@@ -1977,17 +1968,6 @@ pub(crate) struct CustomMirIncompatibleDialectAndPhase {
     pub dialect_span: Span,
     #[label("... is not compatible with this phase")]
     pub phase_span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag("can't mark as unstable using an already stable feature")]
-pub(crate) struct UnstableAttrForAlreadyStableFeature {
-    #[primary_span]
-    #[label("this feature is already stable")]
-    #[help("consider removing the attribute")]
-    pub attr_span: Span,
-    #[label("the stability attribute annotates this item")]
-    pub item_span: Span,
 }
 
 #[derive(Diagnostic)]
