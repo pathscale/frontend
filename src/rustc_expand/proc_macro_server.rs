@@ -664,15 +664,13 @@ impl server::Server for Rustc<'_, '_> {
         base: Option<Self::TokenStream>,
         trees: Vec<TokenTree<Self::TokenStream, Self::Span, Self::Symbol>>,
     ) -> Self::TokenStream {
-        // Glued onto one `Vec` and frozen once: a `TokenStream` is an exactly
-        // sized slice, so pushing onto it tree by tree would copy it each time.
-        let mut vec = base.as_ref().map_or_else(Vec::new, |base| base.to_vec());
+        let mut stream = base.unwrap_or_default();
         for tree in trees {
             for tt in (tree, &mut *self).to_internal() {
-                tokenstream::TokenStream::glue_tree_onto(&mut vec, tt);
+                stream.push_tree_with_gluing(tt);
             }
         }
-        tokenstream::TokenStream::new(vec)
+        stream
     }
 
     fn ts_concat_streams(
@@ -680,11 +678,11 @@ impl server::Server for Rustc<'_, '_> {
         base: Option<Self::TokenStream>,
         streams: Vec<Self::TokenStream>,
     ) -> Self::TokenStream {
-        let mut vec = base.as_ref().map_or_else(Vec::new, |base| base.to_vec());
-        for s in &streams {
-            tokenstream::TokenStream::glue_stream_onto(&mut vec, s);
+        let mut stream = base.unwrap_or_default();
+        for s in streams {
+            stream.push_stream_with_gluing(s);
         }
-        tokenstream::TokenStream::new(vec)
+        stream
     }
 
     fn ts_into_trees(

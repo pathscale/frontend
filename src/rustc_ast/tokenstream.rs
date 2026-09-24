@@ -623,21 +623,12 @@ pub enum Spacing {
 }
 
 /// A `TokenStream` is an abstract sequence of tokens, organized into [`TokenTree`]s.
-///
-/// The trees live in the `Arc`'s own allocation, next to the reference counts: one allocation
-/// per stream, where an `Arc<Vec<_>>` took two (the `Arc` and the `Vec`'s buffer). Streams are
-/// frozen once built; the few in-place edits (`push_*_with_gluing`, `desugar_doc_comments`)
-/// build a new slice.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Encodable, Decodable)]
-pub struct TokenStream(Arc<[TokenTree]>);
+pub struct TokenStream(Arc<Vec<TokenTree>>);
 
 impl TokenStream {
-    /// Moves `tts` into a stream: one allocation of exactly `tts.len()` trees, and `tts`'s
-    /// buffer is freed. A caller that has the trees as an exactly sized iterator (a `Drain`, an
-    /// array) should `collect` into a `TokenStream` instead: `Arc<[T]>`'s `FromIterator`
-    /// allocates once for a `TrustedLen` iterator and builds no intermediate `Vec`.
     pub fn new(tts: Vec<TokenTree>) -> TokenStream {
-        TokenStream(Arc::from(tts))
+        TokenStream(Arc::new(tts))
     }
 
     #[inline]
@@ -690,99 +681,83 @@ impl TokenStream {
     }
 
     /// Push `tt` onto the end of the stream, possibly gluing it to the last
-    /// token. The trees are copied into a new slice; to push many, collect
-    /// them with `glue_tree_onto` into one `Vec` and call `TokenStream::new`
-    /// once.
-    pub fn push_tree_with_gluing(&mut self, tt: TokenTree) {
-        let mut vec = self.0.to_vec();
-        Self::glue_tree_onto(&mut vec, tt);
-        self.0 = Arc::from(vec);
-    }
-
-    /// Push `stream` onto the end of the stream, possibly gluing the first
-    /// token tree to the last token. (No other token trees will be glued.)
-    /// The trees are copied into a new slice; see `glue_stream_onto`.
-    pub fn push_stream_with_gluing(&mut self, stream: TokenStream) {
-        let mut vec = self.0.to_vec();
-        Self::glue_stream_onto(&mut vec, &stream);
-        self.0 = Arc::from(vec);
-    }
-
-    /// `push_tree_with_gluing` onto a `Vec` under construction: pushes `tt`
-    /// onto `vec`, or glues it onto `vec`'s last token when they join.
+    /// token. Uses `make_mut` to maximize efficiency.
     ///
     /// This is intended for specific proc macro use. For general `TokenStream`
     /// construction within the compiler just build a `Vec<TokenTree>` with
     /// normal `Vec` operations and then do `TokenStream::new`.
-    pub fn glue_tree_onto(vec: &mut Vec<TokenTree>, tt: TokenTree) {
-        if Self::try_glue_to_last(vec, &tt) {
+    pub fn push_tree_with_gluing(&mut self, tt: TokenTree) {
+        let vec_mut = Arc::make_mut(&mut self.0);
+
+        if Self::try_glue_to_last(vec_mut, &tt) {
             // nothing else to do
         } else {
-            vec.push(tt);
+            vec_mut.push(tt);
         }
     }
 
-    /// `push_stream_with_gluing` onto a `Vec` under construction.
-    pub fn glue_stream_onto(vec: &mut Vec<TokenTree>, stream: &TokenStream) {
+    /// Push `stream` onto the end of the stream, possibly gluing the first
+    /// token tree to the last token. (No other token trees will be glued.)
+    /// Uses `make_mut` to maximize efficiency.
+    ///
+    /// This is intended for specific proc macro use. For general `TokenStream`
+    /// construction within the compiler just build a `Vec<TokenTree>` with
+    /// normal `Vec` operations and then do `TokenStream::new`.
+    pub fn push_stream_with_gluing(&mut self, stream: TokenStream) {
+        let vec_mut = Arc::make_mut(&mut self.0);
+
         let stream_iter = stream.0.iter().cloned();
 
         if let Some(first) = stream.0.first()
-            && Self::try_glue_to_last(vec, first)
+            && Self::try_glue_to_last(vec_mut, first)
         {
             // Now skip the first token tree from `stream`.
-            vec.extend(stream_iter.skip(1));
+            vec_mut.extend(stream_iter.skip(1));
         } else {
             // Append all of `stream`.
-            vec.extend(stream_iter);
+            vec_mut.extend(stream_iter);
         }
-    }
-
-    /// Copies the trees out into a `Vec`, to extend and rebuild.
-    pub fn to_vec(&self) -> Vec<TokenTree> {
-        self.0.to_vec()
     }
 
     /// Desugar doc comments like `/// foo` in the stream into `#[doc =
-    /// r"foo"]`. Builds new slices only for the streams that change, sharing
-    /// every unchanged one.
+    /// r"foo"]`. Modifies the `TokenStream` via `Arc::make_mut`, but as little
+    /// as possible.
     pub fn desugar_doc_comments(&mut self) {
-        if let Some(desugared_stream) = desugar_inner(self) {
+        if let Some(desugared_stream) = desugar_inner(self.clone()) {
             *self = desugared_stream;
         }
 
-        // The return value is `None` if nothing in `stream` changed. Otherwise
-        // `out` holds the trees before `i` unchanged, then each tree from `i`
-        // on, desugared; it is copied out only at the first change.
-        fn desugar_inner(stream: &TokenStream) -> Option<TokenStream> {
-            let mut out: Option<Vec<TokenTree>> = None;
-            for (i, tt) in stream.0.iter().enumerate() {
+        // The return value is `None` if nothing in `stream` changed.
+        fn desugar_inner(mut stream: TokenStream) -> Option<TokenStream> {
+            let mut i = 0;
+            let mut modified = false;
+            while let Some(tt) = stream.0.get(i) {
                 match tt {
                     &TokenTree::Token(
                         Token { kind: token::DocComment(_, attr_style, data), span },
                         _spacing,
                     ) => {
                         let desugared = desugared_tts(attr_style, data, span);
-                        out.get_or_insert_with(|| stream.0[..i].to_vec()).extend(desugared);
+                        let desugared_len = desugared.len();
+                        Arc::make_mut(&mut stream.0).splice(i..i + 1, desugared);
+                        modified = true;
+                        i += desugared_len;
                     }
 
-                    &TokenTree::Token(..) => {
-                        if let Some(out) = &mut out {
-                            out.push(tt.clone());
-                        }
-                    }
+                    &TokenTree::Token(..) => i += 1,
 
                     &TokenTree::Delimited(sp, spacing, delim, ref delim_stream) => {
-                        if let Some(desugared_delim_stream) = desugar_inner(delim_stream) {
+                        if let Some(desugared_delim_stream) = desugar_inner(delim_stream.clone()) {
                             let new_tt =
                                 TokenTree::Delimited(sp, spacing, delim, desugared_delim_stream);
-                            out.get_or_insert_with(|| stream.0[..i].to_vec()).push(new_tt);
-                        } else if let Some(out) = &mut out {
-                            out.push(tt.clone());
+                            Arc::make_mut(&mut stream.0)[i] = new_tt;
+                            modified = true;
                         }
+                        i += 1;
                     }
                 }
             }
-            out.map(TokenStream::new)
+            if modified { Some(stream) } else { None }
         }
 
         fn desugared_tts(attr_style: AttrStyle, data: Symbol, span: Span) -> Vec<TokenTree> {
@@ -872,15 +847,13 @@ impl TokenStream {
 
 impl FromIterator<TokenTree> for TokenStream {
     fn from_iter<I: IntoIterator<Item = TokenTree>>(iter: I) -> Self {
-        // One allocation for an exactly sized (`TrustedLen`) iterator; any
-        // other is gathered into a `Vec` first by `Arc<[T]>`'s `FromIterator`.
-        TokenStream(iter.into_iter().collect())
+        TokenStream::new(iter.into_iter().collect::<Vec<TokenTree>>())
     }
 }
 
 impl StableHash for TokenStream {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        (*self.0).stable_hash(hcx, hasher);
+        self.0.as_slice().stable_hash(hcx, hasher);
     }
 }
 
@@ -889,7 +862,7 @@ pub struct TokenStreamIter<'t>(core::slice::Iter<'t, TokenTree>);
 
 impl<'t> TokenStreamIter<'t> {
     fn new(stream: &'t TokenStream) -> Self {
-        TokenStreamIter(stream.0.iter())
+        TokenStreamIter(stream.0.as_slice().iter())
     }
 
     // Peeking could be done via `Peekable`, but most iterators need peeking,
@@ -964,7 +937,7 @@ impl TokenTreeCursor {
 /// we (a) lex tokens into a nice tree structure (`TokenStream`), and then (b)
 /// use this type to emit them as a linear sequence. But a linear sequence is
 /// what the parser expects, for the most part.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TokenCursor {
     // Cursor for the current (innermost) token stream. The `next_idx` within the
     // cursor can point to any token tree in the stream (or one past the end).
@@ -980,26 +953,9 @@ pub struct TokenCursor {
     // The frames are frozen and shared: cloning a `TokenCursor` (every
     // `collect_tokens` start position, every parser snapshot) is two reference
     // count increments, not a fresh copy of the whole stack. A frame is
-    // entered on each descent into a delimited group and left on the way out.
+    // allocated once per descent into a delimited group and freed on the way
+    // out unless a clone still holds it.
     stack: Option<Arc<TokenCursorFrame>>,
-
-    // Frames this cursor left that no clone shared, chained through their
-    // `parent` fields, for the next descent to reuse instead of allocating:
-    // a frame costs one allocation the first time this cursor reaches its
-    // depth, not one per group. Every frame here is unique (strong count one,
-    // no weak): it went in only after `Arc::get_mut` succeeded, and nothing
-    // but this chain points at it. A clone of the cursor starts with none, so
-    // cloning stays two reference counts. Their `cursor` fields hold the
-    // stream the cursor just left, which its enclosing stream owns anyway,
-    // and are overwritten on reuse.
-    spare: Option<Arc<TokenCursorFrame>>,
-}
-
-impl Clone for TokenCursor {
-    #[inline]
-    fn clone(&self) -> Self {
-        TokenCursor { curr: self.curr.clone(), stack: self.stack.clone(), spare: None }
-    }
 }
 
 #[derive(Debug)]
@@ -1013,7 +969,7 @@ struct TokenCursorFrame {
 impl TokenCursor {
     #[inline]
     pub fn new(stream: TokenStream) -> Self {
-        TokenCursor { curr: TokenTreeCursor::new(stream), stack: None, spare: None }
+        TokenCursor { curr: TokenTreeCursor::new(stream), stack: None }
     }
 
     /// The cursor of the innermost enclosing token stream, if any.
@@ -1022,50 +978,28 @@ impl TokenCursor {
         self.stack.as_deref().map(|frame| &frame.cursor)
     }
 
-    /// Enters a frame holding `cursor` (the enclosing stream), reusing a spare
-    /// frame when there is one.
     #[inline]
     fn push_frame(&mut self, cursor: TokenTreeCursor) {
         let parent = self.stack.take();
         let depth = parent.as_ref().map_or(0, |frame| frame.depth) + 1;
-        let frame = match self.spare.take() {
-            Some(mut frame) => match Arc::get_mut(&mut frame) {
-                Some(spare) => {
-                    self.spare = mem::replace(&mut spare.parent, parent);
-                    spare.cursor = cursor;
-                    spare.depth = depth;
-                    frame
-                }
-                // Unreachable: spare frames are unique (see `spare`).
-                None => Arc::new(TokenCursorFrame { cursor, parent, depth }),
-            },
-            None => Arc::new(TokenCursorFrame { cursor, parent, depth }),
-        };
-        self.stack = Some(frame);
+        self.stack = Some(Arc::new(TokenCursorFrame { cursor, parent, depth }));
     }
 
-    /// Leaves the innermost frame, making its cursor `curr` again. Returns
-    /// `false` at the outermost stream. A frame no clone shares gives its
-    /// cursor up by a swap (it keeps the exhausted inner cursor) and goes to
-    /// `spare`; a shared one is left to its sharers and its cursor cloned (one
-    /// reference count).
+    /// Removes the innermost frame, moving its cursor out when no clone shares
+    /// it and cloning it (one reference count) when one does.
     #[inline]
-    fn pop_frame(&mut self) -> bool {
-        let Some(mut frame) = self.stack.take() else {
-            return false;
-        };
-        match Arc::get_mut(&mut frame) {
-            Some(unique) => {
-                mem::swap(&mut self.curr, &mut unique.cursor);
-                self.stack = mem::replace(&mut unique.parent, self.spare.take());
-                self.spare = Some(frame);
+    fn pop_frame(&mut self) -> Option<TokenTreeCursor> {
+        let frame = self.stack.take()?;
+        Some(match Arc::try_unwrap(frame) {
+            Ok(TokenCursorFrame { cursor, parent, depth: _ }) => {
+                self.stack = parent;
+                cursor
             }
-            None => {
-                self.stack = frame.parent.clone();
-                self.curr = frame.cursor.clone();
+            Err(shared) => {
+                self.stack = shared.parent.clone();
+                shared.cursor.clone()
             }
-        }
-        true
+        })
     }
 
     /// Gets the next token and advances the cursor by one.
@@ -1234,11 +1168,12 @@ impl TokenCursor {
                         // No open delimiter to return; continue on to the next iteration.
                     }
                 };
-            } else if self.pop_frame() {
-                // We have exhausted this token stream. Moved back to its parent token stream.
-                let Some(&TokenTree::Delimited(span, spacing, delim, _)) = self.curr.curr() else {
+            } else if let Some(parent) = self.pop_frame() {
+                // We have exhausted this token stream. Move back to its parent token stream.
+                let Some(&TokenTree::Delimited(span, spacing, delim, _)) = parent.curr() else {
                     panic!("parent should be Delimited")
                 };
+                self.curr = parent;
                 if !delim.skip() {
                     return (Token::new(delim.as_close_token_kind(), span.close), spacing.close);
                 }
