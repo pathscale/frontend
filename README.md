@@ -148,6 +148,23 @@ Width above 1 needs the `parallel` cargo feature. Workers that run sessions need
 (the timing example uses 16 MiB), and every entry point needs a panic catcher installed first
 (`unwind_janky::install_catcher`) and `panic = "unwind"`.
 
+## Future work
+
+Each of these is measured, not guessed; the sizes are shares of a serial check of the clean
+corpus unless they say otherwise. `research/FINDINGS.md` has the profiles.
+
+| Work | What it would save | Why it is not done |
+| --- | --- | --- |
+| A batch entry point, one session per file on nagoya's pool, answers in input order | Nothing new in time (a caller gets the 8.7x today with `par_for`); it saves every caller writing it | `run_stage` outside a session runs serially, so it needs a helper in `sync::pool` |
+| Borrowck's MIR type check without a fulfillment context for operations that register no obligations | Part of MIR type check, which is 12% (279 ms of 2.3 s) | Needs a prototype to size |
+| Borrowck without cloning each body (renumber regions into a side table) | About 3% (clone, renumber, copy) | Other passes read the unrenumbered MIR after borrowck |
+| One shard lock per query run instead of two | About 2%, more at higher widths | Contained, not yet done |
+| Free the AST once lowering finishes | About 13% of peak memory per file | The AST sits in the `index_ast` query result, which one fallback path still reads |
+| Parse: fewer allocations per node (a `Box` per expression, a `ThinVec` per path), and no separate `Vec` and `Arc` per delimited group | Parse is about 4% of a check; it sits at about 43 MB/s | Changes AST types every later pass uses |
+| A NEON or SSE table-driven lexer core (on stable, through `core::arch`) | Lexing is about a quarter of parse, so about 1% of a check | Small next to the rest |
+| Serial front of a file: macro expansion and definition collection in one walk, then per item | Expansion, resolution and lowering are about 13% of a serial check, the serial start of every file | Definition order must stay exactly as it is |
+| Per-body arenas for inference and obligation vectors | Part of the allocator's 11% | Stable Rust cannot give the standard collections another allocator |
+
 ## Syntax-level diagnostics
 
 Behind the `diagnostics` cargo feature, which is off by default:
