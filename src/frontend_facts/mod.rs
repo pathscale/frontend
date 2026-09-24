@@ -340,6 +340,14 @@ fn complete_when_absent() -> bool {
     true
 }
 
+fn true_when_absent() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 /// Map a rustc `DefKind` to a fact kind. `None` means handled by another list
 /// (`use` → imports, `impl` → impls) or not an addressable name.
 pub fn fact_kind(kind: DefKind) -> Option<FactKind> {
@@ -623,8 +631,22 @@ struct Names<'a, 'tcx> {
 impl<'a, 'tcx> Names<'a, 'tcx> {
     /// `def_id`'s printed path: the definitions stage's, when it reported `def_id`, and printed
     /// here otherwise. Both are `def_path_str` of the same id.
+    ///
+    /// A definition in another crate is printed where it is defined, under that crate's own name
+    /// (`alloc::fmt`), not by the path this crate happens to see it through: std names alloc
+    /// `alloc_crate`, and a re-export chain is followed by joining one crate's facts to the next's,
+    /// whose own paths are where each item is defined.
     fn path(&self, def_id: DefId) -> Arc<str> {
-        self.reported(def_id).unwrap_or_else(|| Arc::from(self.tcx.def_path_str(def_id)))
+        self.reported(def_id).unwrap_or_else(|| {
+            let printed = if def_id.is_local() {
+                self.tcx.def_path_str(def_id)
+            } else {
+                crate::rustc_middle::ty::print::with_no_visible_paths!(
+                    self.tcx.def_path_str(def_id)
+                )
+            };
+            Arc::from(printed)
+        })
     }
 
     fn reported(&self, def_id: DefId) -> Option<Arc<str>> {
@@ -1161,15 +1183,117 @@ pub fn analyze_shared_source_with_width(
     width: usize,
 ) -> Result<CrateFacts, FatalError> {
     let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
-    analyze_input(crate_name, input, sysroot, None, None, false, width).map_err(|_| FatalError)
+    let setup = Setup { sysroot, width, ..Setup::plain(crate_name) };
+    analyze_input(&setup, input, false, None).map_err(|_| FatalError)
 }
 
 /// Why [`analyze_crate`] has no facts: the crate did not parse or its macros did not expand,
 /// so there is no HIR to read. Every error the frontend emitted, as [`CrateFacts::diagnostics`]
 /// holds them, so a refusal says what refused.
+///
+/// A crate read to be a dependency ([`CrateRead::write_metadata`]) is also refused for any error
+/// at all: a crate that does not compile is no crate's dependency, and its metadata is not
+/// written. `crate_name` says which crate of a chain it was.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Refused {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub crate_name: String,
     pub diagnostics: Vec<String>,
+}
+
+/// A crate a session depends on, read from source by frontend earlier: the name the dependent
+/// crate knows it by, and the metadata file that earlier read wrote
+/// ([`CrateRead::write_metadata`]).
+///
+/// **The handoff between crates is rustc's own crate metadata**, written by this build from
+/// source and read back by this build, never a library from a toolchain. It is what rustc's
+/// `--extern name=path` hands a session, and it lives on disk, so a caller that keeps it (per
+/// crate and version) reads a crate's dependencies once and each later read of anything that
+/// depends on them costs only the loading of their files.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Dependency {
+    pub name: String,
+    /// The `.rmeta` file. Its file name has to be `lib<name>.rmeta`, as rustc's loader expects.
+    pub metadata: String,
+    /// In the extern prelude, so the crate being read can name it: a dependency its manifest
+    /// lists. `false` is rustc's `--extern noprelude:`, for a dependency's dependency, which is
+    /// loaded when a loaded crate needs it and which the crate being read cannot name.
+    #[serde(default = "true_when_absent", skip_serializing_if = "is_true")]
+    pub prelude: bool,
+}
+
+impl Dependency {
+    /// A dependency the crate being read names.
+    pub fn new(name: impl Into<String>, metadata: impl Into<String>) -> Self {
+        Dependency { name: name.into(), metadata: metadata.into(), prelude: true }
+    }
+
+    /// A dependency only other dependencies name.
+    pub fn transitive(name: impl Into<String>, metadata: impl Into<String>) -> Self {
+        Dependency { prelude: false, ..Dependency::new(name, metadata) }
+    }
+}
+
+/// What a session reads besides its source: the crates it depends on and the configuration its
+/// build would give it. [`Loaded::default`] is none of either, the `no_core` session every
+/// entry point without dependencies has always run.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Loaded<'a> {
+    /// Every crate the session may load, direct and transitive. When there is at least one,
+    /// nothing is injected: a crate that says `#![no_std]` gets `extern crate core` and core's
+    /// prelude, and one that does not gets std's, exactly as rustc reads it.
+    pub dependencies: &'a [Dependency],
+    /// `--cfg` specs: the features its manifest enables (`feature="std"`) and what its build
+    /// script prints as `cargo:rustc-cfg`. The caller decides these; frontend reads no manifest.
+    pub cfg: &'a [String],
+    /// What `env!` and `option_env!` read: `CARGO_PKG_VERSION` and a build script's
+    /// `cargo:rustc-env`. rustc's `--env-set`: the process environment is not consulted for them.
+    pub env: &'a [(String, String)],
+}
+
+/// One crate on disk to read, and how. [`CrateRead::new`] is [`analyze_crate`]'s defaults:
+/// host target, edition 2015, bodies checked, serial, no dependencies (`no_core`).
+#[derive(Clone, Copy, Debug)]
+pub struct CrateRead<'a> {
+    pub crate_name: &'a str,
+    /// The crate's root file, `src/lib.rs` or wherever its manifest says.
+    pub root: &'a eko::path::Path,
+    pub sysroot: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub edition: Option<&'a str>,
+    /// [`extract_items`]: no body is type checked and no reference is reported.
+    pub items_only: bool,
+    pub width: usize,
+    /// A `proc-macro` crate. Its macros are declared to the crates that load its metadata, and
+    /// they are not run: running one means compiling it, and frontend compiles nothing. An
+    /// expansion of one is an error that says so.
+    pub proc_macro: bool,
+    /// One of the standard library's crates or a crate it depends on (hashbrown, libc), read as
+    /// rustc's bootstrap reads them: `-Zforce-unstable-if-unmarked`, so an item not marked stable
+    /// is unstable. It is what lets std's stable `const fn`s call hashbrown's.
+    pub standard_library: bool,
+    pub loaded: Loaded<'a>,
+    /// Write the crate's metadata here, for later reads to name it as a [`Dependency`]. Written
+    /// only when the crate read with no error; otherwise the read is [`Refused`].
+    pub write_metadata: Option<&'a eko::path::Path>,
+}
+
+impl<'a> CrateRead<'a> {
+    pub fn new(crate_name: &'a str, root: &'a eko::path::Path) -> Self {
+        CrateRead {
+            crate_name,
+            root,
+            sysroot: None,
+            target: None,
+            edition: None,
+            items_only: false,
+            width: 1,
+            proc_macro: false,
+            standard_library: false,
+            loaded: Loaded::default(),
+            write_metadata: None,
+        }
+    }
 }
 
 /// Analyse a crate on disk from its root file, as rustc reads one: `mod x;` is `x.rs` or
@@ -1191,73 +1315,154 @@ pub fn analyze_crate(
     items_only: bool,
     width: usize,
 ) -> Result<CrateFacts, Refused> {
-    analyze_input(crate_name, Input::File(root.to_path_buf()), sysroot, target, edition, items_only, width)
-        .map_err(|diagnostics| Refused { diagnostics })
+    read_crate(&CrateRead {
+        sysroot,
+        target,
+        edition,
+        items_only,
+        width,
+        ..CrateRead::new(crate_name, root)
+    })
 }
 
-/// One analysis session over `input`, the one place every entry point builds it.
-fn analyze_input(
-    crate_name: &str,
-    input: Input,
-    sysroot: Option<&str>,
-    target: Option<&str>,
-    edition: Option<&str>,
-    items_only: bool,
+/// [`analyze_crate`] with everything a crate of a dependency chain needs: the crates it depends
+/// on, loaded from the metadata frontend wrote when it read them, its `cfg` and build
+/// environment, and its own metadata written for the crates that depend on it.
+///
+/// A chain is read in dependency order, each crate once: core with nothing loaded, then alloc
+/// with core, std with core and alloc (and std's own dependencies), then a registry crate with
+/// std and its dependencies. Paths, macros and re-exports into a loaded crate resolve as they
+/// do in rustc, because it is rustc's loader reading rustc's metadata.
+///
+/// **Only source.** Every crate in the chain was read from source by this function; no
+/// toolchain's library is opened, and the metadata this build writes is refused by any other
+/// build (it carries this build's version string).
+///
+/// **What writing metadata costs.** Metadata holds what another crate's type check asks of this
+/// one: every item's signature, and the bodies another crate evaluates or looks through, which
+/// are each `const fn` and `const` (evaluated at compile time) and each function returning
+/// `impl Trait` (an `async fn` among them, whose auto traits leak). Those bodies are type
+/// checked when the metadata is written, and no other body is, with `items_only`.
+pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
+    let setup = Setup {
+        crate_name: read.crate_name,
+        sysroot: read.sysroot,
+        target: read.target,
+        edition: read.edition,
+        width: read.width,
+        proc_macro: read.proc_macro,
+        standard_library: read.standard_library,
+        loaded: read.loaded,
+    };
+    let input = Input::File(read.root.to_path_buf());
+    let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
+    let facts =
+        analyze_input(&setup, input, read.items_only, read.write_metadata).map_err(refused)?;
+    if read.write_metadata.is_some() && !facts.diagnostics.is_empty() {
+        return Err(refused(facts.diagnostics));
+    }
+    Ok(facts)
+}
+
+/// Everything a session is built from except its input.
+#[derive(Clone, Copy)]
+struct Setup<'a> {
+    crate_name: &'a str,
+    sysroot: Option<&'a str>,
+    target: Option<&'a str>,
+    edition: Option<&'a str>,
     width: usize,
-) -> Result<CrateFacts, Vec<String>> {
-    assert!(
-        crate::unwind_janky::unwinding_is_enabled(),
-        "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
-    );
-    let mut opts = Options::default();
-    opts.crate_name = Some(crate_name.to_string());
-    opts.crate_types = alloc::vec![CrateType::Rlib];
-    // Options::default() disallows `#![feature]` the way a stable CLI would.
-    // This crate is a nightly frontend; within-crate no_core analysis needs the
-    // same gates nightly rustc has.
-    opts.unstable_features = UnstableFeatures::Allow;
-    opts.jobs.frontend = frontend_jobs(width);
-    if let Some(target) = target {
-        opts.target_triple = crate::rustc_target::spec::TargetTuple::from_tuple(target);
+    proc_macro: bool,
+    standard_library: bool,
+    loaded: Loaded<'a>,
+}
+
+impl<'a> Setup<'a> {
+    /// One crate, `no_core`, host target, edition 2015, serial.
+    fn plain(crate_name: &'a str) -> Self {
+        Setup {
+            crate_name,
+            sysroot: None,
+            target: None,
+            edition: None,
+            width: 1,
+            proc_macro: false,
+            standard_library: false,
+            loaded: Loaded::default(),
+        }
     }
-    if let Some(edition) = edition {
-        opts.edition = edition
-            .parse()
-            .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
+
+    /// The session's options, and whether its input may be read `no_core`: nothing to load
+    /// (no sysroot, no dependency) and a root that does not declare it already.
+    fn options(&self, input: &Input) -> Result<Options, Vec<String>> {
+        let mut opts = Options::default();
+        opts.crate_name = Some(self.crate_name.to_string());
+        opts.crate_types =
+            alloc::vec![if self.proc_macro { CrateType::ProcMacro } else { CrateType::Rlib }];
+        // Options::default() disallows `#![feature]` the way a stable CLI would.
+        // This crate is a nightly frontend; within-crate no_core analysis needs the
+        // same gates nightly rustc has.
+        opts.unstable_features = UnstableFeatures::Allow;
+        opts.jobs.frontend = frontend_jobs(self.width);
+        opts.unstable_opts.force_unstable_if_unmarked = self.standard_library;
+        if let Some(target) = self.target {
+            opts.target_triple = crate::rustc_target::spec::TargetTuple::from_tuple(target);
+        }
+        if let Some(edition) = self.edition {
+            opts.edition = edition
+                .parse()
+                .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
+        }
+        opts.externs = externs(self.loaded.dependencies);
+        opts.logical_env = self.loaded.env.iter().cloned().collect();
+        // **The sysroot is an optional parameter, because this is a parser.**
+        //
+        // Definitions, imports, impls and within-crate references are read out of
+        // the source this was handed. None of them needs a standard library to
+        // exist. A library only matters to a caller who wants paths resolved into
+        // it, and that caller says so by naming a sysroot, or by handing over the
+        // dependencies frontend itself read from source (`Loaded`).
+        //
+        // Nothing named means `no_core`, so no external crate is loaded, no prelude
+        // import is resolved, and the facts come back with no library anywhere on
+        // the machine. It goes through `crate_attr` rather than being prepended to
+        // the source, because prepended text moves every byte span this crate
+        // reports and those spans are the whole product.
+        //
+        // This used to fall back to `rustc --print sysroot`, which fetched a
+        // library nobody had asked for and then failed to read it: crate metadata
+        // encodes preinterned symbols as bare indices into `rustc_span::symbol`'s
+        // table, nothing checks that two tables agree, and a table from another
+        // commit decodes `std` as whatever now sits at that index. The result was a
+        // bare `E0463` for a library the caller never wanted.
+        // A session handed its dependencies reads those and nothing else, so the environment's
+        // sysroot is not asked for.
+        let named = self.sysroot.map(eko::path::PathBuf::from).or_else(|| {
+            self.loaded
+                .dependencies
+                .is_empty()
+                .then(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from))
+                .flatten()
+        });
+        if named.is_some() {
+            opts.sysroot = Sysroot::new(named);
+        } else if self.loaded.dependencies.is_empty()
+            && !matches!(input, Input::File(root) if syntax::declares_no_core(root))
+        {
+            // A crate that is `no_core` already (core itself) gets nothing added.
+            opts.unstable_opts.crate_attr.push("no_core".to_string());
+            opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
+        }
+        Ok(opts)
     }
-    // **The sysroot is an optional parameter, because this is a parser.**
-    //
-    // Definitions, imports, impls and within-crate references are read out of
-    // the source this was handed. None of them needs a standard library to
-    // exist. A library only matters to a caller who wants paths resolved into
-    // it, and that caller says so by naming a sysroot.
-    //
-    // Nothing named means `no_core`, so no external crate is loaded, no prelude
-    // import is resolved, and the facts come back with no library anywhere on
-    // the machine. It goes through `crate_attr` rather than being prepended to
-    // the source, because prepended text moves every byte span this crate
-    // reports and those spans are the whole product.
-    //
-    // This used to fall back to `rustc --print sysroot`, which fetched a
-    // library nobody had asked for and then failed to read it: crate metadata
-    // encodes preinterned symbols as bare indices into `rustc_span::symbol`'s
-    // table, nothing checks that two tables agree, and a table from another
-    // commit decodes `std` as whatever now sits at that index. The result was a
-    // bare `E0463` for a library the caller never wanted.
-    let named = sysroot
-        .map(eko::path::PathBuf::from)
-        .or_else(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from));
-    let has_sysroot = named.is_some();
-    if has_sysroot {
-        opts.sysroot = Sysroot::new(named);
-    } else if !matches!(&input, Input::File(root) if syntax::declares_no_core(root)) {
-        // A crate that is `no_core` already (core itself) gets nothing added.
-        opts.unstable_opts.crate_attr.push("no_core".to_string());
-        opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
-    }
-    let rustc_version = {
+
+    /// The version string the session claims: the named sysroot's, when there is one to agree
+    /// with; otherwise the compiled-in one, which is also what metadata this build writes
+    /// carries and what it expects of metadata it reads.
+    fn rustc_version(&self, opts: &Options) -> Option<String> {
         #[cfg(feature = "force_pinned_sysroot")]
         {
+            let _ = opts;
             None
         }
         #[cfg(not(feature = "force_pinned_sysroot"))]
@@ -1265,13 +1470,60 @@ fn analyze_input(
             // Only worth asking when something will actually be read. With
             // `no_core` no metadata is opened, so there is no vintage to agree
             // with and no reason to spawn a compiler to ask about one.
-            if has_sysroot {
+            if opts.sysroot.explicit.is_some() {
                 rustc_version_of_sysroot(opts.sysroot.path()).or_else(host_rustc_version)
             } else {
                 None
             }
         }
-    };
+    }
+}
+
+/// `--extern` for each dependency: its file, exactly, and whether the crate being read can name
+/// it.
+fn externs(dependencies: &[Dependency]) -> crate::rustc_session::config::Externs {
+    use crate::rustc_session::config::{ExternEntry, ExternLocation, Externs};
+    use crate::rustc_session::utils::CanonicalizedPath;
+    let mut map = alloc::collections::BTreeMap::new();
+    for dependency in dependencies {
+        let entry = map.entry(dependency.name.clone()).or_insert_with(|| ExternEntry {
+            location: ExternLocation::ExactPaths(alloc::collections::BTreeSet::new()),
+            is_private_dep: false,
+            add_prelude: false,
+            nounused_dep: true,
+            force: false,
+        });
+        entry.add_prelude |= dependency.prelude;
+        if let ExternLocation::ExactPaths(files) = &mut entry.location {
+            files.insert(CanonicalizedPath::new(eko::path::PathBuf::from(
+                dependency.metadata.as_str(),
+            )));
+        }
+    }
+    Externs::new(map)
+}
+
+/// One analysis session over `input`, the one place every facts entry point builds it.
+fn analyze_input(
+    setup: &Setup<'_>,
+    input: Input,
+    items_only: bool,
+    write_metadata: Option<&eko::path::Path>,
+) -> Result<CrateFacts, Vec<String>> {
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    let mut opts = setup.options(&input)?;
+    if let Some(path) = write_metadata {
+        // What rustc's `--emit=metadata=PATH` records; it is also what makes lowering keep the
+        // HIR hashes the metadata's crate hash is made of.
+        opts.output_types = crate::rustc_session::config::OutputTypes::new(&[(
+            crate::rustc_session::config::OutputType::Metadata,
+            Some(crate::rustc_session::config::OutFileName::Real(path.to_path_buf())),
+        )]);
+    }
+    let rustc_version = setup.rustc_version(&opts);
     let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
     // Shared, not leaked per call; see `USING_INTERNAL_FEATURES`.
     let using_internal_features = &USING_INTERNAL_FEATURES;
@@ -1281,17 +1533,26 @@ fn analyze_input(
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version,
+        crate_cfg: setup.loaded.cfg.to_vec(),
     };
     // The facts are handed out through `extracted` rather than returned, because returning is
     // not the way out of a run that emitted an error: `run_compiler` ends every such run in
     // `abort_if_errors`, which unwinds past the return value. What `extract` finished before
     // that is kept here, and the unwind only tells us the run had errors.
     let mut extracted: Option<CrateFacts> = None;
+    let mut written = false;
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
             create_and_enter_global_ctxt(compiler, krate, |tcx| {
                 extracted = Some(if items_only { extract_items(tcx) } else { extract(tcx) });
+                // A crate with an error is no one's dependency, so its metadata is not written.
+                if let Some(path) = write_metadata
+                    && tcx.dcx().has_errors().is_none()
+                {
+                    written = true;
+                    crate::rustc_metadata::encode_metadata(tcx, path, None);
+                }
             })
         })
     });
@@ -1305,6 +1566,14 @@ fn analyze_input(
         }
     });
     drop(captured);
+    // Metadata begun and then stopped by an error (encoding checks the bodies it carries) is
+    // not a crate anyone may load.
+    if let Some(path) = write_metadata
+        && written
+        && (finished.is_err() || !errors.is_empty())
+    {
+        let _ = eko::file::remove_file(path);
+    }
     // No facts means no HIR to read them from: the errors are the whole answer.
     let Some(mut facts) = extracted else {
         return Err(errors);
@@ -1516,15 +1785,59 @@ pub fn check_shared_source_with_width(
     opts.unstable_opts.crate_attr.push("no_core".to_string());
     opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
 
+    check_input(
+        opts,
+        Input::Str { name: FileName::anon_source_code(&source), input: source },
+        Vec::new(),
+    )
+}
+
+/// [`check_source`] against dependencies frontend read earlier: one source text, with its bodies
+/// type checked, borrow checked and linted against the crates in `loaded`, which are loaded from
+/// the metadata [`read_crate`] wrote for them. What rustc would say of the file compiled as its
+/// crate's root with those crates as `--extern`s.
+///
+/// The file stands alone: it may be one module of a crate the caller does not have, so a path
+/// into its own missing siblings (`crate::other`) fails as an unresolved import or path (E0432,
+/// E0433), which the codes tell apart from a mistake about a dependency's API (E0599 for a
+/// method no type in reach has, E0061 for a wrong argument count, E0425 for a missing item).
+///
+/// `edition` is its crate's; `None` is 2015. With no dependency this is [`check_source`].
+pub fn check_source_against(
+    crate_name: &str,
+    source: Arc<String>,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    width: usize,
+) -> Checked {
+    if loaded.dependencies.is_empty() && edition.is_none() && loaded.cfg.is_empty() {
+        return check_shared_source_with_width(crate_name, source, width);
+    }
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    let setup = Setup { edition, width, loaded, ..Setup::plain(crate_name) };
+    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
+    let opts = match setup.options(&input) {
+        Ok(opts) => opts,
+        Err(errors) => return Checked { errors, warnings: Vec::new(), fatal: true },
+    };
+    check_input(opts, input, setup.loaded.cfg.to_vec())
+}
+
+/// `tcx.analysis(())` over one session, and what it said.
+fn check_input(opts: Options, input: Input, crate_cfg: Vec<String>) -> Checked {
     let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
     // Shared, not leaked per call; see `USING_INTERNAL_FEATURES`.
     let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
-        input: Input::Str { name: FileName::anon_source_code(&source), input: source },
+        input,
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version: None,
+        crate_cfg,
     };
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
