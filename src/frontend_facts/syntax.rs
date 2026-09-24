@@ -206,3 +206,42 @@ mod tests {
         );
     }
 }
+
+/// Whether the crate whose root file is `root` declares `#![no_core]` itself, read from the
+/// root's inner attributes by the parser and nothing else.
+///
+/// A session with no sysroot injects `no_core` so that no library is loaded; `core` declares
+/// it already, and a second one is an error ("multiple `no_core` attributes") that the
+/// analysis would report as the crate's own. An unreadable or unparsable root answers `false`:
+/// the session then reads it and reports whatever is wrong.
+pub(crate) fn declares_no_core(root: &eko::path::Path) -> bool {
+    create_session_if_not_set_then(Edition::Edition2024, |_| {
+        let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
+        let text = Arc::new(eko::thread::Mutex::new(String::new()));
+        let emitter = PlainEmitter::new()
+            .sm(Some(Arc::clone(&sm)))
+            .short_message(true)
+            .dst(Box::new(super::Sink(Arc::clone(&text))));
+        let psess = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), sm);
+        let mut declared = false;
+        let _ = catch_fatal_errors(|| {
+            let mut parser =
+                match crate::rustc_parse::new_parser_from_file(&psess, root, StripTokens::Shebang, None) {
+                    Ok(parser) => parser,
+                    Err(diags) => {
+                        for diag in diags {
+                            diag.cancel();
+                        }
+                        return;
+                    }
+                };
+            match parser.parse_inner_attributes() {
+                Ok(attrs) => {
+                    declared = attrs.iter().any(|attr| attr.has_name(crate::rustc_span::sym::no_core));
+                }
+                Err(diag) => diag.cancel(),
+            }
+        });
+        declared
+    })
+}

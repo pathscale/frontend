@@ -43,6 +43,7 @@ use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 #[cfg(not(feature = "force_pinned_sysroot"))]
 use crate::rustc_interface::util::rustc_version_of_sysroot;
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
+use crate::rustc_middle::middle::privacy::EffectiveVisibilities;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
@@ -111,6 +112,80 @@ pub struct Definition {
     /// For `Enum`: each variant's name in declaration order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
+    /// For `Enum`: each variant's shape, in the same order as `variants`. A field of its own
+    /// rather than a change to `variants`, whose shape callers already deserialise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variant_shapes: Vec<VariantShape>,
+    /// Declared plain `pub`. `pub(crate)` and the like are not.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub public: bool,
+    /// Reachable from outside the crate, re-exports included: rustc's effective visibility,
+    /// which is what a path written in another crate can name.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub exported: bool,
+}
+
+/// One enum variant's shape: how it is constructed, and with how many fields.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VariantShape {
+    pub name: String,
+    pub kind: VariantKind,
+    pub fields: u32,
+}
+
+/// How a variant is written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariantKind {
+    /// `A`.
+    Unit,
+    /// `A(x, y)`: called like a function of `fields` arguments.
+    Tuple,
+    /// `A { x, y }`.
+    Struct,
+}
+
+/// The names one module makes visible, as the resolver settled them: its own items, its
+/// imports and re-exports, and what its globs bring in, each followed to what it names.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModuleNames {
+    pub module_def_path: Arc<str>,
+    pub names: Vec<ModuleName>,
+}
+
+/// One name a module makes visible.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModuleName {
+    pub name: String,
+    pub namespace: Namespace,
+    /// What the name resolves to, printed as a def path.
+    pub target_def_path: Arc<str>,
+    /// Visible outside the crate, as `pub` makes it.
+    pub public: bool,
+}
+
+/// The namespace a name lives in: `u8` the type and `u8` a module coexist, as do a function
+/// and a macro of one name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Namespace {
+    Type,
+    Value,
+    Macro,
+}
+
+/// One declarative macro the crate defines, including one an expansion defined.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MacroFacts {
+    pub def_path: Arc<str>,
+    pub name: String,
+    /// `#[macro_export]`: callable from other crates as `crate_name::name!`.
+    pub exported: bool,
+    /// `#[rustc_builtin_macro]`: its matchers are real and its meaning is the compiler's.
+    pub builtin: bool,
+    /// The rules as tokens, printed: `(matcher) => { transcriber };` for each rule. A
+    /// `macro name(..) { .. }` reads as its one rule.
+    pub rules: String,
 }
 
 /// A function's signature, as source text rather than as types.
@@ -253,6 +328,12 @@ pub struct CrateFacts {
     /// not a finished analysis.
     #[serde(default = "complete_when_absent")]
     pub complete: bool,
+    /// Every module's visible names, resolved. Empty from facts taken before this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<ModuleNames>,
+    /// Every declarative macro the crate defines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macros: Vec<MacroFacts>,
 }
 
 fn complete_when_absent() -> bool {
@@ -338,6 +419,18 @@ fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
 /// Two workers that want the same result either find it done or wait for the one computing it.
 /// A query that unwound is poisoned for both, which is how the serial walk already behaved.
 pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
+    extract_with(tcx, true)
+}
+
+/// [`extract`] without the bodies: definitions, imports, impls, module names and macros, and
+/// no references. What indexing a crate's API needs: no body is type checked, which is most of
+/// the cost, and nothing a body's check could stop on is reached. `references` and
+/// `unanalyzed_bodies` stay empty, and `complete` says only that no error was emitted.
+pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
+    extract_with(tcx, false)
+}
+
+fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
 
@@ -358,6 +451,16 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // The input file's name, printed once and shared by every span in it.
     let input = input_file(tcx);
 
+    // What is reachable from outside the crate: rustc's own table, the `effective_visibilities`
+    // query of `rustc_privacy`. The resolver's table, which it starts from, covers modules,
+    // items and imports but no associated item, so a method read from it was never exported;
+    // the privacy pass extends it through impls, traits, fields and `impl Trait` returns (the
+    // last type-checks those functions' bodies, as a full compile does). When it stops on a
+    // fatal error (a lang item a `no_core` session lacks), the resolver's table is what there
+    // is, and associated items read as not exported.
+    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()))
+        .unwrap_or(&tcx.resolutions(()).effective_visibilities);
+
     // **Definitions and impls, one item per local definition.** Each index is read on its own:
     // its kind, its name, its span and its HIR shape, or for an impl its self type, trait and
     // items. Nothing one index computes is read by another, so the walk is a stage whose input
@@ -366,7 +469,7 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // keeping their own sequence.
     //
     // No definition's path is printed yet when this stage runs, so each item prints its own.
-    let printing = Names { tcx, local: &[], input: input.clone() };
+    let printing = Names { tcx, exported, local: &[], input: input.clone() };
     let def_facts: Vec<DefFact> = run_stage((), count, |_, i| {
         let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
         def_fact(tcx, &printing, LocalDefId { local_def_index })
@@ -374,7 +477,7 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
 
     // From here on a local definition's path is the one the stage above printed, handed
     // forward: `def_facts` is frozen, indexed by `DefIndex`, and read in place.
-    let names = Names { tcx, local: &def_facts, input };
+    let names = Names { tcx, exported, local: &def_facts, input };
 
     // An impl's trait and items are local definitions the stage above may have reached after
     // the impl, so their paths are taken now, in impl order.
@@ -401,7 +504,17 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // stopped on a fatal error comes back as its printed path instead. The results come back in
     // owner order and are appended in that order, so `references` before the sort and
     // `unanalyzed_bodies`, which is never sorted, are the serial walk's sequences exactly.
-    let owners = tcx.hir_body_owner_ids();
+    let owners: &[LocalDefId] = if bodies { tcx.hir_body_owner_ids() } else { &[] };
+    //
+    // In rustc's order, in two stages. The first takes every body rustc's own body loop
+    // (`rustc_hir_analysis::check_crate`) type-checks. That loop skips an anon const of the type
+    // system (an array length, a const generic argument): such a const's type is fed while the
+    // signature or body around it is lowered, and rustc lowers every signature before it checks
+    // any body. This walk does not run that crate-wide lowering (it would stop a `no_core` file
+    // on its first missing lang item), so checking those consts in index order reached one before
+    // its type was fed: core, which has no other error to stop at first, ended in delayed bugs.
+    // The second stage takes them after every other body, each after its owner's signature is
+    // lowered (`lower_signature`), which is the state rustc checks them in.
     //
     // In rustc's order, in two stages. The first takes every body rustc's own body loop
     // (`rustc_hir_analysis::check_crate`) type-checks. That loop skips an anon const of the type
@@ -444,6 +557,18 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
         match body {
             BodyFact::Checked(references) => facts.references.extend(references),
             BodyFact::Unanalyzed(from) => facts.unanalyzed_bodies.push(from),
+        }
+    }
+
+    // **Module names and macro definitions**, after the stages above so each target's path is
+    // the one they printed. Serial: one pass over the definition table, and what each module
+    // makes visible is the resolver's own answer, already computed, only read here.
+    for i in 0..count {
+        let local = LocalDefId { local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i) };
+        match tcx.def_kind(local) {
+            DefKind::Mod => facts.modules.push(module_names(tcx, &names, local)),
+            DefKind::Macro(_) => facts.macros.extend(macro_facts(tcx, &names, local)),
+            _ => {}
         }
     }
 
@@ -497,6 +622,8 @@ fn file_name(sf: &SourceFile) -> Arc<str> {
 /// else (a library item, a closure, a constructor) is printed where it is asked for.
 struct Names<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
+    /// Which local definitions are reachable from outside the crate (`Definition::exported`).
+    exported: &'a EffectiveVisibilities,
     /// One entry per local `DefIndex`, from the definitions stage. Empty while that stage runs.
     local: &'a [DefFact],
     /// The input file, compared by pointer, and its name.
@@ -529,6 +656,50 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
             if core::ptr::eq(Arc::as_ptr(input), lo_sf) { Arc::clone(name) } else { file_name(lo_sf) };
         ByteSpan { file, start: lo.0, end: hi.0 }
     }
+}
+
+/// The names a module makes visible, from the resolver: its items, its imports and re-exports,
+/// and what its globs bring in, each with what it resolves to. A name that resolves to no
+/// definition (a primitive type, a built-in attribute) is left out.
+fn module_names<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> ModuleNames {
+    use crate::rustc_hir::def::{Namespace as Ns, Res};
+    let visible = tcx
+        .module_children_local(local)
+        .iter()
+        .filter_map(|child| {
+            let Res::Def(kind, def_id) = child.res else {
+                return None;
+            };
+            let namespace = match kind.ns()? {
+                Ns::TypeNS => Namespace::Type,
+                Ns::ValueNS => Namespace::Value,
+                Ns::MacroNS => Namespace::Macro,
+            };
+            Some(ModuleName {
+                name: child.ident.as_str().to_string(),
+                namespace,
+                target_def_path: names.path(def_id),
+                public: child.vis.is_public(),
+            })
+        })
+        .collect();
+    ModuleNames { module_def_path: names.path(local.to_def_id()), names: visible }
+}
+
+/// A declarative macro's definition, its rules printed from its tokens. `None` for a macro
+/// that is not an item (one a proc macro crate declares).
+fn macro_facts<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> Option<MacroFacts> {
+    let Node::Item(hir::Item { kind: ItemKind::Macro(ident, def, _), .. }) = tcx.hir_node_by_def_id(local)
+    else {
+        return None;
+    };
+    Some(MacroFacts {
+        def_path: names.path(local.to_def_id()),
+        name: ident.as_str().to_string(),
+        exported: crate::find_attr!(tcx, local, MacroExport { .. }),
+        builtin: crate::find_attr!(tcx, local, RustcBuiltinMacro { .. }),
+        rules: crate::rustc_ast_pretty::pprust::tts_to_string(&def.body.tokens),
+    })
 }
 
 /// What one local definition contributes to [`CrateFacts`]: an impl, a named definition, or
@@ -601,6 +772,9 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         signature: None,
         fields: Vec::new(),
         variants: Vec::new(),
+        variant_shapes: Vec::new(),
+        public: tcx.local_visibility(local).is_public(),
+        exported: names.exported.is_exported(local),
     };
     describe_shape(tcx, local, &mut definition);
     DefFact::Definition(definition)
@@ -807,6 +981,22 @@ fn describe_shape(tcx: TyCtxt<'_>, local: LocalDefId, definition: &mut Definitio
             {
                 definition.variants =
                     def.variants.iter().map(|variant| variant.ident.as_str().to_string()).collect();
+                definition.variant_shapes = def
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let (kind, fields) = match &variant.data {
+                            hir::VariantData::Struct { fields, .. } => (VariantKind::Struct, fields.len()),
+                            hir::VariantData::Tuple(fields, ..) => (VariantKind::Tuple, fields.len()),
+                            hir::VariantData::Unit(..) => (VariantKind::Unit, 0),
+                        };
+                        VariantShape {
+                            name: variant.ident.as_str().to_string(),
+                            kind,
+                            fields: u32::try_from(fields).unwrap_or(u32::MAX),
+                        }
+                    })
+                    .collect();
             }
         }
         _ => {}
@@ -980,6 +1170,51 @@ pub fn analyze_shared_source_with_width(
     sysroot: Option<&str>,
     width: usize,
 ) -> Result<CrateFacts, FatalError> {
+    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
+    analyze_input(crate_name, input, sysroot, None, None, false, width).map_err(|_| FatalError)
+}
+
+/// Why [`analyze_crate`] has no facts: the crate did not parse or its macros did not expand,
+/// so there is no HIR to read. Every error the frontend emitted, as [`CrateFacts::diagnostics`]
+/// holds them, so a refusal says what refused.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Refused {
+    pub diagnostics: Vec<String>,
+}
+
+/// Analyse a crate on disk from its root file, as rustc reads one: `mod x;` is `x.rs` or
+/// `x/mod.rs` beside the file that declares it, `#[path]` and `include!` are followed, and
+/// every span says which file it is in. Otherwise exactly [`analyze_source_with_width`]:
+/// `no_core` unless a sysroot is named, and errors do not cost the facts that survive them.
+///
+/// `target` is a target tuple (`x86_64-pc-windows-msvc`) whose `cfg` the crate is read under;
+/// `None` is the host's. A caller that wants every item a library has on any platform reads it
+/// once per target and unions the facts. `edition` is the one the crate's manifest declares
+/// (`2024`); `None` is 2015, as rustc's own default is. `items_only` reads what [`extract_items`]
+/// reads: no body is type checked and no reference is reported.
+pub fn analyze_crate(
+    crate_name: &str,
+    root: &eko::path::Path,
+    sysroot: Option<&str>,
+    target: Option<&str>,
+    edition: Option<&str>,
+    items_only: bool,
+    width: usize,
+) -> Result<CrateFacts, Refused> {
+    analyze_input(crate_name, Input::File(root.to_path_buf()), sysroot, target, edition, items_only, width)
+        .map_err(|diagnostics| Refused { diagnostics })
+}
+
+/// One analysis session over `input`, the one place every entry point builds it.
+fn analyze_input(
+    crate_name: &str,
+    input: Input,
+    sysroot: Option<&str>,
+    target: Option<&str>,
+    edition: Option<&str>,
+    items_only: bool,
+    width: usize,
+) -> Result<CrateFacts, Vec<String>> {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -992,6 +1227,14 @@ pub fn analyze_shared_source_with_width(
     // same gates nightly rustc has.
     opts.unstable_features = UnstableFeatures::Allow;
     opts.jobs.frontend = frontend_jobs(width);
+    if let Some(target) = target {
+        opts.target_triple = crate::rustc_target::spec::TargetTuple::from_tuple(target);
+    }
+    if let Some(edition) = edition {
+        opts.edition = edition
+            .parse()
+            .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
+    }
     // **The sysroot is an optional parameter, because this is a parser.**
     //
     // Definitions, imports, impls and within-crate references are read out of
@@ -1017,7 +1260,8 @@ pub fn analyze_shared_source_with_width(
     let has_sysroot = named.is_some();
     if has_sysroot {
         opts.sysroot = Sysroot::new(named);
-    } else {
+    } else if !matches!(&input, Input::File(root) if syntax::declares_no_core(root)) {
+        // A crate that is `no_core` already (core itself) gets nothing added.
         opts.unstable_opts.crate_attr.push("no_core".to_string());
         opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
     }
@@ -1043,7 +1287,7 @@ pub fn analyze_shared_source_with_width(
     let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
-        input: Input::Str { name: FileName::anon_source_code(&source), input: source },
+        input,
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version,
@@ -1056,19 +1300,26 @@ pub fn analyze_shared_source_with_width(
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
-            create_and_enter_global_ctxt(compiler, krate, |tcx| extracted = Some(extract(tcx)))
+            create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                extracted = Some(if items_only { extract_items(tcx) } else { extract(tcx) });
+            })
         })
     });
-    let mut facts = extracted.ok_or(FatalError)?;
     // Only the errors that are kept become strings: warnings and the closing summary are read
     // in place and never copied.
+    let mut errors = Vec::new();
     let captured = text.lock();
     for_each_diagnostic(&captured, |severity, entry| {
         if severity == Severity::Error && !entry.text.starts_with("error: aborting due to") {
-            facts.diagnostics.push(entry.to_owned_string());
+            errors.push(entry.to_owned_string());
         }
     });
     drop(captured);
+    // No facts means no HIR to read them from: the errors are the whole answer.
+    let Some(mut facts) = extracted else {
+        return Err(errors);
+    };
+    facts.diagnostics = errors;
     facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
     Ok(facts)
 }
