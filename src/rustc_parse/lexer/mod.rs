@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::sync::Arc;
 use diagnostics::make_errors_for_mismatched_closing_delims;
 use crate::rustc_ast::ast::{self, AttrStyle};
 use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
@@ -69,6 +70,7 @@ pub enum StripTokens {
 pub(crate) fn lex_token_trees<'psess, 'src>(
     psess: &'psess ParseSess,
     mut src: &'src str,
+    owner: Option<&'src Arc<String>>,
     mut start_pos: BytePos,
     override_span: Option<Span>,
     strip_tokens: StripTokens,
@@ -94,6 +96,7 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         start_pos,
         pos: start_pos,
         src,
+        owner,
         cursor,
         override_span,
         nbsp_is_whitespace: false,
@@ -133,6 +136,9 @@ struct Lexer<'psess, 'src> {
     pos: BytePos,
     /// Source text to tokenize.
     src: &'src str,
+    /// The source file text `src` is a slice of, when it is one: a symbol made of a slice of
+    /// `src` then keeps its bytes there instead of copying them (`Symbol::intern_from_source`).
+    owner: Option<&'src Arc<String>>,
     /// Cursor for getting lexer tokens.
     cursor: Cursor<'src>,
     override_span: Option<Span>,
@@ -158,6 +164,15 @@ struct Lexer<'psess, 'src> {
 impl<'psess, 'src> Lexer<'psess, 'src> {
     fn dcx(&self) -> DiagCtxtHandle<'psess> {
         self.psess.dcx()
+    }
+
+    /// Intern `text`, a slice of `src`, in place when `src` has an owner.
+    #[inline]
+    fn intern_src(&self, text: &str) -> Symbol {
+        match self.owner {
+            Some(owner) => Symbol::intern_from_source(text, owner),
+            None => Symbol::intern(text),
+        }
     }
 
     #[inline]
@@ -244,7 +259,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     self.ident_text(start, &str_before[..token.len as usize])
                 }
                 crate::rustc_lexer::TokenKind::RawIdent => {
-                    let sym = nfc_normalize(self.str_from(start + BytePos(2)));
+                    let sym = nfc_normalize_in(self.str_from(start + BytePos(2)), self.owner);
                     let span = self.mk_sp(start, self.pos);
                     self.psess.symbol_gallery.insert(sym, span);
                     if !sym.can_be_raw() {
@@ -264,7 +279,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     // this is necessary.
                     let lifetime_name = self.str_from(start);
                     self.last_lifetime = Some(self.mk_sp(start, start + BytePos(1)));
-                    let ident = Symbol::intern(lifetime_name);
+                    let ident = self.intern_src(lifetime_name);
                     token::Lifetime(ident, IdentIsRaw::No)
                 }
                 crate::rustc_lexer::TokenKind::InvalidIdent
@@ -275,7 +290,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                         sym.chars().count() == 1 && c == sym.chars().next().unwrap()
                     }) =>
                 {
-                    let sym = nfc_normalize(self.str_from(start));
+                    let sym = nfc_normalize_in(self.str_from(start), self.owner);
                     let span = self.mk_sp(start, self.pos);
                     self.psess
                         .bad_unicode_identifiers
@@ -329,7 +344,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                             });
                             None
                         } else {
-                            Some(Symbol::intern(string))
+                            Some(self.intern_src(string))
                         }
                     } else {
                         None
@@ -341,7 +356,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     // Include the leading `'` in the real identifier, for macro
                     // expansion purposes. See #12512 for the gory details of why
                     // this is necessary.
-                    let lifetime_name = nfc_normalize(self.str_from(start));
+                    let lifetime_name = nfc_normalize_in(self.str_from(start), self.owner);
                     self.last_lifetime = Some(self.mk_sp(start, start + BytePos(1)));
                     if starts_with_number {
                         let span = self.mk_sp(start, self.pos);
@@ -380,7 +395,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                         let span = self.mk_sp(start, self.pos);
 
                         let lifetime_name_without_tick =
-                            Symbol::intern(&self.str_from(ident_start));
+                            self.intern_src(self.str_from(ident_start));
                         if !lifetime_name_without_tick.can_be_raw() {
                             self.dcx().emit_err(
                                 crate::rustc_parse::diagnostics::CannotBeRawLifetime {
@@ -419,7 +434,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                             }
                         );
 
-                        let lifetime_name = nfc_normalize(self.str_from(start));
+                        let lifetime_name = nfc_normalize_in(self.str_from(start), self.owner);
                         token::Lifetime(lifetime_name, IdentIsRaw::No)
                     }
                 }
@@ -513,7 +528,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
     /// `ident(start)` given its text, `self.str_from(start)`.
     #[inline]
     fn ident_text(&self, start: BytePos, text: &str) -> TokenKind {
-        let sym = nfc_normalize(text);
+        let sym = nfc_normalize_in(text, self.owner);
         let span = self.mk_sp(start, self.pos);
         self.psess.symbol_gallery.insert(sym, span);
         token::Ident(sym, IdentIsRaw::No)
@@ -781,7 +796,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
             DocStyle::Inner => AttrStyle::Inner,
         };
 
-        token::DocComment(comment_kind, attr_style, Symbol::intern(content))
+        token::DocComment(comment_kind, attr_style, self.intern_src(content))
     }
 
     fn cook_lexer_literal(
@@ -953,7 +968,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
     /// As symbol_from, with an explicit endpoint.
     fn symbol_from_to(&self, start: BytePos, end: BytePos) -> Symbol {
         debug!("taking an ident from {:?} to {:?}", start, end);
-        Symbol::intern(self.str_from_to(start, end))
+        self.intern_src(self.str_from_to(start, end))
     }
 
     /// Slice of the source text spanning from `start` up to but excluding `end`.
@@ -1259,7 +1274,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         // We normally exclude the quotes for the symbol, but for errors we
         // include it because it results in clearer error messages.
         let sym = if !matches!(kind, token::Err(_)) {
-            Symbol::intern(lit_content)
+            self.intern_src(lit_content)
         } else {
             self.symbol_from_to(start, end)
         };
@@ -1268,14 +1283,25 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 }
 
 pub fn nfc_normalize(string: &str) -> Symbol {
+    nfc_normalize_in(string, None)
+}
+
+/// `nfc_normalize(string)`, where `string` may be a slice of the source text `owner`: text
+/// that is already NFC is interned in place there (`Symbol::intern_from_source`); text that
+/// normalizes to something else is not in the source and is copied as before.
+fn nfc_normalize_in(string: &str, owner: Option<&Arc<String>>) -> Symbol {
     use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+    let as_is = |string: &str| match owner {
+        Some(owner) => Symbol::intern_from_source(string, owner),
+        None => Symbol::intern(string),
+    };
     // Every ASCII char is NFC_Quick_Check=Yes with canonical combining class 0, so
     // `is_nfc_quick` answers `Yes` for any ASCII string: skip decoding it char by char.
     if string.is_ascii() {
-        return Symbol::intern(string);
+        return as_is(string);
     }
     match is_nfc_quick(string.chars()) {
-        IsNormalized::Yes => Symbol::intern(string),
+        IsNormalized::Yes => as_is(string),
         _ => {
             let normalized_str: String = string.chars().nfc().collect();
             Symbol::intern(&normalized_str)

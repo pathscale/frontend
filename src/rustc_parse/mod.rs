@@ -286,7 +286,14 @@ fn source_file_to_stream<'psess>(
         ));
     });
 
-    lexer::lex_token_trees(psess, src.as_str(), source_file.start_pos, override_span, strip_tokens)
+    lexer::lex_token_trees(
+        psess,
+        src.as_str(),
+        Some(src),
+        source_file.start_pos,
+        override_span,
+        strip_tokens,
+    )
 }
 
 /// Runs the given subparser `f` on the tokens of the given `attr`'s item.
@@ -365,7 +372,7 @@ fn lex_token_trees_for_span(
     span: Span,
 ) -> Option<impl Iterator<Item = TokenTree>> {
     let src = psess.source_map().span_to_snippet(span).ok()?;
-    let stream = match lexer::lex_token_trees(psess, &src, span.lo(), None, StripTokens::Nothing) {
+    let stream = match lexer::lex_token_trees(psess, &src, None, span.lo(), None, StripTokens::Nothing) {
         Ok(stream) => stream,
         Err(errs) => {
             errs.into_iter().for_each(|err| err.cancel());

@@ -9,6 +9,7 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -2703,6 +2704,18 @@ impl Symbol {
         with_session_globals(|session_globals| session_globals.symbol_interner.intern_str(str))
     }
 
+    /// `intern(str)` for a `str` that is a slice of `owner`, a session source text: when the
+    /// session has not seen the string, its bytes stay where they are in `owner` instead of
+    /// being copied, and the interner keeps a clone of `owner` for as long as it lives. The
+    /// symbol is the one `intern` returns, and a later `intern` of equal text from anywhere
+    /// finds it. A `str` outside `owner` is copied, as `intern` does.
+    #[inline]
+    pub fn intern_from_source(str: &str, owner: &Arc<String>) -> Self {
+        with_session_globals(|session_globals| {
+            Symbol::new(session_globals.symbol_interner.intern_inner(str.as_bytes(), Some(owner)))
+        })
+    }
+
     /// Access the underlying string. Takes no lock: the interner's index to string table is
     /// read without it (see `SymbolStrs`).
     ///
@@ -2995,13 +3008,54 @@ impl PredefinedSymbols {
     }
 }
 
-// The `&'static [u8]`s `SymbolStrs` holds for dynamic symbols actually point into this arena.
+// The `&'static [u8]`s `SymbolStrs` holds for dynamic symbols actually point into this arena,
+// or into one of the `sources`.
 //
 // This type is private to prevent accidentally constructing more than one
 // `Interner` on the same thread, which makes it easy to mix up `Symbol`s
 // between `Interner`s.
 struct InternerInner {
     arena: DroplessArena,
+    /// The source texts some session symbol's bytes live in (see `Symbol::intern_from_source`),
+    /// one clone per text, told apart by pointer. Never removed: a symbol's bytes must outlive
+    /// every `as_str` of it, which is as long as the interner, so these drop with it. Holding a
+    /// clone also means no `Arc::get_mut` of the text can succeed while the interner lives, so
+    /// its bytes never change or move.
+    sources: Vec<Arc<String>>,
+}
+
+impl InternerInner {
+    /// The `'static` bytes of a new symbol `byte_str`: taken from `owner` in place when
+    /// `byte_str` lies inside it (holding `owner` from now on), else copied into the arena.
+    fn store(&mut self, byte_str: &[u8], owner: Option<&Arc<String>>) -> &'static [u8] {
+        // The arena refuses an empty slice, and an empty string needs no bytes.
+        if byte_str.is_empty() {
+            return &[][..];
+        }
+        if let Some(owner) = owner {
+            let text = owner.as_bytes();
+            let base = text.as_ptr() as usize;
+            let start = byte_str.as_ptr() as usize;
+            let inside = byte_str.len() <= text.len()
+                && start >= base
+                && start - base <= text.len() - byte_str.len();
+            if inside {
+                // Sources are few and a lexer interns from one at a time: look from the end.
+                if !self.sources.iter().rev().any(|held| Arc::ptr_eq(held, owner)) {
+                    self.sources.push(Arc::clone(owner));
+                }
+                // SAFETY: `byte_str` lies inside the heap buffer of `owner`'s `String`, which
+                // `self.sources` now holds a clone of until the interner drops. The buffer is
+                // never freed, moved or written while that clone lives: the `String` is behind an
+                // `Arc` with more than one strong count, so it is only ever reached shared.
+                return unsafe { &*(byte_str as *const [u8]) };
+            }
+        }
+        let byte_str: &[u8] = self.arena.alloc_slice(byte_str);
+        // SAFETY: we can extend the arena allocation to `'static` because we
+        // only access these while the arena is still alive.
+        unsafe { &*(byte_str as *const [u8]) }
+    }
 }
 
 /// The first table of a session's [`SymbolIndices`]: 2 KiB, enough for a typical file's
@@ -3373,24 +3427,26 @@ impl Interner {
 
         Interner {
             predefined,
-            inner: Lock::new(InternerInner { arena: Default::default() }),
+            inner: Lock::new(InternerInner { arena: Default::default(), sources: Vec::new() }),
             strs,
             indices,
         }
     }
 
     fn intern_str(&self, str: &str) -> Symbol {
-        Symbol::new(self.intern_inner(str.as_bytes()))
+        Symbol::new(self.intern_inner(str.as_bytes(), None))
     }
 
     fn intern_byte_str(&self, byte_str: &[u8]) -> ByteSymbol {
-        ByteSymbol::new(self.intern_inner(byte_str))
+        ByteSymbol::new(self.intern_inner(byte_str, None))
     }
 
     /// One hash, then two lock-free lookups: the static table of predefined symbols, then the
-    /// session's own. Only a string the session has never seen goes on to the lock.
+    /// session's own. Only a string the session has never seen goes on to the lock. `owner`,
+    /// when given, is a source text `byte_str` may be a slice of (see
+    /// `Symbol::intern_from_source`); it only decides where a new string's bytes live.
     #[inline]
-    fn intern_inner(&self, byte_str: &[u8]) -> u32 {
+    fn intern_inner(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> u32 {
         let hash = symbol_hash(byte_str);
 
         if let Some(index) = self.predefined.find(byte_str, hash) {
@@ -3400,26 +3456,23 @@ impl Interner {
         match self.indices.find(byte_str, hash, &self.strs) {
             // Checked against overflow when it was inserted.
             Ok(local) => predefined_base(self.predefined) + local,
-            Err(miss) => self.intern_new(byte_str, hash, miss),
+            Err(miss) => self.intern_new(byte_str, hash, miss, owner),
         }
     }
 
     /// The locked path of [`Self::intern_inner`]: probe again under the lock (another writer
     /// may have inserted `byte_str` since the lock-free miss) and insert it if it is still
-    /// absent, copying it into the arena once.
+    /// absent, storing its bytes once (in place in `owner`, or copied into the arena).
     #[inline(never)]
-    fn intern_new(&self, byte_str: &[u8], hash: u64, miss: SymbolMiss) -> u32 {
+    fn intern_new(
+        &self,
+        byte_str: &[u8],
+        hash: u64,
+        miss: SymbolMiss,
+        owner: Option<&Arc<String>>,
+    ) -> u32 {
         self.inner.with_lock(|inner| {
-            let store = || {
-                // The arena refuses an empty slice, and an empty string needs no bytes.
-                if byte_str.is_empty() {
-                    return &[][..];
-                }
-                let byte_str: &[u8] = inner.arena.alloc_slice(byte_str);
-                // SAFETY: we can extend the arena allocation to `'static` because we
-                // only access these while the arena is still alive.
-                unsafe { &*(byte_str as *const [u8]) }
-            };
+            let store = || inner.store(byte_str, owner);
             // SAFETY: under the lock, so this is the one writer of `indices` and `strs`.
             let local =
                 unsafe { self.indices.find_or_insert(byte_str, hash, &self.strs, miss, store) };

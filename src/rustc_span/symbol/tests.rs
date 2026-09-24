@@ -37,6 +37,35 @@ fn interner_get() {
     assert_eq!(i.get_str(dog_idx), "dog");
 }
 
+/// A string interned from a source text keeps its bytes in that text, one held clone per text;
+/// a copy made elsewhere or a string outside the text gets the same symbols as `intern`.
+#[test]
+fn interner_from_source() {
+    let i = Interner::prefill(&["fn"], &[]);
+    let src = alloc::sync::Arc::new(String::from("fn alpha beta alpha"));
+    let alpha = &src[3..8];
+    let a = Symbol::new(i.intern_inner(alpha.as_bytes(), Some(&src)));
+    assert_eq!(a, Symbol::new(1));
+    assert!(core::ptr::eq(i.get_str(a).as_ptr(), alpha.as_ptr()));
+    // Predefined: found in the static table, nothing held.
+    assert_eq!(Symbol::new(i.intern_inner(src[..2].as_bytes(), Some(&src))), Symbol::new(0));
+    // The second `alpha` and a copy of it find the first.
+    assert_eq!(Symbol::new(i.intern_inner(src[14..].as_bytes(), Some(&src))), a);
+    assert_eq!(i.intern_str("alpha"), a);
+    let b = Symbol::new(i.intern_inner(src[9..13].as_bytes(), Some(&src)));
+    assert_eq!(i.get_str(b), "beta");
+    assert_eq!(i.inner.lock().sources.len(), 1);
+    assert_eq!(alloc::sync::Arc::strong_count(&src), 2);
+    // Not a slice of `src`: copied, nothing more held.
+    let other = String::from("gamma");
+    let g = Symbol::new(i.intern_inner(other.as_bytes(), Some(&src)));
+    assert!(!core::ptr::eq(i.get_str(g).as_ptr(), other.as_ptr()));
+    assert_eq!(i.get_str(g), "gamma");
+    assert_eq!(alloc::sync::Arc::strong_count(&src), 2);
+    drop(i);
+    assert_eq!(alloc::sync::Arc::strong_count(&src), 1);
+}
+
 #[test]
 fn without_first_quote_test() {
     create_default_session_globals_then(|| {
