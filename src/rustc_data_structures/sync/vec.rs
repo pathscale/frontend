@@ -199,6 +199,16 @@ impl<I: Idx, T: Copy> AppendOnlyIndexVec<I, T> {
         let i = i.index();
         self.vec.get(i)
     }
+
+    /// Elements published so far; see `LockFreeAppendOnlyVec::len`. Every index below it
+    /// reads back `Some` from `get` on this thread.
+    pub fn len(&self) -> usize {
+        self.vec.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vec.is_empty()
+    }
 }
 
 #[derive(Default)]

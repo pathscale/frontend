@@ -3,6 +3,7 @@
 //! probably get a better home if someone can find one.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
 use eko::path::PathBuf;
@@ -10,7 +11,7 @@ use eko::path::PathBuf;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_attr_ir::{CfgEntry, PeImportNameType};
 use crate::rustc_data_structures::sync::{AppendOnlyIndexVec, FreezeLock};
-use crate::rustc_hir_id::definitions::{DefKey, DefPath, Definitions};
+use crate::rustc_hir_id::definitions::{DefKey, DefPath, DefTable, Definitions};
 use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use crate::rustc_span::def_id::{
     CrateNum, DefId, DefPathHash, LOCAL_CRATE, LocalDefId, StableCrateId, StableCrateIdMap,
@@ -222,6 +223,10 @@ pub struct Untracked {
     /// Reference span for definitions.
     pub source_span: AppendOnlyIndexVec<LocalDefId, Span>,
     pub definitions: FreezeLock<Definitions>,
+    /// The key and path-hash tables of `definitions`, the same `Arc` it holds, read with no
+    /// lock at any time: frozen or not, in a read phase or not. Only `create_def`, through the
+    /// `definitions` write guard, appends to it.
+    pub def_table: Arc<DefTable>,
     /// The interned [StableCrateId]s.
     pub stable_crate_ids: FreezeLock<StableCrateIdMap>,
 }

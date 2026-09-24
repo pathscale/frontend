@@ -1023,11 +1023,19 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     // already, in memory, and paying for the on-disk graph as well would be paying twice for it.
     let dep_graph = crate::rustc_middle::dep_graph::DepGraph::new_disabled();
     let cstore = FreezeLock::new(Box::new(CStore::new(Box::new(DefaultMetadataLoader))) as _);
-    let definitions = FreezeLock::new(Definitions::new(stable_crate_id));
+    let definitions = Definitions::new(stable_crate_id);
+    let def_table = Arc::clone(definitions.table());
+    let definitions = FreezeLock::new(definitions);
 
     let stable_crate_ids = FreezeLock::new(StableCrateIdMap::default());
     let untracked =
-        Untracked { cstore, source_span: AppendOnlyIndexVec::new(), definitions, stable_crate_ids };
+        Untracked {
+            cstore,
+            source_span: AppendOnlyIndexVec::new(),
+            definitions,
+            def_table,
+            stable_crate_ids,
+        };
 
     // We're constructing the HIR here; we don't care what we will
     // read, since we haven't even constructed the *input* to
