@@ -33,3 +33,14 @@ asked for paths to be resolved into a compiled library. It is never a blocker to
   never bring back the `par_*` shims: new parallel work is a stage over frozen input.
 - No Python. No em dashes. No AI attribution. Never `git stash`. Stage your own paths only,
   with `git commit --only <paths>`.
+
+## Calling this crate from a program: two choices that are yours
+
+Read `README.md`, "Integrating it: allocator and parallelism", before you ship or measure.
+In short:
+
+- **Declare mimalloc as your binary's global allocator.** frontend declares none. It is 8% of
+  a serial check and 24% with files in parallel.
+- **Run files in parallel, each at width 1** (2 to 4 when there are fewer files than workers),
+  rather than one file wide. One file is about 45% serial, so its own stages stop paying at
+  about width 4, while 200 files on 12 workers run 8.7x faster than one after another.

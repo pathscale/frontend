@@ -13,6 +13,10 @@
 //! normal item for this one to use.
 //!
 //! See `UPSTREAM.md` for provenance and `README.md` for the sysroot this needs in order to run.
+//!
+//! **Linking it into a program:** declare mimalloc as your global allocator (this crate declares
+//! none) and run files in parallel, one session each, rather than one file wide. Both are measured
+//! in `README.md`, "Integrating it: allocator and parallelism".
 
 #![no_std]
 #![recursion_limit = "512"]

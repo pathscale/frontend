@@ -65,6 +65,65 @@ scripts and one proc macro - and every one of them still yields to a value you s
 The `.cargo/config.toml` here configures *this* workspace's own build. Cargo does not apply it to
 dependents, and dependents do not need it.
 
+## Integrating it: allocator and parallelism
+
+Two choices belong to the program that links frontend, not to frontend. Both are large, and both
+are easy to miss. Make them before you measure anything.
+
+### 1. Use mimalloc as your global allocator
+
+frontend declares no allocator: whatever your binary declares serves it. The compiler allocates
+heavily (about 12 million allocations for 200 small files), so the allocator is a large share of
+its time, and a larger one the more threads run.
+
+```rust
+// In your binary, once:
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+```
+
+```toml
+[dependencies]
+mimalloc = { version = "^0.1", default-features = false }
+```
+
+Measured on the repository's clean corpus (200 files), checking every file, against the system
+allocator:
+
+| | system allocator | mimalloc |
+| --- | ---: | ---: |
+| one file after another | about 2,450 ms | about 2,250 ms (8% less) |
+| 200 files on 12 workers | about 285 ms | about 215 ms (24% less) |
+
+`mimalloc`'s Rust crates are `#![no_std]`; the library underneath is C, built with `cc`, and
+needs an operating system for pages and thread-local storage, as `malloc` does. A `no_std`
+binary on an OS (one whose allocator is `ekostd::heap::Malloc`) can swap it in the same way.
+
+To measure your own build: `RUSTFLAGS="--cfg bench_mimalloc" cargo run --release --features
+parallel --example parallel_timing -- files clean 12`, against the same without the flag.
+
+### 2. Run files in parallel, not one file wide
+
+A check of one file is about 45% serial (parse, macro expansion, name resolution, session setup
+and teardown), so running one file's stages on many workers stops paying at about width 4:
+
+| clean corpus, one file at a time | width 1 | width 2 | width 4 | width 8 | width 12 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| wall clock | 2,400 ms | 1,800 ms | 1,380 ms | 1,140 ms | 1,030 ms |
+
+Files share nothing, so checking several at once scales almost linearly: the same 200 files on
+12 workers, each file serial, take about 285 ms (8.7x), about 215 ms with mimalloc.
+
+- **Many files:** one call per file (`check_shared_source_with_width`,
+  `analyze_shared_source_with_width`, `read_crate`), each at width 1, spread over a pool, for
+  example nagoya's `par_for`. Answers are identical to running them one after another.
+- **Fewer files than workers** (a few large files): the same, each at width 2 to 4.
+- **One large file:** width 4 is the sweet spot; wider costs CPU for little.
+
+Width above 1 needs the `parallel` cargo feature. Workers that run sessions need a large stack
+(the timing example uses 16 MiB), and every entry point needs a panic catcher installed first
+(`unwind_janky::install_catcher`) and `panic = "unwind"`.
+
 ## Syntax-level diagnostics
 
 Behind the `diagnostics` cargo feature, which is off by default:
