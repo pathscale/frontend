@@ -214,6 +214,65 @@ pub fn find_best_match_for_name(
     find_best_match_for_name_impl(false, candidates, lookup, dist)
 }
 
+/// The index [`find_best_match_for_name`] would lead to if `texts` were first stable-sorted by
+/// text, without sorting.
+///
+/// Callers that want a deterministic suggestion used to sort every candidate by its text, run
+/// [`find_best_match_for_name`] over the sorted names, and take the first sorted entry with the
+/// name it returned. That is `O(n log n)` string comparisons per unresolved name, over every
+/// name in scope, plus two copies of the list. This computes the same entry in one pass:
+///
+/// - a case-insensitive exact match: the smallest such text;
+/// - otherwise the smallest edit distance within the default limit, ties to the smallest text;
+/// - otherwise a match by sorted words: the largest such text, as the sorted fold kept the last;
+///
+/// and among entries with the chosen text, the lowest index, which is where a stable sort left
+/// the first of them. `texts` are the candidates' texts, read once by the caller.
+pub fn find_best_match_index_as_if_sorted(texts: &[&str], lookup: &str) -> Option<usize> {
+    let lookup_is_ascii = lookup.is_ascii();
+    let lookup_uppercase = lookup.to_uppercase();
+    let mut best: Option<usize> = None;
+    for (i, text) in texts.iter().enumerate() {
+        let same = if lookup_is_ascii && text.is_ascii() {
+            text.eq_ignore_ascii_case(lookup)
+        } else {
+            text.chars().flat_map(char::to_uppercase).eq(lookup_uppercase.chars())
+        };
+        if same && best.is_none_or(|b| *text < texts[b]) {
+            best = Some(i);
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+
+    let limit = cmp::max(lookup.chars().count(), 3) / 3;
+    let mut closest: Option<(usize, usize)> = None;
+    for (i, text) in texts.iter().enumerate() {
+        let within = closest.map_or(limit, |(d, _)| d);
+        if let Some(d) = edit_distance(lookup, text, within)
+            && closest.is_none_or(|(bd, b)| d < bd || (d == bd && *text < texts[b]))
+        {
+            closest = Some((d, i));
+        }
+    }
+    if let Some((_, i)) = closest {
+        return Some(i);
+    }
+
+    let lookup_sorted_by_words = sort_by_words(lookup);
+    let mut words: Option<usize> = None;
+    for (i, text) in texts.iter().enumerate() {
+        if text.len() == lookup.len()
+            && sort_by_words(text) == lookup_sorted_by_words
+            && words.is_none_or(|b| *text > texts[b])
+        {
+            words = Some(i);
+        }
+    }
+    words
+}
+
 /// Find the best match for multiple words
 ///
 /// This function is intended for use when the desired match would never be

@@ -38,7 +38,9 @@ use crate::rustc_hir::{MissingLifetimeKind, PrimTy, find_attr};
 use crate::rustc_lint_defs::builtin::{SINGLE_USE_LIFETIMES, UNUSED_LIFETIMES};
 use crate::rustc_middle::ty;
 use crate::rustc_session::Session;
-use crate::rustc_span::edit_distance::{edit_distance, find_best_match_for_name};
+use crate::rustc_span::edit_distance::{
+    edit_distance, find_best_match_for_name, find_best_match_index_as_if_sorted,
+};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{DUMMY_SP, DesugaringKind, Ident, Span, Symbol, kw, sym};
 use thin_vec::{ThinVec, thin_vec};
@@ -2995,35 +2997,18 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             });
         }
         let name = path[path.len() - 1].ident.name;
-        // Make sure error reporting is deterministic. Each candidate's text is read out of the
-        // interner once, rather than twice per comparison, and the suggestions are moved into
-        // the sorted order, not copied.
+        // Deterministic: the same suggestion sorting every candidate by its text would pick,
+        // found in one pass over the candidates as collected, each text read once.
         let texts: Vec<&str> = names.iter().map(|suggestion| suggestion.candidate.as_str()).collect();
-        let mut order: Vec<usize> = (0..names.len()).collect();
-        // Stable, as the sort it replaces was, so equal names keep their collection order.
-        order.sort_by(|&a, &b| texts[a].cmp(texts[b]));
+        let Some(index) = find_best_match_index_as_if_sorted(&texts, name.as_str()) else {
+            return TypoCandidate::None;
+        };
         drop(texts);
-        let mut slots: Vec<Option<TypoSuggestion>> = names.into_iter().map(Some).collect();
-        let names: Vec<TypoSuggestion> =
-            order.into_iter().map(|i| slots[i].take().expect("each index once")).collect();
-
-        match find_best_match_for_name(
-            &names.iter().map(|suggestion| suggestion.candidate).collect::<Vec<Symbol>>(),
-            name,
-            None,
-        ) {
-            Some(found) => {
-                let Some(sugg) = names.into_iter().find(|suggestion| suggestion.candidate == found)
-                else {
-                    return TypoCandidate::None;
-                };
-                if found == name {
-                    TypoCandidate::Shadowed(sugg.res, sugg.span)
-                } else {
-                    TypoCandidate::Typo(sugg)
-                }
-            }
-            _ => TypoCandidate::None,
+        let sugg = names.swap_remove(index);
+        if sugg.candidate == name {
+            TypoCandidate::Shadowed(sugg.res, sugg.span)
+        } else {
+            TypoCandidate::Typo(sugg)
         }
     }
 

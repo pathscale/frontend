@@ -43,7 +43,7 @@ use crate::rustc_middle::ty::{TyCtxt, Visibility};
 use crate::rustc_session::Session;
 use crate::rustc_session::utils::was_invoked_from_cargo;
 use crate::rustc_span::def_id::ModId;
-use crate::rustc_span::edit_distance::find_best_match_for_name;
+use crate::rustc_span::edit_distance::{find_best_match_for_name, find_best_match_index_as_if_sorted};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::MacroKind;
 use crate::rustc_span::source_map::SourceMap;
@@ -1611,19 +1611,14 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             filter_fn,
         );
 
-        // Make sure error reporting is deterministic.
-        suggestions.sort_by(|a, b| a.candidate.as_str().cmp(b.candidate.as_str()));
-
-        match find_best_match_for_name(
-            &suggestions.iter().map(|suggestion| suggestion.candidate).collect::<Vec<Symbol>>(),
-            ident.name,
-            None,
-        ) {
-            Some(found) if found != ident.name => {
-                suggestions.into_iter().find(|suggestion| suggestion.candidate == found)
-            }
-            _ => None,
-        }
+        // Deterministic: the suggestion sorting every candidate by its text would pick, found in
+        // one pass over the candidates as collected, each text read once.
+        let texts: Vec<&str> =
+            suggestions.iter().map(|suggestion| suggestion.candidate.as_str()).collect();
+        let index = find_best_match_index_as_if_sorted(&texts, ident.name.as_str())?;
+        drop(texts);
+        let suggestion = suggestions.swap_remove(index);
+        (suggestion.candidate != ident.name).then_some(suggestion)
     }
 
     fn lookup_import_candidates_from_module<FilterFn>(

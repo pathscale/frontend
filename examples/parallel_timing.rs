@@ -169,8 +169,36 @@ fn clean_report(checked: &[Checked]) {
     }
 }
 
+/// `parallel_timing [src|clean|large] [workers]`: with a corpus named, only that corpus; with a
+/// worker count as well, only that setting, once, with no comparison.
 fn main() {
-    run("src", &src_corpus(), false);
-    run("clean", &generated('c', 200, 300, 1_500, 0x5eed_0001), true);
-    run("large", &generated('l', 6, 5_000, 8_000, 0x5eed_0002), true);
+    let mut args = std::env::args().skip(1);
+    let only = args.next();
+    let workers: Option<usize> = args.next().and_then(|n| n.parse().ok());
+    let corpus = |name: &str| match name {
+        "src" => src_corpus(),
+        "clean" => generated('c', 200, 300, 1_500, 0x5eed_0001),
+        _ => generated('l', 6, 5_000, 8_000, 0x5eed_0002),
+    };
+    // `parallel_timing dump <src|clean|large> <file>`: every answer at one worker, written out,
+    // to diff one build's answers against another's.
+    if only.as_deref() == Some("dump") {
+        let name = std::env::args().nth(2).unwrap_or_else(|| "src".into());
+        let path = std::env::args().nth(3).expect("dump needs an output file");
+        let ((checked, facts), _, _) = pass(1, &corpus(&name));
+        std::fs::write(&path, format!("{checked:#?}\n{facts:#?}\n")).expect("write dump");
+        return;
+    }
+    match (only.as_deref(), workers) {
+        (Some(name), Some(threads)) => {
+            let (_, check_ms, analyze_ms) = pass(threads, &corpus(name));
+            println!("{name} at {threads}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms");
+        }
+        (Some(name), None) => run(name, &corpus(name), name != "src"),
+        (None, _) => {
+            run("src", &corpus("src"), false);
+            run("clean", &corpus("clean"), true);
+            run("large", &corpus("large"), true);
+        }
+    }
 }
