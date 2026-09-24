@@ -130,17 +130,6 @@ impl<'sess> AttributeParser<'sess> {
             return;
         }
 
-        // An internal `rustc_` attribute where this build does not expect it, in a crate that
-        // opts into `rustc_attrs` (every standard library crate does): where it may go belongs
-        // to the compiler version the crate was written for (stable 1.97's `core` puts
-        // `#[rustc_doc_primitive]` on modules). frontend reads the source it is handed, so the
-        // placement is not an error.
-        if cx.attr_path.segments[0].as_str().starts_with("rustc")
-            && cx.features.is_some_and(|features| features.rustc_attrs())
-        {
-            return;
-        }
-
         let allowed_targets = allowed_targets.allowed_targets();
         let (applied, only) = allowed_targets_applied(allowed_targets, cx.target, cx.features);
         let is_diagnostic_attr = cx.attr_path.segments[0] == sym::diagnostic;

@@ -6,7 +6,7 @@ use crate::rustc_attr_ir::{
     UnstableReason, UnstableRemovedFeature, VERSION_PLACEHOLDER,
 };
 use crate::rustc_errors::ErrorGuaranteed;
-use crate::rustc_feature::AttributeStability;
+use crate::rustc_feature::{ACCEPTED_LANG_FEATURES, AttributeStability};
 
 use super::prelude::*;
 use super::util::parse_version;
@@ -429,11 +429,15 @@ pub(crate) fn parse_unstability(
 
     match (feature, issue) {
         (Ok(feature), Ok(_)) => {
-            // rustc refuses an unstable library feature named after a language feature it has
-            // already stabilised. That is its own bookkeeping: a library written for another
-            // compiler version (stable 1.97's `core` marks `never_type` unstable) still says
-            // what it says. frontend reads the source it is handed, so the attribute is read as
-            // written.
+            // Stable *language* features shouldn't be used as unstable library features.
+            // (Not doing this for stable library features is checked by tidy.)
+            if ACCEPTED_LANG_FEATURES.iter().any(|f| f.name == feature) {
+                cx.emit_err(diagnostics::UnstableAttrForAlreadyStableFeature {
+                    attr_span: cx.attr_span,
+                    item_span: cx.target_span,
+                });
+                return None;
+            }
 
             let level = StabilityLevel::Unstable {
                 reason: UnstableReason::from_opt_reason(reason),

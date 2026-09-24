@@ -18,7 +18,7 @@ use super::util::parse_single_integer;
 use crate::rustc_attr_parsing::diagnostics;
 use crate::rustc_attr_parsing::diagnostics::{
     AttributeRequiresOpt, CguFieldsMissing, RustcScalableVectorCountOutOfRange,
-    UnknownExternLangItem,
+    UnknownExternLangItem, UnknownLangItem,
 };
 
 pub(crate) struct RustcMainParser;
@@ -531,11 +531,8 @@ impl SingleAttributeParser for LangParser {
     fn convert(cx: &mut AcceptContext<'_, '_>, args: &ArgParser) -> Option<AttributeKind> {
         let nv = cx.expect_name_value(args, cx.attr_span, None)?;
         let name = cx.expect_string_literal(nv)?;
-        // A lang item this build does not know belongs to the compiler version the library was
-        // written for (stable 1.97's `core` defines `fn_ptr_addr`); `#[lang]` is only ever in a
-        // library, behind `lang_items`. frontend reads the source it is handed: the item is read
-        // as written, and the name is simply not registered as a lang item.
         let Some(lang_item) = LangItem::from_name(name) else {
+            cx.emit_err(UnknownLangItem { span: cx.attr_span, name });
             return None;
         };
 
