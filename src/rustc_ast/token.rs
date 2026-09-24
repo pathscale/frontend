@@ -897,17 +897,20 @@ impl Token {
     }
 
     /// Returns `true` if the token is an identifier.
+    #[inline]
     pub fn is_ident(&self) -> bool {
         self.ident().is_some()
     }
 
     /// Returns `true` if the token is a lifetime.
+    #[inline]
     pub fn is_lifetime(&self) -> bool {
         self.lifetime().is_some()
     }
 
     /// Returns `true` if the token is an identifier whose name is the given
     /// string slice.
+    #[inline]
     pub fn is_ident_named(&self, name: Symbol) -> bool {
         self.ident().is_some_and(|(ident, _)| ident.name == name)
     }
@@ -936,6 +939,7 @@ impl Token {
         self.is_keyword(kw::Mut) || self.is_keyword(kw::Const)
     }
 
+    #[inline]
     pub fn is_qpath_start(&self) -> bool {
         matches!(self.kind, Lt | Shl)
     }
@@ -1028,6 +1032,7 @@ impl Token {
 
     /// Is this an invisible open delimiter at the start of a token sequence
     /// from an expanded metavar?
+    #[inline]
     pub fn is_metavar_seq(&self) -> Option<MetaVarKind> {
         match self.kind {
             OpenInvisible(InvisibleOrigin::MetaVar(kind)) => Some(kind),
@@ -1122,7 +1127,9 @@ impl Token {
 }
 
 impl PartialEq<TokenKind> for Token {
-    #[inline]
+    // Always inlined: against a constant payload-free kind this is one tag
+    // compare, and the profile showed it left out of line in hot callers.
+    #[inline(always)]
     fn eq(&self, rhs: &TokenKind) -> bool {
         self.kind == *rhs
     }
