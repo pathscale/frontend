@@ -139,6 +139,9 @@ pub struct SessionGlobals {
     /// Collisions are possible and processed in `maybe_use_metavar_location` on best effort basis.
     metavar_spans: MetavarSpansMap,
     hygiene_data: Lock<hygiene::HygieneData>,
+    /// The edition `hygiene_data`'s root expansion was created with, which never changes: read
+    /// by `SyntaxContext::edition` for the root context without taking the lock.
+    root_edition: Edition,
 
     /// The session's source map, if there is one. This field should only be
     /// used in places where the `Session` is truly not available, such as
@@ -157,6 +160,7 @@ impl SessionGlobals {
             span_interner: Lock::new(span_encoding::SpanInterner::default()),
             metavar_spans: Default::default(),
             hygiene_data: Lock::new(hygiene::HygieneData::new(edition)),
+            root_edition: edition,
             source_map: sm_inputs.map(|inputs| Arc::new(SourceMap::with_inputs(inputs))),
         }
     }

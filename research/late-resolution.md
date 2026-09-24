@@ -383,3 +383,34 @@ Places the type checker has to confirm, most likely first:
 - From the previous pass, still true: `into_output` moves `unused_labels` out of
   `*diag_metadata` (a `Box`), and `ParentScope { .., ..root_scope }` builds a parent-module
   struct from a child module.
+
+## Why it did not scale on `src/` (speed-01 item 1)
+
+Static check, for the `no_core` sessions of `check_source_with_width` and `parallel_timing`:
+the stage engages. `-Zcrate-attr=no_core` is injected at parse (`rustc_interface/passes.rs`,
+`cmdline_attrs::inject`), before the resolver is built, so the extern prelude gets no `core` or
+`std` flag entry; no `--extern` is set; doc links are `ResolveDocLinks::None`; nothing loads a
+crate except an `extern crate alloc;`/`extern crate std;` item (one file each in `src/`, and the
+load fails against a mismatched or absent sysroot). The width is latched by `run_compiler` on the
+session thread, which is the thread `resolve_crate` runs on, so `is_parallel_here` is true there
+and `run_stage` opens a parallel scope.
+
+So the units did run on the pool, and the time went into locks every unit shares:
+
+- `Symbol::as_str` took the session's symbol interner `Lock` (a mutex in a parallel session)
+  on every call. Typo suggestion calls it once per candidate name per unresolved name, and a
+  `no_core` file has an unresolved name at every `Option`, `Some`, `Vec`, `String`. Every worker
+  took one mutex on one cache line per candidate. Reads are now lock-free (`SymbolStrs`,
+  `rustc_span/symbol.rs`): an append-only table of doubling buckets, published by a `Release`
+  store of its length under the interner's lock and read after an `Acquire` load.
+- `SyntaxContext::adjust`, `normalize_to_macros_2_0_and_adjust`, `outer_expn`, `edition` and
+  `hygienic_eq` took the hygiene `Lock` even for the root context. `visit_scopes` calls `adjust`
+  at the end of every module chain, which every unresolved name reaches, and `edition` is behind
+  every `is_rust_2015`/`at_least_rust_2018`. Each now answers the root context without the lock,
+  with the answer the locked path gives (the root's data is never mutated but for
+  `dollar_crate_name`; its edition is kept in `SessionGlobals::root_edition`).
+
+Left, and worth measuring next: the largest unit (a big `impl` is one unit; see "Finer units"),
+`SourceMap::lookup_source_file`, which takes the files `RwLock` and clones the file's `Arc` (an
+atomic on one shared line) per span lookup in the suggestion code, and `definitions` reads
+(`def_key`, a `FreezeLock` not frozen until after lowering) in `is_accessible_from`.
