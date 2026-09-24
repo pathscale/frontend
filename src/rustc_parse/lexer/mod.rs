@@ -1258,6 +1258,11 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
 pub fn nfc_normalize(string: &str) -> Symbol {
     use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+    // ASCII is always NFC (the quick check answers `Yes` for every character below U+0300),
+    // and nearly every identifier is ASCII: a word-at-a-time scan instead of a char decode.
+    if string.is_ascii() {
+        return Symbol::intern(string);
+    }
     match is_nfc_quick(string.chars()) {
         IsNormalized::Yes => Symbol::intern(string),
         _ => {
