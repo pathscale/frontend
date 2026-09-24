@@ -1,7 +1,6 @@
 //! Conditional compilation stripping.
 
 use alloc::vec::Vec;
-use alloc::borrow::ToOwned;
 use core::iter;
 
 use crate::rustc_ast::attr::data_structures::CfgEntry;
@@ -31,8 +30,8 @@ use crate::rustc_span::{STDLIB_STABLE_CRATES, Span, Symbol, sym};
 use tracing::instrument;
 
 use crate::rustc_expand::diagnostics::{
-    CrateNameInCfgAttr, CrateTypeInCfgAttr, FeatureNotAllowed, FeatureRemoved,
-    FeatureRemovedReason, RemoveExprNotSupported,
+    CrateNameInCfgAttr, CrateTypeInCfgAttr, FeatureNotAllowed,
+    RemoveExprNotSupported,
 };
 
 /// A folder that strips out items that do not belong in the current configuration.
@@ -53,23 +52,11 @@ pub fn features(sess: &Session, krate_attrs: &[Attribute], crate_name: Symbol) -
         AttributeParser::parse_limited_sym(sess, krate_attrs, &[sym::feature])
     {
         for feature_ident in feature_idents {
-            // If the enabled feature has been removed, issue an error.
-            if let Some(f) =
-                REMOVED_LANG_FEATURES.iter().find(|f| feature_ident.name == f.feature.name)
-            {
-                let pull_note = if let Some(pull) = f.pull {
-                    format!(
-                        "; see <https://github.com/rust-lang/rust/pull/{pull}> for more information",
-                    )
-                } else {
-                    "".to_owned()
-                };
-                sess.dcx().emit_err(FeatureRemoved {
-                    span: feature_ident.span,
-                    reason: f.reason.map(|reason| FeatureRemovedReason { reason }),
-                    removed_rustc_version: f.feature.since,
-                    pull_note,
-                });
+            // A feature this build has removed is not an error. frontend reads the source it is
+            // handed, and a library written for another compiler version (stable 1.97's `core`
+            // enables `abi_unadjusted` and `diagnostic_on_unmatch_args`) is still source to
+            // read. The feature is simply not enabled; anything it gated is judged on its own.
+            if REMOVED_LANG_FEATURES.iter().any(|f| feature_ident.name == f.feature.name) {
                 continue;
             }
 
