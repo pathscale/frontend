@@ -1,0 +1,17 @@
+[package]
+name = "parse-ref"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+frontend = { path = "../..", features = ["diagnostics"] }
+ra_ap_syntax = "^0.0.349"
+syn = { version = "2", features = ["full", "parsing"], default-features = false }
+proc-macro2 = { version = "1", default-features = false }
+
+[profile.release]
+debug = false
+
+[workspace]
