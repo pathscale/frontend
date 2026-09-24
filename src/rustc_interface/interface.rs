@@ -334,6 +334,10 @@ pub struct Config {
     /// the sysroot is chosen at run time with `--sysroot`, so the string that has to match it
     /// belongs beside that choice and not inside the executable.
     pub rustc_version: Option<alloc::string::String>,
+    /// `--cfg` specs, as the command line writes them: `feature="std"`, `tokio_unstable`. A
+    /// crate read from source is read under the configuration its build would have given it,
+    /// which its manifest's features and its build script decide, not this compiler.
+    pub crate_cfg: Vec<alloc::string::String>,
 }
 
 // JUSTIFICATION: before session exists, only config
@@ -422,7 +426,7 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
             sess.internal_target_features
                 .extend(target_config.internal_target_features.to_sorted_stable_ord());
 
-            sess.config = parse_cfg(&sess, Vec::new());
+            sess.config = parse_cfg(&sess, config.crate_cfg);
             let is_nightly_build = sess.is_nightly_build();
             let is_crt_static = sess.crt_static(None);
             util::add_configuration(

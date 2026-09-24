@@ -1154,12 +1154,12 @@ impl<'tcx> TyCtxt<'tcx> {
         // - debug_assertions: for the "fingerprint the result" check in
         //   `crate::rustc_query_impl::execution::execute_job`.
         // - incremental: for query lookups.
-        // Not `needs_metadata`: upstream includes the hash in the crate metadata through the
-        // `crate_hash` query, but this crate encodes no metadata (nothing calls
-        // `rustc_metadata`'s encoder), and every session is an `Rlib`, so the check made every
-        // session stable-hash every HIR owner as it was lowered. That hash read each def path
-        // hash under the definitions lock while other items created defs under it, which made
-        // lowering the most contended stage of a parallel session, for a hash nothing read.
+        // - metadata output: the crate metadata carries the hash through the `crate_hash`
+        //   query. Asked of the session's outputs rather than `needs_metadata`, which is true of
+        //   every `Rlib`: only a session that writes metadata (`frontend_facts` reading a
+        //   dependency) reads the hash, and otherwise hashing every HIR owner as it is lowered
+        //   read each def path hash under the definitions lock while other items created defs
+        //   under it, which made lowering the most contended stage of a parallel session.
         // - instrument_coverage: for putting into coverage data (see
         //   `hash_mir_source`).
         // - metrics_dir: metrics use the strict version hash in the filenames
@@ -1170,6 +1170,11 @@ impl<'tcx> TyCtxt<'tcx> {
             || self.sess.opts.incremental.is_some()
             || self.sess.instrument_coverage()
             || self.sess.opts.unstable_opts.metrics_dir.is_some()
+            || self
+                .sess
+                .opts
+                .output_types
+                .contains_key(&crate::rustc_session::config::OutputType::Metadata)
     }
 
     #[inline]
