@@ -1362,9 +1362,10 @@ fn nfc_normalize_in(string: &str, owner: Option<&Arc<String>>) -> Symbol {
         None => Symbol::intern(string),
     };
     // Every ASCII char is NFC_Quick_Check=Yes with canonical combining class 0, so
-    // `is_nfc_quick` answers `Yes` for any ASCII string: skip decoding it char by char.
-    if string.is_ascii() {
-        return as_is(string);
+    // `is_nfc_quick` answers `Yes` for any ASCII string: skip decoding it char by char, and
+    // intern it as is (`as_is`), testing for ASCII in the interner's hashing pass.
+    if let Some(sym) = Symbol::intern_if_ascii(string, owner) {
+        return sym;
     }
     match is_nfc_quick(string.chars()) {
         IsNormalized::Yes => as_is(string),

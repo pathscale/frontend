@@ -199,3 +199,33 @@ fn leaked(s: String) -> &'static [u8] {
     let s: &'static str = s.leak();
     s.as_bytes()
 }
+
+#[test]
+fn symbol_hash_bits_mark_exactly_non_ascii() {
+    // Every length through two whole words and a tail of each size, with one non-ASCII byte
+    // at every position (a two-byte char, so both of its bytes are high), and none.
+    for len in 0..=24usize {
+        let ascii: String = (0..len).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        let (hash, bits) = symbol_hash_and_bits(ascii.as_bytes());
+        assert_eq!(hash, symbol_hash(ascii.as_bytes()));
+        assert_eq!(bits & 0x8080_8080_8080_8080, 0, "{ascii:?}");
+        for at in 0..len.saturating_sub(1) {
+            let mut s = String::from(&ascii[..at]);
+            s.push('\u{e9}');
+            s.push_str(&ascii[at + 2..]);
+            assert_eq!(s.len(), len);
+            let (hash, bits) = symbol_hash_and_bits(s.as_bytes());
+            assert_eq!(hash, symbol_hash(s.as_bytes()));
+            assert_ne!(bits & 0x8080_8080_8080_8080, 0, "{s:?}");
+        }
+    }
+}
+
+#[test]
+fn intern_if_ascii_matches_intern() {
+    let i = Interner::prefill(&["fn", "let"], &[]);
+    assert_eq!(i.intern_if_ascii(b"fn", None), Some(i.intern_inner(b"fn", None)));
+    assert_eq!(i.intern_if_ascii(b"dog", None), Some(i.intern_inner(b"dog", None)));
+    assert_eq!(i.intern_if_ascii("caf\u{e9}".as_bytes(), None), None);
+    assert_eq!(i.intern_if_ascii(b"", None), Some(i.intern_inner(b"", None)));
+}

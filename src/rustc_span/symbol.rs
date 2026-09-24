@@ -2716,6 +2716,17 @@ impl Symbol {
         })
     }
 
+    /// When `str` is ASCII, `intern_from_source(str, owner)` (or `intern(str)` with no owner);
+    /// otherwise `None`, having interned nothing. The ASCII test is made in the same pass over
+    /// the bytes as the interner's hash, for a caller (the lexer's NFC normalization) that
+    /// treats ASCII text differently from the rest.
+    #[inline]
+    pub fn intern_if_ascii(str: &str, owner: Option<&Arc<String>>) -> Option<Self> {
+        with_session_globals(|session_globals| {
+            session_globals.symbol_interner.intern_if_ascii(str.as_bytes(), owner).map(Symbol::new)
+        })
+    }
+
     /// Access the underlying string. Takes no lock: the interner's index to string table is
     /// read without it (see `SymbolStrs`).
     ///
@@ -2903,11 +2914,23 @@ const fn predefined_tag(hash: u64) -> u32 {
 /// multiplication's well-mixed high bits down to where a table takes its slot index from.
 #[inline]
 const fn symbol_hash(bytes: &[u8]) -> u64 {
+    symbol_hash_and_bits(bytes).0
+}
+
+/// `(symbol_hash(bytes), bits)`, where `bits` is the OR of every word the hash reads. Each byte
+/// of `bytes` lands in exactly one of those words and the tail word's padding is zero, so `bits`
+/// has a byte's high bit set exactly when some byte of `bytes` does: `bits & 0x8080..80 == 0`
+/// is `bytes.is_ascii()`, found in the same pass as the hash.
+#[inline]
+const fn symbol_hash_and_bits(bytes: &[u8]) -> (u64, u64) {
     const K: u64 = 0xf1357aea2e62a9c5;
     let mut h = (bytes.len() as u64).wrapping_mul(K);
+    let mut bits = 0u64;
     let mut rest = bytes;
     while let Some((word, tail)) = rest.split_first_chunk::<8>() {
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(*word)).wrapping_mul(K);
+        let word = u64::from_le_bytes(*word);
+        bits |= word;
+        h = (h.rotate_left(5) ^ word).wrapping_mul(K);
         rest = tail;
     }
     if !rest.is_empty() {
@@ -2926,9 +2949,11 @@ const fn symbol_hash(bytes: &[u8]) -> u64 {
         if let Some((part, _)) = rest.split_first_chunk::<1>() {
             word |= (part[0] as u64) << shift;
         }
+        // Every part is shifted by a whole number of bytes, so each byte keeps a lane of its own.
+        bits |= word;
         h = (h.rotate_left(5) ^ word).wrapping_mul(K);
     }
-    h.rotate_left(26)
+    (h.rotate_left(26), bits)
 }
 
 /// The number of slots for `n` predefined symbols: a power of two, at least twice `n`, so the
@@ -3476,8 +3501,23 @@ impl Interner {
     /// `Symbol::intern_from_source`); it only decides where a new string's bytes live.
     #[inline]
     fn intern_inner(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> u32 {
-        let hash = symbol_hash(byte_str);
+        self.intern_hashed(byte_str, symbol_hash(byte_str), owner)
+    }
 
+    /// `intern_inner(byte_str, owner)` when `byte_str` is ASCII, else `None`, with the ASCII test
+    /// made in the hash's own pass over the bytes.
+    #[inline]
+    fn intern_if_ascii(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> Option<u32> {
+        let (hash, bits) = symbol_hash_and_bits(byte_str);
+        if bits & 0x8080_8080_8080_8080 != 0 {
+            return None;
+        }
+        Some(self.intern_hashed(byte_str, hash, owner))
+    }
+
+    /// `intern_inner` given `hash`, which is `symbol_hash(byte_str)`.
+    #[inline]
+    fn intern_hashed(&self, byte_str: &[u8], hash: u64, owner: Option<&Arc<String>>) -> u32 {
         if let Some(index) = self.predefined.find(byte_str, hash) {
             return index;
         }
