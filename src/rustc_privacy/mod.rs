@@ -1796,6 +1796,15 @@ pub fn provide(providers: &mut Providers) {
 /// so the replay order is the order the serial loops ran in: every item's name-privacy errors,
 /// then every item's type-privacy errors.
 ///
+/// The type stage is chained to the name stage (`StageScope::stage_then`): item `i`'s type walk
+/// runs on the thread that just ran its name walk, right after it, while the item's HIR and
+/// typeck results are still in that core's cache. That changes nothing the two stages can
+/// answer. They were already one scope with no order between them, so any interleaving of the
+/// two was a schedule the scope could run; chaining only picks among those, and the argument
+/// below holds for every one. Their numbers, replays and cut-off are the two stages' as before.
+/// In a serial session the type stage runs in full on `release`, straight after the name stage,
+/// which is the two serial loops.
+///
 /// Why an item-like needs nothing another one wrote:
 ///
 /// - `NamePrivacyVisitor` holds `maybe_typeck_results`, which `visit_nested_body` sets and puts
@@ -1820,15 +1829,17 @@ fn check_mod_privacy(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     };
 
     stages(|scope| {
-        // Check privacy of names not checked in previous compilation stages.
-        scope.stage_weighted(module, len, weight, |module, index| {
+        // Check privacy of names not checked in previous compilation stages. Every item says
+        // `true`: its type walk may follow at once.
+        let names = scope.stage_weighted(module, len, weight, |module, index| {
             let mut visitor = NamePrivacyVisitor { tcx, maybe_typeck_results: None };
-            visit_item_like(tcx, module, index, &mut visitor)
+            let _ = visit_item_like(tcx, module, index, &mut visitor);
+            true
         });
 
         // Check privacy of explicitly written types and traits as well as
         // inferred types of expressions and patterns.
-        scope.stage_weighted(module, len, weight, move |module, index| {
+        let types = scope.stage_then(&names, module, len, weight, move |module, index| {
             let mut visitor = TypePrivacyVisitor {
                 tcx,
                 mod_id,
@@ -1856,6 +1867,9 @@ fn check_mod_privacy(tcx: TyCtxt<'_>, mod_id: LocalModId) {
                 );
             }
         });
+        // Released at once, where the serial type loop ran: a serial session runs it here. In
+        // parallel every item said `true` and follows its name walk anyway.
+        drop(types.release());
     });
 }
 
