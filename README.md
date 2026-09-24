@@ -65,6 +65,30 @@ scripts and one proc macro - and every one of them still yields to a value you s
 The `.cargo/config.toml` here configures *this* workspace's own build. Cargo does not apply it to
 dependents, and dependents do not need it.
 
+## Performance: before and after
+
+`check_source` on the repository's two generated corpora of valid source
+(`examples/parallel_timing.rs`). The clean corpus is 200 files, 4.66 MB; the large one is 6
+files, 0.98 MB. "Before" is the earliest measurement on record (commit `6774475`); "after" is
+this branch, on the same 16-core machine, best of back-to-back runs.
+
+| | before | after |
+| --- | ---: | ---: |
+| clean, one file at a time, serial | 2,491 ms (1.9 MB/s) | 2,310 to 2,420 ms (2.0 MB/s) |
+| clean, one file at a time, best width | 1,325 ms (3.5 MB/s) | 1,020 to 1,050 ms (4.5 MB/s) |
+| clean, 200 files in parallel, 12 workers | not measured | 280 to 290 ms (16.5 MB/s) |
+| same, with mimalloc | not measured | 207 to 225 ms (21 to 22 MB/s) |
+| large, serial | 488 ms (2.0 MB/s) | 471 to 478 ms (2.1 MB/s) |
+| large, best width | 203 ms (4.8 MB/s) | 143 to 148 ms (6.7 MB/s) |
+| large, 6 files in parallel, each at width 2 | not measured | 78 ms (12.6 MB/s) |
+| allocations, clean, serial | 13.9 million (4.72 GB) | 11.8 million (2.80 GB) |
+| peak memory per file, clean, serial | 12.7 MB | 5.2 MB |
+| parse alone | about 43 MB/s | about 43 MB/s |
+
+Answers (every diagnostic and fact) are identical at every width and in every row. The largest
+gains come from running files in parallel and from the allocator, both of which are the calling
+program's choice: see the next section.
+
 ## Integrating it: allocator and parallelism
 
 Two choices belong to the program that links frontend, not to frontend. Both are large, and both
