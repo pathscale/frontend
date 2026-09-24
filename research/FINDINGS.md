@@ -1,60 +1,88 @@
 # Parallel frontend: findings
 
 Where the time goes, what runs in parallel now, and what is still serial. Every number comes
-from `examples/parallel_timing.rs` on a shared 16-core machine, so compare numbers only within
-one run.
+from `examples/parallel_timing.rs` on a shared 16-core machine (12 performance cores), so
+compare numbers only within one run.
 
-## How the execution graph below was read
+## What is timed
 
-With rustc's own `-Z time-passes` (JSON format) switched on in the session options of a local
-build, and `parallel_timing <corpus> <width>` running one setting, every pass prints its
-duration, and summing by pass name over a corpus gives the table. A pass that runs inside a
-stage item (such as `drop_ast`, which runs inside lowering) is the sum of every item's
-duration, so it is CPU time added up over the pool, not elapsed time.
+Only valid source: every file must type check with no error, or the run stops. The two corpora
+are generated from `tests/corpus/` (a lang item prelude plus unit templates):
 
-## Bottlenecks at 1 worker (check plus analyze, summed over every file)
+- `clean`: 200 files of 300 to 1,500 lines, 4.7 MB.
+- `large`: 6 files of 5,000 to 8,000 lines, 1 MB.
 
-| pass | this crate's `src/` (1,424 files) | large clean files (6) |
-| --- | ---: | ---: |
-| `resolve_crate` | 6,003 ms | 36 ms |
-| of which `late_resolve_crate` | 3,523 ms | 32 ms |
-| of which `finalize_macro_resolutions` | 1,951 ms | 0 ms |
-| `parse_crate` | 1,121 ms | 54 ms |
-| `macro_expand_crate` | 611 ms | 13 ms |
-| `MIR_borrow_checking` | 0 ms | 203 ms |
-| `type_check_crate` | 79 ms | 174 ms |
-| `coherence_checking` | 76 ms | 66 ms |
+This crate's own `src/` was a corpus until `9893acb`. Each of its files compiled on its own,
+without its crate or `core`, is not a valid program: 1,421 of 1,423 ended fatal, 341 on a
+missing lang item and the rest at the `abort_if_errors` that ends every run with an error. Its
+time was error recovery (typo and import suggestions for every unresolved `Option`, `Vec`,
+`String`) and the unwind out of the refused run, so it measured neither the compiler nor its
+parallelism. Several changes below were found on it and are kept because they are correct
+and cost nothing on valid code.
 
-The crate's own sources run as `no_core`, so most files stop at a missing lang item before
-analysis. Their time is almost all name resolution, much of it error-suggestion search for
-names that are unresolved without `core`.
+## How the execution graph was read
 
-## What runs in parallel now, and its effect (large files, 1 against 8 workers)
+- Per pass: rustc's `-Z time-passes` (JSON) switched on in the session options of a local
+  build, summed by pass name over a corpus. A pass inside a stage item is CPU summed over the
+  pool, not elapsed time.
+- Per thread: macOS `sample` on a running `parallel_timing`, folded by function, with the
+  session's own thread separated from the pool's. What the session thread does while no
+  helper can is the serial part.
 
-| pass | 1 worker | 8 workers |
-| --- | ---: | ---: |
-| `MIR_borrow_checking` | 203 ms | 46 ms |
-| `type_check_crate` | 174 ms | 61 ms |
-| `coherence_checking` | 66 ms | 34 ms |
-| `parse_crate` (serial) | 54 ms | 56 ms |
-| `resolve_crate` (serial) | 39 ms | 36 ms |
+## Whole-call speedup (`check_source`, width 1 against the best width)
 
-The stages are type checking, borrow checking, well-formedness checks, coherence, lints, AST to
-HIR lowering, and `frontend_facts::extract`. Whole-call speedup on `check_source`:
+| corpus | width 1 | best | speedup |
+| --- | ---: | ---: | ---: |
+| large (6 files) | 465 ms | 160 ms | 2.90x |
+| clean (200 files) | 2,357 ms | 1,088 ms | 2.17x |
 
-- large clean files: 2.24x at 12 workers
-- clean corpus: 1.53x at 4 workers
-- this crate's sources: none, because they are bound by resolution
+`analyze_source` (facts) reaches 1.92x and 1.47x. Answers are identical at widths 1 to 24.
 
-Answers are identical at 1 to 12 workers on every corpus.
+## Per pass, clean corpus, check plus analyze, width 1 against width 12
 
-## Still serial
+| pass | width 1 | width 12 | |
+| --- | ---: | ---: | ---: |
+| `MIR_borrow_checking` | 935 ms | 194 ms | 4.83x |
+| `type_check_crate` | 824 ms | 278 ms | 2.96x |
+| `coherence_checking` | 385 ms | 170 ms | 2.27x |
+| `parse_crate` | 279 ms | 286 ms | serial |
+| `resolve_crate` | 232 ms | 152 ms | 1.52x |
+| of which `late_resolve_crate` | 195 ms | 113 ms | 1.73x |
+| `misc_checking_3` | 149 ms | 113 ms | 1.33x |
+| `lint_checking` | 85 ms | 36 ms | 2.34x |
+| `macro_expand_crate` | 84 ms | 84 ms | serial |
 
-1. **Name resolution.** Late resolution and macro finalization both resolve paths through
-   `&mut Resolver` (`cm_mut`), which writes used-import marks, borrow counts, per-module trait
-   lists and diagnostics state. Late resolution is already split into per-item units with owned
-   output (`research/late-resolution.md`). What remains is a per-unit write sink plus a frozen
-   read mode, so the units can run as a stage. The unfinished attempt is
-   `research/late-resolution-wip.patch`. Macro finalization needs the same sink.
-2. **Parsing** one file. Not split.
-3. **Macro expansion.** Its fixed-point loop mutates the resolver.
+## What changed in this round, and why
+
+- **The stage gate measures instead of estimating.** Weights are relative sizes. `run_stage`
+  runs its first items serially and times them, and hands the rest to the pool once their
+  measured cost pays for helpers; a scope's owner measures the chunks it drains and wakes
+  helpers from that rate. The earlier per-byte constants came from `src/`, where most bodies
+  fail to resolve, and kept every stage of clean code serial (0.93x).
+- **No HIR hashing.** `needs_hir_hash` was true because sessions are `Rlib` and
+  `needs_metadata()` said so, but this crate encodes no metadata. Lowering hashed every owner,
+  reading def path hashes under the definitions lock while other items created defs. Large
+  went from 2.49x to 3.09x.
+- **`drop_ast` off the pool.** The AST was freed inside lowering items on every worker at
+  once, into the allocating thread's zone; it is now freed once, at session end, on the thread
+  that allocated it.
+- **Lock-free reads**: symbol strings (an append-only table published under the interner's
+  lock), root-context hygiene, and the definitions during the frozen resolver stages
+  (`FreezeLock::read_phase`).
+- **Macro finalization is a stage** over the frozen resolver, like late resolution.
+- **Zero copy of the source**: `Input::Str` carries `Arc<String>` to the `SourceFile`, which
+  copies only to normalise a BOM or CRLF.
+- **The parallel parse is removed**: on valid source it gained 1.04x on `parse_crate` (clean)
+  and 1.33x (large), under 1% of either run. `research/parallel-parse.md`.
+
+## Still serial, as shares of the session thread at width 12 (clean corpus)
+
+1. **Lexing and parsing**, about 16%. Lexing builds every token tree before parsing starts.
+2. **Macro expansion and early resolution**, about 14%. The fixed-point loop mutates the
+   resolver and numbers hygiene contexts and ids in walk order
+   (`research/macro-expansion.md`).
+3. **Teardown**, about 12%: dropping the query system, mostly the per-slot query arenas the
+   workers filled (one `QueryArenas` per registry slot), freed on the session thread.
+4. Session setup and early lints, a few percent each.
+
+With about 42% serial, 12 workers cannot give more than about 2.2x on the clean corpus.
