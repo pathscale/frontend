@@ -889,6 +889,18 @@ pub fn analyze_source_with_width(
     sysroot: Option<&str>,
     width: usize,
 ) -> Result<CrateFacts, FatalError> {
+    analyze_shared_source_with_width(crate_name, Arc::new(String::from(source)), sysroot, width)
+}
+
+/// [`analyze_source_with_width`] over text the caller already shares. The session's source
+/// file keeps `source` itself, so the text is never copied (unless it has a BOM or a `\r\n`,
+/// which the source map normalizes away in its own copy).
+pub fn analyze_shared_source_with_width(
+    crate_name: &str,
+    source: Arc<String>,
+    sysroot: Option<&str>,
+    width: usize,
+) -> Result<CrateFacts, FatalError> {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -952,7 +964,7 @@ pub fn analyze_source_with_width(
     let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
-        input: Input::Str { name: FileName::anon_source_code(source), input: source.to_string() },
+        input: Input::Str { name: FileName::anon_source_code(&source), input: source },
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version,
@@ -1161,6 +1173,17 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
 /// once on nagoya's pool. `1` (or `0`) is the serial compiler, and the answer does not depend
 /// on it.
 pub fn check_source_with_width(crate_name: &str, source: &str, width: usize) -> Checked {
+    check_shared_source_with_width(crate_name, Arc::new(String::from(source)), width)
+}
+
+/// [`check_source_with_width`] over text the caller already shares. The session's source file
+/// keeps `source` itself, so the text is never copied (unless it has a BOM or a `\r\n`, which
+/// the source map normalizes away in its own copy).
+pub fn check_shared_source_with_width(
+    crate_name: &str,
+    source: Arc<String>,
+    width: usize,
+) -> Checked {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -1178,7 +1201,7 @@ pub fn check_source_with_width(crate_name: &str, source: &str, width: usize) -> 
     let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
-        input: Input::Str { name: FileName::anon_source_code(source), input: source.to_string() },
+        input: Input::Str { name: FileName::anon_source_code(&source), input: source },
         psess_created: Some(capture_diagnostics(&text)),
         using_internal_features,
         rustc_version: None,

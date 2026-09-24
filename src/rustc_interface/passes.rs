@@ -73,7 +73,7 @@ pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
                 Input::Str { input, name } => new_parser_from_source_str(
                     &sess.psess,
                     name.clone(),
-                    input.clone(),
+                    Arc::clone(input),
                     StripTokens::ShebangAndFrontmatter,
                 ),
             });

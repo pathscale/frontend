@@ -110,7 +110,7 @@ pub fn unwrap_or_emit_fatal<T>(expr: Result<T, Vec<Diag<'_>>>) -> T {
 pub fn new_parser_from_source_str(
     psess: &ParseSess,
     name: FileName,
-    source: String,
+    source: impl Into<Arc<String>>,
     strip_tokens: StripTokens,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let source_file = psess.source_map().new_source_file(name, source);
@@ -206,7 +206,7 @@ pub fn utf8_error<E: EmissionGuarantee>(
     } else {
         note.clone()
     };
-    let contents = String::from_utf8_lossy(contents).to_string();
+    let contents = String::from_utf8_lossy(contents).into_owned();
 
     // We only emit this error for files in the current session
     // so the working directory can only be the current working directory
@@ -259,7 +259,7 @@ fn new_parser_from_source_file(
 pub fn source_str_to_stream(
     psess: &ParseSess,
     name: FileName,
-    source: String,
+    source: impl Into<Arc<String>>,
     override_span: Option<Span>,
 ) -> Result<TokenStream, Vec<Diag<'_>>> {
     let source_file = psess.source_map().new_source_file(name, source);

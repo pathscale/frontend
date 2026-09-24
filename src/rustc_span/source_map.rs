@@ -323,8 +323,15 @@ impl SourceMap {
     /// Creates a new `SourceFile`.
     /// If a file already exists in the `SourceMap` with the same ID, that file is returned
     /// unmodified.
-    pub fn new_source_file(&self, filename: FileName, src: String) -> Arc<SourceFile> {
-        self.try_new_source_file(filename, src).unwrap_or_else(|OffsetOverflowError| {
+    ///
+    /// `src` is kept as the file's text without a copy unless normalization changes it; see
+    /// [`SourceFile::new`].
+    pub fn new_source_file(
+        &self,
+        filename: FileName,
+        src: impl Into<Arc<String>>,
+    ) -> Arc<SourceFile> {
+        self.try_new_source_file(filename, src.into()).unwrap_or_else(|OffsetOverflowError| {
             eko::eprintln!(
                 "fatal error: rustc does not support text files larger than {} bytes",
                 SourceFile::MAX_FILE_SIZE
@@ -336,7 +343,7 @@ impl SourceMap {
     fn try_new_source_file(
         &self,
         filename: FileName,
-        src: String,
+        src: Arc<String>,
     ) -> Result<Arc<SourceFile>, OffsetOverflowError> {
         // Note that filename may not be a valid path, eg it may be `<anon>` etc,
         // but this is okay because the directory determined by `path.pop()` will

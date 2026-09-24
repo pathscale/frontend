@@ -113,8 +113,8 @@ fn parse_in_session(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
     // is what decides.
     let refused = finished.is_err() || psess.dcx().has_errors().is_some();
 
-    let captured = text.lock().clone();
-    let mut errors = error_entries(&captured);
+    // Read in place: only the errors kept become strings.
+    let mut errors = error_entries(&text.lock());
     if !refused && errors.is_empty() {
         return Ok(());
     }

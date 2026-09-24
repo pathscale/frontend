@@ -2118,12 +2118,16 @@ impl StableSourceFileId {
 impl SourceFile {
     const MAX_FILE_SIZE: u32 = u32::MAX - 1;
 
+    /// A file of `src`. The file keeps `src` itself as its text, so a caller that holds the
+    /// same `Arc` shares it rather than copying it. Normalization is the only copy, and it
+    /// happens only when it changes the text (a BOM, or a `\r\n`) while `src` is shared.
     pub fn new(
         name: FileName,
-        mut src: String,
+        src: impl Into<Arc<String>>,
         hash_kind: SourceFileHashAlgorithm,
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
     ) -> Result<Self, OffsetOverflowError> {
+        let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
         let src_hash = SourceFileHash::new_in_memory(hash_kind, src.as_bytes());
         let checksum_hash = checksum_hash_kind.map(|checksum_hash_kind| {
@@ -2139,7 +2143,13 @@ impl SourceFile {
             return Err(OffsetOverflowError);
         }
 
-        let normalized_pos = normalize_src(&mut src);
+        // Text that normalization would leave alone is not touched, so a shared `src` stays
+        // shared. `make_mut` copies only a shared `src` that does change.
+        let normalized_pos = if needs_normalization(&src) {
+            normalize_src(Arc::make_mut(&mut src))
+        } else {
+            Vec::new()
+        };
 
         let stable_id = StableSourceFileId::from_filename_in_current_crate(&name);
         let normalized_source_len = u32::try_from(src.len()).map_err(|_| OffsetOverflowError)?;
@@ -2151,7 +2161,7 @@ impl SourceFile {
 
         Ok(SourceFile {
             name,
-            src: Some(Arc::new(src)),
+            src: Some(src),
             src_hash,
             checksum_hash,
             external_src: FreezeLock::frozen(ExternalSource::Unneeded),
@@ -2507,6 +2517,12 @@ pub fn char_width(ch: char) -> usize {
 
 pub fn str_width(s: &str) -> usize {
     s.chars().map(char_width).sum()
+}
+
+/// Whether [`normalize_src`] would change `src`: it starts with a BOM or has a `\r\n`. A lone
+/// `\r` is left as it is by `normalize_newlines`, so it does not count.
+fn needs_normalization(src: &str) -> bool {
+    src.starts_with('\u{feff}') || (src.as_bytes().contains(&b'\r') && src.contains("\r\n"))
 }
 
 /// Normalizes the source code and records the normalizations.

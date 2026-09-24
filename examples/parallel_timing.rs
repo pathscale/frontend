@@ -29,10 +29,11 @@
 //! error; if that is not all of them, the first failing file's first errors, which is a defect
 //! in a unit template to fix, not something to time around.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use frontend::frontend_facts::{
-    CrateFacts, Checked, analyze_source_with_width, check_source_with_width,
+    CrateFacts, Checked, analyze_shared_source_with_width, check_shared_source_with_width,
 };
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
@@ -108,13 +109,19 @@ type Answers = (Vec<Checked>, Vec<Option<CrateFacts>>);
 /// One pass over `files` at stage width `width`: the answers, and milliseconds per entry point.
 fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
     frontend::unwind_janky::install_catcher(catcher);
+    // Shared once, outside the timing: each call below hands its session the same text.
+    let files: Vec<Arc<String>> = files.iter().cloned().map(Arc::new).collect();
     let start = Instant::now();
-    let checked: Vec<Checked> =
-        files.iter().map(|s| check_source_with_width("corpus", s, width)).collect();
+    let checked: Vec<Checked> = files
+        .iter()
+        .map(|s| check_shared_source_with_width("corpus", Arc::clone(s), width))
+        .collect();
     let check_ms = start.elapsed().as_secs_f64() * 1e3;
     let start = Instant::now();
-    let facts: Vec<Option<CrateFacts>> =
-        files.iter().map(|s| analyze_source_with_width("corpus", s, None, width).ok()).collect();
+    let facts: Vec<Option<CrateFacts>> = files
+        .iter()
+        .map(|s| analyze_shared_source_with_width("corpus", Arc::clone(s), None, width).ok())
+        .collect();
     let analyze_ms = start.elapsed().as_secs_f64() * 1e3;
     ((checked, facts), check_ms, analyze_ms)
 }
