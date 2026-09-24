@@ -1255,17 +1255,26 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a function call expression, `expr(...)`.
+    ///
+    /// The struct-literal recovery (`maybe_recover_struct_lit_bad_delims`) acts only on a
+    /// parse error and only when the callee is a plain path, so the parser snapshot is taken
+    /// only for such a callee, and the path is moved out of the callee on the error path
+    /// instead of being cloned up front for every call.
     fn parse_expr_fn_call(&mut self, lo: Span, fun: Box<Expr>) -> Box<Expr> {
-        let snapshot = if self.token == token::OpenParen {
-            Some((self.create_snapshot_for_diagnostic(), fun.kind.clone()))
+        let snapshot = if self.token == token::OpenParen
+            && matches!(fun.kind, ExprKind::Path(None, _))
+        {
+            Some(self.create_snapshot_for_diagnostic())
         } else {
             None
         };
         let open_paren = self.token.span;
         let call_depth = self.token_cursor.depth();
 
-        let seq = match self.parse_expr_paren_seq() {
-            Ok(args) => Ok(self.mk_expr(lo.to(self.prev_token.span), self.mk_call(fun, args))),
+        let err = match self.parse_expr_paren_seq() {
+            Ok(args) => {
+                return self.mk_expr(lo.to(self.prev_token.span), self.mk_call(fun, args));
+            }
             Err(err)
                 if self.is_expected_raw_ref_mut() && self.token_cursor.depth() == call_depth =>
             {
@@ -1275,9 +1284,14 @@ impl<'a> Parser<'a> {
                 let args = self.recover_raw_ref_call_args(guar);
                 return self.mk_expr(lo.to(self.prev_token.span), self.mk_call(fun, args));
             }
-            Err(err) => Err(err),
+            Err(err) => err,
         };
-        match self.maybe_recover_struct_lit_bad_delims(lo, open_paren, seq, snapshot) {
+        // The callee is in no result from here on: hand its path to the recovery.
+        let snapshot = match (snapshot, (*fun).kind) {
+            (Some(snapshot), ExprKind::Path(None, path)) => Some((snapshot, path)),
+            _ => None,
+        };
+        match self.maybe_recover_struct_lit_bad_delims(lo, open_paren, Err(err), snapshot) {
             Ok(expr) => expr,
             Err(err) => self.recover_seq_parse_error(exp!(OpenParen), exp!(CloseParen), lo, err),
         }
@@ -1307,12 +1321,12 @@ impl<'a> Parser<'a> {
         lo: Span,
         open_paren: Span,
         seq: PResult<'a, Box<Expr>>,
-        snapshot: Option<(SnapshotParser<'a>, ExprKind)>,
+        snapshot: Option<(SnapshotParser<'a>, Path)>,
     ) -> PResult<'a, Box<Expr>> {
         match (self.may_recover(), seq, snapshot) {
-            (true, Err(err), Some((mut snapshot, ExprKind::Path(None, path)))) => {
+            (true, Err(err), Some((mut snapshot, path))) => {
                 snapshot.bump(); // `(`
-                match snapshot.parse_struct_fields(path.clone(), false, exp!(CloseParen)) {
+                match snapshot.parse_struct_fields(&path, false, exp!(CloseParen)) {
                     Ok((fields, ..)) if snapshot.eat(exp!(CloseParen)) => {
                         // We are certain we have `Enum::Foo(a: 3, b: 4)`, suggest
                         // `Enum::Foo { a: 3, b: 4 }` or `Enum::Foo(3, 4)`.
@@ -1717,13 +1731,18 @@ impl<'a> Parser<'a> {
             let lo = path.span;
             let mac = Box::new(MacCall { path, args: self.parse_delim_args()? });
             (lo.to(self.prev_token.span), ExprKind::MacCall(mac))
-        } else if self.check(exp!(OpenBrace))
-            && let Some(expr) = self.maybe_parse_struct_expr(&qself, &path)
-        {
-            if qself.is_some() {
-                self.psess.gated_spans.gate(sym::more_qualified_paths, path.span);
+        } else if self.check(exp!(OpenBrace)) {
+            let is_qualified = qself.is_some();
+            let path_span = path.span;
+            match self.maybe_parse_struct_expr(qself, path) {
+                Ok(expr) => {
+                    if is_qualified {
+                        self.psess.gated_spans.gate(sym::more_qualified_paths, path_span);
+                    }
+                    return expr;
+                }
+                Err((qself, path)) => (path.span, ExprKind::Path(qself, path)),
             }
-            return expr;
         } else {
             (path.span, ExprKind::Path(qself, path))
         };
@@ -3760,25 +3779,28 @@ impl<'a> Parser<'a> {
             && self.look_ahead(2, |t| t == &token::Comma || t == &token::Colon)
     }
 
+    /// Parses a struct literal with the path already parsed, or hands the path back (`Err`)
+    /// when there is none here, so the caller can build a path expression from it. The
+    /// accepted literal takes the path by move, with no copy.
     fn maybe_parse_struct_expr(
         &mut self,
-        qself: &Option<Box<ast::QSelf>>,
-        path: &ast::Path,
-    ) -> Option<PResult<'a, Box<Expr>>> {
+        qself: Option<Box<ast::QSelf>>,
+        path: ast::Path,
+    ) -> Result<PResult<'a, Box<Expr>>, (Option<Box<ast::QSelf>>, ast::Path)> {
         let struct_allowed = !self.restrictions.contains(Restrictions::NO_STRUCT_LITERAL);
         match (struct_allowed, self.is_likely_struct_lit()) {
             // A struct literal isn't expected and one is pretty much assured not to be present. The
             // only situation that isn't detected is when a struct with a single field was attempted
             // in a place where a struct literal wasn't expected, but regular parser errors apply.
             // Happy path.
-            (false, false) => None,
+            (false, false) => Err((qself, path)),
             (true, _) => {
                 // A struct is accepted here, try to parse it and rely on `parse_expr_struct` for
                 // any kind of recovery. Happy path.
                 if let Err(err) = self.expect(exp!(OpenBrace)) {
-                    return Some(Err(err));
+                    return Ok(Err(err));
                 }
-                Some(self.parse_expr_struct(qself.clone(), path.clone(), true))
+                Ok(self.parse_expr_struct(qself, path, true))
             }
             (false, true) => {
                 // We have something like `match foo { bar,` or `match foo { bar:`, which means the
@@ -3786,7 +3808,7 @@ impl<'a> Parser<'a> {
                 // discriminant. This is done purely for error recovery.
                 let snapshot = self.create_snapshot_for_diagnostic();
                 if let Err(err) = self.expect(exp!(OpenBrace)) {
-                    return Some(Err(err));
+                    return Ok(Err(err));
                 }
                 match self.parse_expr_struct(qself.clone(), path.clone(), false) {
                     Ok(expr) => {
@@ -3798,14 +3820,14 @@ impl<'a> Parser<'a> {
                                 right: expr.span.shrink_to_hi(),
                             },
                         });
-                        Some(Ok(expr))
+                        Ok(Ok(expr))
                     }
                     Err(err) => {
                         // We couldn't parse a valid struct, rollback and let the parser emit an
                         // error elsewhere.
                         err.cancel();
                         self.restore_snapshot(snapshot);
-                        None
+                        Err((qself, path))
                     }
                 }
             }
@@ -3853,7 +3875,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_struct_fields(
         &mut self,
-        pth: ast::Path,
+        pth: &ast::Path,
         recover: bool,
         close: ExpTokenPair,
     ) -> PResult<
@@ -3923,7 +3945,7 @@ impl<'a> Parser<'a> {
             let parsed_field = match self.parse_expr_field() {
                 Ok(f) => Ok(f),
                 Err(mut e) => {
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         async_block_err(&mut e, pth.span);
                     } else {
                         e.span_label(pth.span, "while parsing this struct");
@@ -3958,7 +3980,7 @@ impl<'a> Parser<'a> {
                     }
 
                     let guar = e.emit();
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         recovered_async = Some(guar);
                     }
 
@@ -3999,7 +4021,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Err(mut e) => {
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         async_block_err(&mut e, pth.span);
                     } else {
                         e.span_label(pth.span, "while parsing this struct");
@@ -4016,7 +4038,7 @@ impl<'a> Parser<'a> {
                         return Err(e);
                     }
                     let guar = e.emit();
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         recovered_async = Some(guar);
                     } else if let Some(f) = field_ident(self, guar) {
                         fields.push(f);
@@ -4042,7 +4064,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, Box<Expr>> {
         let lo = pth.span;
         let (fields, base, recovered_async) =
-            self.parse_struct_fields(pth.clone(), recover, exp!(CloseBrace))?;
+            self.parse_struct_fields(&pth, recover, exp!(CloseBrace))?;
         let span = lo.to(self.token.span);
         self.expect(exp!(CloseBrace))?;
         let expr = if let Some(guar) = recovered_async {

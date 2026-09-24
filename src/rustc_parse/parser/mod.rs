@@ -1697,11 +1697,18 @@ impl<'a> Parser<'a> {
     /// Checks for `::` or, potentially, `:::` and then look ahead after it.
     fn check_path_sep_and_look_ahead(&mut self, looker: impl Fn(&Token) -> bool) -> bool {
         if self.check(exp!(PathSep)) {
-            if self.may_recover() && self.look_ahead(1, |t| t.kind == token::Colon) {
-                debug_assert!(!self.look_ahead(1, &looker), "Looker must not match on colon");
-                self.look_ahead(2, looker)
-            } else {
-                self.look_ahead(1, looker)
+            // One look at the next token answers both questions: a `:` after `::` (when
+            // recovering) defers to the token after it, anything else goes to `looker`.
+            let recover = self.may_recover();
+            let next = self.look_ahead(1, |t| {
+                if recover && t.kind == token::Colon { None } else { Some(looker(t)) }
+            });
+            match next {
+                Some(found) => found,
+                None => {
+                    debug_assert!(!self.look_ahead(1, &looker), "Looker must not match on colon");
+                    self.look_ahead(2, looker)
+                }
             }
         } else {
             false
