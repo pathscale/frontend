@@ -408,3 +408,114 @@ fn byte_skipping_scans() {
         "#]],
     );
 }
+
+#[test]
+fn swar_masks_match_byte_predicates() {
+    // Every byte value at every lane, among neighbours that pass and neighbours that do not:
+    // the lane's high bit is the scalar answer and no other bit is set.
+    for filler in [b'a', b' ', b'!', 0xC3, 0x00, 0x7F] {
+        for lane in 0..8 {
+            for b in 0..=255u8 {
+                let mut bytes = [filler; 8];
+                bytes[lane] = b;
+                let x = u64::from_le_bytes(bytes);
+                let id = swar_id_continue(x);
+                let ws = swar_whitespace(x);
+                assert_eq!(id & !SWAR_HIGH, 0);
+                assert_eq!(ws & !SWAR_HIGH, 0);
+                for (k, &byte) in bytes.iter().enumerate() {
+                    let bit = 1u64 << (8 * k + 7);
+                    let want_id = byte.is_ascii_alphanumeric() || byte == b'_';
+                    let want_ws = byte < 0x80 && is_whitespace(byte as char);
+                    assert_eq!(id & bit != 0, want_id, "id byte {byte:#x} lane {k}");
+                    assert_eq!(ws & bit != 0, want_ws, "ws byte {byte:#x} lane {k}");
+                }
+            }
+        }
+    }
+}
+
+/// Inputs that cross the eight-byte blocks at every offset, with non-ASCII chars inside and
+/// at the edges of identifier and whitespace runs.
+fn scan_inputs() -> alloc::vec::Vec<String> {
+    let pieces = [
+        "a", "Z", "_", "9", "\u{e9}", "\u{431}", "\u{1F600}", " ", "\t", "\n", "\r", "\x0b",
+        "\x0c", "\u{85}", "\u{2028}", "\u{200e}", "\u{a0}", "-", "'", "\"", "#", "\0", "\x7f",
+        "\\", "`",
+    ];
+    let mut inputs = alloc::vec::Vec::new();
+    for lead in 0..12 {
+        for p in pieces {
+            for q in pieces {
+                let mut s = String::new();
+                for _ in 0..lead {
+                    s.push_str(if lead % 2 == 0 { "x" } else { " " });
+                }
+                s.push_str(p);
+                for _ in 0..(11 - lead) {
+                    s.push_str(if lead % 3 == 0 { "_" } else { "\t" });
+                }
+                s.push_str(q);
+                inputs.push(s);
+            }
+        }
+    }
+    inputs
+}
+
+#[test]
+fn block_scans_match_char_scans() {
+    for s in scan_inputs() {
+        for start in 0..s.len() {
+            if !s.is_char_boundary(start) {
+                continue;
+            }
+            let rest = &s[start..];
+
+            let mut fast = Cursor::new(rest, FrontmatterAllowed::No);
+            fast.eat_id_continue();
+            let mut slow = Cursor::new(rest, FrontmatterAllowed::No);
+            slow.eat_while(is_id_continue);
+            assert_eq!(fast.as_str().len(), slow.as_str().len(), "id {rest:?}");
+
+            let mut fast = Cursor::new(rest, FrontmatterAllowed::No);
+            fast.eat_whitespace();
+            let mut slow = Cursor::new(rest, FrontmatterAllowed::No);
+            slow.eat_while(is_whitespace);
+            assert_eq!(fast.as_str().len(), slow.as_str().len(), "ws {rest:?}");
+        }
+    }
+}
+
+#[test]
+fn ascii_dispatch_matches_general() {
+    // Every ASCII first byte, followed by every continuation that changes an arm's choice,
+    // lexes to the same tokens through the byte dispatch as through the char dispatch.
+    let tails = [
+        "", "/", "*", "!", "=", "#", "\"", "'", "r", "r#", "r#x", "r\"a\"", "#\"a\"#", "x", "0",
+        "0x1f_u8", "0b", "1.5e+3f32", "1..2", ".x", "\u{e9}", "\u{1F600}", " ", "\n", "'a'",
+        "a'", "\\n'", "b'a'", "\"s\\\"t\"suf", "//x\n", "/**/ ", "/* /* */ */", "_",
+    ];
+    let mut inputs: alloc::vec::Vec<String> = scan_inputs();
+    for b in 0..0x80u8 {
+        for t in tails {
+            let mut s = String::new();
+            s.push(b as char);
+            s.push_str(t);
+            inputs.push(s);
+        }
+    }
+    for s in inputs {
+        let mut fast = Cursor::new(&s, FrontmatterAllowed::No);
+        let mut general = Cursor::new(&s, FrontmatterAllowed::No);
+        loop {
+            let a = fast.advance_token();
+            let b = general.advance_token_general();
+            assert_eq!((a.kind, a.len), (b.kind, b.len), "{s:?}");
+            assert_eq!(fast.as_str().len(), general.as_str().len(), "{s:?}");
+            if a.kind == TokenKind::Eof {
+                break;
+            }
+        }
+    }
+}

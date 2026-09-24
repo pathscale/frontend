@@ -160,6 +160,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         self.psess.dcx()
     }
 
+    #[inline]
     fn mk_sp(&self, lo: BytePos, hi: BytePos) -> Span {
         self.override_span.unwrap_or_else(|| Span::with_root_ctxt(lo, hi))
     }
@@ -237,7 +238,11 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     preceded_by_whitespace = true;
                     continue;
                 }
-                crate::rustc_lexer::TokenKind::Ident => self.ident(start),
+                // The token's text is the first `token.len` bytes the cursor had left, the
+                // same slice `str_from(start)` takes out of `src`.
+                crate::rustc_lexer::TokenKind::Ident => {
+                    self.ident_text(start, &str_before[..token.len as usize])
+                }
                 crate::rustc_lexer::TokenKind::RawIdent => {
                     let sym = nfc_normalize(self.str_from(start + BytePos(2)));
                     let span = self.mk_sp(start, self.pos);
@@ -502,7 +507,13 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
     }
 
     fn ident(&self, start: BytePos) -> TokenKind {
-        let sym = nfc_normalize(self.str_from(start));
+        self.ident_text(start, self.str_from(start))
+    }
+
+    /// `ident(start)` given its text, `self.str_from(start)`.
+    #[inline]
+    fn ident_text(&self, start: BytePos, text: &str) -> TokenKind {
+        let sym = nfc_normalize(text);
         let span = self.mk_sp(start, self.pos);
         self.psess.symbol_gallery.insert(sym, span);
         token::Ident(sym, IdentIsRaw::No)
@@ -1258,6 +1269,11 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
 pub fn nfc_normalize(string: &str) -> Symbol {
     use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+    // Every ASCII char is NFC_Quick_Check=Yes with canonical combining class 0, so
+    // `is_nfc_quick` answers `Yes` for any ASCII string: skip decoding it char by char.
+    if string.is_ascii() {
+        return Symbol::intern(string);
+    }
     match is_nfc_quick(string.chars()) {
         IsNormalized::Yes => Symbol::intern(string),
         _ => {
