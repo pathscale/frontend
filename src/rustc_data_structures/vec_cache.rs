@@ -41,7 +41,7 @@ struct Slot<V> {
 /// either getting the value or putting a value.
 #[derive(Copy, Clone, Debug)]
 struct SlotIndex {
-    // the index of the bucket in VecCache (0 to 20)
+    // the index of the bucket in VecCache (0 to 24)
     bucket_idx: BucketIndex,
     // the index of the slot within the bucket
     index_in_bucket: usize,
@@ -68,7 +68,7 @@ const ENTRIES_BY_BUCKET: [usize; BUCKETS] = {
     entries
 };
 
-const BUCKETS: usize = 21;
+const BUCKETS: usize = 25;
 
 impl SlotIndex {
     /// Unpacks a flat 32-bit index into a [`BucketIndex`] and a slot offset within that bucket.
@@ -81,7 +81,7 @@ impl SlotIndex {
     // SAFETY: Buckets must be managed solely by functions here (i.e., get/put on SlotIndex) and
     // `self` comes from SlotIndex::from_index
     #[inline]
-    unsafe fn get<V: Copy>(&self, buckets: &[AtomicPtr<Slot<V>>; 21]) -> Option<(V, u32)> {
+    unsafe fn get<V: Copy>(&self, buckets: &[AtomicPtr<Slot<V>>; BUCKETS]) -> Option<(V, u32)> {
         let bucket = &buckets[self.bucket_idx];
         let ptr = bucket.load(Ordering::Acquire);
         // Bucket is not yet initialized: then we obviously won't find this entry in that bucket.
@@ -159,7 +159,7 @@ impl SlotIndex {
 
     /// Returns true if this successfully put into the map.
     #[inline]
-    fn put<V>(&self, buckets: &[AtomicPtr<Slot<V>>; 21], value: V, extra: u32) -> bool {
+    fn put<V>(&self, buckets: &[AtomicPtr<Slot<V>>; BUCKETS], value: V, extra: u32) -> bool {
         let bucket = &buckets[self.bucket_idx];
         let ptr = self.bucket_ptr(bucket);
 
@@ -199,7 +199,7 @@ impl SlotIndex {
 
     /// Inserts into the map, given that the slot is unique, so it won't race with other threads.
     #[inline]
-    unsafe fn put_unique<V>(&self, buckets: &[AtomicPtr<Slot<V>>; 21], value: V, extra: u32) {
+    unsafe fn put_unique<V>(&self, buckets: &[AtomicPtr<Slot<V>>; BUCKETS], value: V, extra: u32) {
         let bucket = &buckets[self.bucket_idx];
         let ptr = self.bucket_ptr(bucket);
 
@@ -236,14 +236,21 @@ impl SlotIndex {
 /// [#124780]: https://github.com/rust-lang/rust/pull/124780
 pub struct VecCache<K: Idx, V, I> {
     // Entries per bucket:
-    // Bucket  0:       4096 2^12
-    // Bucket  1:       4096 2^12
-    // Bucket  2:       8192
-    // Bucket  3:      16384
+    // Bucket  0:        256 2^8
+    // Bucket  1:        256 2^8
+    // Bucket  2:        512
+    // Bucket  3:       1024
     // ...
-    // Bucket 19: 1073741824
-    // Bucket 20: 2147483648
+    // Bucket 23: 1073741824
+    // Bucket 24: 2147483648
     // The total number of entries if all buckets are initialized is 2^32.
+    //
+    // Upstream's first two buckets hold 4096 entries each. Every query kind a session runs
+    // allocates and zeroes its first bucket (and its `present` bucket), 64 KB and 16 KB for a
+    // query returning a reference, while a file of a few hundred definitions fills a few hundred
+    // slots: most of a small session's peak memory was these buckets. Starting at 256 costs four
+    // more buckets per cache (a larger key takes one more doubling to reach), each allocated
+    // only once some key needs it.
     buckets: [AtomicPtr<Slot<V>>; BUCKETS],
 
     // In the compiler's current usage these are only *read* during incremental and self-profiling.
@@ -359,7 +366,7 @@ where
 
 /// Index into an array of buckets.
 ///
-/// Using an enum lets us tell the compiler that values range from 0 to 20,
+/// Using an enum lets us tell the compiler that values range from 0 to 24,
 /// allowing array bounds checks to be optimized away,
 /// without having to resort to pattern types or other unstable features.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -387,6 +394,10 @@ enum BucketIndex {
     Bucket18,
     Bucket19,
     Bucket20,
+    Bucket21,
+    Bucket22,
+    Bucket23,
+    Bucket24,
     // tidy-alphabetical-end
 }
 
@@ -402,10 +413,10 @@ impl BucketIndex {
     /// Adjustment factor from the highest-set-bit-position of a flat index,
     /// to its corresponding bucket number.
     ///
-    /// For example, the first flat-index in bucket 2 is 8192.
-    /// Its highest-set-bit-position is `(8192).ilog2() == 13`, and subtracting
-    /// the adjustment factor of 11 gives the bucket number of 2.
-    const NONZERO_BUCKET_SHIFT_ADJUST: usize = 11;
+    /// For example, the first flat-index in bucket 2 is 512.
+    /// Its highest-set-bit-position is `(512).ilog2() == 9`, and subtracting
+    /// the adjustment factor of 7 gives the bucket number of 2.
+    const NONZERO_BUCKET_SHIFT_ADJUST: usize = 7;
 
     #[inline(always)]
     const fn to_usize(self) -> usize {
@@ -437,6 +448,10 @@ impl BucketIndex {
             18 => Self::Bucket18,
             19 => Self::Bucket19,
             20 => Self::Bucket20,
+            21 => Self::Bucket21,
+            22 => Self::Bucket22,
+            23 => Self::Bucket23,
+            24 => Self::Bucket24,
             // tidy-alphabetical-end
             _ => panic!("bucket index out of range"),
         }
@@ -447,8 +462,8 @@ impl BucketIndex {
     const fn capacity(self) -> usize {
         match self {
             Self::Bucket00 => Self::BUCKET_0_CAPACITY,
-            // Bucket 1 has a capacity of `1 << (1 + 11) == pow(2, 12) == 4096`.
-            // Bucket 2 has a capacity of `1 << (2 + 11) == pow(2, 13) == 8192`.
+            // Bucket 1 has a capacity of `1 << (1 + 7) == pow(2, 8) == 256`.
+            // Bucket 2 has a capacity of `1 << (2 + 7) == pow(2, 9) == 512`.
             _ => 1 << (self.to_usize() + Self::NONZERO_BUCKET_SHIFT_ADJUST),
         }
     }
@@ -474,11 +489,11 @@ impl BucketIndex {
         //              | bucket |   slot
         // flat | ilog2 |  index | offset
         // ------------------------------
-        // 4096 |    12 |      1 |      0
-        // 4097 |    12 |      1 |      1
+        //  256 |     8 |      1 |      0
+        //  257 |     8 |      1 |      1
         // ...
-        // 8191 |    12 |      1 |   4095
-        // 8192 |    13 |      2 |      0
+        //  511 |     8 |      1 |    255
+        //  512 |     9 |      2 |      0
         let highest_bit_pos = flat.ilog2() as usize;
         let bucket_index =
             BucketIndex::from_raw(highest_bit_pos - Self::NONZERO_BUCKET_SHIFT_ADJUST);
