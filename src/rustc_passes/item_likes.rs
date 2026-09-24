@@ -71,6 +71,19 @@ pub fn visit_item_like<'tcx, V: Visitor<'tcx>>(
     }
 }
 
+/// The `index`th item-like of `module` as the item of a stage whose pass costs `ns_per_byte`
+/// (`sync::cost`): its source, for `run_stage_weighted`. A free `impl`, `trait` or inline `mod`
+/// item's source holds its members, which are item-likes of their own; counting them twice
+/// overestimates, which errs towards fanning out.
+pub fn item_like_weight(
+    tcx: TyCtxt<'_>,
+    module: &ModuleItems,
+    index: usize,
+    ns_per_byte: u32,
+) -> u32 {
+    tcx.stage_weight(item_like_def_id(module, index), ns_per_byte)
+}
+
 /// The owner of the `index`th item-like of `module`: the `index`th of
 /// `ModuleItems::definitions`.
 pub fn item_like_def_id(module: &ModuleItems, index: usize) -> LocalDefId {

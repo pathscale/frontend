@@ -34,7 +34,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 
 use crate::rustc_data_structures::fx::FxHashMap;
-use crate::rustc_data_structures::sync::run_stage;
+use crate::rustc_data_structures::sync::{cost, run_stage, run_stage_weighted};
 use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
@@ -402,8 +402,17 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // owner order and are appended in that order, so `references` before the sort and
     // `unanalyzed_bodies`, which is never sorted, are the serial walk's sequences exactly.
     let owners = tcx.hir_body_owner_ids();
-    let bodies: Vec<Option<BodyFact>> =
-        run_stage(owners, owners.len(), |owners, i| body_fact(tcx, &names, owners[i]));
+    //
+    // A body weighs its source at type checking's rate (`sync::cost::TYPECK`), which is what
+    // most of its fact costs, so a small file's bodies run serially, as width one runs them.
+    // The two stages above stay unweighted, cut by count: their items cost a path printed per
+    // definition, which is not a cost per byte, and nothing has measured it.
+    let bodies: Vec<Option<BodyFact>> = run_stage_weighted(
+        owners,
+        owners.len(),
+        |owners, i| tcx.stage_weight(owners[i], cost::TYPECK),
+        |owners, i| body_fact(tcx, &names, owners[i]),
+    );
     for body in bodies.into_iter().flatten() {
         match body {
             BodyFact::Checked(references) => facts.references.extend(references),

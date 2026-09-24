@@ -784,6 +784,15 @@ impl Ord for Span {
 }
 
 impl Span {
+    /// How many bytes of source this span covers, read without tracking its parent (see
+    /// `data_untracked`). For sizing work (a stage item's weight, `sync::cost`), never for
+    /// anything a diagnostic shows.
+    #[inline]
+    pub fn byte_len_untracked(self) -> u32 {
+        let data = self.data_untracked();
+        data.hi.0.saturating_sub(data.lo.0)
+    }
+
     #[inline]
     pub fn lo(self) -> BytePos {
         self.data().lo

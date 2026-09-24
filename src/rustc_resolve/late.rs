@@ -33,7 +33,7 @@ use crate::rustc_ast::*;
 use crate::rustc_data_structures::either::Either;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use crate::rustc_ast::node_id::NodeMap;
-use crate::rustc_data_structures::sync::run_stage;
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_data_structures::unord::{ExtendUnord, UnordMap, UnordSet};
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{
@@ -6112,9 +6112,25 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             // the writes the units would otherwise make).
             unsafe { self.frozen_flag.set(true) };
             let this: &Resolver<'ra, 'tcx> = self;
-            let outputs = run_stage(&units[..], units.len(), |units, index| {
-                this.resolve_late_unit(krate, root_scope, units, index, LateDocLinks::default())
-            });
+            // A unit weighs its item's source at late resolution's rate (`sync::cost::RESOLVE`).
+            // A `mod` unit weighs one: its items are units of their own, and its span would
+            // count them again; unit 0, the crate root's attributes, weighs one too.
+            let outputs = run_stage_weighted(
+                &units[..],
+                units.len(),
+                |units, index| {
+                    let unit = &units[index];
+                    match unit.item {
+                        Some(item) if unit.opens.is_none() => {
+                            cost::weight(item.span.byte_len_untracked(), cost::RESOLVE)
+                        }
+                        _ => 1,
+                    }
+                },
+                |units, index| {
+                    this.resolve_late_unit(krate, root_scope, units, index, LateDocLinks::default())
+                },
+            );
             // SAFETY: the stage has settled every unit, and a unit's untracked borrows end with
             // it.
             unsafe { self.frozen_flag.set(false) };

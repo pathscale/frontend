@@ -102,9 +102,26 @@
 //! left *sweeps* the stages for items reserved elsewhere and not reached yet, so the tail of a
 //! slow chunk is shared rather than waited for.
 //!
-//! The size of a chunk is `len / (threads * CHUNKS_PER_THREAD)`, at least one: small enough that
-//! the last chunks balance the load, large enough that the cursor, which every thread taking
-//! work writes, is written once per chunk and not once per item.
+//! **Chunks are cut by weight, not by count.** A call site may say what each item is expected to
+//! cost ([`run_stage_weighted`], [`StageScope::stage_weighted`]), in estimated nanoseconds: a
+//! cheap structural fact about the item it already holds, the bytes of source it covers
+//! (`TyCtxt::stage_weight`, `Span::byte_len_untracked`), times what its pass was measured to
+//! cost per byte (`cost`). Read at stage start on the owner, never timed and never remembered.
+//! The stage's plan cuts its indices into runs of about equal weight,
+//! `total / (threads * CHUNKS_PER_THREAD)` each and never less than `MIN_CHUNK_WEIGHT`, so one
+//! large body is a chunk of its own and a hundred small ones share one. A chunk is contiguous
+//! and one thread claims its items in order, so the slots it fills sit together and different
+//! threads write the same cache line only where two chunks meet. A stage with no weights
+//! counts every item as one chunk's worth (`UNKNOWN_ITEM_WEIGHT`), which cuts by count exactly
+//! as it always did.
+//!
+//! **Serial when the work cannot pay for the fanout.** A plan with nothing for a helper to take
+//! (under two chunks, or under two chunks' weight) runs serially, in order, on the owner: a
+//! [`run_stage`] then is the serial loop itself, the same calls in the same order as a serial
+//! session, and a stage in a scope is one chunk that wakes nobody (the scope's machinery still
+//! runs it, because its replay has to come out in stage order with the scope's other stages).
+//! Small sessions were paying 2.5 to 3 times the work of a pass in wakes, parks and contention
+//! for items of a few microseconds each; `MIN_CHUNK_WEIGHT` says where the line is drawn.
 //!
 //! **The context is installed once per run of items, not once per item.** Every item of a scope
 //! runs inside the scope's captured context (`ItemContext`: the session's `SessionGlobals` and
@@ -125,12 +142,15 @@
 //! after `k` in serial order starts after `k` stopped, which is what a serial run does.
 //!
 //! **Waking helpers.** When a stage starts, the scope wants one helper per chunk nobody has
-//! reserved yet, across its open stages, less the one chunk the owner will take itself when it
-//! settles (`OWNER_CHUNKS`), and never more than the session's width less one (the owner is the
-//! first of `jobs.frontend` threads) or the pool's worker count; helpers already in the scope
-//! count towards it. A stage of one item, alone in its scope, wakes nobody: its owner runs it,
-//! and a helper woken for it could only take it away and leave the owner parked waiting for it,
-//! which is a wake, a park and a second wake, for nothing.
+//! reserved yet, across its open stages, and no more than one per `MIN_CHUNK_WEIGHT` of their
+//! unreserved weight (so a scope of many tiny stages, one chunk each, still wakes nobody), less
+//! the one chunk the owner will take itself (`OWNER_CHUNKS`), and never more than the session's
+//! width less one (the owner is the first of `jobs.frontend` threads) or the pool's worker
+//! count; helpers already in the scope count towards it. A [`run_stage`] reserves the owner's
+//! chunk, the first, before it wakes anybody, so a helper can never take it and leave the owner
+//! parked; a scope's owner takes its chunk when it settles. A stage of one chunk wakes nobody:
+//! its owner runs it, and a helper woken for it could only take it away and leave the owner
+//! parked waiting for it, which is a wake, a park and a second wake, for nothing.
 //!
 //! **What a parked thread costs.** A waiting thread parks in `nagoya::block_on`. nagoya does
 //! nothing when a worker parks: no compensating thread, no detection. The pool has one worker
@@ -463,6 +483,8 @@ trait Run: Send + Sync {
     fn unreserved_chunks(&self) -> usize;
     /// Claim item `index`, if nobody has started it.
     fn claim(&self, index: usize) -> bool;
+    /// The weight of the chunks nobody has reserved yet.
+    fn unreserved_weight(&self) -> u64;
     /// Run `run` inside the scope's context, which every stage of the scope carries a copy of.
     fn enter_context(&self, run: &mut dyn FnMut());
     /// Run item `index`, which this thread claimed, and settle its slot, inside the scope's
@@ -529,19 +551,105 @@ pub fn stages<'env, R>(body: impl for<'scope> FnOnce(&'scope StageScope<'scope, 
 ///
 /// The common case, a `par_*` loop's replacement: an arena slice of ids in, one output per id
 /// out (`()` for a stage run for its effects on the query system).
+///
+/// Every item counts as heavy (`UNKNOWN_ITEM_WEIGHT`): the stage is cut by count, and only a
+/// stage of one item runs serially. Where the call site can say what an item costs, use
+/// [`run_stage_weighted`].
 pub fn run_stage<'env, In, O, F>(input: In, len: usize, f: F) -> Vec<O>
 where
     In: DynSync + DynSend + 'env,
     O: DynSync + DynSend + 'env,
     F: Fn(&In, usize) -> O + DynSync + DynSend + 'env,
 {
-    let slots = stages(|scope| scope.stage(input, len, f));
-    match Arc::try_unwrap(slots) {
-        Ok(slots) => slots.into_values(),
-        // The scope has dropped its stages and every helper has left it, so this `Arc` is the
-        // only one.
-        Err(_) => unreachable!("a stage's slots were still shared after its scope ended"),
+    run_stage_by(input, len, None, f)
+}
+
+/// [`run_stage`], with `weight(&input, i)` the expected cost of item `i` in nanoseconds: the
+/// bytes of source it covers times its pass's cost per byte (`cost::weight`,
+/// `TyCtxt::stage_weight`).
+///
+/// In a parallel session the weights are read once, on this thread, before any item runs; a
+/// stage whose weight cannot pay for a helper runs as the serial loop, here and now (module
+/// header, "Serial when the work cannot pay for the fanout"), and a larger one is cut into
+/// chunks of about equal weight. `weight` must be cheap and must not emit anything: read a
+/// table, never run a query that could report. In a serial session it is never called.
+pub fn run_stage_weighted<'env, In, O, W, F>(input: In, len: usize, weight: W, f: F) -> Vec<O>
+where
+    In: DynSync + DynSend + 'env,
+    O: DynSync + DynSend + 'env,
+    W: Fn(&In, usize) -> u32,
+    F: Fn(&In, usize) -> O + DynSync + DynSend + 'env,
+{
+    run_stage_by(input, len, Some(&weight), f)
+}
+
+/// What a pass costs per byte of the source an item covers, in nanoseconds: the factor that
+/// turns a byte count into a stage weight (`cost::weight`).
+///
+/// Measured on this crate's own `src/` (1,424 files, 28.9 MB of source) at width one with
+/// `time_passes`: a pass's time over the bytes it read. These are estimates for deciding whether
+/// work pays for a helper and for cutting it evenly, nothing else: a wrong one changes when items
+/// run, never what they answer. A pass nobody measured takes the rate of the measured pass it
+/// resembles, and says so; where that is a guess, the lower rate, which errs towards serial.
+pub mod cost {
+    /// Walks of an item's HIR that check attributes, stability, privacy, liveness or lints and
+    /// infer nothing. `misc_checking_1` (the attribute walk, the unstable-API walk and a few
+    /// crate lookups) is 54 ms, about 2 ns per byte for its two walks: 1 each.
+    pub const WALK: u32 = 1;
+
+    /// Type checking and the passes as heavy: `type_check_crate` 109 ms and
+    /// `coherence_checking` 104 ms, about 4 ns per byte. Borrow checking, well-formedness and the
+    /// facts' body walk (which type checks) were not measured on their own and take this rate;
+    /// so does lowering, which lies between this and parsing (45 ns per byte), taking the lower.
+    pub const TYPECK: u32 = 4;
+
+    /// Late name resolution: `late_resolve_crate` 2,110 ms, about 73 ns per byte.
+    pub const RESOLVE: u32 = 73;
+
+    /// `bytes` of source at `ns_per_byte`, as a stage weight. Saturates.
+    #[inline]
+    pub fn weight(bytes: u32, ns_per_byte: u32) -> u32 {
+        bytes.saturating_mul(ns_per_byte)
     }
+}
+
+fn run_stage_by<'env, In, O, F>(
+    input: In,
+    len: usize,
+    weight: Option<&dyn Fn(&In, usize) -> u32>,
+    f: F,
+) -> Vec<O>
+where
+    In: DynSync + DynSend + 'env,
+    O: DynSync + DynSend + 'env,
+    F: Fn(&In, usize) -> O + DynSync + DynSend + 'env,
+{
+    #[cfg(feature = "parallel")]
+    if let Some(threads) = parallel::threads_here() {
+        let plan = parallel::Plan::new(&input, len, weight, threads);
+        if plan.pays()
+            && let Some(shared) = parallel::ScopeShared::for_this_session()
+        {
+            let slots = parallel::ItemContext::capture(move |context| {
+                parallel::scope(shared, context, move |scope| {
+                    scope.start_planned(input, plan, f, true)
+                })
+            });
+            return match Arc::try_unwrap(slots) {
+                Ok(slots) => slots.into_values(),
+                // The scope has dropped its stages and every helper has left it, so this `Arc`
+                // is the only one.
+                Err(_) => unreachable!("a stage's slots were still shared after its scope ended"),
+            };
+        }
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = weight;
+    // The serial loop: in a serial session, and in a parallel one for a stage too small to pay
+    // for a helper. The same calls in the same order either way, on this thread, with what an
+    // item emits going where it goes in a serial session: straight out, or into the item this
+    // stage is nested in, which is where the replay would have forwarded it at once too.
+    (0..len).map(|index| f(&input, index)).collect()
 }
 
 impl<'scope, 'env> StageScope<'scope, 'env> {
@@ -550,7 +658,44 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
     /// Returns at once in a parallel session, with the items running on the pool; runs them all
     /// first, in order, in a serial one. `input` is the stage's frozen input, owned by the stage
     /// for its life (a slice, an `Arc`, another stage's slots), and `f` reads its item in place.
+    ///
+    /// Every item counts as heavy; see [`run_stage`] and [`stage_weighted`](Self::stage_weighted).
     pub fn stage<In, O, F>(&'scope self, input: In, len: usize, f: F) -> Arc<Slots<O>>
+    where
+        In: DynSync + DynSend + 'scope,
+        O: DynSync + DynSend + 'scope,
+        F: Fn(&In, usize) -> O + DynSync + DynSend + 'scope,
+    {
+        self.stage_by(input, len, None, f)
+    }
+
+    /// [`stage`](Self::stage), with `weight(&input, i)` the expected cost of item `i`; see
+    /// [`run_stage_weighted`]. A stage too small to pay for a helper is one chunk and wakes
+    /// nobody; the scope's owner runs it in order when it settles, unless a helper the scope
+    /// woke for a larger stage gets there first.
+    pub fn stage_weighted<In, O, W, F>(
+        &'scope self,
+        input: In,
+        len: usize,
+        weight: W,
+        f: F,
+    ) -> Arc<Slots<O>>
+    where
+        In: DynSync + DynSend + 'scope,
+        O: DynSync + DynSend + 'scope,
+        W: Fn(&In, usize) -> u32,
+        F: Fn(&In, usize) -> O + DynSync + DynSend + 'scope,
+    {
+        self.stage_by(input, len, Some(&weight), f)
+    }
+
+    fn stage_by<In, O, F>(
+        &'scope self,
+        input: In,
+        len: usize,
+        weight: Option<&dyn Fn(&In, usize) -> u32>,
+        f: F,
+    ) -> Arc<Slots<O>>
     where
         In: DynSync + DynSend + 'scope,
         O: DynSync + DynSend + 'scope,
@@ -558,10 +703,10 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
     {
         #[cfg(feature = "parallel")]
         if let Some(open) = &self.parallel {
-            let seq = self.next_seq.get();
-            self.next_seq.set(seq.saturating_add(1));
-            return parallel::start(open, seq, input, len, f);
+            let plan = parallel::Plan::new(&input, len, weight, open.threads());
+            return self.start_planned(input, plan, f, false);
         }
+        let _ = weight;
         let slots = Slots::with_runner(len, None);
         for index in 0..len {
             let value = f(&input, index);
@@ -570,10 +715,33 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
         }
         Arc::new(slots)
     }
+
+    /// Start a stage whose plan is made, in this parallel scope. `owner_first`: reserve the first
+    /// chunk for the owner before waking anybody, for a scope whose owner settles right after
+    /// (a [`run_stage`]).
+    #[cfg(feature = "parallel")]
+    fn start_planned<In, O, F>(
+        &'scope self,
+        input: In,
+        plan: parallel::Plan,
+        f: F,
+        owner_first: bool,
+    ) -> Arc<Slots<O>>
+    where
+        In: DynSync + DynSend + 'scope,
+        O: DynSync + DynSend + 'scope,
+        F: Fn(&In, usize) -> O + DynSync + DynSend + 'scope,
+    {
+        let open = self.parallel.as_ref().expect("only a parallel scope starts a planned stage");
+        let seq = self.next_seq.get();
+        self.next_seq.set(seq.saturating_add(1));
+        parallel::start(open, seq, input, plan, f, owner_first)
+    }
 }
 
 #[cfg(feature = "parallel")]
 mod parallel {
+    use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::sync::{Arc, Weak};
     use alloc::vec::Vec;
@@ -620,12 +788,42 @@ mod parallel {
     /// owner was about to run and left it parked. A stage whose remaining work is one chunk is
     /// finished by its owner at no cost, and a helper woken for it costs a wake at best and a
     /// wake, a park and a second wake at worst; so one chunk is the threshold below which nobody
-    /// is woken. A larger threshold would need what the measurements do not give, the cost of an
-    /// item, and would be wrong for the stages that have few items and heavy ones: the two
-    /// whole-crate lint stages (`rustc_lint::late::check_crate`, one item each, in one scope, so
-    /// together they still wake one helper under this rule) and the two diagnostics passes of
-    /// `frontend_facts`, one stage of two items, which still wakes one.
+    /// is woken. How much work a chunk must hold is the other half of the rule, and is by
+    /// weight: `MIN_CHUNK_WEIGHT`.
     const OWNER_CHUNKS: usize = 1;
+
+    /// The least weight a chunk is cut to, and so the least work a helper is ever woken for:
+    /// 125 us of estimated work (weights are nanoseconds; see `stage::cost`), which is
+    /// about 32 KiB of source at type checking's rate. A stage needs two chunks of it, 250 us,
+    /// before it wakes anybody.
+    ///
+    /// **Where the line comes from.** This crate's own `src/` (1,424 files, 28.9 MB) at width
+    /// one against width twelve, CPU summed over the pool (the speed-01 handover, from
+    /// `time_passes`):
+    ///
+    /// | pass | width 1 | width 12 | work per session | added per session |
+    /// | --- | ---: | ---: | ---: | ---: |
+    /// | `type_check_crate` | 109 ms | 276 ms | 77 us | 117 us |
+    /// | `coherence_checking` | 104 ms | 268 ms | 73 us | 115 us |
+    /// | `misc_checking_1` | 54 ms | 171 ms | 38 us | 82 us |
+    ///
+    /// Fanning one pass out to the full width added about 80 to 120 us per session whatever the
+    /// session's size: wakes, parks, registry leases, and contention on shared query state and
+    /// the replay, with up to eleven helpers, so about 10 us per helper. A chunk of 125 us is
+    /// twelve times what its helper costs, so the fanout is at most a tenth of what it runs; and
+    /// the smallest stage that wakes a helper, 250 us, is twice the whole overhead of fanning a
+    /// pass out to twelve, so even the worst case keeps half the gain. At type checking's
+    /// 4 ns per byte (`cost::TYPECK`) the average file of `src/` (20 KB, 80 us) is under the
+    /// line and runs serially, as width one ran it, and each file of the large corpus (5,000 to
+    /// 8,000 lines) is several chunks over it. It is a constant derived from those
+    /// measurements, not a switch: nothing reads a clock or a setting to decide.
+    const MIN_CHUNK_WEIGHT: u64 = 125_000;
+
+    /// What an item of a stage with no weights counts as: one whole chunk's worth. Such a stage
+    /// is cut by count, `len / (threads * CHUNKS_PER_THREAD)` items a chunk, as every stage was
+    /// before weights, and two items are enough to wake a helper; only a stage of one item runs
+    /// serially.
+    const UNKNOWN_ITEM_WEIGHT: u64 = MIN_CHUNK_WEIGHT;
 
     /// An item's place in the serial order: its stage's number, then its index. Packed so the
     /// cut-off can be one atomic `fetch_min`; an index past `u32::MAX` saturates, which can only
@@ -634,11 +832,127 @@ mod parallel {
         (u64::from(seq) << 32) | u64::from(u32::try_from(index).unwrap_or(u32::MAX))
     }
 
-    /// How many consecutive indices one reservation takes: `len / (threads * CHUNKS_PER_THREAD)`,
-    /// at least one. `threads` counts every thread that may take the stage's items, its owner
-    /// included.
-    fn chunk_size(len: usize, threads: usize) -> usize {
-        (len / threads.max(1).saturating_mul(CHUNKS_PER_THREAD)).max(1)
+    /// How many helpers unreserved work pays for, before the width and the pool cap it: one per
+    /// chunk, and no more than one per `MIN_CHUNK_WEIGHT` of weight (a scope of several tiny
+    /// stages has one chunk each and still wakes nobody), less the owner's own chunk.
+    fn helpers_for(chunks: usize, weight: u64) -> usize {
+        let affordable = usize::try_from(weight / MIN_CHUNK_WEIGHT).unwrap_or(usize::MAX);
+        chunks.min(affordable).saturating_sub(OWNER_CHUNKS)
+    }
+
+    /// How many threads may take a scope's items at once, the owner included: the session's
+    /// width, or fewer when the pool has fewer workers.
+    fn threads_for(width: usize) -> usize {
+        width.min(pool::workers().saturating_add(1))
+    }
+
+    /// [`threads_for`] this thread's session, if it runs in parallel.
+    pub(super) fn threads_here() -> Option<usize> {
+        if mode::is_parallel_here() { Some(threads_for(pool::width())) } else { None }
+    }
+
+    /// A value on a cache line of its own: 128 bytes, the line size (and the adjacent-line
+    /// prefetch pair) of the machines this runs on. For the few words every thread taking work
+    /// writes (a stage's cursor, a scope's helper count and stage list), so those writes do not
+    /// evict the words every item reads (a stage's input, function and slots, the cut-off).
+    #[repr(align(128))]
+    struct Padded<T>(T);
+
+    impl<T> core::ops::Deref for Padded<T> {
+        type Target = T;
+
+        fn deref(&self) -> &T {
+            &self.0
+        }
+    }
+
+    /// How a stage's indices are cut into chunks: chunk `k` is `starts[k]..starts[k + 1]`, and
+    /// `before[k]` is the weight of every chunk before it, so the last entry of `before` is the
+    /// whole stage's. Made once, on the thread starting the stage, and only read after.
+    pub(super) struct Plan {
+        starts: Box<[usize]>,
+        before: Box<[u64]>,
+    }
+
+    impl Plan {
+        /// Cut `0..len` into runs of about `total / (threads * CHUNKS_PER_THREAD)` weight and at
+        /// least `MIN_CHUNK_WEIGHT`, in index order: an item is added to the open chunk, and the
+        /// chunk closes once it holds the target. A last chunk under half the target joins the
+        /// one before it. A stage of one item, or under two chunks' weight, is one chunk.
+        ///
+        /// `weight` is called twice per item, on this thread, before any item runs; `None`
+        /// counts every item as `UNKNOWN_ITEM_WEIGHT`. A zero weight counts as one.
+        pub(super) fn new<In>(
+            input: &In,
+            len: usize,
+            weight: Option<&dyn Fn(&In, usize) -> u32>,
+            threads: usize,
+        ) -> Plan {
+            let weigh = |index: usize| match weight {
+                Some(weight) => u64::from(weight(input, index).max(1)),
+                None => UNKNOWN_ITEM_WEIGHT,
+            };
+            let total: u64 = (0..len).map(&weigh).sum();
+            let per_chunk = u64::try_from(threads.max(1).saturating_mul(CHUNKS_PER_THREAD))
+                .unwrap_or(u64::MAX);
+            let target = (total / per_chunk).max(MIN_CHUNK_WEIGHT);
+            let mut starts = Vec::with_capacity(2);
+            let mut before = Vec::with_capacity(2);
+            starts.push(0);
+            before.push(0);
+            if len > 1 && total >= 2 * MIN_CHUNK_WEIGHT {
+                // The weight of the chunks closed so far, and of the open one.
+                let mut closed = 0u64;
+                let mut open = 0u64;
+                // The last item never closes a chunk: whatever is open then is the tail.
+                for index in 0..len - 1 {
+                    open += weigh(index);
+                    if open >= target {
+                        closed += open;
+                        open = 0;
+                        starts.push(index + 1);
+                        before.push(closed);
+                    }
+                }
+                open += weigh(len - 1);
+                if open < target / 2 && starts.len() > 1 {
+                    starts.pop();
+                    before.pop();
+                }
+            }
+            if len > 0 {
+                starts.push(len);
+                before.push(total);
+            }
+            Plan { starts: starts.into_boxed_slice(), before: before.into_boxed_slice() }
+        }
+
+        fn len(&self) -> usize {
+            self.starts[self.starts.len() - 1]
+        }
+
+        fn chunks(&self) -> usize {
+            self.starts.len() - 1
+        }
+
+        fn chunk(&self, k: usize) -> Range<usize> {
+            self.starts[k]..self.starts[k + 1]
+        }
+
+        fn total(&self) -> u64 {
+            self.before[self.before.len() - 1]
+        }
+
+        /// The weight of chunks `k..`.
+        fn weight_from(&self, k: usize) -> u64 {
+            self.total() - self.before[k.min(self.chunks())]
+        }
+
+        /// Whether a stage of this plan, alone in a scope, would wake a helper. When it would
+        /// not, [`run_stage`](super::run_stage) runs it as the serial loop instead.
+        pub(super) fn pays(&self) -> bool {
+            helpers_for(self.chunks(), self.total()) > 0
+        }
     }
 
     /// A caught panic, and its place in the serial order.
@@ -653,6 +967,13 @@ mod parallel {
     pub(super) struct Open<'scope> {
         shared: Arc<ScopeShared>,
         context: ItemContext<'scope>,
+    }
+
+    impl Open<'_> {
+        /// How many threads may take this scope's items at once; what a stage's plan is cut for.
+        pub(super) fn threads(&self) -> usize {
+            self.shared.threads
+        }
     }
 
     /// Run a parallel scope's `body`, then settle it and raise what a serial run would have.
@@ -693,16 +1014,24 @@ mod parallel {
     /// they run in is in each stage, not here.
     pub(super) struct ScopeShared {
         /// The stages started so far, in order. Taken when the scope ends, which also breaks the
-        /// `ScopeShared` -> stage -> `ScopeShared` cycle.
-        stages: Mutex<Vec<Arc<dyn Run>>>,
+        /// `ScopeShared` -> stage -> `ScopeShared` cycle. Locked by every thread for every chunk
+        /// it takes, so on a line of its own.
+        stages: Padded<Mutex<Vec<Arc<dyn Run>>>>,
+        /// The chunk the owner reserved for itself before waking anybody (`start` with
+        /// `owner_first`), which it runs first when it settles. Only the owner touches it, and
+        /// `settle` always takes it, which breaks the cycle through its stage as `stages` does.
+        owner_first: Mutex<Option<Batch>>,
         /// Set when the scope ends. A helper that sees it touches nothing.
         closed: AtomicBool,
-        /// Helpers between arriving and leaving.
-        active: AtomicUsize,
+        /// Helpers between arriving and leaving. Written by every job as it arrives and leaves,
+        /// so on a line of its own.
+        active: Padded<AtomicUsize>,
         /// The owner, waiting for `active` to reach zero.
         idle: Mutex<Option<Waker>>,
         /// No item after this one in serial order starts. `u64::MAX` until something raises.
-        cutoff: AtomicU64,
+        /// Read before every item by every thread and written only when something raises, so
+        /// on a line of its own, where the writes above cannot evict it.
+        cutoff: Padded<AtomicU64>,
         /// The first item, in serial order, that ended in a fatal error its replay caught.
         stop: AtomicU64,
         /// The first item, in serial order, that panicked.
@@ -731,16 +1060,17 @@ mod parallel {
             }
             let width = pool::width();
             Some(Arc::new(ScopeShared {
-                stages: Mutex::new(Vec::new()),
+                stages: Padded(Mutex::new(Vec::new())),
+                owner_first: Mutex::new(None),
                 closed: AtomicBool::new(false),
-                active: AtomicUsize::new(0),
+                active: Padded(AtomicUsize::new(0)),
                 idle: Mutex::new(None),
-                cutoff: AtomicU64::new(u64::MAX),
+                cutoff: Padded(AtomicU64::new(u64::MAX)),
                 stop: AtomicU64::new(u64::MAX),
                 panic: Mutex::new(None),
                 registry: Registry::try_current(),
                 width,
-                threads: width.min(pool::workers().saturating_add(1)),
+                threads: threads_for(width),
             }))
         }
 
@@ -813,10 +1143,13 @@ mod parallel {
         /// with `whole` false: one chunk, then it returns, and `help` hands the next chunk to a
         /// new job. The owner is the thread that called into the compiler; a job is fanout work
         /// that ends when its chunk does, not a worker that keeps taking work.
-        fn drain(&self, whole: bool) {
+        ///
+        /// `first` is a chunk this thread reserved earlier (the owner's, `owner_first`), run
+        /// before anything else is taken.
+        fn drain(&self, whole: bool, first: Option<Batch>) {
             let mut chunks_from = 0;
             let mut sweep_from = 0;
-            let mut batch: Option<Batch> = None;
+            let mut batch: Option<Batch> = first;
             let mut taken = false;
             // The item this thread claimed and is running, so a panic out of it can be settled.
             let mut running: Option<usize> = None;
@@ -881,7 +1214,10 @@ mod parallel {
             // a walk of every index in order, waiting at each one a helper was running: at two
             // threads the owner and its one helper went through the same indices side by side,
             // and the owner parked at nearly every other item.
-            self.drain(true);
+            // The chunk it reserved for itself, if any, goes first; taken here on every path,
+            // the unwinding one included, which also breaks the cycle through its stage.
+            let first = self.owner_first.lock().take();
+            self.drain(true, first);
             // Then every item, in stage order, waiting only for what other threads are running.
             // No stage can be added meanwhile: only the owner starts stages, and the owner is
             // here.
@@ -956,11 +1292,12 @@ mod parallel {
         replay: OrderedReplay,
         /// The scope's context, copied in when the stage started; see `drain`.
         context: ItemContext<'scope>,
-        /// The first index nobody has reserved. Only says where the next chunk starts: an item
-        /// is claimed by its own slot's state, never by this.
-        cursor: AtomicUsize,
-        /// How many indices one reservation takes; see `chunk_size`.
-        chunk: usize,
+        /// The first chunk nobody has reserved. Only says which chunk is handed out next: an item
+        /// is claimed by its own slot's state, never by this. Written by every thread that takes
+        /// a chunk, so on a line of its own, away from the fields every item reads.
+        cursor: Padded<AtomicUsize>,
+        /// How the indices are cut into chunks; see `Plan`.
+        plan: Plan,
         seq: u32,
         scope: Arc<ScopeShared>,
     }
@@ -981,22 +1318,26 @@ mod parallel {
         }
 
         fn reserve(&self) -> Option<Range<usize>> {
-            let len = self.slots.len();
-            // Read first: once every index is reserved, every later look is a load of a line
+            let chunks = self.plan.chunks();
+            // Read first: once every chunk is reserved, every later look is a load of a line
             // nobody writes, rather than one more `fetch_add` on it.
-            if self.cursor.load(Ordering::Relaxed) >= len {
+            if self.cursor.load(Ordering::Relaxed) >= chunks {
                 return None;
             }
-            let start = self.cursor.fetch_add(self.chunk, Ordering::Relaxed);
-            if start >= len {
+            let chunk = self.cursor.fetch_add(1, Ordering::Relaxed);
+            if chunk >= chunks {
                 return None;
             }
-            Some(start..len.min(start + self.chunk))
+            Some(self.plan.chunk(chunk))
         }
 
         fn unreserved_chunks(&self) -> usize {
-            let len = self.slots.len();
-            (len - self.cursor.load(Ordering::Relaxed).min(len)).div_ceil(self.chunk)
+            let chunks = self.plan.chunks();
+            chunks - self.cursor.load(Ordering::Relaxed).min(chunks)
+        }
+
+        fn unreserved_weight(&self) -> u64 {
+            self.plan.weight_from(self.cursor.load(Ordering::Relaxed))
         }
 
         fn claim(&self, index: usize) -> bool {
@@ -1087,6 +1428,7 @@ mod parallel {
         //
         // - Strong references come only from upgrading this weak one. They are held by the
         //   scope's `stages` list, by a thread's current `Batch` (the owner's, or a helper's), by
+        //   the owner's reserved first chunk in `owner_first` until `settle` takes it, by
         //   `drain` while it installs the context, and by `Slots::wait` while it runs an
         //   unclaimed item.
         // - `stages` (and the unwind guard `SettleOnUnwind`) runs `settle` before it returns or
@@ -1105,13 +1447,18 @@ mod parallel {
         unsafe { core::mem::transmute::<Weak<dyn Run + 'scope>, Weak<dyn Run>>(stage) }
     }
 
-    /// Start a stage in a parallel scope. See `StageScope::stage`.
+    /// Start a stage in a parallel scope, cut as `plan` says. See `StageScope::stage`.
+    ///
+    /// `owner_first`: reserve the stage's first chunk for the owner before waking anybody, so a
+    /// helper can never take the chunk the owner is about to run and leave it parked; for a
+    /// scope whose owner settles as soon as this returns (`run_stage`).
     pub(super) fn start<'scope, In, O, F>(
         open: &Open<'scope>,
         seq: u32,
         input: In,
-        len: usize,
+        plan: Plan,
         f: F,
+        owner_first: bool,
     ) -> Arc<Slots<O>>
     where
         In: 'scope,
@@ -1119,10 +1466,10 @@ mod parallel {
         F: Fn(&In, usize) -> O + 'scope,
     {
         let shared = &open.shared;
+        let len = plan.len();
         // Begun here, on the thread starting the stage, which is where the replay finds the
         // item this stage is nested in, if any.
         let replay = OrderedReplay::new(len);
-        let chunk = chunk_size(len, shared.threads);
         let mut detached: Option<Weak<dyn Run>> = None;
         let typed = Arc::new_cyclic(|this: &Weak<Stage<'scope, In, O, F>>| {
             let runner = detach(this.clone());
@@ -1133,8 +1480,8 @@ mod parallel {
                 slots: Arc::new(Slots::with_runner(len, Some(runner))),
                 replay,
                 context: open.context,
-                cursor: AtomicUsize::new(0),
-                chunk,
+                cursor: Padded(AtomicUsize::new(0)),
+                plan,
                 seq,
                 scope: shared.clone(),
             }
@@ -1147,22 +1494,31 @@ mod parallel {
             .and_then(Weak::upgrade)
             .expect("a stage is alive while its starter holds it");
         drop(typed);
-        // The work nobody has taken yet, in chunks, across every open stage of the scope, this
-        // one included: counted under the same lock that publishes the stage.
-        let unreserved: usize = {
+        let own = if owner_first { Some(Arc::clone(&stage)) } else { None };
+        // The work nobody has taken yet, in chunks and in weight, across every open stage of the
+        // scope, this one included: counted under the same lock that publishes the stage.
+        let (chunks, weight) = {
             let mut stages = shared.stages.lock();
             stages.push(stage);
-            stages.iter().map(|stage| stage.unreserved_chunks()).sum()
+            stages.iter().fold((0usize, 0u64), |(chunks, weight), stage| {
+                (chunks + stage.unreserved_chunks(), weight + stage.unreserved_weight())
+            })
         };
         // Helpers already in the scope pick this stage up when they finish their current chunk,
         // so only the shortfall is submitted. The owner is counted on for `OWNER_CHUNKS` of the
-        // work, and the session's width caps the rest (module header, "Waking helpers"). A
-        // helper on its way out may be counted and not come back; the owner settles whatever is
-        // left, so that costs time, never an item.
-        let wanted = unreserved
-            .saturating_sub(OWNER_CHUNKS)
-            .min(shared.width - 1)
-            .min(pool::workers());
+        // work, a helper is woken only for a chunk's weight of it, and the session's width caps
+        // the rest (module header, "Waking helpers"). A helper on its way out may be counted and
+        // not come back; the owner settles whatever is left, so that costs time, never an item.
+        let wanted = helpers_for(chunks, weight).min(shared.width - 1).min(pool::workers());
+        // The owner's chunk, the one `OWNER_CHUNKS` counted, reserved before anybody is woken.
+        // A reservation claims nothing, so a waiter can still run any item of it.
+        if let Some(own) = own
+            && let Some(indices) = own.reserve()
+        {
+            let displaced = shared.owner_first.lock().replace(Batch { stage: own, indices });
+            debug_assert!(displaced.is_none(), "a scope reserves one first chunk for its owner");
+            drop(displaced);
+        }
         let present = shared.active.load(Ordering::Relaxed);
         for _ in present..wanted {
             let shared = shared.clone();
@@ -1231,7 +1587,7 @@ mod parallel {
             };
             let _in_slot = slot.as_ref().map(RegistrySlot::enter);
             let _mode = mode::enter_session_width(shared.width);
-            shared.drain(false);
+            shared.drain(false, None);
         });
         if let Err(payload) = outcome {
             shared.stash(u64::MAX, payload);

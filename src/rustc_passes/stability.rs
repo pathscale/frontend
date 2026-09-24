@@ -9,7 +9,7 @@ use core::num::NonZero;
 use crate::rustc_ast_lowering::stability::extern_abi_stability;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::unord::{ExtendUnord, UnordMap, UnordSet};
-use crate::rustc_data_structures::sync::run_stage;
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_feature::{EnabledLangFeature, EnabledLibFeature, UNSTABLE_LANG_FEATURES};
 use crate::rustc_hir::attrs::{AttributeKind, DeprecatedSince};
 use crate::rustc_hir::def::{DefKind, Res};
@@ -35,7 +35,7 @@ use crate::rustc_span::{Span, Symbol, sym};
 use tracing::instrument;
 
 use crate::rustc_passes::diagnostics;
-use crate::rustc_passes::item_likes::{item_like_count, visit_item_like};
+use crate::rustc_passes::item_likes::{item_like_count, item_like_weight, visit_item_like};
 
 #[derive(PartialEq)]
 enum AnnotationKind {
@@ -540,9 +540,12 @@ impl<'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'tcx> {
 /// crate's own missing-stability check, then the `MissingStabilityAnnotations` stage.
 fn check_mod_unstable_api_usage(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     let module = tcx.hir_module_items(mod_id);
-    run_stage(module, item_like_count(module), |module, index| {
-        visit_item_like(tcx, module, index, &mut Checker { tcx })
-    });
+    run_stage_weighted(
+        module,
+        item_like_count(module),
+        |module, index| item_like_weight(tcx, module, index, cost::WALK),
+        |module, index| visit_item_like(tcx, module, index, &mut Checker { tcx }),
+    );
 
     let is_staged_api =
         tcx.sess.opts.unstable_opts.force_unstable_if_unmarked || tcx.features().staged_api();
@@ -552,10 +555,15 @@ fn check_mod_unstable_api_usage(tcx: TyCtxt<'_>, mod_id: LocalModId) {
             MissingStabilityAnnotations { tcx, effective_visibilities }
                 .check_missing_stability(CRATE_DEF_ID);
         }
-        run_stage(module, item_like_count(module), |module, index| {
-            let mut missing = MissingStabilityAnnotations { tcx, effective_visibilities };
-            visit_item_like(tcx, module, index, &mut missing)
-        });
+        run_stage_weighted(
+            module,
+            item_like_count(module),
+            |module, index| item_like_weight(tcx, module, index, cost::WALK),
+            |module, index| {
+                let mut missing = MissingStabilityAnnotations { tcx, effective_visibilities };
+                visit_item_like(tcx, module, index, &mut missing)
+            },
+        );
     }
 
     if mod_id.is_top_level_module() {

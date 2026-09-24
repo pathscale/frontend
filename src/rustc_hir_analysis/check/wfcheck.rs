@@ -15,7 +15,7 @@ use hir::intravisit::{self, Visitor};
 use crate::rustc_abi::{ExternAbi, ScalableElt};
 use crate::rustc_ast as ast;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
-use crate::rustc_data_structures::sync::stages;
+use crate::rustc_data_structures::sync::{cost, stages};
 use crate::rustc_data_structures::transitive_relation::TransitiveRelationBuilder;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, ErrorGuaranteed, msg, pluralize, struct_span_code_err};
@@ -2513,13 +2513,40 @@ pub(super) fn check_type_wf(tcx: TyCtxt<'_>, (): ()) -> Result<(), ErrorGuarante
         let foreign = items.foreign_item_ids();
         let nested = items.nested_body_ids();
         let opaques = items.opaque_ids();
+        // Each item weighs its source at type checking's rate (`sync::cost`): a stage too small
+        // to pay is one chunk, and a scope whose six stages together do not pay wakes nobody.
+        let weight = |def_id: LocalDefId| tcx.stage_weight(def_id, cost::TYPECK);
         [
-            scope.stage(free, free.len(), |ids, i| check(ids[i].owner_id.def_id)),
-            scope.stage(impls, impls.len(), |ids, i| check(ids[i].owner_id.def_id)),
-            scope.stage(traits, traits.len(), |ids, i| check(ids[i].owner_id.def_id)),
-            scope.stage(foreign, foreign.len(), |ids, i| check(ids[i].owner_id.def_id)),
-            scope.stage(nested, nested.len(), |ids, i| check(ids[i])),
-            scope.stage(opaques, opaques.len(), |ids, i| check(ids[i])),
+            scope.stage_weighted(
+                free,
+                free.len(),
+                |ids, i| weight(ids[i].owner_id.def_id),
+                |ids, i| check(ids[i].owner_id.def_id),
+            ),
+            scope.stage_weighted(
+                impls,
+                impls.len(),
+                |ids, i| weight(ids[i].owner_id.def_id),
+                |ids, i| check(ids[i].owner_id.def_id),
+            ),
+            scope.stage_weighted(
+                traits,
+                traits.len(),
+                |ids, i| weight(ids[i].owner_id.def_id),
+                |ids, i| check(ids[i].owner_id.def_id),
+            ),
+            scope.stage_weighted(
+                foreign,
+                foreign.len(),
+                |ids, i| weight(ids[i].owner_id.def_id),
+                |ids, i| check(ids[i].owner_id.def_id),
+            ),
+            scope.stage_weighted(nested, nested.len(), |ids, i| weight(ids[i]), |ids, i| {
+                check(ids[i])
+            }),
+            scope.stage_weighted(opaques, opaques.len(), |ids, i| weight(ids[i]), |ids, i| {
+                check(ids[i])
+            }),
         ]
     });
     let res = checked
