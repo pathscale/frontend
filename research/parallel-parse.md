@@ -1,7 +1,8 @@
 # Parsing one file's top-level items in parallel
 
-Status: source changed, not built or measured by the agent that wrote this (building is the main
-session's job). "Checking it" at the end says what to run.
+Status: source changed, not built or measured by the agents that wrote this (building is the
+main session's job). Measured at `6774475` (before the size gate and the predicted ids):
+`parse_crate` on `src/` 1,288 ms at width 1 against 1,795 ms at width 12. "Checking it" at the end says what to run.
 
 The problem: `parse_crate` is about 55 ms of the ~200 ms that stays serial at width 12 on the
 large clean corpus (six files of 5,000 to 8,000 lines), and about 1.1 s over this crate's own
@@ -25,10 +26,12 @@ Both entry points go through it with no edit outside `rustc_parse`:
 
 | File | What changed |
 | --- | --- |
-| `src/rustc_parse/parser/item_chunks.rs` | New. Planning, the stage, a chunk's parse, the merge, the `AttrId` renumbering. |
+| `src/rustc_parse/parser/item_chunks.rs` | New. The size gate, planning (cut points and predicted `AttrId` bases), the stage, a chunk's parse, the merge. |
+| `src/rustc_ast/attr/mod.rs` | `AttrIdGenerator::starting_at`, `peek`, `take`. |
+| `src/rustc_ast/tokenstream.rs` | `TokenCursor::last_tree`, for the size gate. |
 | `src/rustc_parse/parser/item.rs` | `parse_mod` tries `parse_items_in_chunks` after the inner attributes when `term` is `Eof`. |
 | `src/rustc_parse/parser/mod.rs` | `mod item_chunks;`. `Parser::new` split into `with_cursor` (the one construction site, no token yet) plus the first bump, so a chunk's parser is built at a token without a second field list. |
-| `src/rustc_session/parse.rs` | `ParseSess::part` (a session for one part of a file) and `ParseSess::absorb_part` (the merge, one rule per field). |
+| `src/rustc_session/parse.rs` | `ParseSess::part` (a session for one part of a file, its counter at a given id, built without the hygiene lock `with_dcx` takes) and `ParseSess::absorb_part` (the merge, one rule per field). |
 
 ## Where the design given for this task was changed, and why
 
@@ -55,7 +58,8 @@ Both entry points go through it with no edit outside `rustc_parse`:
    from the serial parser itself, and there is no diagnostic merge to get wrong. A clean file has
    none either way.
 5. **`AttrId`s** are the one counter the parser draws from, and a serial id depends on every
-   attribute before it in the file. Handled below; it needs a walk of the items that took ids.
+   attribute before it in the file. Each chunk's counter starts at a predicted serial position;
+   a walk happens only for a chunk after a misprediction (below).
 
 ## The split rule
 
@@ -96,15 +100,15 @@ Run as a stage item (`sync::run_stage`, one item per chunk):
    serial parser has there (the previous token is the `;` or the `}` of the tree before).
 3. The serial loop, inside `catch_fatal_errors`: stray semicolons, then `parse_item` until the
    next chunk's first token (or, for the last chunk, until `parse_item` gives `None`, and then
-   `Eof` must be eaten). After each item one extra `AttrId` is taken from the chunk's counter as a
-   marker. A returned parse error is cancelled and fails the chunk.
+   `Eof` must be eaten). The chunk's `AttrId` counter starts at the chunk's predicted serial
+   position (`ChunkStart::first_attr_id`). A returned parse error is cancelled and fails the
+   chunk.
 4. Stashed diagnostics are emitted into the chunk's context; then the chunk is clean only if the
    emitter was never called and `has_errors_or_delayed_bugs` is `None`. A chunk that is not
    clean resets its context (`reset_err_count`, so dropping it reports nothing, delayed bugs
    included) and returns `None`.
 
-The output is owned: the items, the markers, the number of ids the serial parse takes over the
-chunk, the parser's bump count over the chunk, for the last chunk the parser's end state, and
+The output is owned: the items, where the chunk's counter started and how many ids it took, the parser's bump count over the chunk, for the last chunk the parser's end state, and
 the chunk's session.
 
 ## When the chunks come back
@@ -113,14 +117,16 @@ If any chunk is `None`, every chunk is dropped (the clean ones hold no diagnosti
 `parse_items_in_chunks` returns `None`: the real parser and session were never touched, and
 `parse_mod` runs its loop from the same token. Otherwise, serially, in chunk order:
 
-1. The real `AttrId` counter is advanced by exactly the ids the serial parse takes over the
-   items, one `mk_attr_id` at a time as the serial parse takes them; the first one is where the
-   items' ids start.
-2. Each item that took ids is walked (`ShiftAttrIds`, a `MutVisitor` on `visit_attribute`) and
-   every attribute's local id is replaced by its serial id. Item `j` of a chunk holds local ids
-   between marker `j - 1` and marker `j`, and `j` markers precede them, so local id `l` of item
-   `j` in chunk `k` is serial id `first(k) + l - j`, where `first(k)` is the first id plus the
-   ids of chunks before `k`. Items that took no id are not walked. Attribute ids appear only on
+1. The real `AttrId` counter is advanced by exactly the ids the chunks took (`take`, one
+   atomic add); the first one is where the first chunk's serial ids start.
+2. Chunk `k` took its ids in the serial order from its predicted base `p(k)`, so its ids are
+   the serial ones shifted by `first(k) - p(k)`, where `first(k)` is the first id plus the ids
+   the chunks before `k` actually took. The prediction counts `#[`, `#![` and doc comment
+   tokens per chunk during planning, skipping groups after `!` (macro input) and after
+   `macro_rules ! name` (a macro body). When it is right for every earlier chunk the shift is
+   zero and nothing is walked. Otherwise every item of that chunk is walked once
+   (`ShiftAttrIds`, a `MutVisitor` on `visit_attribute`) and each id moved by the shift.
+   A wrong prediction costs a walk, never a wrong id. Attribute ids appear only on
    `Attribute`s in the AST: with `capture_cfg` off (it is off for a file parse, and the chunked
    path requires it) the lazy token streams hold no `AttrsTarget`, so no id is hidden in tokens.
 3. The items are moved onto the result (`Box`es moved, nothing cloned).
@@ -146,7 +152,7 @@ parsing, in expansion, on the merged AST, so they are the serial ones.
 | `ambiguous_block_expr_parse` | Yes, and read back within the same statement | `insert` each entry in the part's order. | An `FxIndexMap`: insertion order is its order, and `insert` on an existing key replaces in place as the serial `insert` does. Keys are spans inside one item, so a chunk never needs another chunk's entries. |
 | `gated_spans` | Yes (`gate`, and `ungate_last` right after a `gate` in the same item) | Per feature, `entry().or_default().extend()`. | Each feature's spans in reading order. The outer map is an `FxHashMap`, only ever read by `get(feature)` (`rustc_ast_passes::feature_gate`); its bucket layout can differ from the serial one, which nothing can observe. |
 | `symbol_gallery` | Lexer only | `entry().or_insert()` in order (empty in practice). | First occurrence wins, as `SymbolGallery::insert`. |
-| `attr_id_generator` | Yes (three sites in `parser/attr.rs`) | The part's counter is dropped; the real counter is advanced and the AST renumbered (above). | The ids and the counter's final value are the serial ones. |
+| `attr_id_generator` | Yes (three sites in `parser/attr.rs`) | The part's counter is dropped; the real counter is advanced, and a mispredicted chunk's ids shifted (above). | The ids and the counter's final value are the serial ones. |
 
 Fields named in the task that are not on `ParseSess` in this tree: `reached_eof` does not exist;
 `env_depinfo` and `file_depinfo` are on `Session` (`src/rustc_session/session.rs:411-414`) and
@@ -182,21 +188,21 @@ answers the same).
   with no planning walk);
 - the parser is in its ordinary state: no subparser name, `capture_cfg` off, recovery allowed,
   not capturing tokens, no broken token, cursor at depth 0, not at `Eof`;
+- the rest of the file spans at least `2 * MIN_CHUNK_BYTES` (16 KiB), from the current token's
+  start to the last depth-0 tree's end: checked before any cursor clone or walk. On this crate's
+  `src/` that sends 938 of 1,424 files (19.7% of the 28.9 MB) straight to the serial loop;
+  the other 486 hold 80.3% of the bytes;
 - the session has reported no error (`has_errors`), since a file already known to be broken
   would only fall back.
 
 ## Cost that stays serial
 
-The planning walk (one step per depth-0 tree, three for a group), advancing the real `AttrId`
-counter (one atomic add per attribute id), the renumbering walk of every item that took an id,
-and the merge (moves). The renumbering walk is the only one proportional to the AST. Two ways
-to remove it, both outside `rustc_parse`:
-
-- `rustc_ast::attr::AttrIdGenerator` with a read (`peek`) and a generator that starts at a given
-  id would let each chunk take its ids directly from a predicted base (count `#[`/doc comments
-  per chunk while planning, verify after the parse, renumber only on a mismatch).
-- Expansion already walks the whole AST mutably to assign `NodeId`s; the shift could ride that
-  walk.
+The planning walk (one cursor step per depth-0 tree, three for a group, plus a flat scan of each
+group's trees to count attribute tokens, linear over the token vectors and far cheaper than the
+parse), one atomic add on the real `AttrId` counter, and the merge (moves). No AST walk unless
+a prediction was wrong. The previous version walked every item that took an id (nearly every
+item: doc comments) serially after the join, one extra full AST traversal per split file, and
+took the ids one atomic add at a time.
 
 Not split: one huge item (a big `mod tests { }` or `impl`). Splitting inside an inline module or
 an impl block is the same technique one level down and is not done here.
