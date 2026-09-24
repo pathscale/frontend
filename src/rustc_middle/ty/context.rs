@@ -1153,7 +1153,12 @@ impl<'tcx> TyCtxt<'tcx> {
         // - debug_assertions: for the "fingerprint the result" check in
         //   `crate::rustc_query_impl::execution::execute_job`.
         // - incremental: for query lookups.
-        // - needs_metadata: it is included in the crate metadata through the crate_hash query
+        // Not `needs_metadata`: upstream includes the hash in the crate metadata through the
+        // `crate_hash` query, but this crate encodes no metadata (nothing calls
+        // `rustc_metadata`'s encoder), and every session is an `Rlib`, so the check made every
+        // session stable-hash every HIR owner as it was lowered. That hash read each def path
+        // hash under the definitions lock while other items created defs under it, which made
+        // lowering the most contended stage of a parallel session, for a hash nothing read.
         // - instrument_coverage: for putting into coverage data (see
         //   `hash_mir_source`).
         // - metrics_dir: metrics use the strict version hash in the filenames
@@ -1162,7 +1167,6 @@ impl<'tcx> TyCtxt<'tcx> {
         //   of the proof of concept impl for the metrics initiative project goal)
         cfg!(debug_assertions)
             || self.sess.opts.incremental.is_some()
-            || self.needs_metadata()
             || self.sess.instrument_coverage()
             || self.sess.opts.unstable_opts.metrics_dir.is_some()
     }

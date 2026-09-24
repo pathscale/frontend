@@ -485,6 +485,8 @@ trait Run: Send + Sync {
     fn claim(&self, index: usize) -> bool;
     /// The weight of the chunks nobody has reserved yet.
     fn unreserved_weight(&self) -> u64;
+    /// The weight of the chunk that starts at index `start`, or zero if no chunk does.
+    fn chunk_weight_at(&self, start: usize) -> u64;
     /// Run `run` inside the scope's context, which every stage of the scope carries a copy of.
     fn enter_context(&self, run: &mut dyn FnMut());
     /// Run item `index`, which this thread claimed, and settle its slot, inside the scope's
@@ -625,23 +627,75 @@ where
     F: Fn(&In, usize) -> O + DynSync + DynSend + 'env,
 {
     #[cfg(feature = "parallel")]
-    if let Some(threads) = parallel::threads_here() {
-        let plan = parallel::Plan::new(&input, len, weight, threads);
-        if plan.pays()
-            && let Some(shared) = parallel::ScopeShared::for_this_session()
-        {
-            let slots = parallel::ItemContext::capture(move |context| {
-                parallel::scope(shared, context, move |scope| {
-                    scope.start_planned(input, plan, f, true)
-                })
-            });
-            return match Arc::try_unwrap(slots) {
-                Ok(slots) => slots.into_values(),
-                // The scope has dropped its stages and every helper has left it, so this `Arc`
-                // is the only one.
-                Err(_) => unreachable!("a stage's slots were still shared after its scope ended"),
+    if len > 1
+        && let Some(threads) = parallel::threads_here()
+    {
+        // The serial loop, timed: the first items run here, in order, exactly as the serial
+        // loop below runs them, until what they took says whether the rest pays for helpers
+        // (module header, "Serial until the work is measured"). The rest is then a stage of
+        // its own over `start..len`, whose replay forwards after everything this loop emitted,
+        // so the order is the serial one either way.
+        let weigh = |index: usize| match weight {
+            Some(weight) => u64::from(weight(&input, index).max(1)),
+            None => 1,
+        };
+        let mut out = Vec::with_capacity(len);
+        let clock = eko::time::Instant::now();
+        let mut done = 0u64;
+        let mut check = parallel::FIRST_LOOK_NS;
+        let mut start = 0;
+        while start < len {
+            out.push(f(&input, start));
+            done += weigh(start);
+            start += 1;
+            if start == len {
+                return out;
+            }
+            let spent = u64::try_from(clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            if spent < check {
+                continue;
+            }
+            // Nanoseconds per unit of weight, as measured on this stage's own items: the rest's
+            // weights become nanoseconds, and those decide the helpers and cut the chunks.
+            let in_ns = |w: u64| {
+                u64::try_from(u128::from(w) * u128::from(spent) / u128::from(done.max(1)))
+                    .unwrap_or(u64::MAX)
             };
+            let rest = start;
+            let plan = parallel::Plan::cut(
+                len - rest,
+                &|k| in_ns(weigh(rest + k)),
+                threads,
+                parallel::MIN_CHUNK_NS,
+            );
+            if plan.pays()
+                && let Some(shared) = parallel::ScopeShared::for_this_session()
+            {
+                let slots = parallel::ItemContext::capture(move |context| {
+                    parallel::scope(shared, context, move |scope| {
+                        scope.start_planned(
+                            (input, rest),
+                            plan,
+                            move |(input, rest): &(In, usize), index| f(input, rest + index),
+                            true,
+                            true,
+                        )
+                    })
+                });
+                match Arc::try_unwrap(slots) {
+                    Ok(slots) => out.extend(slots.into_values()),
+                    // The scope has dropped its stages and every helper has left it, so this
+                    // `Arc` is the only one.
+                    Err(_) => {
+                        unreachable!("a stage's slots were still shared after its scope ended")
+                    }
+                }
+                return out;
+            }
+            // Not yet: look again once this stage has run twice as long.
+            check = spent.saturating_mul(2);
         }
+        return out;
     }
     #[cfg(not(feature = "parallel"))]
     let _ = weight;
@@ -703,8 +757,15 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
     {
         #[cfg(feature = "parallel")]
         if let Some(open) = &self.parallel {
-            let plan = parallel::Plan::new(&input, len, weight, open.threads());
-            return self.start_planned(input, plan, f, false);
+            // Weights here are relative sizes, not yet nanoseconds: the owner measures what
+            // they cost when it settles and wakes helpers then (`ScopeShared::drain`), so the
+            // stage is cut by weight alone and wakes nobody now.
+            let weigh = |index: usize| match weight {
+                Some(weight) => u64::from(weight(&input, index).max(1)),
+                None => 1,
+            };
+            let plan = parallel::Plan::cut(len, &weigh, open.threads(), 0);
+            return self.start_planned(input, plan, f, false, false);
         }
         let _ = weight;
         let slots = Slots::with_runner(len, None);
@@ -718,7 +779,8 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
 
     /// Start a stage whose plan is made, in this parallel scope. `owner_first`: reserve the first
     /// chunk for the owner before waking anybody, for a scope whose owner settles right after
-    /// (a [`run_stage`]).
+    /// (a [`run_stage`]). `wake`: the plan's weights are measured nanoseconds, so helpers are
+    /// woken for them now; otherwise the owner wakes them once it has measured (`drain`).
     #[cfg(feature = "parallel")]
     fn start_planned<In, O, F>(
         &'scope self,
@@ -726,6 +788,7 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
         plan: parallel::Plan,
         f: F,
         owner_first: bool,
+        wake: bool,
     ) -> Arc<Slots<O>>
     where
         In: DynSync + DynSend + 'scope,
@@ -735,7 +798,7 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
         let open = self.parallel.as_ref().expect("only a parallel scope starts a planned stage");
         let seq = self.next_seq.get();
         self.next_seq.set(seq.saturating_add(1));
-        parallel::start(open, seq, input, plan, f, owner_first)
+        parallel::start(open, seq, input, plan, f, owner_first, wake)
     }
 }
 
@@ -792,38 +855,29 @@ mod parallel {
     /// weight: `MIN_CHUNK_WEIGHT`.
     const OWNER_CHUNKS: usize = 1;
 
-    /// The least weight a chunk is cut to, and so the least work a helper is ever woken for:
-    /// 125 us of estimated work (weights are nanoseconds; see `stage::cost`), which is
-    /// about 32 KiB of source at type checking's rate. A stage needs two chunks of it, 250 us,
-    /// before it wakes anybody.
+    /// The least measured work a chunk is cut to, and so the least a helper is ever woken for:
+    /// 125 us. A stage needs two chunks of it, 250 us, before it wakes anybody.
     ///
-    /// **Where the line comes from.** This crate's own `src/` (1,424 files, 28.9 MB) at width
-    /// one against width twelve, CPU summed over the pool (the speed-01 handover, from
-    /// `time_passes`):
+    /// **Where the line comes from.** Fanning one pass out to the full width added about 80 to
+    /// 120 us per session whatever the session's size (wakes, parks, registry leases, and
+    /// contention on shared query state and the replay, with up to eleven helpers): about 10 us
+    /// per helper, measured on this crate's own `src/` at width one against width twelve. A
+    /// chunk of 125 us is twelve times what its helper costs, so the fanout is at most a tenth
+    /// of what it runs.
     ///
-    /// | pass | width 1 | width 12 | work per session | added per session |
-    /// | --- | ---: | ---: | ---: | ---: |
-    /// | `type_check_crate` | 109 ms | 276 ms | 77 us | 117 us |
-    /// | `coherence_checking` | 104 ms | 268 ms | 73 us | 115 us |
-    /// | `misc_checking_1` | 54 ms | 171 ms | 38 us | 82 us |
-    ///
-    /// Fanning one pass out to the full width added about 80 to 120 us per session whatever the
-    /// session's size: wakes, parks, registry leases, and contention on shared query state and
-    /// the replay, with up to eleven helpers, so about 10 us per helper. A chunk of 125 us is
-    /// twelve times what its helper costs, so the fanout is at most a tenth of what it runs; and
-    /// the smallest stage that wakes a helper, 250 us, is twice the whole overhead of fanning a
-    /// pass out to twelve, so even the worst case keeps half the gain. At type checking's
-    /// 4 ns per byte (`cost::TYPECK`) the average file of `src/` (20 KB, 80 us) is under the
-    /// line and runs serially, as width one ran it, and each file of the large corpus (5,000 to
-    /// 8,000 lines) is several chunks over it. It is a constant derived from those
-    /// measurements, not a switch: nothing reads a clock or a setting to decide.
-    const MIN_CHUNK_WEIGHT: u64 = 125_000;
+    /// The work it is compared with is measured, never estimated: a stage's weights are only
+    /// relative sizes (bytes of source, or one per item), and what they cost in nanoseconds is
+    /// read off the clock while the owner runs the stage's first items (`run_stage`) or first
+    /// chunks (`ScopeShared::drain`). A pass's cost per byte differs a hundredfold between a
+    /// file whose bodies fail to resolve and one that type checks, so no constant rate can say
+    /// which stages pay.
+    pub(super) const MIN_CHUNK_NS: u64 = 125_000;
 
-    /// What an item of a stage with no weights counts as: one whole chunk's worth. Such a stage
-    /// is cut by count, `len / (threads * CHUNKS_PER_THREAD)` items a chunk, as every stage was
-    /// before weights, and two items are enough to wake a helper; only a stage of one item runs
-    /// serially.
-    const UNKNOWN_ITEM_WEIGHT: u64 = MIN_CHUNK_WEIGHT;
+    /// How long the owner runs a stage before it first asks whether the rest pays for helpers:
+    /// a fifth of a chunk. A stage done by then never touches the pool or the replay; one that is
+    /// not has been measured over enough items for the rate to mean something, and has spent
+    /// under a tenth of the smallest stage that fans out.
+    pub(super) const FIRST_LOOK_NS: u64 = MIN_CHUNK_NS / 5;
 
     /// An item's place in the serial order: its stage's number, then its index. Packed so the
     /// cut-off can be one atomic `fetch_min`; an index past `u32::MAX` saturates, which can only
@@ -833,10 +887,10 @@ mod parallel {
     }
 
     /// How many helpers unreserved work pays for, before the width and the pool cap it: one per
-    /// chunk, and no more than one per `MIN_CHUNK_WEIGHT` of weight (a scope of several tiny
+    /// chunk, and no more than one per `MIN_CHUNK_NS` of measured work (a scope of several tiny
     /// stages has one chunk each and still wakes nobody), less the owner's own chunk.
     fn helpers_for(chunks: usize, weight: u64) -> usize {
-        let affordable = usize::try_from(weight / MIN_CHUNK_WEIGHT).unwrap_or(usize::MAX);
+        let affordable = usize::try_from(weight / MIN_CHUNK_NS).unwrap_or(usize::MAX);
         chunks.min(affordable).saturating_sub(OWNER_CHUNKS)
     }
 
@@ -876,31 +930,29 @@ mod parallel {
 
     impl Plan {
         /// Cut `0..len` into runs of about `total / (threads * CHUNKS_PER_THREAD)` weight and at
-        /// least `MIN_CHUNK_WEIGHT`, in index order: an item is added to the open chunk, and the
-        /// chunk closes once it holds the target. A last chunk under half the target joins the
-        /// one before it. A stage of one item, or under two chunks' weight, is one chunk.
+        /// least `floor`, in index order: an item is added to the open chunk, and the chunk
+        /// closes once it holds the target. A last chunk under half the target joins the one
+        /// before it. A stage of one item, or under two floors' weight, is one chunk.
         ///
-        /// `weight` is called twice per item, on this thread, before any item runs; `None`
-        /// counts every item as `UNKNOWN_ITEM_WEIGHT`. A zero weight counts as one.
-        pub(super) fn new<In>(
-            input: &In,
+        /// `weigh(i)` is item `i`'s weight, at least one; it is called twice per item, on this
+        /// thread, before any item runs. Weights in measured nanoseconds (`run_stage`) take
+        /// `MIN_CHUNK_NS` as the floor; relative weights (a scope's stages) take none.
+        pub(super) fn cut(
             len: usize,
-            weight: Option<&dyn Fn(&In, usize) -> u32>,
+            weigh: &dyn Fn(usize) -> u64,
             threads: usize,
+            floor: u64,
         ) -> Plan {
-            let weigh = |index: usize| match weight {
-                Some(weight) => u64::from(weight(input, index).max(1)),
-                None => UNKNOWN_ITEM_WEIGHT,
-            };
+            let weigh = |index: usize| weigh(index).max(1);
             let total: u64 = (0..len).map(&weigh).sum();
             let per_chunk = u64::try_from(threads.max(1).saturating_mul(CHUNKS_PER_THREAD))
                 .unwrap_or(u64::MAX);
-            let target = (total / per_chunk).max(MIN_CHUNK_WEIGHT);
+            let target = (total / per_chunk).max(floor).max(1);
             let mut starts = Vec::with_capacity(2);
             let mut before = Vec::with_capacity(2);
             starts.push(0);
             before.push(0);
-            if len > 1 && total >= 2 * MIN_CHUNK_WEIGHT {
+            if len > 1 && total >= 2 * floor {
                 // The weight of the chunks closed so far, and of the open one.
                 let mut closed = 0u64;
                 let mut open = 0u64;
@@ -925,6 +977,14 @@ mod parallel {
                 before.push(total);
             }
             Plan { starts: starts.into_boxed_slice(), before: before.into_boxed_slice() }
+        }
+
+        /// The weight of the chunk that starts at `start`, or zero if none does.
+        fn chunk_weight_at(&self, start: usize) -> u64 {
+            match self.starts.binary_search(&start) {
+                Ok(k) if k + 1 < self.starts.len() => self.before[k + 1] - self.before[k],
+                _ => 0,
+            }
         }
 
         fn len(&self) -> usize {
@@ -1039,10 +1099,38 @@ mod parallel {
         registry: Option<Registry>,
         /// The session's `jobs.frontend`: the owner and at most `width - 1` helpers.
         width: usize,
+        /// This scope, for the helpers the owner wakes from `&self` (`wake`).
+        me: Weak<ScopeShared>,
         /// How many threads may take this scope's items at once, the owner included: `width`,
         /// or fewer when the pool has fewer workers than the session asked for. What a stage's
         /// chunks are sized by.
         threads: usize,
+    }
+
+    /// The owner's measure of a scope's work while it drains: when it started, how much weight
+    /// it has run, and when it looks next.
+    struct Probe {
+        clock: eko::time::Instant,
+        done: u64,
+        check: u64,
+    }
+
+    impl Probe {
+        /// A chunk of `weight` is done. Once the owner has run `FIRST_LOOK_NS`, and again
+        /// each time it has run twice as long, wake the helpers the rest pays for at the rate
+        /// measured so far.
+        fn chunk_done(&mut self, shared: &ScopeShared, weight: u64) {
+            if weight == 0 {
+                return;
+            }
+            self.done += weight;
+            let spent = u64::try_from(self.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            if spent < self.check {
+                return;
+            }
+            self.check = spent.saturating_mul(2);
+            shared.wake_measured(self.done, spent);
+        }
     }
 
     /// A run of one stage's indices that a thread goes through in order, claiming each item it
@@ -1059,7 +1147,7 @@ mod parallel {
                 return None;
             }
             let width = pool::width();
-            Some(Arc::new(ScopeShared {
+            Some(Arc::new_cyclic(|me| ScopeShared {
                 stages: Padded(Mutex::new(Vec::new())),
                 owner_first: Mutex::new(None),
                 closed: AtomicBool::new(false),
@@ -1070,6 +1158,7 @@ mod parallel {
                 panic: Mutex::new(None),
                 registry: Registry::try_current(),
                 width,
+                me: me.clone(),
                 threads: threads_for(width),
             }))
         }
@@ -1092,6 +1181,44 @@ mod parallel {
             };
             // Dropped outside the lock: a payload's destructor is foreign code.
             drop(displaced);
+        }
+
+        /// Helpers that `chunks` unreserved chunks of `weight_ns` measured work pay for, capped
+        /// by the session's width and the pool (module header, "Waking helpers").
+        fn wanted(&self, chunks: usize, weight_ns: u64) -> usize {
+            helpers_for(chunks, weight_ns).min(self.width - 1).min(pool::workers())
+        }
+
+        /// Submit helpers until `wanted` are in the scope. Helpers already in it pick up new work
+        /// when they finish their chunk, so only the shortfall is submitted, within the
+        /// application's budget shared by every scope and session: when the pool is full, the
+        /// rest is the owner's to run. A helper on its way out may be counted and not come back;
+        /// the owner settles whatever is left, so that costs time, never an item.
+        fn wake(&self, wanted: usize) {
+            let present = self.active.load(Ordering::Relaxed);
+            for _ in present..wanted {
+                // Alive: this is called by a thread holding the scope.
+                let Some(shared) = self.me.upgrade() else { return };
+                if !pool::try_submit(move || help(shared)) {
+                    break;
+                }
+            }
+        }
+
+        /// The owner has run `done` weight of this scope's chunks in `spent_ns`: wake the
+        /// helpers the rest pays for at that rate.
+        fn wake_measured(&self, done: u64, spent_ns: u64) {
+            let (chunks, weight) = self.stages.lock().iter().fold((0usize, 0u64), |(c, w), stage| {
+                (c + stage.unreserved_chunks(), w + stage.unreserved_weight())
+            });
+            if chunks == 0 {
+                return;
+            }
+            let rest_ns = u64::try_from(
+                u128::from(weight) * u128::from(spent_ns) / u128::from(done.max(1)),
+            )
+            .unwrap_or(u64::MAX);
+            self.wake(self.wanted(chunks, rest_ns));
         }
 
         /// The next unreserved chunk of any open stage, earliest stage first.
@@ -1149,22 +1276,40 @@ mod parallel {
         fn drain(&self, whole: bool, first: Option<Batch>) {
             let mut chunks_from = 0;
             let mut sweep_from = 0;
+            // The weight of the chunk being run, counted towards `probe` when it is done (zero
+            // for a sweep, which runs only what other threads left).
+            let mut batch_weight =
+                first.as_ref().map_or(0, |b| b.stage.chunk_weight_at(b.indices.start));
             let mut batch: Option<Batch> = first;
             let mut taken = false;
+            // The owner's clock: what it has run and how long that took says what the rest
+            // costs, and so how many helpers it pays for (`wake_measured`). A helper runs one
+            // chunk and never looks.
+            let mut probe = whole.then(|| Probe {
+                clock: eko::time::Instant::now(),
+                done: 0,
+                check: FIRST_LOOK_NS,
+            });
             // The item this thread claimed and is running, so a panic out of it can be settled.
             let mut running: Option<usize> = None;
-            let mut next = |chunks_from: &mut usize, sweep_from: &mut usize, taken: &mut bool| {
+            let next = |chunks_from: &mut usize,
+                        sweep_from: &mut usize,
+                        taken: &mut bool,
+                        weight: &mut u64| {
                 if !whole && *taken {
                     return None;
                 }
                 *taken = true;
-                self.next_chunk(chunks_from).or_else(|| {
-                    if whole { self.next_sweep(sweep_from) } else { None }
-                })
+                if let Some(chunk) = self.next_chunk(chunks_from) {
+                    *weight = chunk.stage.chunk_weight_at(chunk.indices.start);
+                    return Some(chunk);
+                }
+                *weight = 0;
+                if whole { self.next_sweep(sweep_from) } else { None }
             };
             loop {
                 if batch.is_none() {
-                    batch = next(&mut chunks_from, &mut sweep_from, &mut taken);
+                    batch = next(&mut chunks_from, &mut sweep_from, &mut taken, &mut batch_weight);
                 }
                 // A handle of its own, so `batch` is free to move on to other stages under it.
                 let installer = match &batch {
@@ -1175,7 +1320,12 @@ mod parallel {
                     installer.enter_context(&mut || {
                         loop {
                             if batch.is_none() {
-                                batch = next(&mut chunks_from, &mut sweep_from, &mut taken);
+                                batch = next(
+                                    &mut chunks_from,
+                                    &mut sweep_from,
+                                    &mut taken,
+                                    &mut batch_weight,
+                                );
                             }
                             let Some(current) = &mut batch else { return };
                             match current.indices.next() {
@@ -1186,7 +1336,12 @@ mod parallel {
                                         running = None;
                                     }
                                 }
-                                None => batch = None,
+                                None => {
+                                    batch = None;
+                                    if let Some(probe) = &mut probe {
+                                        probe.chunk_done(self, batch_weight);
+                                    }
+                                }
                             }
                         }
                     })
@@ -1340,6 +1495,10 @@ mod parallel {
             self.plan.weight_from(self.cursor.load(Ordering::Relaxed))
         }
 
+        fn chunk_weight_at(&self, start: usize) -> u64 {
+            self.plan.chunk_weight_at(start)
+        }
+
         fn claim(&self, index: usize) -> bool {
             self.slots.claim(index)
         }
@@ -1459,6 +1618,7 @@ mod parallel {
         plan: Plan,
         f: F,
         owner_first: bool,
+        wake: bool,
     ) -> Arc<Slots<O>>
     where
         In: 'scope,
@@ -1509,7 +1669,7 @@ mod parallel {
         // work, a helper is woken only for a chunk's weight of it, and the session's width caps
         // the rest (module header, "Waking helpers"). A helper on its way out may be counted and
         // not come back; the owner settles whatever is left, so that costs time, never an item.
-        let wanted = helpers_for(chunks, weight).min(shared.width - 1).min(pool::workers());
+        let wanted = if wake { shared.wanted(chunks, weight) } else { 0 };
         // The owner's chunk, the one `OWNER_CHUNKS` counted, reserved before anybody is woken.
         // A reservation claims nothing, so a waiter can still run any item of it.
         if let Some(own) = own
@@ -1519,15 +1679,7 @@ mod parallel {
             debug_assert!(displaced.is_none(), "a scope reserves one first chunk for its owner");
             drop(displaced);
         }
-        let present = shared.active.load(Ordering::Relaxed);
-        for _ in present..wanted {
-            let shared = shared.clone();
-            // Within the application's budget, shared by every scope and session: when the pool
-            // is already full, the rest of this stage is the owner's to run.
-            if !pool::try_submit(move || help(shared)) {
-                break;
-            }
-        }
+        shared.wake(wanted);
         slots
     }
 
