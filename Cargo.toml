@@ -82,7 +82,7 @@ parallel = ["dep:nagoya"]
 nagoya = { git = "https://github.com/pathscale/nagoya", branch = "feat/stack-size", optional = true }
 # The two crates that could not be merged. `rustc_macros` is the historical name and the source
 # still says `rustc_macros::`, so it is aliased rather than renamed across ten thousand sites.
-rustc_macros = { package = "frontend_macros", path = "frontend_macros", version = "0.2.0", optional = true }
+rustc_macros = { package = "frontend_macros", path = "frontend_macros", version = "0.3.0", optional = true }
 frontend_diag_template = { path = "frontend_diag_template", version = "0.1.1" }
 # Not a module, deliberately. See `frontend_arena/Cargo.toml`.
 frontend_arena = { path = "frontend_arena", version = "0.2.0" }
