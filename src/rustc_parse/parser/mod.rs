@@ -9,7 +9,6 @@ mod expr;
 mod function;
 mod generics;
 mod item;
-mod item_chunks;
 mod nonterminal;
 mod pat;
 mod path;
@@ -351,29 +350,9 @@ impl<'a> Parser<'a> {
         stream: TokenStream,
         subparser_name: Option<&'static str>,
     ) -> Self {
-        let mut parser = Parser::with_cursor(psess, TokenCursor::new(stream), subparser_name);
-
-        // Make parser point to the first token.
-        parser.bump();
-
-        // Change this from 1 back to 0 after the bump. This eases debugging of
-        // `Parser::collect_tokens` because 0-indexed token positions are nicer
-        // than 1-indexed token positions.
-        parser.num_bump_calls = 0;
-
-        parser
-    }
-
-    /// A parser in its initial state over `token_cursor`, not yet pointing at a token: `new`
-    /// bumps it to the first one, and `item_chunks` sets the token it starts a chunk on.
-    fn with_cursor(
-        psess: &'a ParseSess,
-        token_cursor: TokenCursor,
-        subparser_name: Option<&'static str>,
-    ) -> Self {
-        Parser {
+        let mut parser = Parser {
             psess,
-            token_cursor,
+            token_cursor: TokenCursor::new(stream),
             subparser_name,
             capture_state: CaptureState {
                 capturing: Capturing::No,
@@ -399,7 +378,17 @@ impl<'a> Parser<'a> {
             recovery: Recovery::Allowed,
             in_fn_body: false,
             fn_body_missing_semi_guar: None,
-        }
+        };
+
+        // Make parser point to the first token.
+        parser.bump();
+
+        // Change this from 1 back to 0 after the bump. This eases debugging of
+        // `Parser::collect_tokens` because 0-indexed token positions are nicer
+        // than 1-indexed token positions.
+        parser.num_bump_calls = 0;
+
+        parser
     }
 
     #[inline]

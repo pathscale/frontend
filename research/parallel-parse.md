@@ -1,5 +1,20 @@
 # Parsing one file's top-level items in parallel
 
+**Removed.** Measured with the size gate and predicted ids in place, `parse_crate` summed
+over this crate's own `src/` (1,424 files, check and analyze) at width 1 against width 12:
+
+| build | width 1 | width 12 |
+| --- | ---: | ---: |
+| parallel parse on | 1,050 ms | 1,360 ms |
+| parallel parse off | 1,035 ms | 1,070 ms |
+
+It cost about 290 ms at width 12 on real code and made no measurable difference on the large
+and clean corpora. A file's parse is a few hundred microseconds, lexing stays serial, and
+chunks fall back on any diagnostic, so there was too little to split and the setup, merge
+and cross-core frees of chunk-built AST cost more than the split saved. The code is at
+`c84fa48` (`src/rustc_parse/parser/item_chunks.rs`) if parsing ever becomes the long pole of
+a session. What follows is the design as it was.
+
 Status: source changed, not built or measured by the agents that wrote this (building is the
 main session's job). Measured at `6774475` (before the size gate and the predicted ids):
 `parse_crate` on `src/` 1,288 ms at width 1 against 1,795 ms at width 12. "Checking it" at the end says what to run.

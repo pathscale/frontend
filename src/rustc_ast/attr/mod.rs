@@ -53,31 +53,10 @@ impl AttrIdGenerator {
         AttrIdGenerator(AtomicU32::new(0))
     }
 
-    /// A generator whose first id is `first`: the counter of one part of a file parsed on its
-    /// own (`rustc_parse::parser::item_chunks`), started where the serial parse is predicted to
-    /// be when it reaches that part.
-    pub fn starting_at(first: u32) -> Self {
-        AttrIdGenerator(AtomicU32::new(first))
-    }
-
     pub fn mk_attr_id(&self) -> AttrId {
         let id = self.0.fetch_add(1, Ordering::Relaxed);
         assert!(id != u32::MAX);
         AttrId::from_u32(id)
-    }
-
-    /// The id the next `mk_attr_id` would return.
-    pub fn peek(&self) -> u32 {
-        self.0.load(Ordering::Relaxed)
-    }
-
-    /// Take `count` ids at once, exactly as `count` calls to `mk_attr_id` would, and return the
-    /// first of them.
-    pub fn take(&self, count: u32) -> u32 {
-        let first = self.0.fetch_add(count, Ordering::Relaxed);
-        // `mk_attr_id` never hands out `u32::MAX`: the last id taken here must be below it.
-        assert!(count == 0 || first.checked_add(count).is_some());
-        first
     }
 }
 
