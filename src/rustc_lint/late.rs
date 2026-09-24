@@ -341,60 +341,96 @@ macro_rules! impl_late_lint_pass {
 
 crate::late_lint_methods!(impl_late_lint_pass, []);
 
+/// Runs the per-module late lint passes over one module, as a stage over the module's items.
+///
+/// The serial walk is: the module's lint attributes and, for the crate root, `check_crate`;
+/// `check_mod`; then every item of `module.item_ids`, each walked deeply (its nested items,
+/// impl and trait items and bodies, but not nested modules, which are modules of their own);
+/// then `check_crate_post` and the module's closing attribute callback. Here the module-level
+/// callbacks run on the module's thread with one pass object, before and after, and item `i` of
+/// the stage walks `module.item_ids[i]` with a pass object and a `LateContext` of its own.
+///
+/// That changes no output, because nothing crosses an item boundary:
+///
+/// - The `LateContext` a top-level item starts in is always the same one: `visit_item` puts back
+///   `generics`, `typeck_results` and `enclosing_body`, `with_param_env` puts back `param_env`,
+///   and `with_lint_attrs` puts back `last_node_with_lint_attrs`, which is the module's own
+///   `HirId` between items. Each item's context is built with exactly those values.
+/// - Of the registered per-module passes (`BuiltinCombinedLateLintModPass`, and
+///   `InternalCombinedLateLintModPass` when internal lints are on; nothing else registers a
+///   late pass), every one is a unit struct except three, and none of the three carries
+///   anything from one item to the next: `TypeLimits::last_visited_negation` is matched against
+///   a literal's `HirId`, and a negation's operand is in the negation's own owner, so an earlier
+///   item's value can never match; `NonLocalDefinitions::body_depth` goes up in `check_body` and
+///   down in `check_body_post`, so it is 0 between items, which is where a new pass starts;
+///   `IfLetRescope::skip` holds `HirId`s of expressions it already covered and is only asked
+///   about expressions of the item being walked, whose owner is never an earlier item's.
+///
+/// The diagnostics come out in the serial order: the module-level callbacks before and after
+/// the stage, and the items' in item order.
 pub fn late_lint_mod<'tcx, T: LateLintPass<'tcx> + 'tcx>(
     tcx: TyCtxt<'tcx>,
     mod_id: LocalModId,
-    builtin_lints: T,
+    builtin_lints: fn() -> T,
 ) {
-    let context = LateContext {
+    let skippable_lints = tcx.skippable_lints(());
+
+    // Which registered passes are required is decided once per module. The passes themselves
+    // are made once per item and once for the module-level callbacks, in the order the combined
+    // pass always held them: the registered ones, then the builtin one.
+    let factories: Vec<_> = unerased_lint_store(tcx.sess)
+        .late_lint_mod_passes
+        .iter()
+        .filter(|mk_pass| is_lint_pass_required(skippable_lints, &mk_pass(tcx).get_lints()))
+        .collect();
+    let builtin_lints_must_run =
+        is_lint_pass_required(skippable_lints, &builtin_lints().get_lints());
+
+    // Note: `factories` is often empty. In that case, it's faster to run
+    // `builtin_lints` directly rather than bundling it up into the
+    // `RuntimeCombinedLateLintPass`.
+    if factories.is_empty() {
+        if builtin_lints_must_run {
+            late_lint_mod_inner(tcx, mod_id, &builtin_lints);
+        }
+    } else {
+        let make_pass = || {
+            let mut passes: Vec<LateLintPassObject<'tcx>> =
+                factories.iter().map(|mk_pass| mk_pass(tcx)).collect();
+            if builtin_lints_must_run {
+                passes.push(Box::new(builtin_lints()));
+            }
+            RuntimeCombinedLateLintPass { passes }
+        };
+        late_lint_mod_inner(tcx, mod_id, &make_pass);
+    }
+}
+
+fn late_lint_mod_inner<'tcx, T: LateLintPass<'tcx>, M: Fn() -> T>(
+    tcx: TyCtxt<'tcx>,
+    mod_id: LocalModId,
+    make_pass: &M,
+) {
+    let (module, _span, hir_id) = tcx.hir_get_module(mod_id);
+    let effective_visibilities = tcx.effective_visibilities(());
+    let actually_rustdoc = tcx.sess.opts.actually_rustdoc;
+    // The context at the module level and between its items.
+    let module_context = || LateContext {
         tcx,
         enclosing_body: None,
         typeck_results: None,
         param_env: ty::ParamEnv::empty(),
-        effective_visibilities: tcx.effective_visibilities(()),
-        last_node_with_lint_attrs: tcx.local_def_id_to_hir_id(mod_id),
+        effective_visibilities,
+        last_node_with_lint_attrs: hir_id,
         generics: None,
         only_module: true,
     };
 
-    let skippable_lints = tcx.skippable_lints(());
-
-    // Note: `passes` is often empty. In that case, it's faster to run
-    // `builtin_lints` directly rather than bundling it up into the
-    // `RuntimeCombinedLateLintPass`.
-    let mut passes: Vec<_> = unerased_lint_store(tcx.sess)
-        .late_lint_mod_passes
-        .iter()
-        .map(|mk_pass| mk_pass(tcx))
-        .filter(|pass| is_lint_pass_required(skippable_lints, &pass.get_lints()))
-        .collect();
-    let builtin_lints_must_run = is_lint_pass_required(skippable_lints, &builtin_lints.get_lints());
-    if passes.is_empty() {
-        if builtin_lints_must_run {
-            late_lint_mod_inner(tcx, mod_id, context, builtin_lints);
-        }
-    } else {
-        if builtin_lints_must_run {
-            passes.push(Box::new(builtin_lints) as Box<dyn LateLintPass<'tcx>>);
-        }
-        let pass = RuntimeCombinedLateLintPass { passes };
-        late_lint_mod_inner(tcx, mod_id, context, pass);
-    }
-}
-
-fn late_lint_mod_inner<'tcx, T: LateLintPass<'tcx>>(
-    tcx: TyCtxt<'tcx>,
-    mod_id: LocalModId,
-    context: LateContext<'tcx>,
-    pass: T,
-) {
     let mut cx = LateContextAndPass::<'tcx, T> {
-        context,
-        pass,
-        actually_rustdoc: tcx.sess.opts.actually_rustdoc,
+        context: module_context(),
+        pass: make_pass(),
+        actually_rustdoc,
     };
-
-    let (module, _span, hir_id) = tcx.hir_get_module(mod_id);
 
     cx.with_lint_attrs(hir_id, |cx| {
         // There is no module lint that will have the crate itself as an item, so check it here.
@@ -402,7 +438,17 @@ fn late_lint_mod_inner<'tcx, T: LateLintPass<'tcx>>(
             lint_callback!(cx, check_crate,);
         }
 
-        cx.process_mod(module, hir_id);
+        // `process_mod`, with the walk over the module's items as a stage.
+        lint_callback!(cx, check_mod, module, hir_id);
+        let items = module.item_ids;
+        run_stage(items, items.len(), |items, index| {
+            let mut item_cx = LateContextAndPass::<'tcx, T> {
+                context: module_context(),
+                pass: make_pass(),
+                actually_rustdoc,
+            };
+            hir_visit::Visitor::visit_nested_item(&mut item_cx, items[index]);
+        });
 
         if hir_id == hir::CRATE_HIR_ID {
             lint_callback!(cx, check_crate_post,);

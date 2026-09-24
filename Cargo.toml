@@ -112,7 +112,7 @@ rustc-demangle = "0.1.28"
 rustc_apfloat = "0.2.3"
 rustc-hash = { version = "2.0.0", default-features = false }
 rustc-literal-escaper = "0.0.8"
-serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive"] }
+serde = { version = "1.0.219", default-features = false, features = ["alloc", "derive", "rc"] }
 serde_derive = "1.0.219"
 serde_json = { version = "1.0.59", default-features = false, features = ["alloc"] }
 serde_path_to_error = "0.1.17"
@@ -135,6 +135,9 @@ unicode-width = "0.2.2"
 # The vendored upstream unit tests, at the versions upstream tested with. They link only into the
 # `cargo test` harness, which brings `std` itself; the library build never sees them.
 [dev-dependencies]
+# The timing example sizes its own nagoya pool (`--pool N`) and hands it over with
+# `sync::set_parallel_executor`, to measure scaling at pool sizes other than the default.
+nagoya = { git = "https://github.com/pathscale/nagoya", branch = "feat/stack-size" }
 # `rustc_lexer`'s snapshot tests.
 expect-test = "1.4.0"
 # `odht`'s property tests.

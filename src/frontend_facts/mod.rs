@@ -29,14 +29,15 @@ pub mod syntax;
 // search cannot see them.
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::AtomicBool;
 
 use crate::rustc_data_structures::fx::FxHashMap;
-use crate::rustc_data_structures::sync::{Lock, run_stage};
+use crate::rustc_data_structures::sync::run_stage;
 use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_hir::def::DefKind;
-use crate::rustc_hir::def_id::{DefId, LOCAL_CRATE, LocalDefId};
+use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 #[cfg(not(feature = "force_pinned_sysroot"))]
@@ -45,7 +46,7 @@ use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_co
 use crate::rustc_middle::ty::{TyCtxt, TypeVisitableExt};
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
-use crate::rustc_span::{FileName, Span};
+use crate::rustc_span::{FileName, SourceFile, Span};
 use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
 pub mod site;
@@ -54,9 +55,12 @@ pub mod site;
 pub mod diagnostics;
 
 /// Byte range inside one source file, relative to that file's start.
+///
+/// `file` is shared: every span in the session's input file holds the one name [`extract`]
+/// printed for it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ByteSpan {
-    pub file: String,
+    pub file: Arc<str>,
     pub start: u32,
     pub end: u32,
 }
@@ -92,7 +96,8 @@ pub enum FactKind {
 /// kinds it describes and is empty for every other kind.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Definition {
-    pub def_path: String,
+    /// Printed once; every other fact that names this definition shares it.
+    pub def_path: Arc<str>,
     pub name: String,
     pub kind: FactKind,
     pub span: ByteSpan,
@@ -165,7 +170,7 @@ pub struct FieldSignature {
 /// One `use` / `pub use`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Import {
-    pub module_def_path: String,
+    pub module_def_path: Arc<str>,
     pub path: String,
     pub span: ByteSpan,
     pub reexport: bool,
@@ -177,9 +182,9 @@ pub struct Import {
 /// One `impl` block, inherent or trait.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Impl {
-    pub def_path: String,
+    pub def_path: Arc<str>,
     pub self_type: String,
-    pub trait_def_path: Option<String>,
+    pub trait_def_path: Option<Arc<str>>,
     pub span: ByteSpan,
     /// The associated items this block defines, in source order. Items a trait impl inherits
     /// from the trait's defaults are not here: this block does not define them.
@@ -193,7 +198,7 @@ pub struct Impl {
 pub struct ImplItem {
     pub name: String,
     pub kind: FactKind,
-    pub def_path: String,
+    pub def_path: Arc<str>,
 }
 
 /// Kind of a resolved use of a definition.
@@ -207,8 +212,11 @@ pub enum RefKind {
 /// One resolved reference. Locals and primitives are omitted: they are not defs.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
-    pub from_def_path: String,
-    pub to_def_path: String,
+    /// Shared by every reference out of the same body.
+    pub from_def_path: Arc<str>,
+    /// Shared by every reference to the same definition out of the same body, and with the
+    /// definition's own fact when it is local.
+    pub to_def_path: Arc<str>,
     pub kind: RefKind,
     pub span: ByteSpan,
 }
@@ -236,7 +244,7 @@ pub struct CrateFacts {
     /// references are listed. A body whose type check merely reported errors is not here: its
     /// references that did resolve are kept.
     #[serde(default)]
-    pub unanalyzed_bodies: Vec<String>,
+    pub unanalyzed_bodies: Vec<Arc<str>>,
     /// No error was emitted and every body was type checked. When false, `references` is a
     /// lower bound and the definitions, imports and impls are unaffected.
     ///
@@ -319,6 +327,11 @@ fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
 /// assembled exactly as the serial loops assembled them, so a fact's position, ties in the final
 /// sorts included, is the same at any worker count.
 ///
+/// **Data forward, not recomputed.** The definitions stage prints each local definition's path
+/// once. Its output is frozen before the imports and bodies stages start, and they, like the
+/// impls' trait and item paths, read a local definition's path from it and share the `Arc`
+/// rather than printing it again (see [`Names`]).
+///
 /// What makes the items safe to run side by side is the query system, not anything here: every
 /// `tcx` call is a query, a query's result is memoised behind the session's locks, and those
 /// locks synchronise because `jobs.frontend` turned the thread-safe mode on for this session.
@@ -327,8 +340,6 @@ fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
 pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
-    // Printed paths, one per `DefId`, for this extraction only. Shared by every worker.
-    let paths = DefPaths::new(tcx);
 
     // Not `tcx.iter_local_def_id()`: that depends on the `analysis` query so that it lists the
     // definitions of a finished compilation, and `analysis` runs well-formedness checking over
@@ -344,23 +355,36 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     let _ = tcx.hir_crate_items(());
     let count = tcx.untracked().definitions.read().num_definitions();
 
+    // The input file's name, printed once and shared by every span in it.
+    let input = input_file(tcx);
+
     // **Definitions and impls, one item per local definition.** Each index is read on its own:
     // its kind, its name, its span and its HIR shape, or for an impl its self type, trait and
     // items. Nothing one index computes is read by another, so the walk is a stage whose input
     // is the index itself, and it hands back one `DefFact` per index in index order. Pushing
     // them in that order below is the serial loop's order exactly, impls and definitions each
     // keeping their own sequence.
+    //
+    // No definition's path is printed yet when this stage runs, so each item prints its own.
+    let printing = Names { tcx, local: &[], input: input.clone() };
     let def_facts: Vec<DefFact> = run_stage((), count, |_, i| {
         let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
-        def_fact(tcx, &paths, LocalDefId { local_def_index })
+        def_fact(tcx, &printing, LocalDefId { local_def_index })
     });
-    for fact in def_facts {
-        match fact {
-            DefFact::Impl(fact) => facts.impls.push(fact),
-            DefFact::Definition(definition) => facts.definitions.push(definition),
-            DefFact::Skipped => {}
-        }
-    }
+
+    // From here on a local definition's path is the one the stage above printed, handed
+    // forward: `def_facts` is frozen, indexed by `DefIndex`, and read in place.
+    let names = Names { tcx, local: &def_facts, input };
+
+    // An impl's trait and items are local definitions the stage above may have reached after
+    // the impl, so their paths are taken now, in impl order.
+    let impl_paths: Vec<ImplPaths> = def_facts
+        .iter()
+        .filter_map(|fact| match fact {
+            DefFact::Impl(pending) => Some(pending.paths(&names)),
+            DefFact::Definition(_) | DefFact::Skipped => None,
+        })
+        .collect();
 
     // **Imports, one item per free item**, read in place from the crate's frozen id list. Each
     // `use` reads only its own item, its parent module and its visibility; `None` is anything
@@ -368,7 +392,7 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // dropped it.
     let free_items = tcx.hir_crate_items(()).free_item_ids();
     let imports: Vec<Option<Import>> =
-        run_stage(free_items, free_items.len(), |ids, i| import_fact(tcx, &paths, ids[i]));
+        run_stage(free_items, free_items.len(), |ids, i| import_fact(tcx, &names, ids[i]));
     facts.imports.extend(imports.into_iter().flatten());
 
     // **Bodies, one item per body owner: the expensive walk.** Each owner's type check runs in
@@ -379,11 +403,25 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // `unanalyzed_bodies`, which is never sorted, are the serial walk's sequences exactly.
     let owners = tcx.hir_body_owner_ids();
     let bodies: Vec<Option<BodyFact>> =
-        run_stage(owners, owners.len(), |owners, i| body_fact(tcx, &paths, owners[i]));
+        run_stage(owners, owners.len(), |owners, i| body_fact(tcx, &names, owners[i]));
     for body in bodies.into_iter().flatten() {
         match body {
             BodyFact::Checked(references) => facts.references.extend(references),
             BodyFact::Unanalyzed(from) => facts.unanalyzed_bodies.push(from),
+        }
+    }
+
+    // Every later stage has read `def_facts`; now they move into the facts, in index order.
+    drop(names);
+    let mut impl_paths = impl_paths.into_iter();
+    for fact in def_facts {
+        match fact {
+            DefFact::Impl(pending) => {
+                let paths = impl_paths.next().expect("one `ImplPaths` per impl, in impl order");
+                facts.impls.push(pending.finish(paths));
+            }
+            DefFact::Definition(definition) => facts.definitions.push(definition),
+            DefFact::Skipped => {}
         }
     }
     facts.complete = tcx.dcx().has_errors().is_none() && facts.unanalyzed_bodies.is_empty();
@@ -399,37 +437,118 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     facts
 }
 
-/// How [`extract`] prints a def path. No cache: a map shared by every worker is mutable state a
-/// parallel stage would have to lock, and the path is printed from the `TyCtxt` each time.
-struct DefPaths<'tcx> {
-    tcx: TyCtxt<'tcx>,
+/// The session's input file, the one the crate root's span is in, and its name.
+///
+/// Only the sharing depends on this being the right file: [`Names::span`] compares a span's
+/// file to it by pointer and prints the name of any other file itself.
+fn input_file(tcx: TyCtxt<'_>) -> (Arc<SourceFile>, Arc<str>) {
+    let root = tcx.def_span(CRATE_DEF_ID.to_def_id());
+    let sf = tcx.sess.source_map().lookup_byte_offset(root.lo()).sf;
+    let name = file_name(&sf);
+    (sf, name)
 }
 
-impl<'tcx> DefPaths<'tcx> {
-    fn new(tcx: TyCtxt<'tcx>) -> Self {
-        DefPaths { tcx }
+/// A source file's name as a [`ByteSpan`] reports it.
+fn file_name(sf: &SourceFile) -> Arc<str> {
+    Arc::from(sf.name.prefer_local_unconditionally().to_string())
+}
+
+/// Where [`extract`] gets the def paths and file names its facts hold, as shared values.
+///
+/// No cache. `local` is the definitions stage's output, frozen before any later stage starts
+/// and read in place, so a local definition's path is printed once, by the stage item that
+/// reports the definition, and every later fact that names it holds the same `Arc`. Anything
+/// else (a library item, a closure, a constructor) is printed where it is asked for.
+struct Names<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    /// One entry per local `DefIndex`, from the definitions stage. Empty while that stage runs.
+    local: &'a [DefFact],
+    /// The input file, compared by pointer, and its name.
+    input: (Arc<SourceFile>, Arc<str>),
+}
+
+impl<'a, 'tcx> Names<'a, 'tcx> {
+    /// `def_id`'s printed path: the definitions stage's, when it reported `def_id`, and printed
+    /// here otherwise. Both are `def_path_str` of the same id.
+    fn path(&self, def_id: DefId) -> Arc<str> {
+        self.reported(def_id).unwrap_or_else(|| Arc::from(self.tcx.def_path_str(def_id)))
     }
 
-    fn get(&self, def_id: DefId) -> String {
-        self.tcx.def_path_str(def_id)
+    fn reported(&self, def_id: DefId) -> Option<Arc<str>> {
+        let local = def_id.as_local()?;
+        match self.local.get(local.local_def_index.as_usize())? {
+            DefFact::Definition(definition) => Some(Arc::clone(&definition.def_path)),
+            DefFact::Impl(pending) => Some(Arc::clone(&pending.fact.def_path)),
+            DefFact::Skipped => None,
+        }
+    }
+
+    /// `span` as a byte range in its file. A span in the input file shares its one name.
+    fn span(&self, span: Span) -> ByteSpan {
+        let sm = self.tcx.sess.source_map();
+        let lo = sm.lookup_byte_offset(span.lo());
+        let hi = sm.lookup_byte_offset(span.hi());
+        let (input, name) = &self.input;
+        let file = if Arc::ptr_eq(input, &lo.sf) { Arc::clone(name) } else { file_name(&lo.sf) };
+        ByteSpan { file, start: lo.pos.0, end: hi.pos.0 }
     }
 }
 
 /// What one local definition contributes to [`CrateFacts`]: an impl, a named definition, or
 /// nothing (a `use`, an anonymous item, a definition with no name).
 enum DefFact {
-    Impl(Impl),
+    Impl(PendingImpl),
     Definition(Definition),
     Skipped,
 }
 
+/// An impl as the definitions stage leaves it: everything but the paths of its local trait and
+/// its items, which name other local definitions and are taken from their facts afterwards.
+struct PendingImpl {
+    /// `items` is empty, and `trait_def_path` is filled only for a trait that is not local.
+    fact: Impl,
+    /// The implemented trait, when it is local.
+    local_trait: Option<LocalDefId>,
+    /// Each item's name, kind and id, in source order.
+    items: Vec<(String, FactKind, LocalDefId)>,
+}
+
+/// The paths a [`PendingImpl`] was waiting for, in the same order.
+struct ImplPaths {
+    local_trait: Option<Arc<str>>,
+    items: Vec<Arc<str>>,
+}
+
+impl PendingImpl {
+    fn paths(&self, names: &Names<'_, '_>) -> ImplPaths {
+        ImplPaths {
+            local_trait: self.local_trait.map(|id| names.path(id.to_def_id())),
+            items: self.items.iter().map(|(_, _, id)| names.path(id.to_def_id())).collect(),
+        }
+    }
+
+    fn finish(self, paths: ImplPaths) -> Impl {
+        let mut fact = self.fact;
+        if paths.local_trait.is_some() {
+            fact.trait_def_path = paths.local_trait;
+        }
+        fact.items = self
+            .items
+            .into_iter()
+            .zip(paths.items)
+            .map(|((name, kind, _), def_path)| ImplItem { name, kind, def_path })
+            .collect();
+        fact
+    }
+}
+
 /// One local definition's fact. The body of the serial loop that used to sit in [`extract`],
 /// moved out unchanged so each index can run on its own worker.
-fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId) -> DefFact {
+fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> DefFact {
     let def_id = local.to_def_id();
     let kind = tcx.def_kind(def_id);
     if let DefKind::Impl { .. } = kind {
-        return DefFact::Impl(impl_fact(tcx, paths, local));
+        return DefFact::Impl(impl_fact(tcx, names, local));
     }
     let Some(kind) = fact_kind(kind) else {
         return DefFact::Skipped;
@@ -438,10 +557,10 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId) 
         return DefFact::Skipped;
     };
     let mut definition = Definition {
-        def_path: paths.get(def_id),
+        def_path: names.path(def_id),
         name: name.to_string(),
         kind,
-        span: byte_span(tcx, tcx.def_span(def_id)),
+        span: names.span(tcx.def_span(def_id)),
         signature: None,
         fields: Vec::new(),
         variants: Vec::new(),
@@ -454,7 +573,7 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId) 
 /// the serial loop that used to sit in [`extract`], with each `continue` now a `None`.
 fn import_fact<'tcx>(
     tcx: TyCtxt<'tcx>,
-    paths: &DefPaths<'tcx>,
+    names: &Names<'_, 'tcx>,
     item_id: hir::ItemId,
 ) -> Option<Import> {
     let item = tcx.hir_item(item_id);
@@ -476,9 +595,9 @@ fn import_fact<'tcx>(
     };
     let module = tcx.parent_module_from_def_id(item.owner_id.def_id);
     Some(Import {
-        module_def_path: paths.get(module.to_def_id()),
+        module_def_path: names.path(module.to_def_id()),
         path: path_str,
-        span: byte_span(tcx, item.span),
+        span: names.span(item.span),
         reexport: tcx.local_visibility(item.owner_id.def_id).is_public(),
         bindings,
     })
@@ -488,36 +607,50 @@ fn import_fact<'tcx>(
 /// stopped on a fatal error, the body's own path for [`CrateFacts::unanalyzed_bodies`].
 enum BodyFact {
     Checked(Vec<Reference>),
-    Unanalyzed(String),
+    Unanalyzed(Arc<str>),
 }
 
 /// One body owner's fact, or `None` for an owner with no body. The body of the serial loop that
 /// used to sit in [`extract`], collecting into a list of its own instead of a shared one.
+///
+/// The walk collects each reference as the `DefId` it resolved to. Only then are paths
+/// printed: each distinct callee once for this body, its `Arc` shared by every reference to it
+/// here, and the map that dedups them ends with the body.
 fn body_fact<'tcx>(
     tcx: TyCtxt<'tcx>,
-    paths: &DefPaths<'tcx>,
+    names: &Names<'_, 'tcx>,
     owner: LocalDefId,
 ) -> Option<BodyFact> {
     let body = tcx.hir_maybe_body_owned_by(owner)?;
-    let from = paths.get(owner.to_def_id());
+    let from = names.path(owner.to_def_id());
     // Results tainted by an error are still read: a path that resolved is a fact whether or not
     // some other expression in the body failed, and one that did not resolve is `Res::Err`,
     // which `RefVisitor` already skips.
     let Ok(typeck) = catch_fatal_errors(|| tcx.typeck(owner)) else {
         return Some(BodyFact::Unanalyzed(from));
     };
-    let mut refs = Vec::new();
-    let mut visitor = RefVisitor { tcx, typeck, paths, from: &from, refs: &mut refs };
+    let mut found = Vec::new();
+    let mut visitor = RefVisitor { typeck, found: &mut found };
     visitor.visit_expr(body.value);
+    let mut callees: FxHashMap<DefId, Arc<str>> = FxHashMap::default();
+    let refs = found
+        .into_iter()
+        .map(|(def_id, kind, span)| Reference {
+            from_def_path: Arc::clone(&from),
+            to_def_path: Arc::clone(callees.entry(def_id).or_insert_with(|| names.path(def_id))),
+            kind,
+            span: names.span(span),
+        })
+        .collect();
     Some(BodyFact::Checked(refs))
 }
 
-/// One `impl` block's fact.
+/// One `impl` block's fact, with its local trait and its items left for [`PendingImpl::finish`].
 ///
 /// `type_of` is a query that can stop on a fatal error of its own, and an impl whose self type
 /// did not resolve comes back as an error type that prints as nothing useful. Either way the
 /// type is reported as written in the source, so an impl is never dropped for its self type.
-fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId) -> Impl {
+fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> PendingImpl {
     let def_id = local.to_def_id();
     let hir_impl = match tcx.hir_node_by_def_id(local) {
         Node::Item(hir::Item { kind: ItemKind::Impl(hir_impl), .. }) => Some(hir_impl),
@@ -531,10 +664,13 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId)
     .flatten()
     .or_else(|| hir_impl.map(|hir_impl| type_text(tcx, hir_impl.self_ty)))
     .unwrap_or_default();
-    let trait_def_path = catch_fatal_errors(|| tcx.impl_opt_trait_id(def_id))
-        .ok()
-        .flatten()
-        .map(|trait_id| paths.get(trait_id));
+    let trait_id = catch_fatal_errors(|| tcx.impl_opt_trait_id(def_id)).ok().flatten();
+    let local_trait = trait_id.and_then(DefId::as_local);
+    // A trait from another crate has no fact here to share, so it is printed now.
+    let trait_def_path = match (trait_id, local_trait) {
+        (Some(trait_id), None) => Some(names.path(trait_id)),
+        _ => None,
+    };
     let items = hir_impl
         .map(|hir_impl| {
             hir_impl
@@ -542,20 +678,24 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, paths: &DefPaths<'tcx>, local: LocalDefId)
                 .iter()
                 .filter_map(|item| {
                     let item_id = item.owner_id.to_def_id();
-                    Some(ImplItem {
-                        name: tcx.opt_item_name(item_id)?.to_string(),
-                        kind: fact_kind(tcx.def_kind(item_id))?,
-                        def_path: paths.get(item_id),
-                    })
+                    Some((
+                        tcx.opt_item_name(item_id)?.to_string(),
+                        fact_kind(tcx.def_kind(item_id))?,
+                        item.owner_id.def_id,
+                    ))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    Impl {
-        def_path: paths.get(def_id),
-        self_type,
-        trait_def_path,
-        span: byte_span(tcx, tcx.def_span(def_id)),
+    PendingImpl {
+        fact: Impl {
+            def_path: names.path(def_id),
+            self_type,
+            trait_def_path,
+            span: names.span(tcx.def_span(def_id)),
+            items: Vec::new(),
+        },
+        local_trait,
         items,
     }
 }
@@ -829,9 +969,15 @@ pub fn analyze_source_with_width(
         })
     });
     let mut facts = extracted.ok_or(FatalError)?;
-    let (errors, _warnings) = split_diagnostics(&text.lock());
-    facts.diagnostics =
-        errors.into_iter().filter(|error| !error.starts_with("error: aborting due to")).collect();
+    // Only the errors that are kept become strings: warnings and the closing summary are read
+    // in place and never copied.
+    let captured = text.lock();
+    for_each_diagnostic(&captured, |severity, entry| {
+        if severity == Severity::Error && !entry.text.starts_with("error: aborting due to") {
+            facts.diagnostics.push(entry.to_owned_string());
+        }
+    });
+    drop(captured);
     facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
     Ok(facts)
 }
@@ -899,33 +1045,101 @@ fn capture_diagnostics(
 /// as an error: input the compiler could not handle has not been shown to be clean.
 ///
 /// The one splitter for every entry point here, `syntax` and `diagnostics` included, so what
-/// counts as an error cannot differ between them.
+/// counts as an error cannot differ between them. Each returned string is one allocation,
+/// copied once out of `captured`.
 pub(crate) fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
-    fn flush(entry: Option<String>, errors: &mut Vec<String>, warnings: &mut Vec<String>) {
-        if let Some(entry) = entry {
-            if entry.starts_with("error") || entry.starts_with("internal compiler error") {
-                errors.push(entry);
-            } else if entry.starts_with("warning") {
-                warnings.push(entry);
-            }
-        }
-    }
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    let mut current: Option<String> = None;
-    for line in captured.lines() {
+    for_each_diagnostic(captured, |severity, entry| match severity {
+        Severity::Error => errors.push(entry.to_owned_string()),
+        Severity::Warning => warnings.push(entry.to_owned_string()),
+    });
+    (errors, warnings)
+}
+
+/// Whether a captured diagnostic is an error or a warning.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Severity {
+    Error,
+    Warning,
+}
+
+/// One diagnostic in captured emitter output: its first line through its last location line,
+/// borrowed from the capture.
+#[derive(Clone, Copy)]
+struct Entry<'a> {
+    /// The lines exactly as captured, with the line breaks between them.
+    text: &'a str,
+    /// Some break inside `text` is `\r\n`, which the entry's string spells `\n`.
+    crlf: bool,
+}
+
+impl Entry<'_> {
+    /// The entry's lines joined by `\n`, in one allocation.
+    fn to_owned_string(self) -> String {
+        if !self.crlf {
+            return String::from(self.text);
+        }
+        let mut out = String::with_capacity(self.text.len());
+        for (index, line) in self.text.lines().enumerate() {
+            if index > 0 {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+        out
+    }
+}
+
+/// Hand each error and warning in `captured` to `f`, in emission order, as a slice of it.
+///
+/// Lines are split the way `str::lines` splits them: at `\n`, with a `\r` right before it
+/// dropped too. A line that starts with a space continues the current entry, and one before any
+/// entry is dropped.
+fn for_each_diagnostic<'a>(captured: &'a str, mut f: impl FnMut(Severity, Entry<'a>)) {
+    let mut emit = |start: usize, end: usize, crlf: bool| {
+        let text = &captured[start..end];
+        let severity = if text.starts_with("error") || text.starts_with("internal compiler error")
+        {
+            Severity::Error
+        } else if text.starts_with("warning") {
+            Severity::Warning
+        } else {
+            return;
+        };
+        f(severity, Entry { text, crlf });
+    };
+    // The current entry: where it starts and ends, whether a break inside it is `\r\n`, and
+    // whether its last line's own break is.
+    let mut current: Option<(usize, usize, bool, bool)> = None;
+    let mut pos = 0;
+    for raw in captured.split_inclusive('\n') {
+        let start = pos;
+        pos += raw.len();
+        let (line, line_crlf) = match raw.strip_suffix('\n') {
+            Some(line) => match line.strip_suffix('\r') {
+                Some(line) => (line, true),
+                None => (line, false),
+            },
+            None => (raw, false),
+        };
+        let end = start + line.len();
         if line.starts_with(' ') {
-            if let Some(entry) = current.as_mut() {
-                entry.push('\n');
-                entry.push_str(line);
+            if let Some((_, entry_end, crlf, last_crlf)) = current.as_mut() {
+                *crlf |= *last_crlf;
+                *entry_end = end;
+                *last_crlf = line_crlf;
             }
         } else {
-            flush(current.take(), &mut errors, &mut warnings);
-            current = Some(line.to_string());
+            if let Some((entry_start, entry_end, crlf, _)) = current.take() {
+                emit(entry_start, entry_end, crlf);
+            }
+            current = Some((start, end, false, line_crlf));
         }
     }
-    flush(current.take(), &mut errors, &mut warnings);
-    (errors, warnings)
+    if let Some((start, end, crlf, _)) = current {
+        emit(start, end, crlf);
+    }
 }
 
 /// Type check, borrow check and lint one crate from source, and return what was said.
@@ -991,25 +1205,12 @@ fn host_rustc_version() -> Option<alloc::string::String> {
     (!version.is_empty()).then(|| version.to_string())
 }
 
-fn byte_span(tcx: TyCtxt<'_>, span: Span) -> ByteSpan {
-    let sm = tcx.sess.source_map();
-    let lo = sm.lookup_byte_offset(span.lo());
-    let hi = sm.lookup_byte_offset(span.hi());
-    ByteSpan {
-        file: lo.sf.name.prefer_local_unconditionally().to_string(),
-        start: lo.pos.0,
-        end: hi.pos.0,
-    }
-}
-
-/// Collects one body's references. Each body gets its own visitor and its own `refs`, so
-/// visitors on different workers share nothing but `paths`, whose sharing [`DefPaths`] covers.
+/// Collects one body's references as the `DefId` each resolved to, its kind and its span.
+/// Each body gets its own visitor and its own `found`, so visitors on different workers share
+/// nothing; [`body_fact`] turns the ids into paths once the walk is done.
 struct RefVisitor<'a, 'tcx> {
-    tcx: TyCtxt<'tcx>,
     typeck: &'tcx crate::rustc_middle::ty::TypeckResults<'tcx>,
-    paths: &'a DefPaths<'tcx>,
-    from: &'a str,
-    refs: &'a mut Vec<Reference>,
+    found: &'a mut Vec<(DefId, RefKind, Span)>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
@@ -1019,28 +1220,17 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
         match expr.kind {
             ExprKind::Path(ref qpath) => {
                 if let Some(def_id) = self.typeck.qpath_res(qpath, expr.hir_id).opt_def_id() {
-                    self.push(def_id, RefKind::Path, expr.span);
+                    self.found.push((def_id, RefKind::Path, expr.span));
                 }
             }
             ExprKind::MethodCall(_, _, _, _) => {
                 if let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id) {
-                    self.push(def_id, RefKind::Method, expr.span);
+                    self.found.push((def_id, RefKind::Method, expr.span));
                 }
             }
             _ => {}
         }
         intravisit::walk_expr(self, expr);
-    }
-}
-
-impl<'a, 'tcx> RefVisitor<'a, 'tcx> {
-    fn push(&mut self, def_id: crate::rustc_hir::def_id::DefId, kind: RefKind, span: Span) {
-        self.refs.push(Reference {
-            from_def_path: self.from.to_string(),
-            to_def_path: self.paths.get(def_id),
-            kind,
-            span: byte_span(self.tcx, span),
-        });
     }
 }
 
@@ -1113,5 +1303,20 @@ mod tests {
             ]
         );
         assert_eq!(warnings, vec!["warning: unused variable: `y`".to_string()]);
+    }
+
+    // The split hands out slices of the capture, so a `\r\n` break inside an entry has to come
+    // out as `\n`, which is what splitting with `str::lines` and joining did. A bare `\r` is not
+    // a break and stays, and a location line before any entry is dropped.
+    #[test]
+    fn crlf_breaks_inside_an_entry_read_as_newlines() {
+        let captured =
+            "  --> orphan.rs:1:1\r\nerror: a\r\n  --> a.rs:1:1\r\n  --> a.rs:2:2\nwarning: w\r\nerror: b\r";
+        let (errors, warnings) = split_diagnostics(captured);
+        assert_eq!(
+            errors,
+            vec!["error: a\n  --> a.rs:1:1\n  --> a.rs:2:2".to_string(), "error: b\r".to_string()]
+        );
+        assert_eq!(warnings, vec!["warning: w".to_string()]);
     }
 }

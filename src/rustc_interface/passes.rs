@@ -1201,6 +1201,8 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
             &|| {
                 tcx.ensure_ok().exportable_items(LOCAL_CRATE);
                 tcx.ensure_ok().stable_order_of_exportable_impls(LOCAL_CRATE);
+                // Both per-module queries are themselves stages over the module's item-likes
+                // (`rustc_passes::item_likes`), so a crate of one module still spreads.
                 let modules = tcx.hir_module_ids();
                 run_stage(modules, modules.len(), |modules, index| {
                     let module = modules[index];
@@ -1301,7 +1303,9 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
         // nested stage of four checks, each of the module-wide ones a stage over the crate's
         // modules. Serially they run in exactly this order, as the nested `par_fns` they replaced
         // did; in parallel a group's inner stages run their own items rather than waiting on the
-        // pool.
+        // pool. Every per-module query below is in turn a stage over the module's owners (its
+        // item-likes, or for the late lints its top-level items), so a crate of one module still
+        // spreads; see `research/per-owner-passes.md`.
         let per_module = |check: &dyn Fn(LocalModId)| {
             let modules = tcx.hir_module_ids();
             run_stage(modules, modules.len(), |modules, index| check(modules[index]));

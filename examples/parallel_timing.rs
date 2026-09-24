@@ -40,7 +40,7 @@ fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
 }
 
 /// The settings timed. The first is the reference every other one is held to.
-const SETTINGS: &[usize] = &[1, 2, 4, 8, 12];
+const SETTINGS: &[usize] = &[1, 2, 4, 8, 12, 16, 24];
 
 fn src_corpus() -> Vec<String> {
     let mut paths = Vec::new();
@@ -168,7 +168,25 @@ fn clean_report(checked: &[Checked]) {
 /// `parallel_timing [src|clean|large] [width]`: with a corpus named, only that corpus; with a
 /// width as well, only that setting, once, with no comparison.
 fn main() {
-    let mut args = std::env::args().skip(1);
+    // `--pool N` anywhere: run on a nagoya pool of `N` workers this program builds and hands to
+    // frontend, instead of the default one, to see how the widths scale with the pool's size.
+    let mut raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(at) = raw.iter().position(|a| a == "--pool") {
+        let workers: usize = raw.get(at + 1).and_then(|n| n.parse().ok()).expect("--pool N");
+        raw.drain(at..at + 2);
+        let runtime = nagoya::runtime::Runtime::builder()
+            .workers(workers)
+            .label("timing")
+            .stack_size(16 * 1024 * 1024)
+            .build();
+        let executor = runtime.executor().clone_handle();
+        // Kept for the life of the program: dropping a `Runtime` does not stop its workers.
+        std::mem::forget(runtime);
+        frontend::rustc_data_structures::sync::set_parallel_executor(executor)
+            .unwrap_or_else(|_| panic!("an executor was already set"));
+        println!("pool: {workers} workers");
+    }
+    let mut args = raw.into_iter();
     let only = args.next();
     let width: Option<usize> = args.next().and_then(|n| n.parse().ok());
     let corpus = |name: &str| match name {

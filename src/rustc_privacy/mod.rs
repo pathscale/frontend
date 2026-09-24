@@ -35,7 +35,7 @@ use diagnostics::{
 use crate::rustc_ast::visit::{VisitorResult, try_visit};
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
-use crate::rustc_data_structures::sync::run_stage;
+use crate::rustc_data_structures::sync::stages;
 use crate::rustc_errors::{MultiSpan, listify};
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalModId};
@@ -52,6 +52,7 @@ use crate::rustc_middle::ty::{
     TypeVisitable, TypeVisitor,
 };
 use crate::rustc_middle::{bug, span_bug};
+use crate::rustc_passes::item_likes::{item_like_count, item_like_def_id, visit_item_like};
 use crate::rustc_span::{Ident, Span, Symbol, sym};
 use tracing::debug;
 
@@ -1786,39 +1787,69 @@ pub fn provide(providers: &mut Providers) {
     };
 }
 
+/// Two stages over the module's item-likes, in one scope: name privacy, then type privacy, each
+/// item-like with a visitor of its own. Item `i` of both is the `i`th of
+/// `hir_visit_item_likes_in_module`'s walk, which is also the `i`th of `ModuleItems::definitions`,
+/// so the replay order is the order the serial loops ran in: every item's name-privacy errors,
+/// then every item's type-privacy errors.
+///
+/// Why an item-like needs nothing another one wrote:
+///
+/// - `NamePrivacyVisitor` holds `maybe_typeck_results`, which `visit_nested_body` sets and puts
+///   back, so it is `None` between item-likes; with `OnlyBodies` a nested item is its own
+///   item-like, not walked from its parent.
+/// - `TypePrivacyVisitor` holds `maybe_typeck_results` (put back the same way), `span`, and
+///   `accessible_tys`. `span` is written before every check that can emit: `walk_types` goes
+///   through `SpannedTypeVisitor::visit`, which sets it, and `visit_ty`, `visit_infer`,
+///   `check_expr_pat_type`, the method-call arm and the trait-impl arm below all set it before
+///   they check; `visit_qpath` emits at its own `span` argument. So what an item-like prints
+///   never depends on the span the previous one left behind. `accessible_tys` only records
+///   types whose walk found nothing (a failed walk is never recorded), keyed on a type and the
+///   fixed `mod_id`, so starting an item-like with it empty only re-walks a type that would walk
+///   clean again, and prints nothing either way.
 fn check_mod_privacy(tcx: TyCtxt<'_>, mod_id: LocalModId) {
-    // Check privacy of names not checked in previous compilation stages.
-    let mut visitor = NamePrivacyVisitor { tcx, maybe_typeck_results: None };
-    tcx.hir_visit_item_likes_in_module(mod_id, &mut visitor);
-
-    // Check privacy of explicitly written types and traits as well as
-    // inferred types of expressions and patterns.
-    let span = tcx.def_span(mod_id);
-    let mut visitor = TypePrivacyVisitor {
-        tcx,
-        mod_id,
-        maybe_typeck_results: None,
-        span,
-        accessible_tys: Default::default(),
-    };
-
     let module = tcx.hir_module_items(mod_id);
-    for def_id in module.definitions() {
-        let _ = crate::rustc_ty_walk::walk_types(tcx, def_id, &mut visitor);
+    let len = item_like_count(module);
+    let span = tcx.def_span(mod_id);
 
-        if let Some(body_id) = tcx.hir_maybe_body_owned_by(def_id) {
-            visitor.visit_nested_body(body_id.id());
-        }
+    stages(|scope| {
+        // Check privacy of names not checked in previous compilation stages.
+        scope.stage(module, len, |module, index| {
+            let mut visitor = NamePrivacyVisitor { tcx, maybe_typeck_results: None };
+            visit_item_like(tcx, module, index, &mut visitor)
+        });
 
-        if let DefKind::Impl { of_trait: true } = tcx.def_kind(def_id) {
-            let trait_ref = tcx.impl_trait_ref(def_id);
-            let trait_ref = trait_ref.instantiate_identity().skip_norm_wip();
-            visitor.span =
-                tcx.hir_expect_item(def_id).expect_impl().of_trait.unwrap().trait_ref.path.span;
-            let _ =
-                visitor.visit_def_id(trait_ref.def_id, "trait", &trait_ref.print_only_trait_path());
-        }
-    }
+        // Check privacy of explicitly written types and traits as well as
+        // inferred types of expressions and patterns.
+        scope.stage(module, len, move |module, index| {
+            let mut visitor = TypePrivacyVisitor {
+                tcx,
+                mod_id,
+                maybe_typeck_results: None,
+                span,
+                accessible_tys: Default::default(),
+            };
+            let def_id = item_like_def_id(module, index);
+
+            let _ = crate::rustc_ty_walk::walk_types(tcx, def_id, &mut visitor);
+
+            if let Some(body_id) = tcx.hir_maybe_body_owned_by(def_id) {
+                visitor.visit_nested_body(body_id.id());
+            }
+
+            if let DefKind::Impl { of_trait: true } = tcx.def_kind(def_id) {
+                let trait_ref = tcx.impl_trait_ref(def_id);
+                let trait_ref = trait_ref.instantiate_identity().skip_norm_wip();
+                visitor.span =
+                    tcx.hir_expect_item(def_id).expect_impl().of_trait.unwrap().trait_ref.path.span;
+                let _ = visitor.visit_def_id(
+                    trait_ref.def_id,
+                    "trait",
+                    &trait_ref.print_only_trait_path(),
+                );
+            }
+        });
+    });
 }
 
 fn effective_visibilities(tcx: TyCtxt<'_>, (): ()) -> &EffectiveVisibilities {
@@ -1928,14 +1959,18 @@ fn check_private_in_public(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     // Check for private types in public interfaces.
     let checker = PrivateItemsInPublicInterfacesChecker { tcx, effective_visibilities };
 
-    // Two stages over the module's frozen id lists, one after the other as before: the checker
-    // only reads, and each item's findings are emitted as diagnostics, which the stage forwards
-    // in item order.
+    // Two stages over the module's frozen id lists, in one scope: the checker only reads, and
+    // each item's findings are emitted as diagnostics, which the stages forward in stage order
+    // and then item order, the order the two serial loops ran in. The foreign items need not
+    // wait for the last free item.
     let crate_items = tcx.hir_module_items(mod_id);
-    let items = crate_items.free_item_ids();
-    run_stage(items, items.len(), |items, index| checker.check_item(items[index]));
-    let foreign_items = crate_items.foreign_item_ids();
-    run_stage(foreign_items, foreign_items.len(), |items, index| {
-        checker.check_foreign_item(items[index])
+    let checker = &checker;
+    stages(|scope| {
+        let items = crate_items.free_item_ids();
+        scope.stage(items, items.len(), move |items, index| checker.check_item(items[index]));
+        let foreign_items = crate_items.foreign_item_ids();
+        scope.stage(foreign_items, foreign_items.len(), move |items, index| {
+            checker.check_foreign_item(items[index])
+        });
     });
 }

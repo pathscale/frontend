@@ -40,6 +40,7 @@ mod eii;
 pub mod entry;
 pub mod hir_id_validator;
 pub mod input_stats;
+pub mod item_likes;
 mod lang_items;
 pub mod layout_test;
 mod lib_features;

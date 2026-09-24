@@ -131,19 +131,42 @@ impl<'tcx> QueryJob<'tcx> {
 /// holds a shard or a latch mutex ever takes this lock.
 #[derive(Default)]
 pub struct QueryWaitGraph {
-    lock: WaitMutex<()>,
-    /// Waiters on latches right now. Changed only under `lock`, so a reader holding `lock` sees
-    /// the exact count. A cycle through a new edge needs the awaited job's thread to be asleep
-    /// on a latch itself, or to be the waiting thread, so with no other waiter and a job on
-    /// another thread there is no cycle to look for, and the snapshot of every active job is
-    /// not taken.
-    waiting: AtomicUsize,
+    /// Who waits on whom, one entry per thread asleep on a latch: the waiting thread, and the
+    /// thread running the job it waits on (see [`thread_token`]). Held while an edge is added and
+    /// while a latch is set, which is the lock the module header describes.
+    ///
+    /// **Why a chain and not a count.** A cycle through a new wait edge is a chain of waits that
+    /// comes back to the waiting thread: the job it waits on runs on a thread that is itself
+    /// waiting, on a job running on a thread that is waiting, and so on. Each thread waits on at
+    /// most one latch, so the chain is at most one step per waiting thread, and walking it is a
+    /// few comparisons. Only when it does come back is the full snapshot of active jobs taken, to
+    /// build the cycle's report. A count of waiters was not enough: in a stage where many items
+    /// wait on one shared query there is always another waiter, so every wait took the snapshot,
+    /// a walk of every query's shards under this lock, and every completing latch queued behind it.
+    edges: WaitMutex<Vec<(usize, usize)>>,
 }
 
 impl QueryWaitGraph {
     pub fn new() -> Self {
-        QueryWaitGraph { lock: WaitMutex::new(()), waiting: AtomicUsize::new(0) }
+        QueryWaitGraph { edges: WaitMutex::new(Vec::new()) }
     }
+}
+
+/// Whether following waits from `waitee_thread` comes back to `me`, given who waits on whom.
+fn chain_reaches(edges: &[(usize, usize)], me: usize, waitee_thread: usize) -> bool {
+    let mut thread = waitee_thread;
+    // One step per recorded wait at most; a chain longer than that would repeat a thread, which
+    // cannot happen (a thread waits on one latch), so the bound only guards the loop.
+    for _ in 0..=edges.len() {
+        if thread == me {
+            return true;
+        }
+        match edges.iter().find(|(waiter, _)| *waiter == thread) {
+            Some(&(_, next)) => thread = next,
+            None => return false,
+        }
+    }
+    true
 }
 
 /// A number no other live thread shares: the address of this thread's own slot.
@@ -236,6 +259,8 @@ pub struct QueryWaiter<'tcx> {
     /// mutex; an atomic rather than a `Cell` only so that `QueryWaiter` stays `Sync` behind its
     /// `Arc`.
     pub resumed: AtomicBool,
+    /// The waiting thread, as [`thread_token`] gave it: its entry in [`QueryWaitGraph`].
+    pub thread: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -266,11 +291,12 @@ impl<'tcx> QueryLatch<'tcx> {
         graph: &QueryWaitGraph,
         query: Option<QueryJobId>,
         span: Span,
-        own_job: bool,
+        waitee_thread: usize,
         detect_cycle: impl FnOnce() -> Option<QueryCycle<'tcx>>,
     ) -> Result<(), QueryCycle<'tcx>> {
+        let me = thread_token();
         // Add the edge and look for a cycle through it, all under the graph lock.
-        let graph_guard = graph.lock.lock();
+        let mut graph_guard = graph.edges.lock();
 
         let waiter = {
             let mut waiters_guard = self.waiters.lock();
@@ -284,6 +310,7 @@ impl<'tcx> QueryLatch<'tcx> {
                 cycle: Mutex::new(None),
                 condvar: Condvar::new(),
                 resumed: AtomicBool::new(false),
+                thread: me,
             });
 
             // We push the waiter on to the `waiters` list. It can be accessed inside
@@ -296,21 +323,19 @@ impl<'tcx> QueryLatch<'tcx> {
             // this one included, and the mutex is not reentrant.
         };
 
-        // Every other waiter, counted under the lock. See `QueryWaitGraph::waiting`: with none,
-        // and the job running on another thread, that thread is not asleep and no cycle can
-        // run through this edge.
-        let others = graph.waiting.fetch_add(1, Ordering::Relaxed);
-        if query.is_some() && (own_job || others > 0) {
+        // A cycle through this edge is a chain of waits from the awaited job's thread back to this
+        // one (see `QueryWaitGraph::edges`). Only then is the snapshot taken, to report it.
+        if query.is_some() && chain_reaches(&graph_guard, me, waitee_thread) {
             if let Some(cycle) = detect_cycle() {
                 // Our edge closes the cycle. Take it back out, so the graph holds no cycle
                 // again, and report instead of sleeping. The removal is under `graph` too,
                 // like every other change to the latch edges.
                 self.remove_waiter(&waiter);
-                graph.waiting.fetch_sub(1, Ordering::Relaxed);
                 drop(graph_guard);
                 return Err(cycle);
             }
         }
+        graph_guard.push((me, waitee_thread));
 
         // The edge is in and closes nothing. Let other threads add and remove edges again.
         // From here this thread counts as asleep: its waiter is on the latch and its stack
@@ -353,11 +378,12 @@ impl<'tcx> QueryLatch<'tcx> {
     /// Sets the latch and resumes all waiters on it
     fn set(&self, graph: &QueryWaitGraph) {
         // Removing edges is a change to the wait graph; see `QueryWaitGraph`.
-        let _graph_guard = graph.lock.lock();
+        let mut graph_guard = graph.edges.lock();
         let mut waiters_guard = self.waiters.lock();
         let waiters = waiters_guard.take().unwrap(); // mark the latch as complete
-        graph.waiting.fetch_sub(waiters.len(), Ordering::Relaxed);
         for waiter in waiters {
+            // Each thread waits on one latch at a time, so its one entry is this wait's.
+            graph_guard.retain(|(thread, _)| *thread != waiter.thread);
             // Under the latch mutex, so the sleeper cannot miss it; see `wait_on`.
             waiter.resumed.store(true, Ordering::Relaxed);
             waiter.condvar.notify_one();

@@ -1166,7 +1166,11 @@ mod parallel {
         let present = shared.active.load(Ordering::Relaxed);
         for _ in present..wanted {
             let shared = shared.clone();
-            pool::submit(move || help(shared));
+            // Within the application's budget, shared by every scope and session: when the pool
+            // is already full, the rest of this stage is the owner's to run.
+            if !pool::try_submit(move || help(shared)) {
+                break;
+            }
         }
         slots
     }
@@ -1204,7 +1208,8 @@ mod parallel {
         let more = !shared.closed.load(Ordering::SeqCst) && shared.unreserved_chunks() > 0;
         if more {
             let next = Arc::clone(&shared);
-            pool::submit(move || help(next));
+            // This job's place in the application budget passes to its successor.
+            pool::submit_continuation(move || help(next));
         }
     }
 

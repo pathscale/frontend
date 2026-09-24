@@ -214,7 +214,7 @@ fn wait_for_query<'tcx, C: QueryCache>(
     key_hash: u64,
     latch: QueryLatch<'tcx>,
     waitee: QueryJobId,
-    own_job: bool,
+    waitee_thread: usize,
     current: Option<QueryJobId>,
 ) -> (C::Value, Option<DepNodeIndex>) {
     // For parallel queries, we'll block and wait until the query running
@@ -231,7 +231,7 @@ fn wait_for_query<'tcx, C: QueryCache>(
     // fact; with that handler gone the check runs here, before sleeping, under the wait-graph
     // lock (`QueryWaitGraph` says why that makes it exact). A cycle comes back as `Err` and is
     // handled exactly as the serial path handles one it finds on its own stack.
-    let result = latch.wait_on(&tcx.query_system.wait_graph, current, span, own_job, || {
+    let result = latch.wait_on(&tcx.query_system.wait_graph, current, span, waitee_thread, || {
         find_cycle_closed_by_wait(tcx, waitee)
     });
 
@@ -373,7 +373,7 @@ where
                         // waiter's edge also sees the latch in its snapshot of this job.
                         let latch = job.latch();
                         let waitee = job.id;
-                        let own_job = job.thread == crate::rustc_middle::query::thread_token();
+                        let waitee_thread = job.thread;
                         drop(state_lock);
 
                         // Only call `wait_for_query` in parallel mode: it blocks this thread
@@ -387,7 +387,7 @@ where
                             key_hash,
                             latch,
                             waitee,
-                            own_job,
+                            waitee_thread,
                             current_job_id,
                         )
                     } else {

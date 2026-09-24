@@ -35,6 +35,7 @@
 extern crate std;
 
 use core::future::Future;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use eko::thread::OnceLock;
 
@@ -92,9 +93,61 @@ pub(crate) fn width() -> usize {
     }
 }
 
-/// Hand `work` to the pool. It runs once, on some worker, start to finish.
-pub(crate) fn submit(work: impl FnOnce() + Send + 'static) {
-    executor().submit(work);
+/// Fanout jobs submitted and not yet finished, across every scope of every session in the
+/// process.
+///
+/// **The budget is the application's, not a scope's.** There is one pool, and a stage inside an
+/// item of another stage, or a stage of another session, draws on the same workers. Counting
+/// per scope let every scope submit up to its own width, so nested and concurrent scopes
+/// together queued many times the pool's size, and the surplus only contended: jobs that found
+/// no registry slot, and locks fought over by more runners than there are cores.
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Submit `work` if the application-wide budget has room, and say whether it did. The budget is
+/// the pool's worker count: one job per worker, whoever submitted it. Work not submitted stays
+/// with its scope, whose owner runs it.
+pub(crate) fn try_submit(work: impl FnOnce() + Send + 'static) -> bool {
+    let limit = workers();
+    let mut current = IN_FLIGHT.load(Ordering::Relaxed);
+    loop {
+        if current >= limit {
+            return false;
+        }
+        match IN_FLIGHT.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(seen) => current = seen,
+        }
+    }
+    launch(work);
+    true
+}
+
+/// Submit `work` as the continuation of the job calling this: it takes over that job's place in
+/// the budget, which the caller gives up as it ends, so the count is back where it was once the
+/// caller returns. Called only from inside a job `try_submit` started.
+pub(crate) fn submit_continuation(work: impl FnOnce() + Send + 'static) {
+    IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    launch(work);
+}
+
+/// Hand a budgeted job to the pool, releasing its place in the budget when it ends.
+fn launch(work: impl FnOnce() + Send + 'static) {
+    executor().submit(move || {
+        // Released when the job ends however it ends, so a panic cannot leak budget.
+        struct Release;
+        impl Drop for Release {
+            fn drop(&mut self) {
+                IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        let _release = Release;
+        work()
+    });
 }
 
 /// Park this thread until `future` completes. On a pool worker this takes the worker out of the
