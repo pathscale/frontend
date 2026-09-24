@@ -1326,7 +1326,7 @@ impl<'a> Parser<'a> {
         match (self.may_recover(), seq, snapshot) {
             (true, Err(err), Some((mut snapshot, path))) => {
                 snapshot.bump(); // `(`
-                match snapshot.parse_struct_fields(path.clone(), false, exp!(CloseParen)) {
+                match snapshot.parse_struct_fields(&path, false, exp!(CloseParen)) {
                     Ok((fields, ..)) if snapshot.eat(exp!(CloseParen)) => {
                         // We are certain we have `Enum::Foo(a: 3, b: 4)`, suggest
                         // `Enum::Foo { a: 3, b: 4 }` or `Enum::Foo(3, 4)`.
@@ -3867,7 +3867,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_struct_fields(
         &mut self,
-        pth: ast::Path,
+        pth: &ast::Path,
         recover: bool,
         close: ExpTokenPair,
     ) -> PResult<
@@ -3937,7 +3937,7 @@ impl<'a> Parser<'a> {
             let parsed_field = match self.parse_expr_field() {
                 Ok(f) => Ok(f),
                 Err(mut e) => {
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         async_block_err(&mut e, pth.span);
                     } else {
                         e.span_label(pth.span, "while parsing this struct");
@@ -3972,7 +3972,7 @@ impl<'a> Parser<'a> {
                     }
 
                     let guar = e.emit();
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         recovered_async = Some(guar);
                     }
 
@@ -4013,7 +4013,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Err(mut e) => {
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         async_block_err(&mut e, pth.span);
                     } else {
                         e.span_label(pth.span, "while parsing this struct");
@@ -4030,7 +4030,7 @@ impl<'a> Parser<'a> {
                         return Err(e);
                     }
                     let guar = e.emit();
-                    if pth == kw::Async {
+                    if *pth == kw::Async {
                         recovered_async = Some(guar);
                     } else if let Some(f) = field_ident(self, guar) {
                         fields.push(f);
@@ -4056,7 +4056,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, Box<Expr>> {
         let lo = pth.span;
         let (fields, base, recovered_async) =
-            self.parse_struct_fields(pth.clone(), recover, exp!(CloseBrace))?;
+            self.parse_struct_fields(&pth, recover, exp!(CloseBrace))?;
         let span = lo.to(self.token.span);
         self.expect(exp!(CloseBrace))?;
         let expr = if let Some(guar) = recovered_async {
