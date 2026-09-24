@@ -1102,6 +1102,23 @@ impl<'a> Parser<'a> {
             &[kw::Const, kw::Unsafe, kw::Trait],
             &[kw::Const, kw::Unsafe, kw::Auto, kw::Trait],
         ];
+        // Cheap rejection first. Unless the current token is a non-raw identifier
+        // `impl`, `trait`, `auto`, `unsafe` or `const`, the `impl` check below
+        // fails and every suffix fails at its first keyword, so the only effect is
+        // recording `impl` and each suffix's first keyword as expected.
+        let may_match = matches!(
+            self.token.ident(),
+            Some((ident, IdentIsRaw::No))
+                if matches!(ident.name, kw::Impl | kw::Trait | kw::Auto | kw::Unsafe | kw::Const)
+        );
+        if !may_match {
+            self.expected_token_types.insert(exp!(Impl).token_type);
+            self.expected_token_types.insert(exp!(Trait).token_type);
+            self.expected_token_types.insert(exp!(Auto).token_type);
+            self.expected_token_types.insert(exp!(Unsafe).token_type);
+            self.expected_token_types.insert(exp!(Const).token_type);
+            return false;
+        }
         // `impl(`
         if self.check_keyword(exp!(Impl)) && self.look_ahead(1, |t| t == &token::OpenParen) {
             // `impl(in` unambiguously introduces an `impl` restriction

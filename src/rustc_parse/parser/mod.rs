@@ -504,9 +504,7 @@ impl<'a> Parser<'a> {
     #[inline]
     pub fn check(&mut self, exp: ExpTokenPair) -> bool {
         let is_present = self.token == exp.tok;
-        if !is_present {
-            self.expected_token_types.insert(exp.token_type);
-        }
+        self.expected_token_types.insert_unless(is_present, exp.token_type);
         is_present
     }
 
@@ -560,9 +558,7 @@ impl<'a> Parser<'a> {
     #[must_use]
     fn check_keyword(&mut self, exp: ExpKeywordPair) -> bool {
         let is_keyword = self.token.is_keyword(exp.kw);
-        if !is_keyword {
-            self.expected_token_types.insert(exp.token_type);
-        }
+        self.expected_token_types.insert_unless(is_keyword, exp.token_type);
         is_keyword
     }
 
@@ -710,16 +706,16 @@ impl<'a> Parser<'a> {
 
     #[inline]
     fn check_or_expected(&mut self, ok: bool, token_type: TokenType) -> bool {
-        if !ok {
-            self.expected_token_types.insert(token_type);
-        }
+        self.expected_token_types.insert_unless(ok, token_type);
         ok
     }
 
+    #[inline]
     fn check_ident(&mut self) -> bool {
         self.check_or_expected(self.token.is_ident(), TokenType::Ident)
     }
 
+    #[inline]
     fn check_path(&mut self) -> bool {
         self.check_or_expected(self.token.is_path_start(), TokenType::Path)
     }
@@ -1142,6 +1138,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Advance the parser by one token.
+    ///
+    /// Inlined: the common step is a plain token in the current stream (see
+    /// `TokenCursor::inlined_next_and_bump`), and the rare work (delimiters,
+    /// dummy spans) is out of line.
+    #[inline]
     pub fn bump(&mut self) {
         // Note: destructuring here would give nicer code, but it was found in #96210 to be slower
         // than `.0`/`.1` access.
@@ -1151,15 +1152,21 @@ impl<'a> Parser<'a> {
         // worry about an unglued token. See `break_and_eat` for more details.
         self.break_last_token = 0;
         if next.0.span.is_dummy() {
-            // Tweak the location for better diagnostics, but keep syntactic context intact.
-            let fallback_span = self.token.span;
-            next.0.span = fallback_span.with_ctxt(next.0.span.ctxt());
+            next.0.span = self.dummy_span_fallback(next.0.span);
         }
         debug_assert!(!matches!(
             next.0.kind,
             token::OpenInvisible(origin) | token::CloseInvisible(origin) if origin.skip()
         ));
         self.inlined_bump_with(next)
+    }
+
+    /// Tweak the location of a token with a dummy span for better diagnostics: the
+    /// current token's span, keeping the syntactic context of `span` intact.
+    #[cold]
+    #[inline(never)]
+    fn dummy_span_fallback(&self, span: Span) -> Span {
+        self.token.span.with_ctxt(span.ctxt())
     }
 
     /// Look-ahead `dist` tokens of `self.token` and get access to that token there.

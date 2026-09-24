@@ -1125,8 +1125,26 @@ impl TokenCursor {
     }
 
     /// This always-inlined version should only be used on hot code paths.
+    ///
+    /// Only the common case, a plain token in the current stream, is inlined:
+    /// one bounds check, one tag test and one index increment. Entering or
+    /// leaving a delimited sequence and reaching the end go through
+    /// `next_and_bump_delimited`, which runs the full loop from the same
+    /// state and so returns the same token.
     #[inline(always)]
     pub fn inlined_next_and_bump(&mut self) -> (Token, Spacing) {
+        if let Some(&TokenTree::Token(token, spacing)) = self.curr.next() {
+            debug_assert!(!token.kind.is_delim());
+            self.curr.bump();
+            return (token, spacing);
+        }
+        self.next_and_bump_delimited()
+    }
+
+    /// The general step of `inlined_next_and_bump`: descends into and climbs
+    /// out of delimited sequences, skipping invisible delimiters.
+    #[inline(never)]
+    fn next_and_bump_delimited(&mut self) -> (Token, Spacing) {
         loop {
             // FIXME: we currently don't return `Delimiter::Invisible` open/close delims. To fix
             // #67062 we will need to, whereupon the `delim != Delimiter::Invisible` conditions

@@ -322,6 +322,30 @@ impl<'a> Parser<'a> {
         } else {
             &[exp!(Gen), exp!(Const), exp!(Async), exp!(Unsafe), exp!(Safe), exp!(Extern)]
         };
+
+        // Cheap rejection first. Every check below needs the current token to be a
+        // non-raw identifier, and with `Case::Sensitive` one named `fn` or a
+        // qualifier (`extern` is among `quals`). Otherwise every
+        // `check_keyword_case` below fails, `&&` skips each lookahead, and the only
+        // effect is recording `fn`, each qualifier and `extern` as expected, which
+        // this does directly.
+        let may_match = match self.token.ident() {
+            Some((ident, IdentIsRaw::No)) => {
+                case == Case::Insensitive
+                    || ident.name == kw::Fn
+                    || quals.iter().any(|exp| exp.kw == ident.name)
+            }
+            _ => false,
+        };
+        if !may_match {
+            self.expected_token_types.insert(exp!(Fn).token_type);
+            for exp in quals {
+                self.expected_token_types.insert(exp.token_type);
+            }
+            self.expected_token_types.insert(exp!(Extern).token_type);
+            return false;
+        }
+
         self.check_keyword_case(exp!(Fn), case) // Definitely an `fn`.
             // `$qual fn` or `$qual $qual`:
             || quals.iter().any(|&exp| self.check_keyword_case(exp, case))
