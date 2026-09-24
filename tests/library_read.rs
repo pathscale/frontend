@@ -26,6 +26,15 @@
 //! the tree's `library/vendor` when it has one, and otherwise from cargo's registry cache,
 //! `$CARGO_HOME/registry/src`, at the version the lock file names.
 //!
+//! A second ignored test reads the same chain from the first tree named, with `test` (libtest)
+//! and what it depends on planned beside `std` as the sysroot has them, and checks one file
+//! with rustc's `--test` against it (`check_source_against`'s `test`):
+//!
+//! ```text
+//! FRONTEND_RUST_SRC_ROOTS=$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust \
+//!     cargo test --test library_read a_test_check -- --ignored --nocapture
+//! ```
+//!
 //! A `std` program, because the catcher needs `std`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -133,6 +142,7 @@ fn a_type_error_is_refused_by_a_strict_read_and_recorded_by_a_library_read() {
         Some("2021"),
         loaded,
         1,
+        false,
     );
     assert!(checked.is_clean(), "{:?}", checked.errors);
 }
@@ -214,17 +224,90 @@ fn every_rust_src_reads_core_alloc_and_std_as_a_chain() {
     let mut failures = Vec::new();
     for (index, root) in roots.iter().enumerate() {
         let scratch = Scratch::new(&format!("chain-{index}"));
-        if let Err(failure) = read_chain(root, &scratch.0) {
+        if let Err(failure) = read_chain(root, &scratch.0, false) {
             failures.push(format!("{}: {failure}", root.display()));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-/// Read one tree's `std` chain into `out`. `Err` says which crate was refused and why.
-fn read_chain(root: &Path, out: &Path) -> Result<(), String> {
+/// rustc's `--test` over one file, against `std`'s chain and libtest read from the first
+/// `rust-src` tree named. A type error in a `#[test]` function of a `#[cfg(test)]` module is
+/// E0599 with `test` and nothing without it; a test module with no error is clean with `test`,
+/// warnings included, so the harness's `main` and each test's descriptor say nothing of their
+/// own, as under rustc.
+#[test]
+#[ignore = "reads std's chain and libtest from the first tree FRONTEND_RUST_SRC_ROOTS names"]
+fn a_test_check_loads_libtest_and_sets_cfg_test() {
+    let roots = std::env::var("FRONTEND_RUST_SRC_ROOTS").expect(
+        "FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated, each holding `library/`",
+    );
+    frontend::unwind_janky::install_catcher(catcher);
+    let root = roots
+        .split(':')
+        .find(|r| !r.is_empty())
+        .map(PathBuf::from)
+        .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
+    let scratch = Scratch::new("test-harness");
+    let written = read_chain(&root, &scratch.0, true)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
+
+    // As a sysroot gives them to a crate cargo builds: none in the extern prelude but what rustc
+    // puts there itself (`core`, `std`), each found by name (the injected `extern crate std`, the
+    // harness's `extern crate test`) or by the hash a loaded crate recorded.
+    let dependencies: Vec<Dependency> = written
+        .iter()
+        .map(|(name, metadata)| Dependency::transitive(name.clone(), metadata.clone()))
+        .collect();
+    let loaded = Loaded { dependencies: &dependencies, ..Loaded::default() };
+    let check = |source: &str, test: bool| {
+        check_source_against("user", Arc::new(source.to_string()), Some("2021"), loaded, 1, test)
+    };
+
+    let broken = "\
+#[cfg(test)]
+mod t {
+    #[test]
+    fn f() {
+        let _v: Vec<u8> = Vec::new_value();
+    }
+}
+";
+    let plain = check(broken, false);
+    assert!(plain.is_clean(), "{:?}", plain.errors);
+    assert!(plain.warnings.is_empty(), "{:?}", plain.warnings);
+    let tested = check(broken, true);
+    assert!(!tested.errors.is_empty(), "no error with `test`");
+    assert!(
+        tested.errors.iter().all(|e| e.starts_with("error[E0599]") && e.contains("new_value")),
+        "{:?}",
+        tested.errors
+    );
+
+    let clean = "\
+#[cfg(test)]
+mod t {
+    #[test]
+    fn f() {
+        let v: Vec<u8> = Vec::new();
+        assert!(v.is_empty());
+    }
+}
+";
+    let tested = check(clean, true);
+    assert!(tested.is_clean(), "{:?}", tested.errors);
+    assert!(tested.warnings.is_empty(), "{:?}", tested.warnings);
+}
+
+/// Read one tree's `std` chain into `out`, with `test` (libtest) and its dependencies when
+/// `with_test`. `Err` says which crate was refused and why; `Ok` is each crate read, by name,
+/// with the metadata written for it, in the order read.
+fn read_chain(root: &Path, out: &Path, with_test: bool) -> Result<Vec<(String, String)>, String> {
     let library = root.join("library");
-    let graph = plan::Graph::for_std(&library)?;
+    let mut graph = plan::Graph::for_std(&library)?;
+    if with_test {
+        graph = graph.with_test()?;
+    }
     let order = graph.order();
     eprintln!("{}: {} crates: {}", root.display(), order.len(), order.join(", "));
 
@@ -301,12 +384,14 @@ fn read_chain(root: &Path, out: &Path) -> Result<(), String> {
         }
         written.insert(id.clone(), metadata);
     }
-    for name in ["core", "alloc", "std"] {
-        if !read_names.contains(name) {
+    let expected: &[&str] =
+        if with_test { &["core", "alloc", "std", "test"] } else { &["core", "alloc", "std"] };
+    for name in expected {
+        if !read_names.contains(*name) {
             return Err(format!("the chain has no `{name}`"));
         }
     }
-    Ok(())
+    Ok(order.iter().map(|id| (graph.packages[id].crate_name(), written[id].clone())).collect())
 }
 
 /// Which crates `std` depends on on this host, with which features, in which order: what cargo
@@ -549,7 +634,8 @@ mod plan {
         library: PathBuf,
         lock: Vec<Locked>,
         patches: BTreeMap<String, String>,
-        root: String,
+        /// The packages the graph is resolved from: `std`, and `test` after it when asked for.
+        roots: Vec<String>,
         /// By package id (`name version`).
         pub packages: BTreeMap<String, Package>,
         pub features: BTreeMap<String, BTreeSet<String>>,
@@ -575,7 +661,7 @@ mod plan {
                 library: library.to_path_buf(),
                 lock: lock.clone(),
                 patches: workspace.patches,
-                root: root.clone(),
+                roots: vec![root.clone()],
                 packages: BTreeMap::new(),
                 features: BTreeMap::new(),
                 edges: BTreeMap::new(),
@@ -590,6 +676,27 @@ mod plan {
                 .collect();
             graph.activate(&root, &std_dir, &wanted, true)?;
             Ok(graph)
+        }
+
+        /// The graph with `test` (libtest) resolved into it too, as the sysroot has it beside
+        /// `std`: what the harness of a `--test` check loads. Its manifest's dependencies are
+        /// followed as `std`'s are (`getopts` with `rustc-dep-of-std`, whose `core` and `std` are
+        /// the `rustc-std-workspace-*` shims and so the real crates; `libc`; `std`; `core`), and
+        /// a package both reach is one package with the union of the features each asks for, as
+        /// the standard library workspace's resolver builds them. `test`'s build script prints
+        /// `enable_unstable_features` only on a nightly or dev compiler, and only a `cfg!` reads
+        /// it, so it is not supplied.
+        pub fn with_test(mut self) -> Result<Graph, String> {
+            let id = self
+                .lock
+                .iter()
+                .find(|locked| locked.name == "test" && !locked.registry)
+                .ok_or("library/Cargo.lock has no `test`")?
+                .id();
+            let dir = self.library.join("test");
+            self.activate(&id, &dir, &[], true)?;
+            self.roots.push(id);
+            Ok(self)
         }
 
         pub fn core(&self) -> Option<String> {
@@ -612,7 +719,9 @@ mod plan {
             if let Some(builtins) = self.compiler_builtins() {
                 self.visit(&builtins, &mut seen, &mut order);
             }
-            self.visit(&self.root, &mut seen, &mut order);
+            for root in &self.roots {
+                self.visit(root, &mut seen, &mut order);
+            }
             order
         }
 

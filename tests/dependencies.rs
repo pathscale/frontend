@@ -2,7 +2,8 @@
 //!
 //! The dependency is a `no_core` crate of its own, with the lang items it needs, so nothing
 //! outside this file is read: it is read from source once, its metadata written, and the crates
-//! after it load that metadata as rustc loads an `--extern`.
+//! after it load that metadata as rustc loads an `--extern`. One check is made with rustc's
+//! `--test` and nothing loaded, to show it sets `cfg(test)`.
 //!
 //! A `std` program, because the catcher needs `std`.
 
@@ -151,7 +152,7 @@ fn one_file_is_checked_against_its_dependency() {
     let loaded = Loaded { dependencies: &dependencies, ..Loaded::default() };
     let check = |body: &str| {
         let source = format!("#![feature(no_core)]\n#![no_core]\n{body}\n");
-        check_source_against("user", Arc::new(source), Some("2021"), loaded, 1)
+        check_source_against("user", Arc::new(source), Some("2021"), loaded, 1, false)
     };
 
     let clean = check("pub fn f(m: &base::Mutex<u32>) -> u32 { *m.lock() }");
@@ -170,6 +171,30 @@ fn one_file_is_checked_against_its_dependency() {
     // A path into the file's own missing siblings is told apart by its code.
     let sibling = check("use crate::other::Thing;");
     assert!(sibling.errors.iter().any(|e| e.starts_with("error[E0432]")), "{:?}", sibling.errors);
+}
+
+/// `test` is rustc's `--test`. Without it a `#[cfg(test)]` item is compiled out, so its type
+/// error is not reported. With it the harness names libtest, which this `no_core` check is not
+/// given, and rustc stops at its own E0463 for `test` before type checking, as rustc does. That
+/// `cfg(test)` code is then checked is shown with libtest loaded, in `tests/library_read.rs`
+/// (`a_test_check_loads_libtest_and_sets_cfg_test`).
+#[test]
+fn test_sets_cfg_test_for_the_checked_file() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = "#[cfg(test)]\nfn f() { let _: u32 = \"x\"; }\n";
+    let check = |test: bool| {
+        check_source_against("user", Arc::new(source.to_string()), None, Loaded::default(), 1, test)
+    };
+
+    let plain = check(false);
+    assert!(plain.is_clean(), "{:?}", plain.errors);
+
+    let tested = check(true);
+    assert!(
+        tested.errors.iter().any(|e| e.starts_with("error[E0463]") && e.contains("`test`")),
+        "{:?}",
+        tested.errors
+    );
 }
 
 // Two crates of one name in one read: `dup` v1 and `dup` v2, each read under its own
