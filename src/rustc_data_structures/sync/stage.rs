@@ -178,6 +178,35 @@
 //! the fatal error, raised again once the replay has every earlier item's diagnostics out. A
 //! `FatalError` is still one to `catch_fatal_errors`. [`Slots::wait`] answers `None` for an item
 //! that failed or was cut off.
+//!
+//! # Chains: item `i` of one stage triggers item `i` of the next
+//!
+//! Two stages over the same items, where the second's item `i` needs only the first's item `i`
+//! (type checking, then borrow checking, of one body), are two back-to-back serial loops in a
+//! serial run, and a barrier between them in a parallel one: every thread idles on the first
+//! stage's tail, and body `i`'s type check has left the cache by the time some other core borrow
+//! checks it. [`StageScope::stage_then`] starts the second stage *chained* to the first: when the
+//! first stage's item `i` settles with `true`, the thread that ran it runs the second stage's
+//! item `i` straight after, inside the same install of the scope's context (`Run::follow`).
+//!
+//! - **Its own stage in serial order.** The chained stage takes the next stage number, so every
+//!   one of its items comes after every item of its upstream in serial order: its replay
+//!   forwards after the upstream's, and a fatal error or a panic anywhere in the upstream cuts
+//!   off every chained item that has not started, exactly as for a later stage that never
+//!   started. An item that already ran speculatively is only diagnostics in its own replay,
+//!   dropped with it, and query results, whose diagnostics come out at their first consumer in
+//!   serial order whoever computed them (`rustc_errors::item_scope`).
+//! - **Held until its upstream item says so.** A chained stage hands out no chunks and is
+//!   skipped by sweeps (`Run::ready`) until an item's upstream item has settled with `true`, or
+//!   the stage has been released ([`Chain::release`]); an item whose upstream said `false` waits
+//!   for the release, which the owner calls where the serial loop ran. Whoever runs a chained
+//!   item runs or waits for its upstream item first, so the order holds on every path.
+//! - **Owner work between the two.** [`StageScope::conclude_through`] settles and concludes the
+//!   upstream (and every stage before it) early, raising what a serial run raised by then, so
+//!   what the owner emits next comes after the upstream's diagnostics and before the chained
+//!   stage's, as it did serially, while the chained items go on running.
+//! - **Serial is the two loops.** In a serial scope nothing is chained: the upstream runs when
+//!   started, and the chained stage runs in full, in order, when it is released.
 
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
@@ -503,6 +532,21 @@ trait Run: Send + Sync {
     /// forwards its items' diagnostics, and raise the fatal error this stage stopped at, if it
     /// did.
     fn conclude(&self);
+    /// The stage's number in its scope, which is also its place in the scope's list.
+    fn seq(&self) -> u32;
+    /// Whether item `index` may start now. Always, for a stage started with
+    /// [`StageScope::stage`]; for one started with [`StageScope::stage_then`], once its upstream
+    /// item has settled and either said so or the stage was released ("Chains" below).
+    fn ready(&self, index: usize) -> bool;
+    /// Item `index` of this stage's upstream has just settled with a value, on this thread,
+    /// inside the scope's context: run this stage's item `index` here and now if it is ready
+    /// and nobody has claimed it. Never unwinds.
+    fn follow(&self, index: usize);
+    /// Make `next` this stage's follower, whose item `i` [`follow`](Run::follow)s this stage's
+    /// item `i`. A stage has at most one; `false` if it already had one.
+    fn set_then(&self, next: Arc<dyn Run>) -> bool;
+    /// Let every item of a chained stage start, whatever its upstream item said.
+    fn release(&self);
 }
 
 /// A scope in which stages run. See the module header, and [`stages`].
@@ -516,6 +560,10 @@ pub struct StageScope<'scope, 'env: 'scope> {
     /// The next stage's number.
     #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
     next_seq: Cell<u32>,
+    /// How many of the scope's first stages [`conclude_through`](Self::conclude_through) has
+    /// concluded already; the end of the scope concludes the rest.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
+    concluded: Cell<u32>,
     /// Invariant in both, as `std::thread::Scope` is: `'scope` must not shrink to a borrow the
     /// body could end early, nor `'env` stretch past the data it names.
     _scope: PhantomData<&'scope mut &'scope ()>,
@@ -542,6 +590,7 @@ pub fn stages<'env, R>(body: impl for<'scope> FnOnce(&'scope StageScope<'scope, 
         #[cfg(feature = "parallel")]
         parallel: None,
         next_seq: Cell::new(0),
+        concluded: Cell::new(0),
         _scope: PhantomData,
         _env: PhantomData,
         _owner_thread: PhantomData,
@@ -679,6 +728,7 @@ where
                             move |(input, rest): &(In, usize), index| f(input, rest + index),
                             true,
                             true,
+                            None,
                         )
                     })
                 });
@@ -765,7 +815,7 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
                 None => 1,
             };
             let plan = parallel::Plan::cut(len, &weigh, open.threads(), 0);
-            return self.start_planned(input, plan, f, false, false);
+            return self.start_planned(input, plan, f, false, false, None);
         }
         let _ = weight;
         let slots = Slots::with_runner(len, None);
@@ -781,6 +831,7 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
     /// chunk for the owner before waking anybody, for a scope whose owner settles right after
     /// (a [`run_stage`]). `wake`: the plan's weights are measured nanoseconds, so helpers are
     /// woken for them now; otherwise the owner wakes them once it has measured (`drain`).
+    /// `upstream`: the stage is chained to that one (see [`stage_then`](Self::stage_then)).
     #[cfg(feature = "parallel")]
     fn start_planned<In, O, F>(
         &'scope self,
@@ -789,6 +840,7 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
         f: F,
         owner_first: bool,
         wake: bool,
+        upstream: Option<Arc<Slots<bool>>>,
     ) -> Arc<Slots<O>>
     where
         In: DynSync + DynSend + 'scope,
@@ -798,7 +850,116 @@ impl<'scope, 'env> StageScope<'scope, 'env> {
         let open = self.parallel.as_ref().expect("only a parallel scope starts a planned stage");
         let seq = self.next_seq.get();
         self.next_seq.set(seq.saturating_add(1));
-        parallel::start(open, seq, input, plan, f, owner_first, wake)
+        parallel::start(open, seq, input, plan, f, owner_first, wake, upstream)
+    }
+
+    /// Start a stage chained to `upstream`, a stage of this scope with one `bool` per item:
+    /// item `i` of the new stage runs `f(&input, i)` as soon as `upstream`'s item `i` has settled
+    /// with `true`, on the thread that settled it, right after it. An item whose upstream said
+    /// `false` waits for [`Chain::release`]. See "Chains" in the module header.
+    ///
+    /// The new stage is a stage of its own in every other way: its own number, after
+    /// `upstream`'s, so its items come after every one of `upstream`'s in serial order; its own
+    /// replay; its own slots. In a serial session, and in a scope that is serial, nothing runs
+    /// here: the whole stage runs, in order, when it is released, which is where the serial
+    /// loop it replaces ran.
+    ///
+    /// `upstream` must have `len` items and belong to this scope.
+    pub fn stage_then<In, O, W, F>(
+        &'scope self,
+        upstream: &Arc<Slots<bool>>,
+        input: In,
+        len: usize,
+        weight: W,
+        f: F,
+    ) -> Chain<'scope, In, O, F>
+    where
+        In: DynSync + DynSend + 'scope,
+        O: DynSync + DynSend + 'scope,
+        W: Fn(&In, usize) -> u32,
+        F: Fn(&In, usize) -> O + DynSync + DynSend + 'scope,
+    {
+        assert_eq!(upstream.len(), len, "a chained stage has one item per upstream item");
+        #[cfg(feature = "parallel")]
+        if let Some(open) = &self.parallel {
+            let weigh = |index: usize| u64::from(weight(&input, index).max(1));
+            let plan = parallel::Plan::cut(len, &weigh, open.threads(), 0);
+            let slots =
+                self.start_planned(input, plan, f, false, false, Some(Arc::clone(upstream)));
+            let stage = slots.runner.clone();
+            open.follow(upstream, stage.as_ref().and_then(Weak::upgrade));
+            return Chain { slots, serial: None, stage, _scope: PhantomData };
+        }
+        let _ = weight;
+        Chain {
+            slots: Arc::new(Slots::with_runner(len, None)),
+            serial: Some((input, f)),
+            #[cfg(feature = "parallel")]
+            stage: None,
+            _scope: PhantomData,
+        }
+    }
+
+    /// Settle every item of `upstream`'s stage and of every stage started before it, then
+    /// conclude those stages in order, now: forward their diagnostics and raise what a serial
+    /// run would have raised by the end of `upstream`'s stage. Stages started after it, a
+    /// chained stage included, go on running.
+    ///
+    /// For owner work that a serial run did between two stages: after this, what the owner
+    /// emits comes after everything those stages emitted, as it did serially. Does nothing in a
+    /// serial scope, where every stage has emitted and raised as it ran.
+    pub fn conclude_through<O>(&'scope self, upstream: &Arc<Slots<O>>) {
+        #[cfg(feature = "parallel")]
+        if let Some(open) = &self.parallel {
+            let Some(through) = open.seq_of(upstream) else { return };
+            let from = self.concluded.get();
+            if through < from {
+                return;
+            }
+            open.conclude_through(from, through);
+            self.concluded.set(through + 1);
+        }
+        let _ = upstream;
+    }
+}
+
+/// A stage chained to another by [`StageScope::stage_then`], until it is released.
+///
+/// Must be released inside the scope: in a serial session that is where the stage runs at all.
+#[must_use = "a chained stage runs in a serial session only when it is released"]
+pub struct Chain<'scope, In, O, F> {
+    slots: Arc<Slots<O>>,
+    /// A serial scope's stage, run in order by `release`.
+    serial: Option<(In, F)>,
+    /// A parallel scope's stage, to release.
+    #[cfg(feature = "parallel")]
+    stage: Option<Weak<dyn Run>>,
+    _scope: PhantomData<&'scope ()>,
+}
+
+impl<'scope, In, O, F> Chain<'scope, In, O, F>
+where
+    F: Fn(&In, usize) -> O,
+{
+    /// Let every item run, and hand back the stage's slots.
+    ///
+    /// In a serial scope this runs the whole stage, here, in index order, exactly as
+    /// [`StageScope::stage`] runs one when it starts: call it where the serial loop ran. In a
+    /// parallel one the items whose upstream said `false` become free to take; the end of the
+    /// scope runs whatever is left.
+    pub fn release(mut self) -> Arc<Slots<O>> {
+        if let Some((input, f)) = self.serial.take() {
+            for index in 0..self.slots.len() {
+                let value = f(&input, index);
+                assert!(self.slots.claim(index));
+                self.slots.fill(index, value);
+            }
+        }
+        #[cfg(feature = "parallel")]
+        if let Some(stage) = self.stage.as_ref().and_then(Weak::upgrade) {
+            stage.release();
+        }
+        Arc::clone(&self.slots)
     }
 }
 
@@ -815,6 +976,7 @@ mod parallel {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use core::task::{Context, Poll, Waker};
 
+    use eko::thread::OnceLock;
     use parking_lot::Mutex;
 
     use core::cell::Cell;
@@ -1047,6 +1209,7 @@ mod parallel {
         let scope = StageScope {
             parallel: Some(Open { shared, context }),
             next_seq: Cell::new(0),
+            concluded: Cell::new(0),
             _scope: PhantomData,
             _env: PhantomData,
             _owner_thread: PhantomData,
@@ -1055,8 +1218,54 @@ mod parallel {
         let result = body(&scope);
         core::mem::forget(guard);
         let settled = owner.settle();
-        owner.conclude(settled);
+        // The stages `conclude_through` concluded already are not concluded again.
+        let concluded = usize::try_from(scope.concluded.get()).unwrap_or(usize::MAX);
+        owner.conclude(settled, concluded);
         result
+    }
+
+    impl Open<'_> {
+        /// The number of the stage of this scope that fills `slots`, or `None` for slots no
+        /// stage can fill any more (a stage run eagerly).
+        ///
+        /// # Panics
+        ///
+        /// If `slots` belong to a stage of another scope.
+        pub(super) fn seq_of<O>(&self, slots: &Arc<Slots<O>>) -> Option<u32> {
+            let stage = slots.runner.as_ref().and_then(Weak::upgrade)?;
+            let seq = stage.seq();
+            let ours = self
+                .shared
+                .stages
+                .lock()
+                .get(usize::try_from(seq).unwrap_or(usize::MAX))
+                .is_some_and(|mine| Arc::ptr_eq(mine, &stage));
+            assert!(ours, "a stage of another scope");
+            Some(seq)
+        }
+
+        /// Make `next`, a stage just started in this scope, the follower of the stage that fills
+        /// `upstream`, which must be a stage of this scope too: the follower is held by the
+        /// upstream stage's value, so it must not outlive this scope, and a stage of an enclosing
+        /// scope does. With no upstream stage to follow (slots a stage filled eagerly), nothing
+        /// triggers `next`'s items, and they run when it is released.
+        pub(super) fn follow(&self, upstream: &Arc<Slots<bool>>, next: Option<Arc<dyn Run>>) {
+            let Some(next) = next else { return };
+            if self.seq_of(upstream).is_none() {
+                return;
+            }
+            let Some(stage) = upstream.runner.as_ref().and_then(Weak::upgrade) else { return };
+            let first = stage.set_then(next);
+            assert!(first, "a stage has one chained follower");
+        }
+
+        /// See [`StageScope::conclude_through`]: stages `from..=through`, which are started and
+        /// not concluded.
+        pub(super) fn conclude_through(&self, from: u32, through: u32) {
+            let range = usize::try_from(from).unwrap_or(usize::MAX)
+                ..usize::try_from(through).unwrap_or(usize::MAX).saturating_add(1);
+            self.shared.conclude_through(range, serial_order(through, usize::MAX));
+        }
     }
 
     /// Settles a parallel scope whose body unwound, so no item outlives what it borrows, then
@@ -1330,7 +1539,9 @@ mod parallel {
                             let Some(current) = &mut batch else { return };
                             match current.indices.next() {
                                 Some(index) => {
-                                    if current.stage.claim(index) {
+                                    // A chained item whose upstream has not let it start is
+                                    // left for whoever it is released to.
+                                    if current.stage.ready(index) && current.stage.claim(index) {
                                         running = Some(index);
                                         current.stage.run_in_context(index);
                                         running = None;
@@ -1396,9 +1607,53 @@ mod parallel {
             core::mem::take(&mut *self.stages.lock())
         }
 
+        /// Settle and conclude the stages `range` of this scope, which the owner started and has
+        /// not concluded, before the scope ends: `last` is the serial order of the last item any
+        /// of them can have. Raises what a serial run would have raised by then, if anything:
+        /// the first panic at or before `last` unless a fatal error came first, else the first
+        /// fatal error, from the stage that stopped at it. Later stages keep running and keep
+        /// whatever they raise for the end of the scope. Owner only.
+        ///
+        /// Settling runs what this thread can take, exactly as the end of the scope does
+        /// (`settle`), and then waits for these stages' items other threads are running, and for
+        /// nothing else: a later stage's item, a chained one run right after its upstream item
+        /// included, may still be running when this returns.
+        pub(super) fn conclude_through(&self, range: Range<usize>, last: u64) {
+            let first = self.owner_first.lock().take();
+            self.drain(true, first);
+            for index in range.clone() {
+                let stage = self.stages.lock().get(index).cloned();
+                if let Some(stage) = stage {
+                    stage.settle_all();
+                }
+            }
+            let stop = self.stop.load(Ordering::Acquire);
+            let caught = {
+                let mut slot = self.panic.lock();
+                match &*slot {
+                    Some(caught) if caught.order <= last && caught.order <= stop => slot.take(),
+                    _ => None,
+                }
+            };
+            if let Some(Caught { payload, message, .. }) = caught {
+                // The unwind settles the scope and drops every stage, discarding their replays,
+                // as a panic at the end of the scope does.
+                pool::resume(payload, message);
+            }
+            // In stage order; a stage that stopped at a fatal error raises it here, after every
+            // earlier item's diagnostics, and the unwind discards the rest.
+            for index in range {
+                let stage = self.stages.lock().get(index).cloned();
+                if let Some(stage) = stage {
+                    stage.conclude();
+                }
+            }
+        }
+
         /// Raise what a serial run would have raised, if anything: the earliest of the first
-        /// panic and the first fatal error, in serial order.
-        pub(super) fn conclude(&self, stages: Vec<Arc<dyn Run>>) {
+        /// panic and the first fatal error, in serial order. The first `concluded` stages were
+        /// concluded already, by `conclude_through`.
+        pub(super) fn conclude(&self, stages: Vec<Arc<dyn Run>>, concluded: usize) {
             let caught = self.panic.lock().take();
             let stop = self.stop.load(Ordering::Acquire);
             if let Some(Caught { order, payload, message }) = caught {
@@ -1415,7 +1670,7 @@ mod parallel {
             }
             // In stage order: every stage before the one a fatal error stopped hands its hook a
             // normal `finish`; that one's raises, and the unwind drops the rest, discarding.
-            for stage in &stages {
+            for stage in stages.iter().skip(concluded) {
                 stage.conclude();
             }
         }
@@ -1455,12 +1710,35 @@ mod parallel {
         plan: Plan,
         seq: u32,
         scope: Arc<ScopeShared>,
+        /// The stage chained to this one, whose item `i` runs right after this one's item `i`
+        /// settles, on the same thread (`follow`). Set once, by the owner, right after the
+        /// follower starts. A strong reference that is part of this stage's value, so it is
+        /// dropped with it, inside the scope (see `detach`).
+        then: OnceLock<Arc<dyn Run>>,
+        /// For a chained stage: what its items wait for.
+        gate: Option<Gate>,
+    }
+
+    /// What a chained stage's items wait for: their upstream item, and either its `true` or the
+    /// stage's release.
+    struct Gate {
+        upstream: Arc<Slots<bool>>,
+        released: AtomicBool,
+    }
+
+    impl<In, O, F> Stage<'_, In, O, F> {
+        /// A chained stage that has not been released: its chunks are not handed out, because
+        /// its items are run by their upstream items (`follow`) or wait for the release.
+        fn held(&self) -> bool {
+            self.gate.as_ref().is_some_and(|gate| !gate.released.load(Ordering::Acquire))
+        }
     }
 
     // SAFETY: unchecked, as the module header says: the call site's `DynSend`/`DynSync` bounds
     // are implemented for every type, and this is the one place that word is taken. `Slots` is
     // accessed through its own synchronisation, `replay` through its own (per-item entries and
-    // a lock, `rustc_errors::item_scope`), and `input`, `f` and `context` only through `&`.
+    // a lock, `rustc_errors::item_scope`), `then` and `gate` through their atomics, and `input`,
+    // `f` and `context` only through `&`.
     unsafe impl<In, O, F> Send for Stage<'_, In, O, F> {}
     unsafe impl<In, O, F> Sync for Stage<'_, In, O, F> {}
 
@@ -1473,6 +1751,9 @@ mod parallel {
         }
 
         fn reserve(&self) -> Option<Range<usize>> {
+            if self.held() {
+                return None;
+            }
             let chunks = self.plan.chunks();
             // Read first: once every chunk is reserved, every later look is a load of a line
             // nobody writes, rather than one more `fetch_add` on it.
@@ -1487,11 +1768,17 @@ mod parallel {
         }
 
         fn unreserved_chunks(&self) -> usize {
+            if self.held() {
+                return 0;
+            }
             let chunks = self.plan.chunks();
             chunks - self.cursor.load(Ordering::Relaxed).min(chunks)
         }
 
         fn unreserved_weight(&self) -> u64 {
+            if self.held() {
+                return 0;
+            }
             self.plan.weight_from(self.cursor.load(Ordering::Relaxed))
         }
 
@@ -1508,6 +1795,15 @@ mod parallel {
         }
 
         fn run_in_context(&self, index: usize) {
+            // A chained item starts after its upstream item has settled, whoever runs it. When it
+            // is run by `follow`, or taken after the check in `drain`, it has; otherwise (the end
+            // of the scope, a `Slots::wait`) this runs the upstream item or waits for it. An
+            // upstream item that failed set the cut-off at or before itself first (`stop_at`,
+            // `stash`, or it was cut off), and this item comes after it in serial order, so the
+            // check below then fails this one unrun, as a serial run never reaches it.
+            if let Some(gate) = &self.gate {
+                let _ = gate.upstream.wait(index);
+            }
             let order = serial_order(self.seq, index);
             if order > self.scope.cutoff.load(Ordering::Acquire) {
                 self.slots.fail(index);
@@ -1526,8 +1822,52 @@ mod parallel {
                 self.scope.stop_at(order);
             }
             match value {
-                Some(value) => self.slots.fill(index, value),
+                Some(value) => {
+                    self.slots.fill(index, value);
+                    // The chained stage's item `index`, here and now, while what this item
+                    // touched is still in this core's cache.
+                    if let Some(next) = self.then.get() {
+                        next.follow(index);
+                    }
+                }
                 None => self.slots.fail(index),
+            }
+        }
+
+        fn seq(&self) -> u32 {
+            self.seq
+        }
+
+        fn ready(&self, index: usize) -> bool {
+            match &self.gate {
+                None => true,
+                Some(gate) => {
+                    gate.upstream.is_settled(index)
+                        && (gate.released.load(Ordering::Acquire)
+                            || gate.upstream.get(index) != Some(&false))
+                }
+            }
+        }
+
+        fn follow(&self, index: usize) {
+            if !self.ready(index) || !self.slots.claim(index) {
+                return;
+            }
+            // Caught here, inside the context the caller installed, so a panic in this item is
+            // this item's, settled and ordered as its own, and never reaches the upstream item's
+            // run, which has already settled.
+            if let Err(payload) = pool::catch(|| self.run_in_context(index)) {
+                self.panicked(index, payload);
+            }
+        }
+
+        fn set_then(&self, next: Arc<dyn Run>) -> bool {
+            self.then.set(next).is_ok()
+        }
+
+        fn release(&self) {
+            if let Some(gate) = &self.gate {
+                gate.released.store(true, Ordering::Release);
             }
         }
 
@@ -1588,8 +1928,11 @@ mod parallel {
         // - Strong references come only from upgrading this weak one. They are held by the
         //   scope's `stages` list, by a thread's current `Batch` (the owner's, or a helper's), by
         //   the owner's reserved first chunk in `owner_first` until `settle` takes it, by
-        //   `drain` while it installs the context, and by `Slots::wait` while it runs an
-        //   unclaimed item.
+        //   `drain` while it installs the context, by `Slots::wait` while it runs an
+        //   unclaimed item, and, for a chained stage, by its upstream stage's `then`, which is
+        //   part of the upstream stage's value and dropped with it, so it is gone once every
+        //   strong reference to the upstream stage is (`Open::follow` only chains stages of one
+        //   scope).
         // - `stages` (and the unwind guard `SettleOnUnwind`) runs `settle` before it returns or
         //   unwinds, and `stages` is where `'scope` ends. `settle` settles every item, so no
         //   `Slots::wait` finds one unclaimed any more; closes the scope and waits until no
@@ -1619,6 +1962,7 @@ mod parallel {
         f: F,
         owner_first: bool,
         wake: bool,
+        upstream: Option<Arc<Slots<bool>>>,
     ) -> Arc<Slots<O>>
     where
         In: 'scope,
@@ -1644,6 +1988,9 @@ mod parallel {
                 plan,
                 seq,
                 scope: shared.clone(),
+                then: OnceLock::new(),
+                gate: upstream
+                    .map(|upstream| Gate { upstream, released: AtomicBool::new(false) }),
             }
         });
         let slots = typed.slots.clone();
