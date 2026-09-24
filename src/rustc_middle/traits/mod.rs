@@ -276,7 +276,9 @@ impl<'tcx> core::ops::Deref for ObligationCauseCodeHandle<'tcx> {
 /// The `ObligationCauseCode`s that carry no data, stored in a handle as this
 /// tag instead of on the heap. `code` hands out a reference to a promoted
 /// constant of the same value, so a reader cannot tell the two storages apart.
-#[derive(Copy, Clone, PartialEq, Eq, Default, Encodable, Decodable)]
+// `Debug` because `TypeVisitable` requires it of every field; the handles' own `Debug` impls
+// are written out and never print it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Encodable, Decodable)]
 #[derive(TypeVisitable, TypeFoldable)]
 enum InlineCode {
     #[default]
