@@ -828,15 +828,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(),
             tcx.ensure_ok().clauses_of(def_id);
             tcx.ensure_ok().fn_sig(def_id);
             tcx.ensure_ok().codegen_fn_attrs(def_id);
-            // rustc checks every intrinsic's declaration against its own table of signatures. In a
-            // crate that opts into `rustc_attrs` (the standard library, the only place intrinsics
-            // are declared) the table belongs to one compiler version and the library may be
-            // another's (stable 1.97's `core` declares some with other generics). frontend
-            // generates no code and reads the source it is handed, so the declaration is read as
-            // written.
-            if let Some(i) = tcx.intrinsic(def_id)
-                && !tcx.features().rustc_attrs()
-            {
+            if let Some(i) = tcx.intrinsic(def_id) {
                 intrinsic::check_intrinsic_type(
                     tcx,
                     def_id,

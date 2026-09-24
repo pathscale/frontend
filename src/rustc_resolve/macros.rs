@@ -624,18 +624,6 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         invoc_in_mod_inert_attr: Option<LocalDefId>,
         suggestion_span: Option<Span>,
     ) -> Result<(&'ra Arc<SyntaxExtension>, Res), Indeterminate> {
-        // A `rustc_` attribute this build does not know, in a crate that opts into
-        // `rustc_attrs` (every standard library crate does), belongs to the compiler version the
-        // crate was written for (stable 1.97's `core` has `#[rustc_unsafe_specialization_marker]`).
-        // frontend reads the source it is handed, so the attribute is inert here, not an error.
-        if kind == MacroKind::Attr
-            && let [segment] = path.segments.as_slice()
-            && segment.ident.as_str().starts_with("rustc")
-            && !crate::rustc_feature::is_builtin_attr_name(segment.ident.name)
-            && self.tcx.features().rustc_attrs()
-        {
-            return Ok((self.non_macro_attr, Res::NonMacroAttr(NonMacroAttrKind::Tool)));
-        }
         let (ext, res) = match self.cm_mut().resolve_macro_or_delegation_path(
             path,
             kind,

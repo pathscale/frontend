@@ -1718,14 +1718,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     pub(super) fn lower_abi(&mut self, abi_str: StrLit) -> ExternAbi {
         let ast::StrLit { symbol_unescaped, span, .. } = abi_str;
         let extern_abi = symbol_unescaped.as_str().parse().unwrap_or_else(|_| {
-            // An ABI this build does not know, in a crate that opts into `rustc_attrs` (every
-            // standard library crate does), belongs to the compiler version the crate was written
-            // for (stable 1.97's `core` declares intrinsics `extern "unadjusted"`). frontend reads
-            // the source it is handed: the function is read with the Rust ABI, its signature
-            // intact, and nothing is refused.
-            if !self.tcx.features().rustc_attrs() {
-                self.error_on_invalid_abi(abi_str);
-            }
+            self.error_on_invalid_abi(abi_str);
             ExternAbi::Rust
         });
         let tcx = self.tcx;
