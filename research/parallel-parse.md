@@ -8,12 +8,13 @@ over this crate's own `src/` (1,424 files, check and analyze) at width 1 against
 | parallel parse on | 1,050 ms | 1,360 ms |
 | parallel parse off | 1,035 ms | 1,070 ms |
 
-It cost about 290 ms at width 12 on real code and made no measurable difference on the large
-and clean corpora. A file's parse is a few hundred microseconds, lexing stays serial, and
-chunks fall back on any diagnostic, so there was too little to split and the setup, merge
-and cross-core frees of chunk-built AST cost more than the split saved. The code is at
-`c84fa48` (`src/rustc_parse/parser/item_chunks.rs`) if parsing ever becomes the long pole of
-a session. What follows is the design as it was.
+On `src/` it cost about 290 ms at width 12, because every file there emits diagnostics and
+any diagnostic sends a chunk back to the serial parse. On valid source, where chunks do not
+fall back, it gained little: `parse_crate` on the clean corpus 271 ms to 261 ms (1.04x), on
+the large corpus 53 ms to 40 ms (1.33x), under 1% of either run. Lexing stays serial and a
+file splits into few chunks, so there is too little to split. The code is at `c84fa48`
+(`src/rustc_parse/parser/item_chunks.rs`) if parsing ever becomes the long pole of a session.
+What follows is the design as it was.
 
 Status: source changed, not built or measured by the agents that wrote this (building is the
 main session's job). Measured at `6774475` (before the size gate and the predicted ids):
