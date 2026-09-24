@@ -826,8 +826,9 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             // passes after it (macro finalization's units, reaching here through a derive helper's
             // `DeriveHelpersCompat` scope, and late resolution), which run once the lists were
             // taken, so what they would record is never read: skipping it changes nothing, and a
-            // frozen resolver cannot write it.
-            if !matches!(self, CmResolver::Late(..)) {
+            // frozen resolver cannot write it. A `Ref` made with `cm()` inside a frozen unit is the
+            // same case, so the frozen flag is checked as well as the variant.
+            if !matches!(self, CmResolver::Late(..)) && !self.frozen_flag.is_frozen() {
                 self.multi_segment_macro_resolutions.borrow_mut_checked(&self).push((
                     path,
                     path_span,
@@ -857,7 +858,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             }
 
             // See the multi-segment case above.
-            if !matches!(self, CmResolver::Late(..)) {
+            if !matches!(self, CmResolver::Late(..)) && !self.frozen_flag.is_frozen() {
                 self.single_segment_macro_resolutions.borrow_mut_checked(&self).push((
                     path[0].ident,
                     kind,
