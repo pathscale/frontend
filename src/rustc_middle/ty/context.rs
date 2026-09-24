@@ -32,7 +32,7 @@ use crate::rustc_data_structures::defer;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_data_structures::profiling::SelfProfilerRef;
-use crate::rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
+use crate::rustc_data_structures::sharded::{InternKey, InternSet, IntoPointer};
 use crate::rustc_data_structures::stable_hash::StableHash;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::sync::{
@@ -139,7 +139,8 @@ impl<'tcx> crate::rustc_type_ir::inherent::Span<TyCtxt<'tcx>> for Span {
     }
 }
 
-type InternedSet<'tcx, T> = ShardedHashMap<InternedInSet<'tcx, T>, ()>;
+/// Looking up a value already interned takes no lock; see [`InternSet`].
+type InternedSet<'tcx, T> = InternSet<InternedInSet<'tcx, T>>;
 
 pub struct CtxtInterners<'tcx> {
     /// The arena that types, regions, etc. are allocated from.
@@ -1822,14 +1823,12 @@ macro_rules! sty_debug_print {
                 };
                 $(let mut $variant = total;)*
 
-                for shard in tcx.interners.type_.lock_shards() {
-                    // It seems that ordering doesn't affect anything here.
-                    let types = shard.iter();
-                    for &(InternedInSet(t), ()) in types {
+                // Counts only, so the set's order does not matter.
+                tcx.interners.type_.for_each(|InternedInSet(t)| {
                         let variant = match t.internee {
                             ty::Bool | ty::Char | ty::Int(..) | ty::Uint(..) |
-                                ty::Float(..) | ty::Str | ty::Never => continue,
-                            ty::Error(_) => /* unimportant */ continue,
+                                ty::Float(..) | ty::Str | ty::Never => return,
+                            ty::Error(_) => /* unimportant */ return,
                             $(ty::$variant(..) => &mut $variant,)*
                         };
                         let lt = t.flags.intersects(ty::TypeFlags::HAS_RE_INFER);
@@ -1842,8 +1841,7 @@ macro_rules! sty_debug_print {
                         if ty { total.ty_infer += 1; variant.ty_infer += 1 }
                         if ct { total.ct_infer += 1; variant.ct_infer += 1 }
                         if lt && ty && ct { total.all_infer += 1; variant.all_infer += 1 }
-                    }
-                }
+                });
                 writeln!(fmt, "Ty interner             total           ty lt ct all")?;
                 $(writeln!(fmt, "    {:18}: {uses:6} {usespc:4.1}%, \
                             {ty:4.1}% {lt:5.1}% {ct:4.1}% {all:4.1}%",
@@ -1927,6 +1925,24 @@ impl<'tcx, T: 'tcx + ?Sized> IntoPointer for InternedInSet<'tcx, T> {
         self.0 as *const _ as *const ()
     }
 }
+
+// SAFETY: the pointer is the `&'tcx T` itself, which lives in the `'tcx` arena and is never
+// written after interning; the `InternSet`s holding it are `CtxtInterners`' fields, which the
+// `'tcx` arena outlives. `from_raw` rebuilds the same reference.
+unsafe impl<'tcx, T: 'tcx> InternKey for InternedInSet<'tcx, T> {
+    #[inline]
+    fn into_raw(self) -> core::ptr::NonNull<()> {
+        core::ptr::NonNull::from(self.0).cast()
+    }
+
+    #[inline]
+    unsafe fn from_raw(raw: core::ptr::NonNull<()>) -> Self {
+        // SAFETY: `raw` came from `into_raw` of an `InternedInSet<'tcx, T>`, whose pointee lives
+        // for `'tcx`.
+        InternedInSet(unsafe { raw.cast::<T>().as_ref() })
+    }
+}
+
 impl<'tcx, T> Borrow<T> for InternedInSet<'tcx, WithCachedTypeInfo<T>> {
     fn borrow(&self) -> &T {
         &self.0.internee
