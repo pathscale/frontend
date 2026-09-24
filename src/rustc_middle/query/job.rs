@@ -350,6 +350,28 @@ impl<'tcx> QueryLatch<'tcx> {
         // worker blocking here starves the runtime is `sync::parallel`'s concern: this thread
         // is only waiting for a job that another thread is actively computing.
         //
+        // **Why this thread does not run other stage items while it waits.** It would be a new
+        // item on top of a suspended one, and that is unsound in two ways, whatever the wait
+        // graph says:
+        //
+        // - *A self-wait no check can break.* The suspended item's queries (`query` and every
+        //   job this thread started under it) stay `Started` on this thread. A nested item that
+        //   asks for one of them (another body's `typeck` asking for the same `generics_of`)
+        //   finds it on its own thread and sleeps on it; it is not an ancestor of the nested
+        //   item's job, so no cycle is found, and the job cannot finish until the nested item
+        //   returns. On another thread the same item would just have waited. Only a thread
+        //   whose every job is an ancestor of the scope's query (the item has no query of its
+        //   own on the stack) is free of this, and the waits that park workers are inside the
+        //   item's queries (`generics_of`, `crate_variances`, `inferred_outlives_crate`).
+        // - *Thread state leaks across.* An item can call a query with thread-local state set
+        //   that belongs to it alone: the printing flags (`with_no_trimmed_paths!`) around a
+        //   lint's message, the resolver's active-resolution stack, a `WorkerLocal` borrow. A
+        //   nested item would run under that state and could print or resolve differently, so
+        //   answers would depend on the width.
+        //
+        // `Slots::wait` running an unclaimed item it depends on is the one sanctioned nesting:
+        // the item asked for exactly that slot, at a point it chose.
+        //
         // `resumed` is set under this same mutex before the notify, so there is no window in
         // which the notify can land before this thread is inside `wait`: either `resumed` is
         // already true when it is checked, or the notifier is still waiting for the mutex that
