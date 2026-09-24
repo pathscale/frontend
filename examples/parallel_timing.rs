@@ -490,14 +490,20 @@ fn main() {
     // `parallel_timing alloc-sites`: where the clean corpus's check allocates, at width one:
     // every 1,024th allocation's backtrace, grouped by the nearest compiler frame that is not
     // collection or allocator machinery, and by that frame's caller.
+    // `alloc-sites parse` samples the parse alone (`syntax::parses`), the parse-only line's pass.
     if only.as_deref() == Some("alloc-sites") {
         frontend::unwind_janky::install_catcher(catcher);
         let files: Vec<Arc<String>> =
             corpus("clean").into_iter().map(Arc::new).collect();
+        let parse = std::env::args().nth(2).as_deref() == Some("parse");
         SITES.store(true, Relaxed);
         let ((), allocs, _) = counted(|| {
             for f in &files {
-                let _ = check_shared_source_with_width("corpus", Arc::clone(f), 1);
+                if parse {
+                    let _ = frontend::frontend_facts::syntax::parses(f);
+                } else {
+                    let _ = check_shared_source_with_width("corpus", Arc::clone(f), 1);
+                }
             }
         });
         SITES.store(false, Relaxed);
