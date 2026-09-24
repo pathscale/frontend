@@ -4,6 +4,50 @@ Where the time goes, what runs in parallel now, and what is still serial. Every 
 from `examples/parallel_timing.rs` on a shared 16-core machine (12 performance cores), so
 compare numbers only within one run.
 
+## State at the end of 2026-09-24
+
+Clean corpus (200 files, 4.66 MB) and large corpus (6 files, 0.98 MB), `check_source`, best of
+back-to-back runs at load 4 to 16. "Start" is the earliest measurement on record (`6774475`);
+the master this work began from (`630da40`) was never timed on these corpora.
+
+| | start | now |
+| --- | ---: | ---: |
+| clean, width 1 | 2,491 ms (1.87 MB/s) | 2,312 to 2,423 ms (about 2.0 MB/s) |
+| clean, best width inside one file | about 1,325 ms (1.88x) | 1,020 to 1,049 ms at 12 (2.2 to 2.4x) |
+| clean, 200 files in parallel on 12 workers | not measured | 280 to 290 ms (8.7x, 16.5 MB/s) |
+| same, on mimalloc | | 207 to 225 ms (10.3x, 21 to 22 MB/s) |
+| large, width 1 | 488 ms | 471 to 478 ms |
+| large, best width inside one file | about 203 ms (2.4x) | 143 to 148 ms at 12 (3.3x) |
+| large, 6 files in parallel, each at width 2, 12 workers | not measured | 78 ms (6.3x) |
+| parse only | about 43 MB/s | 41.8 to 43.1 MB/s |
+| allocations, clean check at width 1 | 13.9 M (4.72 GB) | 11.79 M (2.80 GB) |
+| median peak live memory per file, width 1 / 12 | 12.7 / 16.6 MB | 5.2 / 8.3 MB |
+
+**Inside one file the sweet spot is width 4** (1.7x clean, 2.1x large). Past 8 the wall clock
+stops improving. About 45% of a file's check is serial on the session thread (parse,
+expansion, resolution, session setup and teardown), and the parallel stages cost about 1.9x
+their serial CPU at width 12 (allocator, pool search, query bookkeeping, shared-cache
+pressure).
+
+**Across files it scales almost linearly** (`parallel_timing files`): sessions share no state
+the answers can see, and one file's serial start overlaps other files' work. For a caller
+with many files this is the parallelism to use, with the inner width at 1, or 2 when there
+are fewer files than workers.
+
+**The allocator is the caller's choice and is worth 8 to 24%** (`--cfg bench_mimalloc`), the
+most when files run in parallel.
+
+Where the serial 2.3 s goes (width 1, the session thread's own time charged to the innermost
+pass): borrow check 20%, body type check 16%, signatures and collection 12%, MIR build 9%,
+well-formedness 7%, MIR passes 7%, setup and teardown 5%, resolution 5%, lints 4%, parse 4%,
+lowering 3%. By kind of work: allocator 11%, query machinery 5%, hash tables 5%, memory copy
+and zeroing 5%, interning 3%, obligation processing 3%, the rest compiler logic. No pass has a
+hot spot: each is a flat profile.
+
+Memory: most of a small session's peak was empty first buckets of query caches (4,096 slots
+each) and interner tables (64 KiB each); both now start small (`vec_cache.rs`, `sharded.rs`).
+`parallel_timing mem-held` says what a check holds at its peak.
+
 ## What is timed
 
 Only valid source: every file must type check with no error, or the run stops. The two corpora
