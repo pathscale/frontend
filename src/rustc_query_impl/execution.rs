@@ -269,10 +269,33 @@ fn wait_for_query<'tcx, C: QueryCache>(
 
 #[inline]
 fn next_job_id<'tcx>(tcx: TyCtxt<'tcx>) -> QueryJobId {
-    QueryJobId(
-        NonZero::new(tcx.query_system.jobs.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
-            .unwrap(),
-    )
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    if !sync::is_dyn_thread_safe() {
+        return QueryJobId(NonZero::new(tcx.query_system.jobs.fetch_add(1, Relaxed)).unwrap());
+    }
+    // A parallel session's jobs take their ids in blocks, one block per thread at a time, so the
+    // counter is written once per `BLOCK` jobs rather than by every job on every worker: one
+    // shared line per query executed was what every worker wrote. An id only has to differ from
+    // every other live job's, and the blocks come from one counter for the whole process, so a
+    // block a thread still holds from an earlier session cannot meet the ids of a later one.
+    const BLOCK: u64 = 256;
+    static NEXT_BLOCK: AtomicU64 = AtomicU64::new(1);
+    static BLOCKS: eko::thread::ThreadLocal<(u64, u64)> = eko::thread::ThreadLocal::new();
+    let id = BLOCKS
+        .with(
+            || (0, 0),
+            |(next, end)| {
+                if *next == *end {
+                    *next = NEXT_BLOCK.fetch_add(BLOCK, Relaxed);
+                    *end = *next + BLOCK;
+                }
+                let id = *next;
+                *next += 1;
+                id
+            },
+        )
+        .unwrap_or_else(|| NEXT_BLOCK.fetch_add(1, Relaxed));
+    QueryJobId(NonZero::new(id).unwrap())
 }
 
 #[inline]
