@@ -51,11 +51,19 @@ struct Counting;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Counted allocations by size class (`log2` of the size, 0 to 31), and how many of the
+/// counted calls were reallocations: which of them growth up front would remove.
+static BY_SIZE: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
+static REALLOCS: AtomicU64 = AtomicU64::new(0);
+fn size_class(size: usize) -> usize {
+    (usize::BITS - size.max(1).leading_zeros() - 1).min(31) as usize
+}
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Relaxed) {
             ALLOCS.fetch_add(1, Relaxed);
             ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
+            BY_SIZE[size_class(layout.size())].fetch_add(1, Relaxed);
         }
         unsafe { System.alloc(layout) }
     }
@@ -66,6 +74,8 @@ unsafe impl GlobalAlloc for Counting {
         if COUNTING.load(Relaxed) {
             ALLOCS.fetch_add(1, Relaxed);
             ALLOC_BYTES.fetch_add(size as u64, Relaxed);
+            BY_SIZE[size_class(size)].fetch_add(1, Relaxed);
+            REALLOCS.fetch_add(1, Relaxed);
         }
         unsafe { System.realloc(ptr, layout, size) }
     }
@@ -161,6 +171,23 @@ fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
 static LAST_CHECK_ALLOCS: AtomicU64 = AtomicU64::new(0);
 static LAST_CHECK_ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
 
+/// What the width-one check's allocations were: reallocations (growth), and counts by size.
+fn allocation_classes() {
+    let total: u64 = BY_SIZE.iter().map(|c| c.load(Relaxed)).sum();
+    let reallocs = REALLOCS.load(Relaxed);
+    let mut line = format!(
+        "        allocations at width 1: {total}, of which reallocations {reallocs} ({:.0}%); by size:",
+        reallocs as f64 * 100.0 / total.max(1) as f64
+    );
+    for (class, count) in BY_SIZE.iter().enumerate() {
+        let count = count.load(Relaxed);
+        if count * 200 >= total {
+            line.push_str(&format!(" <{}B {:.0}%", 1u64 << (class + 1), count as f64 * 100.0 / total as f64));
+        }
+    }
+    println!("{line}");
+}
+
 /// Parse-only throughput of a corpus, one thread: `frontend_facts::syntax::parses` over every
 /// file, after one untimed round.
 fn parse_only(label: &str, files: &[String]) {
@@ -208,8 +235,13 @@ fn run(label: &str, files: &[String]) {
         );
     };
     let one = SETTINGS[0];
+    for class in &BY_SIZE {
+        class.store(0, Relaxed);
+    }
+    REALLOCS.store(0, Relaxed);
     let (want, check_one, analyze_one) = pass(one, files);
     row(one, check_one, analyze_one, 1.0, 1.0);
+    allocation_classes();
     assert_clean(label, &want.0);
     for &width in &SETTINGS[1..] {
         let (answers, check_ms, analyze_ms) = pass(width, files);
