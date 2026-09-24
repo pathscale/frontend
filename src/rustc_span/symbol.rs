@@ -2876,8 +2876,23 @@ pub(crate) struct Interner {
     indices: SymbolIndices,
 }
 
-/// Marks an empty slot of [`PredefinedSymbols::slots`].
+/// One past the largest predefined symbol index: a predefined index fits in the low 16 bits of
+/// a [`PredefinedSymbols::slots`] entry and is never `u16::MAX`.
 const EMPTY_SLOT: u16 = u16::MAX;
+
+/// Marks an empty entry of [`PredefinedSymbols::slots`]. A full entry is
+/// `predefined_tag(hash) << 16 | index` with `index < EMPTY_SLOT`, so its low half is never
+/// `0xFFFF` and it never equals this.
+const EMPTY_PREDEFINED_SLOT: u32 = u32::MAX;
+
+/// The 16-bit tag a [`PredefinedSymbols::slots`] entry keeps of its string's `symbol_hash`: the
+/// top bits, which the slot index (`hash & mask`, a mask far below 48 bits) does not use. Equal
+/// strings have equal hashes and so equal tags; a lookup compares strings only when the tags
+/// agree, so almost every occupied slot of a miss is passed over without reading its string.
+#[inline]
+const fn predefined_tag(hash: u64) -> u32 {
+    (hash >> 48) as u32
+}
 
 /// The hash of an interned string, for both the static table of predefined symbols and a
 /// session's own table. A `const fn`, so the static table is hashed at compile time by the same
@@ -2938,24 +2953,27 @@ const fn const_bytes_eq(a: &[u8], b: &[u8]) -> bool {
     true
 }
 
-/// Fill `slots` (all [`EMPTY_SLOT`], length a power of two at least twice `strs.len()`) with the
-/// index of every string of `strs`, by linear probing from `symbol_hash(s) & mask`. Panics on a
-/// duplicate string - at compile time for the static table.
-const fn fill_predefined_slots(strs: &[&str], slots: &mut [u16]) {
+/// Fill `slots` (all [`EMPTY_PREDEFINED_SLOT`], length a power of two at least twice
+/// `strs.len()`) with `predefined_tag(hash) << 16 | index` for every string of `strs`, by linear
+/// probing from `hash & mask`, `hash` being `symbol_hash(s)`. Panics on a duplicate string - at
+/// compile time for the static table.
+const fn fill_predefined_slots(strs: &[&str], slots: &mut [u32]) {
     assert!(strs.len() < EMPTY_SLOT as usize, "too many predefined symbols for a u16 slot");
     assert!(slots.len().is_power_of_two() && slots.len() >= strs.len() * 2);
     let mask = slots.len() - 1;
     let mut index = 0;
     while index < strs.len() {
         let bytes = strs[index].as_bytes();
-        let mut slot = symbol_hash(bytes) as usize & mask;
+        let hash = symbol_hash(bytes);
+        let mut slot = hash as usize & mask;
         loop {
-            let occupant = slots[slot];
-            if occupant == EMPTY_SLOT {
-                slots[slot] = index as u16;
+            let entry = slots[slot];
+            if entry == EMPTY_PREDEFINED_SLOT {
+                slots[slot] = predefined_tag(hash) << 16 | index as u32;
                 break;
             }
-            if const_bytes_eq(strs[occupant as usize].as_bytes(), bytes) {
+            let occupant = (entry & 0xFFFF) as usize;
+            if const_bytes_eq(strs[occupant].as_bytes(), bytes) {
                 panic!("duplicate symbol in the predefined symbol list");
             }
             slot = (slot + 1) & mask;
@@ -2966,8 +2984,8 @@ const fn fill_predefined_slots(strs: &[&str], slots: &mut [u16]) {
 
 const PREDEFINED_SLOT_COUNT: usize = predefined_slot_count(PREDEFINED_SYMBOLS_COUNT as usize);
 
-const fn predefined_slots() -> [u16; PREDEFINED_SLOT_COUNT] {
-    let mut slots = [EMPTY_SLOT; PREDEFINED_SLOT_COUNT];
+const fn predefined_slots() -> [u32; PREDEFINED_SLOT_COUNT] {
+    let mut slots = [EMPTY_PREDEFINED_SLOT; PREDEFINED_SLOT_COUNT];
     fill_predefined_slots(&PREDEFINED_SYMBOL_LIST, &mut slots);
     slots
 }
@@ -2976,32 +2994,42 @@ const fn predefined_slots() -> [u16; PREDEFINED_SLOT_COUNT] {
 static PREDEFINED_SYMBOL_STRS: [&str; PREDEFINED_SYMBOLS_COUNT as usize] = PREDEFINED_SYMBOL_LIST;
 
 /// String to index for the predefined symbols, built at compile time.
-static PREDEFINED_SYMBOL_SLOTS: [u16; PREDEFINED_SLOT_COUNT] = predefined_slots();
+static PREDEFINED_SYMBOL_SLOTS: [u32; PREDEFINED_SLOT_COUNT] = predefined_slots();
 
 /// The predefined symbols of every session: immutable, compile-time data.
 static PREDEFINED_SYMBOLS: PredefinedSymbols =
     PredefinedSymbols { strs: &PREDEFINED_SYMBOL_STRS, slots: &PREDEFINED_SYMBOL_SLOTS };
 
 /// A fixed set of symbols at indices `0..strs.len()`: `strs` maps index to string, and `slots`
-/// is an open-addressed table (built by [`fill_predefined_slots`]) mapping string to index.
+/// is an open-addressed table (built by [`fill_predefined_slots`]) mapping string to index, each
+/// full entry carrying a tag of its string's hash beside the index.
 pub(crate) struct PredefinedSymbols {
     strs: &'static [&'static str],
-    slots: &'static [u16],
+    slots: &'static [u32],
 }
 
 impl PredefinedSymbols {
     /// The index of `bytes` if it is one of these symbols; `hash` is `symbol_hash(bytes)`.
+    ///
+    /// Most identifiers of a source are not predefined, so most lookups miss and walk the whole
+    /// probe sequence. An entry whose tag differs from `bytes`'s cannot hold `bytes` (equal
+    /// strings hash equally), so it is passed over on the entry alone: the string table, a
+    /// separate array of fat pointers, and the string's bytes are only read on a tag match.
     #[inline]
     fn find(&self, bytes: &[u8], hash: u64) -> Option<u32> {
         let mask = self.slots.len() - 1;
+        let tag = predefined_tag(hash);
         let mut slot = hash as usize & mask;
         loop {
-            let occupant = self.slots[slot];
-            if occupant == EMPTY_SLOT {
+            let entry = self.slots[slot];
+            if entry == EMPTY_PREDEFINED_SLOT {
                 return None;
             }
-            if self.strs[occupant as usize].as_bytes() == bytes {
-                return Some(occupant as u32);
+            if entry >> 16 == tag {
+                let occupant = entry & 0xFFFF;
+                if self.strs[occupant as usize].as_bytes() == bytes {
+                    return Some(occupant);
+                }
             }
             slot = (slot + 1) & mask;
         }
@@ -3387,7 +3415,8 @@ impl Interner {
     #[cfg(test)]
     fn prefill(init: &[&'static str], extra: &[&'static str]) -> Self {
         let strs: &'static [&'static str] = init.to_vec().leak();
-        let slots: &'static mut [u16] = vec![EMPTY_SLOT; predefined_slot_count(init.len())].leak();
+        let slots: &'static mut [u32] =
+            vec![EMPTY_PREDEFINED_SLOT; predefined_slot_count(init.len())].leak();
         fill_predefined_slots(strs, slots);
         let predefined: &'static PredefinedSymbols =
             Box::leak(Box::new(PredefinedSymbols { strs, slots }));
