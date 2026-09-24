@@ -1023,11 +1023,12 @@ impl TokenCursor {
     pub fn look_ahead_token(&self, dist: usize) -> Option<Token> {
         const LOOK_AHEAD_MAX_ENTERED: usize = 8;
         // Frames are `(stream, next_idx)`: the stream holding a `Delimited`
-        // and the index one past it, as in `self.stack`.
+        // and the index one past it, as in a frame of `self.stack`.
         let mut entered: [(&TokenStream, usize); LOOK_AHEAD_MAX_ENTERED] =
             [(&self.curr.stream, 0); LOOK_AHEAD_MAX_ENTERED];
         let mut n_entered = 0;
-        let mut n_outer = self.stack.len();
+        // The enclosing frames, innermost first, walked through their shared parents.
+        let mut outer: Option<&TokenCursorFrame> = self.stack.as_deref();
         let mut stream = &self.curr.stream;
         let mut idx = self.curr.next_idx;
         let mut token = Token::dummy();
@@ -1058,10 +1059,9 @@ impl TokenCursor {
                     let (parent, parent_idx) = if n_entered > 0 {
                         n_entered -= 1;
                         entered[n_entered]
-                    } else if n_outer > 0 {
-                        n_outer -= 1;
-                        let frame = &self.stack[n_outer];
-                        (&frame.stream, frame.next_idx)
+                    } else if let Some(frame) = outer {
+                        outer = frame.parent.as_deref();
+                        (&frame.cursor.stream, frame.cursor.next_idx)
                     } else {
                         break Token::new(token::Eof, DUMMY_SP);
                     };
