@@ -54,7 +54,7 @@ pub use self::mode::{
 #[cfg(feature = "parallel")]
 pub use self::pool::set_parallel_executor;
 pub use self::stage::{ReadySlot, Slots, StageScope, cost, run_stage, run_stage_weighted, stages};
-pub use self::vec::{AppendOnlyIndexVec, AppendOnlyVec};
+pub use self::vec::{AppendOnlyIndexVec, AppendOnlyVec, LockFreeAppendOnlyVec};
 pub use self::worker_local::{Registry, RegistryScope, RegistrySlot, WorkerLocal};
 pub use crate::rustc_data_structures::marker::*;
 

@@ -145,7 +145,7 @@ fn generated(name: char, count: usize, min_lines: usize, max_lines: usize, seed:
 type Answers = (Vec<Checked>, Vec<Option<CrateFacts>>);
 
 /// One pass over `files` at stage width `width`: the answers, and milliseconds per entry point.
-/// The check's allocations are left in `LAST_CHECK_ALLOCS`.
+/// At width one, the check's allocations are left in `LAST_CHECK_ALLOCS`.
 fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
     frontend::unwind_janky::install_catcher(catcher);
     // Shared once, outside the timing: each call below hands its session the same text.
@@ -156,9 +156,14 @@ fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
     let start = Instant::now();
     let checked = check_all();
     let check_ms = start.elapsed().as_secs_f64() * 1e3;
-    let (_, allocs, alloc_bytes) = counted(check_all);
-    LAST_CHECK_ALLOCS.store(allocs, Relaxed);
-    LAST_CHECK_ALLOC_BYTES.store(alloc_bytes, Relaxed);
+    // Counted at width one only: the count barely moves with the width (by about 7%), and a
+    // counted pass at a wider width makes every worker's allocations contend on the counters,
+    // which is time spent, and profile samples taken, in this program rather than the compiler.
+    if width == 1 {
+        let (_, allocs, alloc_bytes) = counted(check_all);
+        LAST_CHECK_ALLOCS.store(allocs, Relaxed);
+        LAST_CHECK_ALLOC_BYTES.store(alloc_bytes, Relaxed);
+    }
     let start = Instant::now();
     let facts: Vec<Option<CrateFacts>> = files
         .iter()
@@ -176,7 +181,8 @@ fn allocation_classes() {
     let total: u64 = BY_SIZE.iter().map(|c| c.load(Relaxed)).sum();
     let reallocs = REALLOCS.load(Relaxed);
     let mut line = format!(
-        "        allocations at width 1: {total}, of which reallocations {reallocs} ({:.0}%); by size:",
+        "        check allocations at width 1: {total} ({:.0} MB), of which reallocations {reallocs} ({:.0}%); by size:",
+        LAST_CHECK_ALLOC_BYTES.load(Relaxed) as f64 / 1e6,
         reallocs as f64 * 100.0 / total.max(1) as f64
     );
     for (class, count) in BY_SIZE.iter().enumerate() {
@@ -222,15 +228,13 @@ fn run(label: &str, files: &[String]) {
     println!("\n{label}: {} files, {lines} lines, {mb:.2} MB", files.len());
     parse_only(label, files);
     println!(
-        "{:>7} {:>10} {:>8} {:>6} {:>12} {:>10} {:>10} {:>8} {:>6}",
-        "width", "check ms", "MB/s", "x", "allocs", "alloc MB", "analyze ms", "MB/s", "x"
+        "{:>7} {:>10} {:>8} {:>6} {:>10} {:>8} {:>6}",
+        "width", "check ms", "MB/s", "x", "analyze ms", "MB/s", "x"
     );
     let row = |width: usize, check_ms: f64, analyze_ms: f64, check_x: f64, analyze_x: f64| {
         println!(
-            "{width:>7} {check_ms:>10.1} {:>8.2} {check_x:>6.2} {:>12} {:>10.0} {analyze_ms:>10.1} {:>8.2} {analyze_x:>6.2}",
+            "{width:>7} {check_ms:>10.1} {:>8.2} {check_x:>6.2} {analyze_ms:>10.1} {:>8.2} {analyze_x:>6.2}",
             mb / (check_ms / 1e3),
-            LAST_CHECK_ALLOCS.load(Relaxed),
-            LAST_CHECK_ALLOC_BYTES.load(Relaxed) as f64 / 1e6,
             mb / (analyze_ms / 1e3),
         );
     };
@@ -316,8 +320,7 @@ fn main() {
         (Some(name), Some(width)) => {
             let (_, check_ms, analyze_ms) = pass(width, &corpus(name));
             println!(
-                "{name} at {width}: check {check_ms:.1} ms, {} allocations, analyze {analyze_ms:.1} ms",
-                LAST_CHECK_ALLOCS.load(Relaxed)
+                "{name} at {width}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms"
             );
         }
         (Some(name), None) => run(name, &corpus(name)),

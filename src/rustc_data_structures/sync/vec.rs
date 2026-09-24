@@ -129,6 +129,16 @@ impl<T: Copy> LockFreeAppendOnlyVec<T> {
         len
     }
 
+    /// Elements published so far. Grows only; a reader may see a length a concurrent push
+    /// has just passed, never one it has not reached.
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, index: usize) -> Option<T> {
         // The length only grows, so reading it once and independently of the element is
         // sound: the worst case is a stale value and a spurious `None` for an element some

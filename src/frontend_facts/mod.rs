@@ -495,11 +495,12 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
     /// `span` as a byte range in its file. A span in the input file shares its one name.
     fn span(&self, span: Span) -> ByteSpan {
         let sm = self.tcx.sess.source_map();
-        let lo = sm.lookup_byte_offset(span.lo());
-        let hi = sm.lookup_byte_offset(span.hi());
+        let (lo_sf, lo) = sm.lookup_byte_offset_in(span.lo());
+        let (_, hi) = sm.lookup_byte_offset_in(span.hi());
         let (input, name) = &self.input;
-        let file = if Arc::ptr_eq(input, &lo.sf) { Arc::clone(name) } else { file_name(&lo.sf) };
-        ByteSpan { file, start: lo.pos.0, end: hi.pos.0 }
+        let file =
+            if core::ptr::eq(Arc::as_ptr(input), lo_sf) { Arc::clone(name) } else { file_name(lo_sf) };
+        ByteSpan { file, start: lo.0, end: hi.0 }
     }
 }
 
