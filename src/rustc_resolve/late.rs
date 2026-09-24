@@ -904,6 +904,13 @@ struct LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// The `mod` item this visitor's unit is, when it is one. Its items are units of their own
     /// (see `LateUnit`), so resolving it stops at its items instead of walking into them.
     defer_children_of: Option<NodeId>,
+
+    /// Always empty. A top-level pattern's bindings map whose entries were copied into a rib
+    /// that already had bindings (the second and later `let`s of a block) is drained and kept
+    /// here, and the next top-level pattern collects into it instead of allocating a new one.
+    /// Only its capacity carries over; an `FxIndexMap` iterates in insertion order, so nothing
+    /// observable changes.
+    spare_pattern_bindings: FxIndexMap<Ident, Res>,
 }
 
 /// The tables late resolution writes into one owner's `PerOwnerResolverData`, owned by the
@@ -1702,6 +1709,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             lifetime_uses: Default::default(),
             out: Default::default(),
             defer_children_of: None,
+            spare_pattern_bindings: Default::default(),
         }
     }
 
@@ -4448,7 +4456,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     /// Arising from `source`, resolve a top level pattern.
     fn resolve_pattern_top(&mut self, pat: &'ast Pat, pat_src: PatternSource) {
-        let mut bindings = smallvec![(PatBoundCtx::Product, Default::default())];
+        // Empty, possibly with capacity (see `spare_pattern_bindings`).
+        let spare = take(&mut self.spare_pattern_bindings);
+        debug_assert!(spare.is_empty());
+        let mut bindings = smallvec![(PatBoundCtx::Product, spare)];
         self.resolve_pattern(pat, pat_src, &mut bindings);
         self.apply_pattern_bindings(bindings);
     }
@@ -4456,7 +4467,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// Apply the bindings from a pattern to the innermost rib of the current scope.
     fn apply_pattern_bindings(&mut self, mut pat_bindings: PatternBindings) {
         let rib_bindings = self.innermost_rib_bindings(ValueNS);
-        let Some((_, pat_bindings)) = pat_bindings.pop() else {
+        let Some((_, mut pat_bindings)) = pat_bindings.pop() else {
             bug!("tried applying nonexistent bindings from pattern");
         };
 
@@ -4465,7 +4476,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             // In this case, we can move the bindings over directly.
             *rib_bindings = pat_bindings;
         } else {
-            rib_bindings.extend(pat_bindings);
+            // Same entries, same order as `extend(pat_bindings)`; the emptied map's
+            // allocation is kept for the next top-level pattern.
+            rib_bindings.extend(pat_bindings.drain(..));
+            self.spare_pattern_bindings = pat_bindings;
         }
     }
 
