@@ -1731,13 +1731,18 @@ impl<'a> Parser<'a> {
             let lo = path.span;
             let mac = Box::new(MacCall { path, args: self.parse_delim_args()? });
             (lo.to(self.prev_token.span), ExprKind::MacCall(mac))
-        } else if self.check(exp!(OpenBrace))
-            && let Some(expr) = self.maybe_parse_struct_expr(&qself, &path)
-        {
-            if qself.is_some() {
-                self.psess.gated_spans.gate(sym::more_qualified_paths, path.span);
+        } else if self.check(exp!(OpenBrace)) {
+            let is_qualified = qself.is_some();
+            let path_span = path.span;
+            match self.maybe_parse_struct_expr(qself, path) {
+                Ok(expr) => {
+                    if is_qualified {
+                        self.psess.gated_spans.gate(sym::more_qualified_paths, path_span);
+                    }
+                    return expr;
+                }
+                Err((qself, path)) => (path.span, ExprKind::Path(qself, path)),
             }
-            return expr;
         } else {
             (path.span, ExprKind::Path(qself, path))
         };
@@ -3774,25 +3779,28 @@ impl<'a> Parser<'a> {
             && self.look_ahead(2, |t| t == &token::Comma || t == &token::Colon)
     }
 
+    /// Parses a struct literal with the path already parsed, or hands the path back (`Err`)
+    /// when there is none here, so the caller can build a path expression from it. The
+    /// accepted literal takes the path by move, with no copy.
     fn maybe_parse_struct_expr(
         &mut self,
-        qself: &Option<Box<ast::QSelf>>,
-        path: &ast::Path,
-    ) -> Option<PResult<'a, Box<Expr>>> {
+        qself: Option<Box<ast::QSelf>>,
+        path: ast::Path,
+    ) -> Result<PResult<'a, Box<Expr>>, (Option<Box<ast::QSelf>>, ast::Path)> {
         let struct_allowed = !self.restrictions.contains(Restrictions::NO_STRUCT_LITERAL);
         match (struct_allowed, self.is_likely_struct_lit()) {
             // A struct literal isn't expected and one is pretty much assured not to be present. The
             // only situation that isn't detected is when a struct with a single field was attempted
             // in a place where a struct literal wasn't expected, but regular parser errors apply.
             // Happy path.
-            (false, false) => None,
+            (false, false) => Err((qself, path)),
             (true, _) => {
                 // A struct is accepted here, try to parse it and rely on `parse_expr_struct` for
                 // any kind of recovery. Happy path.
                 if let Err(err) = self.expect(exp!(OpenBrace)) {
-                    return Some(Err(err));
+                    return Ok(Err(err));
                 }
-                Some(self.parse_expr_struct(qself.clone(), path.clone(), true))
+                Ok(self.parse_expr_struct(qself, path, true))
             }
             (false, true) => {
                 // We have something like `match foo { bar,` or `match foo { bar:`, which means the
@@ -3800,7 +3808,7 @@ impl<'a> Parser<'a> {
                 // discriminant. This is done purely for error recovery.
                 let snapshot = self.create_snapshot_for_diagnostic();
                 if let Err(err) = self.expect(exp!(OpenBrace)) {
-                    return Some(Err(err));
+                    return Ok(Err(err));
                 }
                 match self.parse_expr_struct(qself.clone(), path.clone(), false) {
                     Ok(expr) => {
@@ -3812,14 +3820,14 @@ impl<'a> Parser<'a> {
                                 right: expr.span.shrink_to_hi(),
                             },
                         });
-                        Some(Ok(expr))
+                        Ok(Ok(expr))
                     }
                     Err(err) => {
                         // We couldn't parse a valid struct, rollback and let the parser emit an
                         // error elsewhere.
                         err.cancel();
                         self.restore_snapshot(snapshot);
-                        None
+                        Err((qself, path))
                     }
                 }
             }
