@@ -201,6 +201,55 @@ fn record_site(n: u64) {
     SITE_TRACES.lock().unwrap().push(trace);
     IN_SITE.with(|flag| flag.set(false));
 }
+/// `mem-held`: every `HELD_EVERY`th allocation made while `HELD` is set is remembered, with its
+/// size and backtrace, until it is freed; `HELD_SNAPSHOT` then says what the remembered live ones
+/// were allocated by at one moment.
+static HELD: AtomicBool = AtomicBool::new(false);
+const HELD_EVERY: u64 = 128;
+static HELD_COUNT: AtomicU64 = AtomicU64::new(0);
+static HELD_LIVE: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>> =
+    std::sync::Mutex::new(None);
+/// Live bytes (over `BASE`) at which to take the `mem-held` snapshot; `i64::MAX` when none.
+static HELD_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
+static HELD_SNAPSHOT: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn held_alloc(ptr: *mut u8, size: usize) {
+    if !HELD.load(Relaxed) || IN_SITE.with(|flag| flag.replace(true)) {
+        return;
+    }
+    if HELD_COUNT.fetch_add(1, Relaxed) % HELD_EVERY == 0 {
+        let trace = std::backtrace::Backtrace::force_capture();
+        if let Some(map) = HELD_LIVE.lock().unwrap().as_mut() {
+            map.insert(ptr as usize, (size, trace));
+        }
+    }
+    // The snapshot, the first time this file's live bytes reach the armed level: every
+    // remembered allocation still live, with its trace printed, weighted by its size.
+    let over = LIVE.load(Relaxed) - BASE.load(Relaxed);
+    if over >= HELD_AT.load(Relaxed) {
+        HELD_AT.store(i64::MAX, Relaxed);
+        let guard = HELD_LIVE.lock().unwrap();
+        let rows: Vec<(usize, String)> = guard
+            .as_ref()
+            .map(|map| map.values().map(|(size, trace)| (*size, format!("{trace}"))).collect())
+            .unwrap_or_default();
+        drop(guard);
+        HELD_SNAPSHOT.lock().unwrap().extend(rows);
+    }
+    IN_SITE.with(|flag| flag.set(false));
+}
+
+fn held_free(ptr: *mut u8) {
+    if !HELD.load(Relaxed) || IN_SITE.with(|flag| flag.get()) {
+        return;
+    }
+    IN_SITE.with(|flag| flag.set(true));
+    if let Some(map) = HELD_LIVE.lock().unwrap().as_mut() {
+        map.remove(&(ptr as usize));
+    }
+    IN_SITE.with(|flag| flag.set(false));
+}
+
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         track_live(layout.size() as i64);
@@ -210,10 +259,13 @@ unsafe impl GlobalAlloc for Counting {
             ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
             BY_SIZE[size_class(layout.size())].fetch_add(1, Relaxed);
         }
-        unsafe { System.alloc(layout) }
+        let ptr = unsafe { System.alloc(layout) };
+        held_alloc(ptr, layout.size());
+        ptr
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         track_live(-(layout.size() as i64));
+        held_free(ptr);
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
@@ -224,7 +276,10 @@ unsafe impl GlobalAlloc for Counting {
             BY_SIZE[size_class(size)].fetch_add(1, Relaxed);
             REALLOCS.fetch_add(1, Relaxed);
         }
-        unsafe { System.realloc(ptr, layout, size) }
+        held_free(ptr);
+        let new = unsafe { System.realloc(ptr, layout, size) };
+        held_alloc(new, size);
+        new
     }
 }
 #[global_allocator]
@@ -237,6 +292,52 @@ fn counted<R>(f: impl FnOnce() -> R) -> (R, u64, u64) {
     let r = f();
     COUNTING.store(false, Relaxed);
     (r, ALLOCS.load(Relaxed) - a, ALLOC_BYTES.load(Relaxed) - b)
+}
+
+/// The pass a printed backtrace is in: the innermost frame naming one.
+fn pass_of(text: &str) -> &'static str {
+    const PASSES: [(&str, &str); 26] = [
+        ("rustc_borrowck::", "borrow check"),
+        ("check_liveness", "liveness"),
+        ("rustc_mir_build::", "MIR build"),
+        ("rustc_mir_transform::", "MIR passes"),
+        ("rustc_hir_typeck::", "type check (bodies)"),
+        ("wfcheck", "well-formedness"),
+        ("coherence", "coherence"),
+        ("rustc_lint::", "lints"),
+        ("rustc_privacy::", "privacy"),
+        ("rustc_ast_lowering::", "lowering"),
+        ("late_resolve", "late resolution"),
+        ("rustc_resolve::", "resolution"),
+        ("rustc_expand::", "expansion"),
+        ("rustc_parse::", "parse"),
+        ("frontend_facts::extract", "facts"),
+        ("rustc_hir_analysis::", "hir analysis (other)"),
+        ("drop_in_place", "teardown"),
+        ("new_lint_store", "session: lint store"),
+        ("register_lints", "session: lint store"),
+        ("create_global_ctxt", "session: global context"),
+        ("query_system", "session: query system"),
+        ("Session::", "session"),
+        ("build_session", "session"),
+        ("rustc_session::", "session"),
+        ("rustc_interface::", "interface (other)"),
+        ("rustc_middle::", "middle (other)"),
+    ];
+    let frames: Vec<&str> =
+        text.lines().map(str::trim).filter(|line| !line.starts_with("at ")).collect();
+    // The specific passes first, over every frame, innermost first; the general
+    // markers (session, interface, middle) only when no pass is on the stack, since a
+    // query or an arena from `rustc_middle` is innermost in almost every trace.
+    let (specific, general) = PASSES.split_at(17);
+    for group in [specific, general] {
+        for line in &frames {
+            if let Some((_, pass)) = group.iter().find(|(pat, _)| line.contains(pat)) {
+                return pass;
+            }
+        }
+    }
+    "other"
 }
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
@@ -549,6 +650,83 @@ fn main() {
         }
         return;
     }
+    // `parallel_timing mem-held [width]`: what a check is holding when its live memory reaches
+    // 95% of its peak, by the pass that allocated it and by allocating site, weighted by bytes:
+    // what stays live to the end, and so what freeing each body's data earlier would release.
+    // Every tenth file of the clean corpus; one run for the peaks, one for the snapshot.
+    if only.as_deref() == Some("mem-held") {
+        frontend::unwind_janky::install_catcher(catcher);
+        let run_width = width.unwrap_or(1);
+        let files: Vec<Arc<String>> =
+            corpus("clean").into_iter().step_by(10).map(Arc::new).collect();
+        MEMCAP.store(true, Relaxed);
+        let mut peaks = Vec::with_capacity(files.len());
+        for f in &files {
+            let base = LIVE.load(Relaxed);
+            BASE.store(base, Relaxed);
+            PEAK.store(base, Relaxed);
+            let _ = check_shared_source_with_width("corpus", Arc::clone(f), run_width);
+            peaks.push(PEAK.load(Relaxed) - base);
+        }
+        *HELD_LIVE.lock().unwrap() = Some(Default::default());
+        HELD.store(true, Relaxed);
+        for (f, &peak) in files.iter().zip(&peaks) {
+            BASE.store(LIVE.load(Relaxed), Relaxed);
+            HELD_AT.store(peak * 95 / 100, Relaxed);
+            let _ = check_shared_source_with_width("corpus", Arc::clone(f), run_width);
+            HELD_AT.store(i64::MAX, Relaxed);
+            if let Some(map) = HELD_LIVE.lock().unwrap().as_mut() {
+                map.clear();
+            }
+        }
+        HELD.store(false, Relaxed);
+        MEMCAP.store(false, Relaxed);
+        let rows = std::mem::take(&mut *HELD_SNAPSHOT.lock().unwrap());
+        let total: usize = rows.iter().map(|r| r.0).sum();
+        let site_of = |text: &str| -> String {
+            let skip = [
+                "alloc::", "core::", "std::", "hashbrown", "indexmap", "smallvec", "thin_vec",
+                "rustc_arena", "frontend_arena", "parallel_timing", "__rust", "RawVec",
+                "backtrace", "held_alloc", "Counting", "rustc_index::", "sharded", "fx::",
+                "Clone", "clone", "FromIterator", "Extend", "collect", "arena::Arena",
+                "rustc_middle::arena", "ToOwned", "_malloc", "<unknown>",
+            ];
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.starts_with("at "))
+                .filter_map(|line| line.split_once(": ").map(|(_, name)| name))
+                .find(|name| name.contains("frontend") && !skip.iter().any(|pat| name.contains(pat)))
+                .map(|name| name.rsplit_once("::h").map_or(name, |(a, _)| a).to_string())
+                .unwrap_or_else(|| "?".to_string())
+        };
+        let mut by_pass: std::collections::HashMap<&str, usize> = Default::default();
+        let mut by_site: std::collections::HashMap<String, usize> = Default::default();
+        for (size, text) in &rows {
+            *by_pass.entry(pass_of(text)).or_default() += size;
+            *by_site.entry(site_of(text)).or_default() += size;
+        }
+        let mut sorted = peaks.clone();
+        sorted.sort();
+        println!(
+            "width {run_width}: {} files, peak live per file median {:.1} MB; held at 95% of the peak, by allocating pass and site ({} sampled allocations, 1 in {HELD_EVERY}, {:.1} MB sampled):",
+            files.len(),
+            sorted[sorted.len() / 2] as f64 / 1e6,
+            rows.len(),
+            total as f64 / 1e6,
+        );
+        for (title, map) in [
+            ("by pass", by_pass.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<Vec<_>>()),
+            ("by site", by_site.into_iter().collect()),
+        ] {
+            let mut map = map;
+            map.sort_by(|a, b| b.1.cmp(&a.1));
+            println!("\n{title}:");
+            for (name, bytes) in map.into_iter().take(30) {
+                println!("{:>6.2}%  {name}", bytes as f64 * 100.0 / total.max(1) as f64);
+            }
+        }
+        return;
+    }
     // `parallel_timing mem-phases [width]`: what runs while each file's live memory climbs to
     // its peak. A first run records every file's peak; an identical second run records a
     // backtrace the first time live bytes reach 25%, 50%, 75% and 95% of it, and names the pass
@@ -584,52 +762,7 @@ fn main() {
         }
         MEMCAP.store(false, Relaxed);
         let traces = std::mem::take(&mut *LEVEL_TRACES.lock().unwrap());
-        // The pass a backtrace is in: the innermost frame naming one.
-        const PASSES: [(&str, &str); 26] = [
-            ("rustc_borrowck::", "borrow check"),
-            ("check_liveness", "liveness"),
-            ("rustc_mir_build::", "MIR build"),
-            ("rustc_mir_transform::", "MIR passes"),
-            ("rustc_hir_typeck::", "type check (bodies)"),
-            ("wfcheck", "well-formedness"),
-            ("coherence", "coherence"),
-            ("rustc_lint::", "lints"),
-            ("rustc_privacy::", "privacy"),
-            ("rustc_ast_lowering::", "lowering"),
-            ("late_resolve", "late resolution"),
-            ("rustc_resolve::", "resolution"),
-            ("rustc_expand::", "expansion"),
-            ("rustc_parse::", "parse"),
-            ("frontend_facts::extract", "facts"),
-            ("rustc_hir_analysis::", "hir analysis (other)"),
-            ("drop_in_place", "teardown"),
-            ("new_lint_store", "session: lint store"),
-            ("register_lints", "session: lint store"),
-            ("create_global_ctxt", "session: global context"),
-            ("query_system", "session: query system"),
-            ("Session::", "session"),
-            ("build_session", "session"),
-            ("rustc_session::", "session"),
-            ("rustc_interface::", "interface (other)"),
-            ("rustc_middle::", "middle (other)"),
-        ];
-        let phase_of = |trace: &std::backtrace::Backtrace| -> &'static str {
-            let text = format!("{trace}");
-            let frames: Vec<&str> =
-                text.lines().map(str::trim).filter(|line| !line.starts_with("at ")).collect();
-            // The specific passes first, over every frame, innermost first; the general
-            // markers (session, interface, middle) only when no pass is on the stack, since a
-            // query or an arena from `rustc_middle` is innermost in almost every trace.
-            let (specific, general) = PASSES.split_at(17);
-            for group in [specific, general] {
-                for line in &frames {
-                    if let Some((_, pass)) = group.iter().find(|(pat, _)| line.contains(pat)) {
-                        return pass;
-                    }
-                }
-            }
-            "other"
-        };
+        let phase_of = |trace: &std::backtrace::Backtrace| pass_of(&format!("{trace}"));
         let mut table: Vec<std::collections::BTreeMap<&str, (u64, f64)>> =
             (0..FRACTIONS.len()).map(|_| Default::default()).collect();
         for (file, (first, start)) in starts.iter().enumerate() {
