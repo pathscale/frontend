@@ -470,7 +470,7 @@ impl<K: InternKey> InternSet<K> {
     fn publish(&self, shard: usize, count: &mut usize, hash: u64, key: K) {
         let mut table = self.tables[shard].load(Ordering::Acquire);
         // SAFETY: a non-null current table is published and alive until `self` drops.
-        let len = if table.is_null() { 0 } else { unsafe { (*table).slots.len() } };
+        let len = if table.is_null() { 0 } else { unsafe { (&*table).slots.len() } };
         if (*count + 1) * 2 > len {
             table = self.grow(shard, table, len);
         }
