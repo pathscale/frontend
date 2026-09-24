@@ -293,6 +293,49 @@ pub struct ResolverAstLowering<'tcx> {
     pub lint_buffer: Steal<LintBuffer>,
 
     pub disambiguators: LocalDefIdMap<Steal<PerParentDisambiguatorState>>,
+
+    /// The `allow_internal_unstable` lists lowering attaches to its desugarings.
+    pub desugaring_allow: DesugaringAllowLists,
+}
+
+/// The `allow_internal_unstable` lists that AST lowering attaches to the spans of its
+/// desugarings (`?`, `.await`, `for await`, contracts, pattern types, ...). They depend only on
+/// the session's features, so they are built once, with the resolver's outputs, and every
+/// owner's `LoweringContext` shares them (one reference count per desugaring), where each
+/// context used to allocate all eight of its own.
+#[derive(Debug)]
+pub struct DesugaringAllowLists {
+    pub contracts: alloc::sync::Arc<[Symbol]>,
+    pub try_trait: alloc::sync::Arc<[Symbol]>,
+    pub gen_future: alloc::sync::Arc<[Symbol]>,
+    pub pattern_type: alloc::sync::Arc<[Symbol]>,
+    pub async_gen: alloc::sync::Arc<[Symbol]>,
+    pub async_iterator: alloc::sync::Arc<[Symbol]>,
+    pub for_await: alloc::sync::Arc<[Symbol]>,
+    pub async_fn_traits: alloc::sync::Arc<[Symbol]>,
+}
+
+impl DesugaringAllowLists {
+    pub fn new(async_fn_track_caller: bool) -> Self {
+        use crate::rustc_span::sym;
+        DesugaringAllowLists {
+            contracts: [sym::contracts_internals].into(),
+            try_trait: [sym::try_trait_v2, sym::try_trait_v2_residual, sym::yeet_desugar_details]
+                .into(),
+            pattern_type: [sym::pattern_types, sym::pattern_type_range_trait].into(),
+            gen_future: if async_fn_track_caller {
+                [sym::gen_future, sym::closure_track_caller].into()
+            } else {
+                [sym::gen_future].into()
+            },
+            for_await: [sym::async_gen_internals, sym::async_iterator].into(),
+            async_fn_traits: [sym::async_fn_traits].into(),
+            async_gen: [sym::async_gen_internals].into(),
+            // FIXME(gen_blocks): how does `closure_track_caller`/`async_fn_track_caller`
+            // interact with `gen`/`async gen` blocks
+            async_iterator: [sym::gen_future, sym::async_iterator].into(),
+        }
+    }
 }
 
 #[derive(Debug, StableHash)]

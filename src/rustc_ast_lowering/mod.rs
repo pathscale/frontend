@@ -83,7 +83,9 @@ use crate::rustc_index::{Idx, IndexVec};
 use rustc_macros::extension;
 use crate::rustc_middle::queries::Providers;
 use crate::span_bug;
-use crate::rustc_middle::ty::{PerOwnerResolverData, ResolverAstLowering, TyCtxt};
+use crate::rustc_middle::ty::{
+    DesugaringAllowLists, PerOwnerResolverData, ResolverAstLowering, TyCtxt,
+};
 use crate::rustc_session::diagnostics::add_feature_diagnostics;
 use crate::rustc_span::symbol::{Ident, Symbol, kw, sym};
 use crate::rustc_span::{DUMMY_SP, DesugaringKind, Span};
@@ -218,14 +220,9 @@ struct LoweringContext<'a, 'hir> {
     /// so we only store `self_param_id`.
     partial_res_overrides: NodeMap<NodeId>,
 
-    allow_contracts: Arc<[Symbol]>,
-    allow_try_trait: Arc<[Symbol]>,
-    allow_gen_future: Arc<[Symbol]>,
-    allow_pattern_type: Arc<[Symbol]>,
-    allow_async_gen: Arc<[Symbol]>,
-    allow_async_iterator: Arc<[Symbol]>,
-    allow_for_await: Arc<[Symbol]>,
-    allow_async_fn_traits: Arc<[Symbol]>,
+    /// The `allow_internal_unstable` lists of the desugarings, built once per session
+    /// (`resolver.desugaring_allow`) and shared by every owner.
+    allow: &'a DesugaringAllowLists,
 
     delayed_lints: Vec<DelayedLint>,
 
@@ -284,25 +281,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             current_item: None,
             impl_trait_defs: Vec::new(),
             impl_trait_bounds: Vec::new(),
-            allow_contracts: [sym::contracts_internals].into(),
-            allow_try_trait: [
-                sym::try_trait_v2,
-                sym::try_trait_v2_residual,
-                sym::yeet_desugar_details,
-            ]
-            .into(),
-            allow_pattern_type: [sym::pattern_types, sym::pattern_type_range_trait].into(),
-            allow_gen_future: if tcx.features().async_fn_track_caller() {
-                [sym::gen_future, sym::closure_track_caller].into()
-            } else {
-                [sym::gen_future].into()
-            },
-            allow_for_await: [sym::async_gen_internals, sym::async_iterator].into(),
-            allow_async_fn_traits: [sym::async_fn_traits].into(),
-            allow_async_gen: [sym::async_gen_internals].into(),
-            // FIXME(gen_blocks): how does `closure_track_caller`/`async_fn_track_caller`
-            // interact with `gen`/`async gen` blocks
-            allow_async_iterator: [sym::gen_future, sym::async_iterator].into(),
+            allow: &resolver.desugaring_allow,
 
             move_expr_bindings: Vec::new(),
             attribute_parser: AttributeParser::new(
@@ -529,6 +508,7 @@ fn index_ast<'tcx>(
         owners: &resolver.owners,
         index: IndexVec::new(),
         next_node_id: resolver.next_node_id,
+        empty_tokens: crate::rustc_ast::tokenstream::TokenStream::default(),
     };
     indexer.visit_crate(&mut krate);
     indexer.insert(CRATE_NODE_ID, AstOwner::Crate(Box::new(krate)));
@@ -541,6 +521,10 @@ fn index_ast<'tcx>(
         owners: &'s NodeMap<PerOwnerResolverData<'hir>>,
         index: IndexVec<LocalDefId, AstOwner>,
         next_node_id: NodeId,
+        /// The one empty stream every dummy's `DelimArgs` shares (a reference count each),
+        /// instead of one allocation per indexed owner. Built, cloned and freed on this
+        /// thread with the index.
+        empty_tokens: crate::rustc_ast::tokenstream::TokenStream,
     }
 
     impl Indexer<'_, '_> {
@@ -555,12 +539,12 @@ fn index_ast<'tcx>(
             id: NodeId,
             span: Span,
             dummy: impl FnOnce(Box<MacCall>) -> K,
-        ) -> Box<Item<K>> {
+        ) -> Item<K> {
             use crate::rustc_ast::token::Delimiter;
-            use crate::rustc_ast::tokenstream::{DelimSpan, TokenStream};
+            use crate::rustc_ast::tokenstream::DelimSpan;
             use thin_vec::thin_vec;
 
-            Box::new(Item {
+            Item {
                 attrs: AttrVec::default(),
                 id,
                 span,
@@ -572,13 +556,14 @@ fn index_ast<'tcx>(
                     args: Box::new(DelimArgs {
                         dspan: DelimSpan::from_single(span),
                         delim: Delimiter::Parenthesis,
-                        tokens: TokenStream::new(Vec::new()),
+                        tokens: self.empty_tokens.clone(),
                     }),
                 })),
                 tokens: None,
-            })
+            }
         }
 
+        /// Replaces an item reached in place (not through its parent's list) with a dummy.
         fn replace_with_dummy<K>(
             &mut self,
             item: &mut ast::Item<K>,
@@ -586,8 +571,22 @@ fn index_ast<'tcx>(
             node: impl FnOnce(Box<Item<K>>) -> AstOwner,
         ) {
             let dummy = self.make_dummy(item.id, item.span, dummy);
-            let item = mem::replace(item, *dummy);
+            let item = mem::replace(item, dummy);
             self.insert(item.id, node(Box::new(item)));
+        }
+
+        /// Moves a boxed item, box and all, into the index and returns a boxed dummy in its
+        /// place: one allocation (the dummy's box), where `replace_with_dummy` needs two.
+        fn take_boxed<K>(
+            &mut self,
+            item: Box<Item<K>>,
+            dummy: impl FnOnce(Box<MacCall>) -> K,
+            node: impl FnOnce(Box<Item<K>>) -> AstOwner,
+        ) -> Box<Item<K>> {
+            let (id, span) = (item.id, item.span);
+            let dummy = Box::new(self.make_dummy(id, span, dummy));
+            self.insert(id, node(item));
+            dummy
         }
 
         #[tracing::instrument(level = "trace", skip(self))]
@@ -602,7 +601,7 @@ fn index_ast<'tcx>(
                 UseTreeKind::Nested { items: ref nested_vec, span } => {
                     for &(ref nested, id) in nested_vec {
                         self.insert(id, AstOwner::NestedUseTree(parent));
-                        items.push(self.make_dummy(id, span, ItemKind::MacCall));
+                        items.push(Box::new(self.make_dummy(id, span, ItemKind::MacCall)));
 
                         let def_id = self.owners[&id].def_id;
                         self.visit_item_id_use_tree(nested, def_id, items);
@@ -621,7 +620,7 @@ fn index_ast<'tcx>(
         fn flat_map_item(&mut self, mut item: Box<Item>) -> SmallVec<[Box<Item>; 1]> {
             let def_id = self.owners[&item.id].def_id;
             mut_visit::walk_item(self, &mut *item);
-            let dummy = self.make_dummy(item.id, item.span, ItemKind::MacCall);
+            let dummy = Box::new(self.make_dummy(item.id, item.span, ItemKind::MacCall));
             let mut items = smallvec![dummy];
             if let ItemKind::Use(ref use_tree) = item.kind {
                 self.visit_item_id_use_tree(use_tree, def_id, &mut items);
@@ -648,6 +647,32 @@ fn index_ast<'tcx>(
                     Stmt { id, kind, span }
                 })
                 .collect()
+        }
+
+        // Items in their parent's list arrive boxed: the box moves into the index as it is.
+        fn flat_map_assoc_item(
+            &mut self,
+            mut item: Box<AssocItem>,
+            ctxt: visit::AssocCtxt,
+        ) -> SmallVec<[Box<AssocItem>; 1]> {
+            mut_visit::walk_assoc_item(self, &mut *item, ctxt);
+            let dummy = match ctxt {
+                visit::AssocCtxt::Trait => {
+                    self.take_boxed(item, AssocItemKind::MacCall, AstOwner::TraitItem)
+                }
+                visit::AssocCtxt::Impl { .. } => {
+                    self.take_boxed(item, AssocItemKind::MacCall, AstOwner::ImplItem)
+                }
+            };
+            smallvec![dummy]
+        }
+
+        fn flat_map_foreign_item(
+            &mut self,
+            mut item: Box<ForeignItem>,
+        ) -> SmallVec<[Box<ForeignItem>; 1]> {
+            mut_visit::walk_item(self, &mut *item);
+            smallvec![self.take_boxed(item, ForeignItemKind::MacCall, AstOwner::ForeignItem)]
         }
 
         fn visit_assoc_item(&mut self, item: &mut AssocItem, ctxt: visit::AssocCtxt) {
@@ -2200,7 +2225,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let (opaque_ty_node_id, allowed_features) = match coro.kind {
             CoroutineKind::Async | CoroutineKind::Gen => (coro.return_impl_trait_id, None),
             CoroutineKind::AsyncGen => {
-                (coro.return_impl_trait_id, Some(Arc::clone(&self.allow_async_iterator)))
+                (coro.return_impl_trait_id, Some(Arc::clone(&self.allow.async_iterator)))
             }
         };
 
