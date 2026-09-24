@@ -3617,6 +3617,17 @@ pub mod sym {
     }
 }
 
+// `Symbol::is_reserved` returns `false` for any symbol above `kw::Try` without asking the
+// predicates, which is only right while each of their ranges ends at or below `kw::Try`.
+const _: () = {
+    let try_ = kw::Try.0.as_u32();
+    assert!(kw::Underscore.0.as_u32() <= try_);
+    assert!(kw::While.0.as_u32() <= try_);
+    assert!(kw::Yield.0.as_u32() <= try_);
+    assert!(kw::Dyn.0.as_u32() <= try_);
+    assert!(kw::Gen.0.as_u32() <= try_);
+};
+
 impl Symbol {
     fn is_special(self) -> bool {
         self <= kw::Underscore
@@ -3639,7 +3650,14 @@ impl Symbol {
             || self == kw::Try && edition().at_least_rust_2018()
     }
 
+    #[inline]
     pub fn is_reserved(self, edition: impl Copy + FnOnce() -> Edition) -> bool {
+        // Every symbol the predicates below accept is at most `kw::Try` (the assertion under
+        // this impl), so any later symbol, which is almost every identifier the parser asks
+        // about, is answered by one comparison.
+        if self > kw::Try {
+            return false;
+        }
         self.is_special()
             || self.is_used_keyword_always()
             || self.is_unused_keyword_always()
@@ -3701,6 +3719,7 @@ impl Ident {
     }
 
     /// Returns `true` if the token is either a special identifier or a keyword.
+    #[inline]
     pub fn is_reserved(self) -> bool {
         // Note: `span.edition()` is relatively expensive, don't call it unless necessary.
         self.name.is_reserved(|| self.span.edition())
