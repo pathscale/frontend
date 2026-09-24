@@ -11,7 +11,7 @@ use core::sync::atomic::Ordering;
 use hir::def_id::{LocalDefIdMap, LocalDefIdSet};
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
-use crate::rustc_data_structures::sync::{DynSend, DynSync, StageScope, stages};
+use crate::rustc_data_structures::sync::{DynSend, DynSync, StageScope, cost, stages};
 use crate::rustc_errors::{ErrorGuaranteed, MultiSpan};
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalModId};
@@ -1457,7 +1457,17 @@ fn lint_dead_codes<'scope, 'tcx: 'scope>(
     reported: impl Fn(LocalDefId) -> bool + DynSync + DynSend + 'scope,
 ) {
     let len = module_items.free_item_ids().len() + module_items.foreign_item_ids().len();
-    scope.stage(module_items, len, move |module_items, index| {
+    // An item weighs its source at a walk's rate: an upper bound, since the lint reads the
+    // item's definitions and not its bodies.
+    let weight = move |module_items: &&'tcx ModuleItems, index: usize| {
+        let free_items = module_items.free_item_ids();
+        let def_id = match free_items.get(index) {
+            Some(item) => item.owner_id.def_id,
+            None => module_items.foreign_item_ids()[index - free_items.len()].owner_id.def_id,
+        };
+        tcx.stage_weight(def_id, cost::WALK)
+    };
+    scope.stage_weighted(module_items, len, weight, move |module_items, index| {
         let mut visitor = DeadVisitor { tcx, target_lint, live_symbols, ignored_derived_traits };
         let free_items = module_items.free_item_ids();
         match free_items.get(index) {

@@ -1429,6 +1429,26 @@ impl<'tcx> TyCtxt<'tcx> {
         self.untracked.source_span.get(def_id).unwrap_or(DUMMY_SP)
     }
 
+    /// The expected cost of a stage item over `def_id`, for `sync::run_stage_weighted`: the
+    /// bytes of source the definition covers times `ns_per_byte`, its pass's rate
+    /// (`sync::cost`). Read from the resolver's span table, with no query and no dependency
+    /// tracking, so asking has no effect a serial session would not have; a definition with no
+    /// span weighs nothing, which the stage counts as one.
+    #[inline]
+    pub fn stage_weight(self, def_id: LocalDefId, ns_per_byte: u32) -> u32 {
+        crate::rustc_data_structures::sync::cost::weight(
+            self.source_span_untracked(def_id).byte_len_untracked(),
+            ns_per_byte,
+        )
+    }
+
+    /// [`stage_weight`](Self::stage_weight) of the whole crate: the weight of a stage item that
+    /// walks every item of it.
+    #[inline]
+    pub fn crate_stage_weight(self, ns_per_byte: u32) -> u32 {
+        self.stage_weight(CRATE_DEF_ID, ns_per_byte)
+    }
+
     #[inline(always)]
     pub fn with_stable_hashing_context<R>(self, f: impl FnOnce(StableHashState<'_>) -> R) -> R {
         f(StableHashState::new(self.sess, &self.untracked))

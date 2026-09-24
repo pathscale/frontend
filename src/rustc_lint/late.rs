@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use core::any::Any;
 
-use crate::rustc_data_structures::sync::{run_stage, stages};
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted, stages};
 use crate::rustc_hir::def_id::{LocalDefId, LocalModId};
 use crate::rustc_hir::{self as hir, AmbigArg, HirId, intravisit as hir_visit};
 use crate::rustc_lint_defs::LintPass;
@@ -441,14 +441,19 @@ fn late_lint_mod_inner<'tcx, T: LateLintPass<'tcx>, M: Fn() -> T>(
         // `process_mod`, with the walk over the module's items as a stage.
         lint_callback!(cx, check_mod, module, hir_id);
         let items = module.item_ids;
-        run_stage(items, items.len(), |items, index| {
-            let mut item_cx = LateContextAndPass::<'tcx, T> {
-                context: module_context(),
-                pass: make_pass(),
-                actually_rustdoc,
-            };
-            hir_visit::Visitor::visit_nested_item(&mut item_cx, items[index]);
-        });
+        run_stage_weighted(
+            items,
+            items.len(),
+            |items, index| tcx.stage_weight(items[index].owner_id.def_id, cost::WALK),
+            |items, index| {
+                let mut item_cx = LateContextAndPass::<'tcx, T> {
+                    context: module_context(),
+                    pass: make_pass(),
+                    actually_rustdoc,
+                };
+                hir_visit::Visitor::visit_nested_item(&mut item_cx, items[index]);
+            },
+        );
 
         if hir_id == hir::CRATE_HIR_ID {
             lint_callback!(cx, check_crate_post,);
@@ -500,20 +505,29 @@ pub fn check_crate<'tcx>(tcx: TyCtxt<'tcx>) {
     // Two independent stages in one scope, neither waiting for the other: the whole-crate lints,
     // and the per-module lints, which are a stage over the crate's modules of their own. Serially
     // they run in that order, as the `par_join` they replaced did.
+    //
+    // Each is a walk of the whole crate, and weighs it (`sync::cost::WALK`): a small crate runs
+    // both on this thread, in order, and only a crate whose two walks pay for a helper wakes one.
+    let crate_walk = tcx.crate_stage_weight(cost::WALK);
     stages(|scope| {
-        scope.stage((), 1, |_, _| {
+        scope.stage_weighted((), 1, |_, _| crate_walk, |_, _| {
             tcx.sess.time("crate_lints", || {
                 // Run whole crate non-incremental lints
                 late_lint_crate(tcx);
             });
         });
-        scope.stage((), 1, |_, _| {
+        scope.stage_weighted((), 1, |_, _| crate_walk, |_, _| {
             tcx.sess.time("module_lints", || {
                 // Run per-module lints
                 let modules = tcx.hir_module_ids();
-                run_stage(modules, modules.len(), |modules, index| {
-                    tcx.ensure_ok().lint_mod(modules[index])
-                });
+                run_stage_weighted(
+                    modules,
+                    modules.len(),
+                    |modules, index| {
+                        tcx.stage_weight(modules[index].to_local_def_id(), cost::WALK)
+                    },
+                    |modules, index| tcx.ensure_ok().lint_mod(modules[index]),
+                );
             });
         });
     });

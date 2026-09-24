@@ -25,7 +25,9 @@ use crate::rustc_crate_store::Untracked;
 // with `indexmap/std` off the hasher parameter has no default and has to be named.
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::steal::Steal;
-use crate::rustc_data_structures::sync::{AppendOnlyIndexVec, FreezeLock, WorkerLocal, run_stage};
+use crate::rustc_data_structures::sync::{
+    AppendOnlyIndexVec, FreezeLock, WorkerLocal, cost, run_stage_weighted,
+};
 use crate::rustc_data_structures::thousands;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
 use crate::rustc_expand::base::{ExtCtxt, LintStoreExpand};
@@ -1204,11 +1206,20 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
                 // Both per-module queries are themselves stages over the module's item-likes
                 // (`rustc_passes::item_likes`), so a crate of one module still spreads.
                 let modules = tcx.hir_module_ids();
-                run_stage(modules, modules.len(), |modules, index| {
-                    let module = modules[index];
-                    tcx.ensure_ok().check_mod_attrs(module);
-                    tcx.ensure_ok().check_mod_unstable_api_usage(module);
-                });
+                run_stage_weighted(
+                    modules,
+                    modules.len(),
+                    // A module's source counts the modules inside it too: an overestimate, for
+                    // the rare crate of several, that errs towards fanning out.
+                    |modules, index| {
+                        tcx.stage_weight(modules[index].to_local_def_id(), 2 * cost::WALK)
+                    },
+                    |modules, index| {
+                        let module = modules[index];
+                        tcx.ensure_ok().check_mod_attrs(module);
+                        tcx.ensure_ok().check_mod_unstable_api_usage(module);
+                    },
+                );
             },
             &|| {
                 // We force these queries to run,
@@ -1218,7 +1229,16 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
                 tcx.ensure_ok().limits(());
             },
         ];
-        run_stage(&checks, checks.len(), |checks, index| checks[index]());
+        // The second check walks every item (two walks, `cost::WALK` each); the first and third
+        // are crate-level lookups. So the stage fans out only for a crate whose walks pay for a
+        // helper, and even then the walks' own per-item stages are where the parallel work is.
+        let crate_walks = tcx.crate_stage_weight(2 * cost::WALK);
+        run_stage_weighted(
+            &checks,
+            checks.len(),
+            |_, index| if index == 1 { crate_walks } else { 1 },
+            |checks, index| checks[index](),
+        );
     });
 
     sess.time("emit_ast_lowering_delayed_lints", || {
@@ -1235,7 +1255,9 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
     sess.time("MIR_borrow_checking", || {
         let owners = tcx.hir_body_owner_ids();
-        run_stage(owners, owners.len(), |owners, index| {
+        run_stage_weighted(owners, owners.len(), |owners, index| {
+            tcx.stage_weight(owners[index], cost::TYPECK)
+        }, |owners, index| {
             let def_id = owners[index];
             let not_typeck_child = !tcx.is_typeck_child(def_id.to_def_id());
             if not_typeck_child {
@@ -1306,10 +1328,31 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
         // pool. Every per-module query below is in turn a stage over the module's owners (its
         // item-likes, or for the late lints its top-level items), so a crate of one module still
         // spreads; see `research/per-owner-passes.md`.
+        //
+        // Every stage here weighs what its items walk: a module its source, a whole-crate check
+        // the crate's, at `cost::WALK` a walk; so a small crate runs each serially, as width one
+        // does, and only the per-item stages under them fan out, where the work is.
         let per_module = |check: &dyn Fn(LocalModId)| {
             let modules = tcx.hir_module_ids();
-            run_stage(modules, modules.len(), |modules, index| check(modules[index]));
+            run_stage_weighted(
+                modules,
+                modules.len(),
+                |modules, index| tcx.stage_weight(modules[index].to_local_def_id(), cost::WALK),
+                |modules, index| check(modules[index]),
+            );
         };
+        let crate_walk = tcx.crate_stage_weight(cost::WALK);
+        let lints_run = sess.opts.lint_cap != Some(crate::rustc_lint_defs::Level::Allow);
+        // The four checks of the first group, in order: private-in-public, liveness, the lints
+        // (a walk when they run, nothing when every lint is capped), clashing externs (a lookup
+        // over the foreign items).
+        let check_weights: [u32; 4] =
+            [crate_walk, crate_walk, if lints_run { crate_walk } else { 1 }, 1];
+        // The first group is its four checks; the second, privacy, walks names and then types.
+        let group_weights: [u32; 2] = [
+            check_weights.iter().fold(0u32, |sum, &weight| sum.saturating_add(weight)),
+            crate_walk.saturating_mul(2),
+        ];
         let groups: [&dyn Fn(); 2] = [
             &|| {
                 tcx.ensure_ok().effective_visibilities(());
@@ -1344,7 +1387,12 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
                         tcx.ensure_ok().clashing_extern_declarations(());
                     },
                 ];
-                run_stage(&checks, checks.len(), |checks, index| checks[index]());
+                run_stage_weighted(
+                    &checks,
+                    checks.len(),
+                    |_, index| check_weights[index],
+                    |checks, index| checks[index](),
+                );
             },
             &|| {
                 sess.time("privacy_checking_modules", || {
@@ -1352,7 +1400,12 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
                 });
             },
         ];
-        run_stage(&groups, groups.len(), |groups, index| groups[index]());
+        run_stage_weighted(
+            &groups,
+            groups.len(),
+            |_, index| group_weights[index],
+            |groups, index| groups[index](),
+        );
 
         // This check has to be run after all lints are done processing. We don't
         // define a lint filter, as all lint checks should have finished at this point.
@@ -1378,7 +1431,9 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     if tcx.sess.opts.unstable_opts.validate_mir {
         sess.time("ensuring_final_MIR_is_computable", || {
             let owners = tcx.hir_body_owner_ids();
-            run_stage(owners, owners.len(), |owners, index| {
+            run_stage_weighted(owners, owners.len(), |owners, index| {
+                tcx.stage_weight(owners[index], cost::TYPECK)
+            }, |owners, index| {
                 let def_id = owners[index];
                 if !tcx.is_trivial_const(def_id) {
                     tcx.instance_mir(ty::InstanceKind::Item(def_id.into()));

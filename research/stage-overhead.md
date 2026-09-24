@@ -206,3 +206,34 @@ Nothing here has been compiled. The main session:
 3. `PROFILE=large:1:30`, `large:2:30`, `large:8:30` with `examples/parallel_timing.rs`, answers
    compared across worker counts, and `sample` at two workers for `semaphore_signal_trap` and
    `__psynch_mutexwait`.
+
+## The gate: serial when the work cannot pay (speed-01, item 3)
+
+Small sessions lost at width 12: on `src/`, `type_check_crate` 109 to 276 ms, coherence 104 to
+268, `misc_checking_1` 54 to 171 (CPU summed). Fanning a pass out added 80 to 120 us per
+session whatever its size, on 38 to 77 us of work.
+
+- **Weights.** `run_stage_weighted` and `StageScope::stage_weighted` take a per-item weight in
+  estimated nanoseconds: the item's source bytes (`TyCtxt::stage_weight`, read from the
+  resolver's span table with no query; `Span::byte_len_untracked` for AST units) times its
+  pass's measured rate (`sync::cost`: `WALK` 1, `TYPECK` 4, `RESOLVE` 73 ns per byte). Read once
+  on the owner at stage start, only in a parallel session. `run_stage` and `stage` stay
+  unweighted: every item counts as one chunk, which is the old count-based behaviour.
+- **Plan.** `stage.rs` `Plan::new` cuts the indices into contiguous chunks of about
+  `total / (threads * 8)` weight and at least `MIN_CHUNK_WEIGHT` (125 us, about 32 KiB at
+  typeck's rate); a tail under half a chunk joins the previous one.
+- **Gate.** `helpers_for(chunks, weight) = min(chunks, weight / MIN_CHUNK_WEIGHT) - 1`. A
+  `run_stage` whose plan wakes nobody is the plain serial loop (same calls, same order, what
+  items emit goes where a serial session sends it). A stage in a scope that does not pay is one
+  chunk and wakes nobody; the scope's replay still orders it with the other stages.
+- **Owner first.** A parallel `run_stage` reserves its first chunk for the owner before waking
+  anybody (`ScopeShared::owner_first`, taken by `settle` on every path).
+- **False sharing.** Chunks are contiguous and claimed in order, so slot and replay-byte writes
+  from different threads meet only at chunk boundaries. A stage's cursor and a scope's `stages`
+  lock, `active` count and `cutoff` sit on 128-byte lines of their own (`Padded`).
+- **Threshold rationale.** About 10 us of overhead per helper (117 us over up to eleven); a
+  125 us chunk keeps it under a tenth; the smallest stage that fans out (250 us) is twice the
+  whole full-width overhead. The average `src/` file (20 KB, 80 us of typeck) runs serially.
+
+Not weighted: `frontend_facts` definition and import stages (cost is per path printed, not per
+byte, and unmeasured), parse chunks (handover item 4), `hir_id_validator` (debug only).

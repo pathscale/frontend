@@ -35,7 +35,7 @@ use diagnostics::{
 use crate::rustc_ast::visit::{VisitorResult, try_visit};
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
-use crate::rustc_data_structures::sync::stages;
+use crate::rustc_data_structures::sync::{cost, stages};
 use crate::rustc_errors::{MultiSpan, listify};
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalModId};
@@ -44,6 +44,7 @@ use crate::rustc_hir::{self as hir, AmbigArg, ForeignItemId, ItemId, OwnerId, Pa
 use crate::rustc_lint_defs::builtin::{
     EXPORTED_PRIVATE_DEPENDENCIES, PRIVATE_BOUNDS, PRIVATE_INTERFACES, UNNAMEABLE_TYPES,
 };
+use crate::rustc_middle::hir::ModuleItems;
 use crate::rustc_middle::middle::privacy::{EffectiveVisibilities, EffectiveVisibility, Level};
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::print::PrintTraitRefExt as _;
@@ -52,7 +53,9 @@ use crate::rustc_middle::ty::{
     TypeVisitable, TypeVisitor,
 };
 use crate::rustc_middle::{bug, span_bug};
-use crate::rustc_passes::item_likes::{item_like_count, item_like_def_id, visit_item_like};
+use crate::rustc_passes::item_likes::{
+    item_like_count, item_like_def_id, item_like_weight, visit_item_like,
+};
 use crate::rustc_span::{Ident, Span, Symbol, sym};
 use tracing::debug;
 
@@ -1811,17 +1814,21 @@ fn check_mod_privacy(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     let module = tcx.hir_module_items(mod_id);
     let len = item_like_count(module);
     let span = tcx.def_span(mod_id);
+    // Both walks weigh an item-like's source at a walk's rate. `Copy`: it captures `tcx`.
+    let weight = move |module: &&ModuleItems, index: usize| {
+        item_like_weight(tcx, module, index, cost::WALK)
+    };
 
     stages(|scope| {
         // Check privacy of names not checked in previous compilation stages.
-        scope.stage(module, len, |module, index| {
+        scope.stage_weighted(module, len, weight, |module, index| {
             let mut visitor = NamePrivacyVisitor { tcx, maybe_typeck_results: None };
             visit_item_like(tcx, module, index, &mut visitor)
         });
 
         // Check privacy of explicitly written types and traits as well as
         // inferred types of expressions and patterns.
-        scope.stage(module, len, move |module, index| {
+        scope.stage_weighted(module, len, weight, move |module, index| {
             let mut visitor = TypePrivacyVisitor {
                 tcx,
                 mod_id,
@@ -1965,12 +1972,22 @@ fn check_private_in_public(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     // wait for the last free item.
     let crate_items = tcx.hir_module_items(mod_id);
     let checker = &checker;
+    // Each item weighs its source at a walk's rate: the checker reads signatures, not bodies, so
+    // this overestimates, which errs towards fanning out.
     stages(|scope| {
         let items = crate_items.free_item_ids();
-        scope.stage(items, items.len(), move |items, index| checker.check_item(items[index]));
+        scope.stage_weighted(
+            items,
+            items.len(),
+            |items, index| tcx.stage_weight(items[index].owner_id.def_id, cost::WALK),
+            move |items, index| checker.check_item(items[index]),
+        );
         let foreign_items = crate_items.foreign_item_ids();
-        scope.stage(foreign_items, foreign_items.len(), move |items, index| {
-            checker.check_foreign_item(items[index])
-        });
+        scope.stage_weighted(
+            foreign_items,
+            foreign_items.len(),
+            |items, index| tcx.stage_weight(items[index].owner_id.def_id, cost::WALK),
+            move |items, index| checker.check_foreign_item(items[index]),
+        );
     });
 }

@@ -791,7 +791,16 @@ pub fn lower_every_owner(tcx: TyCtxt<'_>) {
     // that whatever it emits is emitted before the stage, not by whichever item gets there first.
     let len = tcx.index_ast(()).1.len();
     let _ = tcx.registered_attr_tools(());
-    crate::rustc_data_structures::sync::run_stage((), len, |_, index| {
+    // A definition weighs its source (`sync::cost::TYPECK`, lowering's assumed rate), read from
+    // the resolver's span table with no query. The crate root weighs one: its own lowering is its
+    // item list, and its span is the whole file. A definition nested in another (a field, a
+    // closure, a parameter) lowers nothing of its own yet weighs its source again, which
+    // overestimates by at most the nesting, and errs towards fanning out.
+    use crate::rustc_data_structures::sync::cost;
+    let weight = |_: &(), index: usize| {
+        if index == 0 { 1 } else { tcx.stage_weight(LocalDefId::new(index), cost::TYPECK) }
+    };
+    crate::rustc_data_structures::sync::run_stage_weighted((), len, weight, |_, index| {
         let def_id = LocalDefId::new(index);
         match tcx.def_kind(def_id) {
             DefKind::Variant

@@ -13,7 +13,7 @@ use core::slice;
 
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_ast::{AttrStyle, MetaItemKind, ast};
-use crate::rustc_data_structures::sync::run_stage;
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_attr_parsing::AttributeParser;
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_errors::{DiagCtxtHandle, IntoDiagArg, MultiSpan, msg};
@@ -53,7 +53,7 @@ use crate::rustc_trait_selection::infer::{TyCtxtInferExt, ValuePairs};
 use crate::rustc_trait_selection::traits::{ObligationCtxt, TraitErrors};
 
 use crate::rustc_passes::diagnostics;
-use crate::rustc_passes::item_likes::{item_like_count, visit_item_like};
+use crate::rustc_passes::item_likes::{item_like_count, item_like_weight, visit_item_like};
 
 #[derive(Diagnostic)]
 #[diag(
@@ -1791,11 +1791,16 @@ fn check_non_exported_macro_for_invalid_attrs(tcx: TyCtxt<'_>, item: &Item<'_>) 
 /// crate-root check, once every item's diagnostics have been replayed.
 fn check_mod_attrs(tcx: TyCtxt<'_>, module_def_id: LocalModId) {
     let module = tcx.hir_module_items(module_def_id);
-    let aborts = run_stage(module, item_like_count(module), |module, index| {
-        let check_attr_visitor = &mut CheckAttrVisitor { tcx, abort: Cell::new(false) };
-        visit_item_like(tcx, module, index, check_attr_visitor);
-        check_attr_visitor.abort.get()
-    });
+    let aborts = run_stage_weighted(
+        module,
+        item_like_count(module),
+        |module, index| item_like_weight(tcx, module, index, cost::WALK),
+        |module, index| {
+            let check_attr_visitor = &mut CheckAttrVisitor { tcx, abort: Cell::new(false) };
+            visit_item_like(tcx, module, index, check_attr_visitor);
+            check_attr_visitor.abort.get()
+        },
+    );
     let mut abort = aborts.contains(&true);
     if module_def_id.to_local_def_id().is_top_level_module() {
         let check_attr_visitor = CheckAttrVisitor { tcx, abort: Cell::new(false) };
