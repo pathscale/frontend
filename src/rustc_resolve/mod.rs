@@ -1708,16 +1708,37 @@ impl<'tcx> Resolver<'_, 'tcx> {
         span: Span,
         is_owner: bool,
     ) -> TyCtxtFeed<'tcx, LocalDefId> {
-        assert!(
-            !self.current_owner.node_id_to_def_id.contains_key(&node_id),
-            "adding a def for node-id {:?}, name {:?}, data {:?} but a previous def exists: {:?}",
-            node_id,
-            name,
-            def_kind,
-            self.tcx
-                .def_table_untracked()
-                .def_key(self.current_owner.node_id_to_def_id[&node_id]),
-        );
+        // Some things for which we allocate `LocalDefId`s don't correspond to
+        // anything in the AST, so they don't have a `NodeId`. For these cases
+        // we don't need a mapping from `NodeId` to `LocalDefId`.
+        //
+        // When the mapping is recorded, the slot is found once: the same lookup checks that
+        // no previous def exists (the same panic, before anything is created) and is filled
+        // below, instead of a `contains_key` here and an `insert` at the end.
+        let vacant = if node_id != ast::DUMMY_NODE_ID && !is_owner {
+            match self.current_owner.node_id_to_def_id.entry(node_id) {
+                hashbrown::hash_map::Entry::Occupied(previous) => panic!(
+                    "adding a def for node-id {:?}, name {:?}, data {:?} but a previous def exists: {:?}",
+                    node_id,
+                    name,
+                    def_kind,
+                    self.tcx.def_table_untracked().def_key(*previous.get()),
+                ),
+                hashbrown::hash_map::Entry::Vacant(vacant) => Some(vacant),
+            }
+        } else {
+            assert!(
+                !self.current_owner.node_id_to_def_id.contains_key(&node_id),
+                "adding a def for node-id {:?}, name {:?}, data {:?} but a previous def exists: {:?}",
+                node_id,
+                name,
+                def_kind,
+                self.tcx
+                    .def_table_untracked()
+                    .def_key(self.current_owner.node_id_to_def_id[&node_id]),
+            );
+            None
+        };
 
         let disambiguator = self.disambiguators.get_or_create(parent);
 
@@ -1735,12 +1756,9 @@ impl<'tcx> Resolver<'_, 'tcx> {
         let _id = self.tcx.untracked().source_span.push(span);
         debug_assert_eq!(_id, def_id);
 
-        // Some things for which we allocate `LocalDefId`s don't correspond to
-        // anything in the AST, so they don't have a `NodeId`. For these cases
-        // we don't need a mapping from `NodeId` to `LocalDefId`.
-        if node_id != ast::DUMMY_NODE_ID && !is_owner {
+        if let Some(vacant) = vacant {
             debug!("create_def: def_id_to_node_id[{:?}] <-> {:?}", def_id, node_id);
-            self.current_owner.node_id_to_def_id.insert(node_id, def_id);
+            vacant.insert(def_id);
         }
 
         feed
