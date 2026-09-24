@@ -3151,7 +3151,7 @@ impl SymbolIndices {
         // entries; keep it at most half full after this insert.
         let count = strs.len.load(Ordering::Relaxed);
         // SAFETY: a non-null current table is published and alive until `self` drops.
-        let len = if table.is_null() { 0 } else { unsafe { (*table).slots.len() } };
+        let len = if table.is_null() { 0 } else { unsafe { (&*table).slots.len() } };
         if (count + 1) * 2 > len {
             table = self.grow(table, len, strs);
             // The new table holds exactly the old one's entries, so `bytes` is absent from it
