@@ -153,14 +153,17 @@ cfg_select! {
             lines: &mut Vec<RelativeBytePos>,
             multi_byte_chars: &mut Vec<MultiByteChar>,
         ) {
-            analyze_source_file_neon(src, lines, multi_byte_chars);
+            // SAFETY: this arm compiles only with `target_feature = "neon"` enabled, so the
+            // function's feature requirement is met on every machine this code runs on.
+            unsafe { analyze_source_file_neon(src, lines, multi_byte_chars) };
         }
 
         /// The SSE2 path above, on NEON: 16 byte chunks, an all-ASCII chunk has its
         /// newlines found from a comparison mask, and a chunk holding any byte >= 0x80
         /// falls back to the generic decoder, which also reports how far a multi-byte
         /// character runs into the next chunk.
-        fn analyze_source_file_neon(
+        #[target_feature(enable = "neon")]
+        unsafe fn analyze_source_file_neon(
             src: &str,
             lines: &mut Vec<RelativeBytePos>,
             multi_byte_chars: &mut Vec<MultiByteChar>,
