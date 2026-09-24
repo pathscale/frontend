@@ -146,81 +146,13 @@ pub fn diagnose_with(source: &str, opts: &Options) -> Result<Vec<Diagnostic>, Ve
         "diagnose needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
     run(source, opts, |cx, krate, out| {
-        both_passes(cx, krate, out);
+        structure::check(cx, krate, out);
+        names::check(cx, krate, out);
         for diagnostic in out.iter_mut() {
             if let Some(name) = documented_name(&diagnostic.code) {
                 diagnostic.code = name.to_string();
             }
         }
-    })
-}
-
-/// The structural pass, then the name pass, each appending to `out`.
-///
-/// **Side by side when [`super::set_parallelism`] asked for more than one worker.** The two
-/// passes are independent readers of one parsed crate:
-///
-/// - Each reads the AST through `&Crate` and the context through `&Cx`, and neither mutates
-///   either. `Cx` is the source text, the options and a span-to-offset closure that captures
-///   two `u32`s by value, so calling it from two workers at once is two subtractions.
-/// - Neither holds a `Cell`, a `RefCell`, a `static` or a thread-local of its own. The state
-///   each builds (the structural checker's scope stacks, the name pass's index and checker) is
-///   a local of that pass.
-/// - What they do share is the session globals: a `Span`'s `lo` can consult the span
-///   interner and a `Symbol`'s `as_str` reads the symbol interner. Both sit behind the
-///   compiler's `Lock`, which synchronises whenever the thread-safe mode is on, and
-///   `set_parallelism` turns that mode on before anything can ask for this path. The stage
-///   installs the caller's globals around each pass, on whichever thread runs it, through the
-///   hook `set_parallelism` registers.
-/// - Neither pass reads `out`: each only pushes to it. So each gets a list of its own and
-///   the two are joined structural first, names second, which is the list the serial order
-///   builds. `run` then sorts by `(start, end)` with a stable sort, so even diagnostics that
-///   tie on both offsets keep that same relative order and the answer is the serial answer.
-///
-/// With one worker, or without the `parallel` feature, this is the two calls in a row, as it
-/// always was, with no join and no extra list.
-fn both_passes(cx: &Cx<'_>, krate: &Crate, out: &mut Vec<Diagnostic>) {
-    if super::parallelism() <= 1 {
-        structure::check(cx, krate, out);
-        names::check(cx, krate, out);
-        return;
-    }
-    // One stage of two items, whose input is the pass number: each item's output is its own
-    // list, and the lists come back in item order, structural first.
-    let found = crate::rustc_data_structures::sync::run_stage((), 2, |_, pass| {
-        let mut found = Vec::new();
-        if pass == 0 {
-            structure::check(cx, krate, &mut found);
-        } else {
-            names::check(cx, krate, &mut found);
-        }
-        found
-    });
-    out.extend(found.into_iter().flatten());
-}
-
-/// [`diagnose_with`] for each of `inputs`, in order, with the session setup shared.
-///
-/// One result per input, in input order, each exactly what [`diagnose_with`] returns for that
-/// source and `opts` on its own; every offset is into that input's own source. The calls run on
-/// the caller's thread under one set of session globals, rebuilt every
-/// [`super::session::RECYCLE_EVERY`] calls, rather than one set per call. Spawns nothing. See
-/// [`super::session`] for why sharing the globals cannot change an answer.
-///
-/// Needs the same catcher as [`diagnose_with`], asserted up front.
-pub fn diagnose_many<'a, I>(
-    inputs: I,
-    opts: &Options,
-) -> Vec<Result<Vec<Diagnostic>, Vec<String>>>
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    assert!(
-        crate::unwind_janky::unwinding_is_enabled(),
-        "diagnose_many needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
-    );
-    super::session::run_batch(inputs, super::session::RECYCLE_EVERY, |source| {
-        diagnose_with(source, opts)
     })
 }
 

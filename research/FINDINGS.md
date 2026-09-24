@@ -4,17 +4,13 @@ Where the time goes, what runs in parallel now, and what is still serial. Every 
 from `examples/parallel_timing.rs` on a shared 16-core machine, so compare numbers only within
 one run.
 
-## How to read the execution graph
+## How the execution graph below was read
 
-`FRONTEND_TIME_PASSES=1` turns on rustc's own `-Z time-passes` inside `check_source` and
-`analyze_source`, as one JSON line per pass on stderr. `PROFILE=<src|clean|large>:<workers>:<passes>`
-runs one setting of the timing example on its own. The two together give the pass tree of a
-whole corpus:
-
-    FRONTEND_TIME_PASSES=1 PROFILE=large:1:1 cargo run --release --features diagnostics,parallel --example parallel_timing 2> passes.txt
-
-A pass that runs inside a stage item (such as `drop_ast`, which runs inside lowering) is summed
-across workers. That sum is thread time, not wall time.
+With rustc's own `-Z time-passes` (JSON format) switched on in the session options of a local
+build, and `parallel_timing <corpus> <width>` running one setting, every pass prints its
+duration, and summing by pass name over a corpus gives the table. A pass that runs inside a
+stage item (such as `drop_ast`, which runs inside lowering) is the sum of every item's
+duration, so it is CPU time added up over the pool, not elapsed time.
 
 ## Bottlenecks at 1 worker (check plus analyze, summed over every file)
 

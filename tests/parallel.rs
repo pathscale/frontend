@@ -1,50 +1,34 @@
-//! Parallelism inside one analysis never changes an answer.
+//! A wider stage never changes an answer.
 //!
-//! [`set_parallelism`] lets one `analyze_source` or `check_source` call spread its own
-//! independent work (per-definition facts, per-body type checks, the two syntax diagnostics
-//! passes) over several workers. That is only worth having if the answer is the serial one, so
-//! every test here computes each input's answer at one worker, which is the reference, and then
-//! again at four and at eight, and requires the whole value to be equal: every definition,
-//! reference, import and impl, `unanalyzed_bodies`, `complete`, and every diagnostic string in
-//! its order.
+//! `check_source_with_width` and `analyze_source_with_width` let up to `width` of one call's
+//! independent stage items (per-definition facts, per-body type and borrow checks, lowering) run
+//! at once on nagoya's pool. That is only worth having if the answer is the serial one, so each
+//! input's answer is computed at width one, the reference, and again at four and at eight, and
+//! the whole value must be equal: every definition, reference, import and impl,
+//! `unanalyzed_bodies`, `complete`, and every diagnostic string in its order.
 //!
-//! **Repeated, because a race does not lose every time.** Each parallel setting runs its whole
-//! input list `RUNS` times, and every run must match the reference. Bounded by work: a fixed
-//! list of inputs, a fixed run count, nothing timed.
+//! **Repeated, because a race does not lose every time.** Each width runs its whole input list
+//! `RUNS` times, and every run must match the reference. Bounded by work: a fixed list of inputs,
+//! a fixed run count, nothing timed.
 //!
-//! **One setting per fresh thread.** The setting is process-wide, and a thread keeps the
-//! worker registry its first session sized, so each setting is applied and used on a thread
-//! that has analysed nothing yet, and the tests take a lock so that no two settings overlap.
-//! The threads are this test program's, not the library's: frontend spawns nothing.
+//! Without the `parallel` feature every width is the serial path, so the comparisons hold
+//! trivially; they still check that the same input gives the same answer twice.
 //!
-//! Without the `parallel` feature [`set_parallelism`] does nothing and every setting is the
-//! serial path, so the comparisons hold trivially. They are still run, because they still
-//! check that the same input gives the same answer twice.
-//!
-//! A `std` program, like `tests/batch.rs`, because the catcher needs `std`.
+//! A `std` program, because the catcher needs `std`.
 
-use std::sync::Mutex;
-
-use frontend::frontend_facts::{CrateFacts, Checked, analyze_source, check_source, set_parallelism};
+use frontend::frontend_facts::{
+    CrateFacts, Checked, analyze_source_with_width, check_source_with_width,
+};
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
 }
 
-/// Install the catcher. Installing twice is harmless.
-fn ready() {
-    frontend::unwind_janky::install_catcher(catcher);
-}
-
-/// How many times each parallel setting runs the whole input list.
+/// How many times each width runs the whole input list.
 const RUNS: usize = 5;
 
-/// The parallel settings, each held to the answer at one worker.
-const SETTINGS: &[usize] = &[4, 8];
-
-/// Only one setting in force at a time: the setting is process-wide and the harness runs tests
-/// on several threads at once.
-static ONE_SETTING_AT_A_TIME: Mutex<()> = Mutex::new(());
+/// The widths held to the answer at width one.
+const WIDTHS: &[usize] = &[4, 8];
 
 /// The lang items a `no_core` crate declares so that ordinary bodies can type check.
 const LANG: &str = "\
@@ -124,7 +108,7 @@ const NO_LANG_ITEMS: &[&str] = &[
 /// so they carry many errors and many bodies.
 const FILES: &[&str] = &[
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frontend_facts/syntax.rs")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frontend_facts/session.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rustc_span/edit_distance.rs")),
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frontend_facts/site.rs")),
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rustc_span/fatal_error.rs")),
 ];
@@ -137,7 +121,8 @@ fn inputs() -> Vec<String> {
     all
 }
 
-/// What both entry points say about every input, at one setting.
+
+/// What both entry points say about every input, at one width.
 #[derive(Debug, PartialEq)]
 struct Answers {
     checked: Vec<Checked>,
@@ -145,64 +130,34 @@ struct Answers {
     facts: Vec<Option<CrateFacts>>,
 }
 
-/// Run `f` on a fresh thread that applies `threads` first. Large stack: rustc recurses deeply.
-fn at_setting<R: Send + 'static>(threads: usize, f: impl FnOnce() -> R + Send + 'static) -> R {
-    std::thread::Builder::new()
-        .stack_size(64 << 20)
-        .spawn(move || {
-            ready();
-            set_parallelism(threads);
-            f()
-        })
-        .expect("spawn")
-        .join()
-        .expect("a setting's thread panicked")
-}
-
-fn answers(threads: usize) -> Answers {
-    at_setting(threads, || {
-        let inputs = inputs();
-        Answers {
-            checked: inputs.iter().map(|s| check_source("parallel", s)).collect(),
-            facts: inputs.iter().map(|s| analyze_source("parallel", s).ok()).collect(),
-        }
-    })
+fn answers(width: usize) -> Answers {
+    frontend::unwind_janky::install_catcher(catcher);
+    let inputs = inputs();
+    Answers {
+        checked: inputs.iter().map(|s| check_source_with_width("parallel", s, width)).collect(),
+        facts: inputs
+            .iter()
+            .map(|s| analyze_source_with_width("parallel", s, None, width).ok())
+            .collect(),
+    }
 }
 
 #[test]
-fn every_setting_gives_the_one_worker_answer() {
-    let _one = ONE_SETTING_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn every_width_gives_the_width_one_answer() {
     let reference = answers(1);
     // The fixtures must actually exercise the walks: definitions, references and diagnostics.
     let many = reference.facts[0].as_ref().expect("the many-items source has facts");
     assert!(many.definitions.len() > 20, "{} definitions", many.definitions.len());
     assert!(!reference.checked[1].errors.is_empty(), "the erroring source reports errors");
-    for &threads in SETTINGS {
+    for &width in WIDTHS {
         for run in 0..RUNS {
-            let got = answers(threads);
+            let got = answers(width);
             for (index, (want, got)) in reference.checked.iter().zip(&got.checked).enumerate() {
-                assert_eq!(want, got, "check_source, input {index}, {threads} workers, run {run}");
+                assert_eq!(want, got, "check_source, input {index}, width {width}, run {run}");
             }
             for (index, (want, got)) in reference.facts.iter().zip(&got.facts).enumerate() {
-                let at = format!("input {index}, {threads} workers, run {run}");
-                assert_eq!(want, got, "analyze_source, {at}");
+                assert_eq!(want, got, "analyze_source, input {index}, width {width}, run {run}");
             }
-        }
-    }
-}
-
-#[cfg(feature = "diagnostics")]
-#[test]
-fn the_diagnostics_passes_give_the_one_worker_answer() {
-    use frontend::frontend_facts::diagnostics::{Options, diagnose_with};
-    let _one = ONE_SETTING_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let run_all =
-        || inputs().iter().map(|s| diagnose_with(s, &Options::default())).collect::<Vec<_>>();
-    let reference = at_setting(1, run_all);
-    for &threads in SETTINGS {
-        for run in 0..RUNS {
-            let got = at_setting(threads, run_all);
-            assert_eq!(reference, got, "diagnose_with, {threads} workers, run {run}");
         }
     }
 }

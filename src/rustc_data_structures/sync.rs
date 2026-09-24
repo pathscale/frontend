@@ -116,7 +116,7 @@ mod atomic {
 /// shared across sessions except process-wide statics, none of which holds a `Lock` or a
 /// `Sharded` (checked: only atomics, `OnceLock`/`LazyLock` tables and `eko` mutexes). A caller
 /// that builds compiler state outside a session and hands it to a parallel one would have to set
-/// the fallback first, which is what `frontend_facts::set_parallelism` does.
+/// the fallback first; nothing in this crate does that.
 mod mode {
     use core::sync::atomic::{AtomicU8, Ordering};
 

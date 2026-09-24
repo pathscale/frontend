@@ -49,7 +49,6 @@ use crate::rustc_span::{FileName, Span};
 use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
 pub mod site;
-pub mod session;
 
 #[cfg(feature = "diagnostics")]
 pub mod diagnostics;
@@ -290,69 +289,14 @@ pub fn fact_kind(kind: DefKind) -> Option<FactKind> {
     })
 }
 
-/// How many workers one analysis may spread its own work over. `0` means nobody asked.
+/// A session's `jobs.frontend` for a stage width of `width`: how many stage items may run at
+/// once on nagoya's pool.
 ///
-/// Read once per session, when [`analyze_source_with_sysroot`] and [`check_source`] build their
-/// `Options`, and by the diagnostics passes. See [`set_parallelism`].
-static PARALLELISM: AtomicUsize = AtomicUsize::new(0);
-
-/// Let one analysis spread its own work over `threads` workers.
-///
-/// **For editor and tooling throughput on large files.** A single [`analyze_source`] or
-/// [`check_source`] call is otherwise serial from end to end: one body is type checked, then
-/// the next. With this set, the work inside one call that does not depend on other work in the
-/// same call (per-definition facts, per-body type checks and reference walks, the two syntax
-/// diagnostics passes) is run as stages (`rustc_data_structures::sync::run_stage`), whose items
-/// run on nagoya's pool. This crate still spawns nothing: the workers belong to nagoya, or to the
-/// pool the caller handed over with `sync::set_parallel_executor`.
-///
-/// **Opt-in, and every existing call keeps its behaviour.** Until this is called, every entry
-/// point runs exactly as it always has, serial, with `jobs.frontend` unset. The answers never
-/// depend on the setting: results are reassembled in the order the serial walk produces them,
-/// and `tests/parallel.rs` holds every entry point to that across 1, 4 and 8 workers.
-///
-/// **Can change between analyses.** Each analysis session latches its own mode from its
-/// `jobs.frontend` and builds its locks and worker registry to match
-/// (`sync::enter_session_width`), so serial and parallel analyses can follow each other, or run
-/// side by side on different threads, in one process. `1` (and `0`, read as `1`) is serial.
-///
-/// What this does fix for the process: it turns on the thread-safe fallback that code outside
-/// any analysis session uses (the parse-only diagnostics path), and that stays on once on.
-/// What a pool thread needs installed to run an item of such code is captured by the stage
-/// itself, where it starts (`rustc_middle::ty::tls::ItemContext`); there is nothing to register.
-///
-/// Without the `parallel` cargo feature this does nothing and [`parallelism`] stays `1`.
-pub fn set_parallelism(threads: usize) {
-    #[cfg(feature = "parallel")]
-    {
-        if threads > 1 {
-            crate::rustc_data_structures::sync::set_dyn_thread_safe_mode(true);
-        }
-        PARALLELISM.store(threads.max(1), Ordering::Relaxed);
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        let _ = threads;
-    }
-}
-
-/// The number of workers one analysis may use: what [`set_parallelism`] last set, or `1` when
-/// nothing was set or the `parallel` feature is off.
-pub fn parallelism() -> usize {
-    if cfg!(feature = "parallel") { PARALLELISM.load(Ordering::Relaxed).max(1) } else { 1 }
-}
-
-/// Carry [`set_parallelism`] into one session's options.
-///
-/// Nothing asked leaves `jobs.frontend` at `None`, which is the serial compiler exactly as it
-/// was. Anything asked sets it, which `run_compiler` reads twice: to latch the session's mode
-/// (parallel from two up), and to size the session's worker registry, whose slots are the
-/// session's thread budget on the pool. `-Z threads` is not
-/// touched: in this tree it is a deprecated string that nothing reads, and `jobs.frontend` is
-/// what replaced it.
-fn apply_parallelism(opts: &mut Options) {
-    let asked = if cfg!(feature = "parallel") { PARALLELISM.load(Ordering::Relaxed) } else { 0 };
-    opts.jobs.frontend = core::num::NonZero::new(asked);
+/// One or none leaves it unset, which is the serial compiler exactly as it was. Two or more set
+/// it, which `run_compiler` reads to latch the session's shared-state mode and to size its
+/// per-worker registry. Without the `parallel` cargo feature there is no pool, so it stays unset.
+fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
+    if cfg!(feature = "parallel") && width > 1 { core::num::NonZero::new(width) } else { None }
 }
 
 /// Extract facts from an already-built `TyCtxt`. Runs type checking, one body at a time.
@@ -366,7 +310,7 @@ fn apply_parallelism(opts: &mut Options) {
 /// `diagnostics` is left empty here: the emitter belongs to whoever built the session, and
 /// only [`analyze_source`] installed one it can read back.
 ///
-/// **Three independent walks, each spread over workers when [`set_parallelism`] asked.** The
+/// **Three independent walks, each spread over the session's workers when it has more than one.** The
 /// definitions, the imports and the bodies are each a list whose items do not read one
 /// another's results: every item asks `tcx` its own questions and returns owned data. Each list
 /// is one stage (`sync::run_stage`) over its frozen input, read in place, which runs serially
@@ -790,6 +734,21 @@ pub fn analyze_source_with_sysroot(
     source: &str,
     sysroot: Option<&str>,
 ) -> Result<CrateFacts, FatalError> {
+    analyze_source_with_width(crate_name, source, sysroot, 1)
+}
+
+/// [`analyze_source_with_sysroot`], with up to `width` of this analysis's independent stage
+/// items (per-definition facts, per-body type and borrow checks, lowering) running at once on
+/// nagoya's pool. `1` (or `0`) is the serial compiler.
+///
+/// The answer does not depend on `width`; `tests/parallel.rs` holds it to that. Without the
+/// `parallel` cargo feature every stage runs serially whatever is asked.
+pub fn analyze_source_with_width(
+    crate_name: &str,
+    source: &str,
+    sysroot: Option<&str>,
+    width: usize,
+) -> Result<CrateFacts, FatalError> {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -801,8 +760,7 @@ pub fn analyze_source_with_sysroot(
     // This crate is a nightly frontend; within-crate no_core analysis needs the
     // same gates nightly rustc has.
     opts.unstable_features = UnstableFeatures::Allow;
-    // Serial unless the caller asked for parallelism; see `set_parallelism`.
-    apply_parallelism(&mut opts);
+    opts.jobs.frontend = frontend_jobs(width);
     // **The sysroot is an optional parameter, because this is a parser.**
     //
     // Definitions, imports, impls and within-crate references are read out of
@@ -982,6 +940,13 @@ pub(crate) fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
 /// Needs a catcher installed through [`crate::unwind_janky::install_catcher`], because a
 /// refused program ends in `abort_if_errors`, which unwinds.
 pub fn check_source(crate_name: &str, source: &str) -> Checked {
+    check_source_with_width(crate_name, source, 1)
+}
+
+/// [`check_source`], with up to `width` of this check's independent stage items running at
+/// once on nagoya's pool. `1` (or `0`) is the serial compiler, and the answer does not depend
+/// on it.
+pub fn check_source_with_width(crate_name: &str, source: &str, width: usize) -> Checked {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -990,8 +955,7 @@ pub fn check_source(crate_name: &str, source: &str) -> Checked {
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
     opts.unstable_features = UnstableFeatures::Allow;
-    // Serial unless the caller asked for parallelism; see `set_parallelism`.
-    apply_parallelism(&mut opts);
+    opts.jobs.frontend = frontend_jobs(width);
     opts.unstable_opts.crate_attr.push("no_core".to_string());
     opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
 
