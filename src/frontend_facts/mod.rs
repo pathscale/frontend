@@ -1460,6 +1460,7 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
         loaded: read.loaded,
         library: read.library,
         disambiguator: read.disambiguator,
+        test: false,
     };
     let input = Input::File(read.root.to_path_buf());
     let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
@@ -1487,6 +1488,8 @@ struct Setup<'a> {
     library: bool,
     /// `-C metadata`; see [`CrateRead::disambiguator`].
     disambiguator: Option<&'a str>,
+    /// rustc's `--test`; see [`check_source_against`].
+    test: bool,
 }
 
 impl<'a> Setup<'a> {
@@ -1503,6 +1506,7 @@ impl<'a> Setup<'a> {
             loaded: Loaded::default(),
             library: false,
             disambiguator: None,
+            test: false,
         }
     }
 
@@ -1513,6 +1517,9 @@ impl<'a> Setup<'a> {
         opts.crate_name = Some(self.crate_name.to_string());
         opts.crate_types =
             alloc::vec![if self.proc_macro { CrateType::ProcMacro } else { CrateType::Rlib }];
+        // rustc's `--test`, which `collect_crate_types` reads as the one crate type `bin`,
+        // whatever `crate_types` says, as rustc does.
+        opts.test = self.test;
         // Options::default() disallows `#![feature]` the way a stable CLI would.
         // This crate is a nightly frontend; within-crate no_core analysis needs the
         // same gates nightly rustc has.
@@ -1934,6 +1941,17 @@ pub fn check_shared_source_with_width(
     source: Arc<String>,
     width: usize,
 ) -> Checked {
+    check_no_core_source(crate_name, source, width, false)
+}
+
+/// [`check_shared_source_with_width`], built with rustc's `--test` when `test` is set (see
+/// [`check_source_against`]).
+fn check_no_core_source(
+    crate_name: &str,
+    source: Arc<String>,
+    width: usize,
+    test: bool,
+) -> Checked {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -1941,6 +1959,7 @@ pub fn check_shared_source_with_width(
     let mut opts = Options::default();
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
+    opts.test = test;
     opts.unstable_features = UnstableFeatures::Allow;
     opts.jobs.frontend = frontend_jobs(width);
     opts.unstable_opts.crate_attr.push("no_core".to_string());
@@ -1964,21 +1983,36 @@ pub fn check_shared_source_with_width(
 /// method no type in reach has, E0061 for a wrong argument count, E0425 for a missing item).
 ///
 /// `edition` is its crate's; `None` is 2015. With no dependency this is [`check_source`].
+///
+/// **`test` is rustc's `--test`**, which `cargo check --all-targets` passes for a lib's test
+/// target, so a file whose code sits in `#[cfg(test)]` modules and `#[test]` functions gets the
+/// diagnostics cargo gives that target. As in rustc: `cfg(test)` is set, each `#[test]` function
+/// is kept with the descriptor const its expansion writes beside it, the crate is a `bin`
+/// whatever its crate type, and the harness adds a `main` that calls `test::test_main_static`.
+/// Those descriptors and that `main` name the crate `test` (libtest) through `extern crate
+/// test`, so **the caller supplies libtest**: the crate `test`, read from rust-src's
+/// `library/test` like std (a library read, after std and libtest's other dependencies, with its
+/// metadata written), in `loaded.dependencies` like any other dependency. Pass it as
+/// [`Dependency::transitive`]: rustc finds libtest in the sysroot, not in the extern prelude, so
+/// the file names `test::` only after its own `extern crate test`. Not supplied, the check says
+/// what rustc says: E0463, can't find crate for `test`. It is a check still: nothing is emitted.
+/// `false` is the check without `--test`.
 pub fn check_source_against(
     crate_name: &str,
     source: Arc<String>,
     edition: Option<&str>,
     loaded: Loaded<'_>,
     width: usize,
+    test: bool,
 ) -> Checked {
     if loaded.dependencies.is_empty() && edition.is_none() && loaded.cfg.is_empty() {
-        return check_shared_source_with_width(crate_name, source, width);
+        return check_no_core_source(crate_name, source, width, test);
     }
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
-    let setup = Setup { edition, width, loaded, ..Setup::plain(crate_name) };
+    let setup = Setup { edition, width, loaded, test, ..Setup::plain(crate_name) };
     let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
     let opts = match setup.options(&input) {
         Ok(opts) => opts,

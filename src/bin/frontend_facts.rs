@@ -27,7 +27,10 @@
 //!   (`CrateRead::library`): nothing judges it, every error it still meets is in the facts'
 //!   `diagnostics`, and `--emit-metadata` writes its metadata anyway.
 //!
-//! With `--check`, the flags check stdin against the loaded dependencies.
+//! With `--check`, the flags check stdin against the loaded dependencies. `--test` (only with
+//! `--check`) checks it as rustc's `--test` does, as `cargo check --all-targets` checks a lib's
+//! test target: `cfg(test)` is set and the test harness is added, which loads the crate `test`,
+//! so libtest's metadata is passed as `--extern noprelude:test=PATH` like std's.
 //!
 //! This is a `std` program, so it is the party that can catch a panic: it installs
 //! `std::panic::catch_unwind` as frontend's catcher before anything else, which is what lets a
@@ -48,6 +51,7 @@ fn main() {
     frontend::unwind_janky::install_catcher(catcher);
     let mut args = std::env::args().skip(1).peekable();
     let mut check = false;
+    let mut test = false;
     let mut root: Option<String> = None;
     let mut target: Option<String> = None;
     let mut edition: Option<String> = None;
@@ -66,6 +70,7 @@ fn main() {
             |name: &str| args.next().unwrap_or_else(|| usage(&format!("{name} needs a value")));
         match flag.as_str() {
             "--check" => check = true,
+            "--test" => test = true,
             "--root" => root = Some(value("--root")),
             "--target" => target = Some(value("--target")),
             "--edition" => edition = Some(value("--edition")),
@@ -99,6 +104,9 @@ fn main() {
             }
             other => usage(&format!("unknown flag {other}")),
         }
+    }
+    if test && !check {
+        usage("--test is for --check");
     }
     let crate_name = args.next().unwrap_or_else(|| "crate".to_string());
     let loaded = Loaded { dependencies: &dependencies, cfg: &cfg, env: &env };
@@ -148,6 +156,7 @@ fn main() {
             edition.as_deref(),
             loaded,
             1,
+            test,
         );
         let clean = checked.is_clean();
         let json = serde_json::to_string(&checked);
