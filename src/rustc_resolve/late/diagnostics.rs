@@ -2995,8 +2995,17 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             });
         }
         let name = path[path.len() - 1].ident.name;
-        // Make sure error reporting is deterministic.
-        names.sort_by(|a, b| a.candidate.as_str().cmp(b.candidate.as_str()));
+        // Make sure error reporting is deterministic. Each candidate's text is read out of the
+        // interner once, rather than twice per comparison, and the suggestions are moved into
+        // the sorted order, not copied.
+        let texts: Vec<&str> = names.iter().map(|suggestion| suggestion.candidate.as_str()).collect();
+        let mut order: Vec<usize> = (0..names.len()).collect();
+        // Stable, as the sort it replaces was, so equal names keep their collection order.
+        order.sort_by(|&a, &b| texts[a].cmp(texts[b]));
+        drop(texts);
+        let mut slots: Vec<Option<TypoSuggestion>> = names.into_iter().map(Some).collect();
+        let names: Vec<TypoSuggestion> =
+            order.into_iter().map(|i| slots[i].take().expect("each index once")).collect();
 
         match find_best_match_for_name(
             &names.iter().map(|suggestion| suggestion.candidate).collect::<Vec<Symbol>>(),

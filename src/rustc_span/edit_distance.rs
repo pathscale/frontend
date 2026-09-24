@@ -258,8 +258,17 @@ fn find_best_match_for_name_impl(
     // 3. Sorted word match
     // `str::to_uppercase` is each char's `to_uppercase`, joined, so comparing the two char
     // streams is the same test without allocating an uppercase copy of every candidate.
-    if let Some(c) = candidates.iter().find(|c| {
-        c.as_str().chars().flat_map(char::to_uppercase).eq(lookup_uppercase.chars())
+    // For two ASCII strings, uppercasing each char is exactly an ASCII case-insensitive compare.
+    let lookup_is_ascii = lookup.is_ascii();
+    // Every candidate's text, read out of the interner once for all three passes below.
+    let texts: Vec<&str> = candidates.iter().map(|c| c.as_str()).collect();
+    if let Some((c, _)) = candidates.iter().zip(&texts).find(|(_, c)| {
+        let c: &str = c;
+        if lookup_is_ascii && c.is_ascii() {
+            c.eq_ignore_ascii_case(lookup)
+        } else {
+            c.chars().flat_map(char::to_uppercase).eq(lookup_uppercase.chars())
+        }
     }) {
         return Some(*c);
     }
@@ -272,11 +281,11 @@ fn find_best_match_for_name_impl(
     let mut best = None;
     // store the candidates with the same distance, only for `use_substring_score` current.
     let mut next_candidates = vec![];
-    for c in candidates {
+    for (c, text) in candidates.iter().zip(&texts) {
         match if use_substring_score {
-            edit_distance_with_substrings(lookup, c.as_str(), dist)
+            edit_distance_with_substrings(lookup, text, dist)
         } else {
-            edit_distance(lookup, c.as_str(), dist)
+            edit_distance(lookup, text, dist)
         } {
             Some(0) => return Some(*c),
             Some(d) => {
@@ -314,13 +323,17 @@ fn find_best_match_for_name_impl(
         return best;
     }
 
-    find_match_by_sorted_words(candidates, lookup)
+    find_match_by_sorted_words(candidates, &texts, lookup)
 }
 
-fn find_match_by_sorted_words(iter_names: &[Symbol], lookup: &str) -> Option<Symbol> {
+fn find_match_by_sorted_words(iter_names: &[Symbol], texts: &[&str], lookup: &str) -> Option<Symbol> {
     let lookup_sorted_by_words = sort_by_words(lookup);
-    iter_names.iter().fold(None, |result, candidate| {
-        if sort_by_words(candidate.as_str()) == lookup_sorted_by_words {
+    iter_names.iter().zip(texts).fold(None, |result, (candidate, text)| {
+        // Equal sorted words means the same words with the same separators, so the same length.
+        // Checked first, so a candidate that cannot match is not split and sorted.
+        if text.len() == lookup.len()
+            && sort_by_words(text) == lookup_sorted_by_words
+        {
             Some(*candidate)
         } else {
             result
