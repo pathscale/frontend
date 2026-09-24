@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::num::NonZero;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use alloc::sync::Arc;
 
 // `parking_lot_lite_hack` has no `Condvar`: upstream's is built on `parking_lot_core`'s thread
@@ -44,13 +44,23 @@ pub struct QueryJob<'tcx> {
 
     /// The latch that is used to wait on this job.
     pub latch: Option<QueryLatch<'tcx>>,
+
+    /// The thread running this job, as [`thread_token`] gave it, or 0 in a serial session. A
+    /// waiter compares it with its own to learn, without a snapshot, whether the job is on its
+    /// own stack.
+    pub thread: usize,
 }
 
 impl<'tcx> QueryJob<'tcx> {
     /// Creates a new query job.
     #[inline]
     pub fn new(id: QueryJobId, span: Span, parent: Option<QueryJobId>) -> Self {
-        QueryJob { id, span, parent, latch: None }
+        let thread = if crate::rustc_data_structures::sync::is_dyn_thread_safe() {
+            thread_token()
+        } else {
+            0
+        };
+        QueryJob { id, span, parent, latch: None, thread }
     }
 
     pub fn latch(&mut self) -> QueryLatch<'tcx> {
@@ -122,12 +132,24 @@ impl<'tcx> QueryJob<'tcx> {
 #[derive(Default)]
 pub struct QueryWaitGraph {
     lock: WaitMutex<()>,
+    /// Waiters on latches right now. Changed only under `lock`, so a reader holding `lock` sees
+    /// the exact count. A cycle through a new edge needs the awaited job's thread to be asleep
+    /// on a latch itself, or to be the waiting thread, so with no other waiter and a job on
+    /// another thread there is no cycle to look for, and the snapshot of every active job is
+    /// not taken.
+    waiting: AtomicUsize,
 }
 
 impl QueryWaitGraph {
     pub fn new() -> Self {
-        QueryWaitGraph { lock: WaitMutex::new(()) }
+        QueryWaitGraph { lock: WaitMutex::new(()), waiting: AtomicUsize::new(0) }
     }
+}
+
+/// A number no other live thread shares: the address of this thread's own slot.
+pub fn thread_token() -> usize {
+    static SLOT: eko::thread::ThreadLocal<u8> = eko::thread::ThreadLocal::new();
+    SLOT.with(|| 0, |slot| slot as *mut u8 as usize).unwrap_or(0)
 }
 
 impl Debug for QueryWaitGraph {
@@ -244,6 +266,7 @@ impl<'tcx> QueryLatch<'tcx> {
         graph: &QueryWaitGraph,
         query: Option<QueryJobId>,
         span: Span,
+        own_job: bool,
         detect_cycle: impl FnOnce() -> Option<QueryCycle<'tcx>>,
     ) -> Result<(), QueryCycle<'tcx>> {
         // Add the edge and look for a cycle through it, all under the graph lock.
@@ -273,12 +296,17 @@ impl<'tcx> QueryLatch<'tcx> {
             // this one included, and the mutex is not reentrant.
         };
 
-        if query.is_some() {
+        // Every other waiter, counted under the lock. See `QueryWaitGraph::waiting`: with none,
+        // and the job running on another thread, that thread is not asleep and no cycle can
+        // run through this edge.
+        let others = graph.waiting.fetch_add(1, Ordering::Relaxed);
+        if query.is_some() && (own_job || others > 0) {
             if let Some(cycle) = detect_cycle() {
                 // Our edge closes the cycle. Take it back out, so the graph holds no cycle
                 // again, and report instead of sleeping. The removal is under `graph` too,
                 // like every other change to the latch edges.
                 self.remove_waiter(&waiter);
+                graph.waiting.fetch_sub(1, Ordering::Relaxed);
                 drop(graph_guard);
                 return Err(cycle);
             }
@@ -328,6 +356,7 @@ impl<'tcx> QueryLatch<'tcx> {
         let _graph_guard = graph.lock.lock();
         let mut waiters_guard = self.waiters.lock();
         let waiters = waiters_guard.take().unwrap(); // mark the latch as complete
+        graph.waiting.fetch_sub(waiters.len(), Ordering::Relaxed);
         for waiter in waiters {
             // Under the latch mutex, so the sleeper cannot miss it; see `wait_on`.
             waiter.resumed.store(true, Ordering::Relaxed);

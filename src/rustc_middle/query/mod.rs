@@ -13,7 +13,7 @@ pub use self::calls::{TyCtxtAt, TyCtxtEnsureDone, TyCtxtEnsureOk, TyCtxtEnsureRe
 pub use self::into_query_key::IntoQueryKey;
 pub use self::job::{
     ActiveKeyStatus, QueryCycle, QueryJob, QueryJobId, QueryLatch, QueryStackFrame, QueryState,
-    QueryWaitGraph, QueryWaiter,
+    QueryWaitGraph, QueryWaiter, thread_token,
 };
 pub use self::keys::{LocalCrate, QueryKey};
 pub use self::node_diagnostics::NodeDiagnostics;
