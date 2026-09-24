@@ -1255,17 +1255,26 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a function call expression, `expr(...)`.
+    ///
+    /// The struct-literal recovery (`maybe_recover_struct_lit_bad_delims`) acts only on a
+    /// parse error and only when the callee is a plain path, so the parser snapshot is taken
+    /// only for such a callee, and the path is moved out of the callee on the error path
+    /// instead of being cloned up front for every call.
     fn parse_expr_fn_call(&mut self, lo: Span, fun: Box<Expr>) -> Box<Expr> {
-        let snapshot = if self.token == token::OpenParen {
-            Some((self.create_snapshot_for_diagnostic(), fun.kind.clone()))
+        let snapshot = if self.token == token::OpenParen
+            && matches!(fun.kind, ExprKind::Path(None, _))
+        {
+            Some(self.create_snapshot_for_diagnostic())
         } else {
             None
         };
         let open_paren = self.token.span;
         let call_depth = self.token_cursor.depth();
 
-        let seq = match self.parse_expr_paren_seq() {
-            Ok(args) => Ok(self.mk_expr(lo.to(self.prev_token.span), self.mk_call(fun, args))),
+        let err = match self.parse_expr_paren_seq() {
+            Ok(args) => {
+                return self.mk_expr(lo.to(self.prev_token.span), self.mk_call(fun, args));
+            }
             Err(err)
                 if self.is_expected_raw_ref_mut() && self.token_cursor.depth() == call_depth =>
             {
@@ -1275,9 +1284,14 @@ impl<'a> Parser<'a> {
                 let args = self.recover_raw_ref_call_args(guar);
                 return self.mk_expr(lo.to(self.prev_token.span), self.mk_call(fun, args));
             }
-            Err(err) => Err(err),
+            Err(err) => err,
         };
-        match self.maybe_recover_struct_lit_bad_delims(lo, open_paren, seq, snapshot) {
+        // The callee is in no result from here on: hand its path to the recovery.
+        let snapshot = match (snapshot, (*fun).kind) {
+            (Some(snapshot), ExprKind::Path(None, path)) => Some((snapshot, path)),
+            _ => None,
+        };
+        match self.maybe_recover_struct_lit_bad_delims(lo, open_paren, Err(err), snapshot) {
             Ok(expr) => expr,
             Err(err) => self.recover_seq_parse_error(exp!(OpenParen), exp!(CloseParen), lo, err),
         }
@@ -1307,10 +1321,10 @@ impl<'a> Parser<'a> {
         lo: Span,
         open_paren: Span,
         seq: PResult<'a, Box<Expr>>,
-        snapshot: Option<(SnapshotParser<'a>, ExprKind)>,
+        snapshot: Option<(SnapshotParser<'a>, Path)>,
     ) -> PResult<'a, Box<Expr>> {
         match (self.may_recover(), seq, snapshot) {
-            (true, Err(err), Some((mut snapshot, ExprKind::Path(None, path)))) => {
+            (true, Err(err), Some((mut snapshot, path))) => {
                 snapshot.bump(); // `(`
                 match snapshot.parse_struct_fields(path.clone(), false, exp!(CloseParen)) {
                     Ok((fields, ..)) if snapshot.eat(exp!(CloseParen)) => {
