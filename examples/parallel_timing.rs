@@ -586,6 +586,67 @@ fn main() {
         "clean" => generated('c', 200, 300, 1_500, 0x5eed_0001),
         _ => generated('l', 6, 5_000, 8_000, 0x5eed_0002),
     };
+    // `parallel_timing files <clean|large> N [inner]`: many files at once. A nagoya pool of `N`
+    // workers runs one file's whole check per item (`par_for`), each session at width `inner`
+    // (default 1) on the same pool, and the answers are held to the serial pass's. Files share
+    // nothing, so this is the parallelism a caller with many files has, beside the one inside a
+    // file that the table measures.
+    if only.as_deref() == Some("files") {
+        frontend::unwind_janky::install_catcher(catcher);
+        let name = std::env::args().nth(2).unwrap_or_else(|| "clean".into());
+        let workers: usize = std::env::args().nth(3).and_then(|n| n.parse().ok()).unwrap_or(12);
+        let inner: usize = std::env::args().nth(4).and_then(|n| n.parse().ok()).unwrap_or(1);
+        let texts = corpus(&name);
+        let bytes: usize = texts.iter().map(String::len).sum();
+        let files: Arc<Vec<Arc<String>>> = Arc::new(texts.into_iter().map(Arc::new).collect());
+        // The reference, serial, one file after another.
+        let start = Instant::now();
+        let serial: Vec<Checked> =
+            files.iter().map(|f| check_shared_source_with_width("corpus", Arc::clone(f), 1)).collect();
+        let serial_ms = start.elapsed().as_secs_f64() * 1e3;
+        let runtime = nagoya::runtime::Runtime::builder()
+            .workers(workers)
+            .label("files")
+            .stack_size(16 * 1024 * 1024)
+            .build();
+        let pool = Arc::clone(runtime.pool());
+        let executor = runtime.executor().clone_handle();
+        std::mem::forget(runtime);
+        frontend::rustc_data_structures::sync::set_parallel_executor(executor)
+            .unwrap_or_else(|_| panic!("an executor was already set"));
+        let run = || -> (Vec<Checked>, f64) {
+            let slots: Arc<Vec<std::sync::OnceLock<Checked>>> =
+                Arc::new((0..files.len()).map(|_| std::sync::OnceLock::new()).collect());
+            let (in_files, in_slots) = (Arc::clone(&files), Arc::clone(&slots));
+            let start = Instant::now();
+            nagoya::block_on(nagoya::par_for(Arc::clone(&pool), 0..files.len(), move |i| {
+                let checked = check_shared_source_with_width("corpus", Arc::clone(&in_files[i]), inner);
+                let _ = in_slots[i].set(checked);
+            }));
+            let ms = start.elapsed().as_secs_f64() * 1e3;
+            let out = slots.iter().map(|slot| slot.get().expect("every file checked").clone()).collect();
+            (out, ms)
+        };
+        let _ = run();
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let (answers, ms) = run();
+            assert!(answers == serial, "{name}: files in parallel changed an answer");
+            times.push(ms);
+        }
+        times.sort_by(f64::total_cmp);
+        let mb = bytes as f64 / 1e6;
+        println!(
+            "{name}: {} files, {mb:.2} MB; serial {serial_ms:.1} ms ({:.2} MB/s); {workers} workers, each file at width {inner}: best {:.1} ms ({:.2} MB/s, {:.2}x), runs {:?}; answers identical",
+            files.len(),
+            mb / (serial_ms / 1e3),
+            times[0],
+            mb / (times[0] / 1e3),
+            serial_ms / times[0],
+            times.iter().map(|t| t.round()).collect::<Vec<_>>(),
+        );
+        return;
+    }
     // `parallel_timing dump <clean|large> <file>`: every answer at width one, written out,
     // to diff one build's answers against another's.
     if only.as_deref() == Some("dump") {
