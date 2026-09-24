@@ -166,7 +166,8 @@ impl core::fmt::Debug for SourceMapFiles {
 pub struct SourceMapInputs {
     pub file_loader: Box<dyn FileLoader + Send + Sync>,
     pub path_mapping: FilePathMapping,
-    pub hash_kind: SourceFileHashAlgorithm,
+    /// `None`: source files are not hashed (see `SourceFile::src_hash`).
+    pub hash_kind: Option<SourceFileHashAlgorithm>,
     pub checksum_hash_kind: Option<SourceFileHashAlgorithm>,
 }
 
@@ -181,8 +182,8 @@ pub struct SourceMap {
     /// Current working directory
     working_dir: RealFileName,
 
-    /// The algorithm used for hashing the contents of each source file.
-    hash_kind: SourceFileHashAlgorithm,
+    /// The algorithm used for hashing the contents of each source file, if they are hashed.
+    hash_kind: Option<SourceFileHashAlgorithm>,
 
     /// Similar to `hash_kind`, however this algorithm is used for checksums to determine if a crate is fresh.
     /// `cargo` is the primary user of these.
@@ -218,9 +219,24 @@ impl SourceMap {
         Self::with_inputs(SourceMapInputs {
             file_loader: Box::new(RealFileLoader),
             path_mapping,
-            hash_kind: SourceFileHashAlgorithm::Md5,
+            hash_kind: None,
             checksum_hash_kind: None,
         })
+    }
+
+    /// A map for text held in memory that loads no file: it asks the operating system for no
+    /// working directory, which only makes a loaded file's relative path absolute. For parsing a
+    /// string, pretty-printing, and reading a snippet; a session, which can load `mod` files,
+    /// uses [`with_inputs`](Self::with_inputs). Its files are not hashed.
+    pub fn for_text(path_mapping: FilePathMapping) -> SourceMap {
+        SourceMap {
+            files: Default::default(),
+            working_dir: RealFileName::empty(),
+            file_loader: IntoDynSyncSend(Box::new(RealFileLoader)),
+            path_mapping,
+            hash_kind: None,
+            checksum_hash_kind: None,
+        }
     }
 
     pub fn with_inputs(
@@ -372,7 +388,7 @@ impl SourceMap {
     pub fn new_imported_source_file(
         &self,
         filename: FileName,
-        src_hash: SourceFileHash,
+        src_hash: Option<SourceFileHash>,
         checksum_hash: Option<SourceFileHash>,
         stable_id: StableSourceFileId,
         normalized_source_len: u32,

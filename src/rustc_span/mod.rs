@@ -1905,8 +1905,12 @@ pub struct SourceFile {
     pub name: FileName,
     /// The complete source code.
     pub src: Option<Arc<String>>,
-    /// The source code's hash.
-    pub src_hash: SourceFileHash,
+    /// The source code's hash, when the session asked for one (`-Z src-hash-algorithm`), and
+    /// always for a file imported from a crate's metadata. Only metadata, dep-info and the check
+    /// of an imported file's external source read it, and this crate writes neither metadata nor
+    /// dep-info, so a session that did not ask does not hash its sources: hashing every file
+    /// was 6% of a parse.
+    pub src_hash: Option<SourceFileHash>,
     /// Used to enable cargo to use checksums to check if a crate is fresh rather
     /// than mtimes. This might be the same as `src_hash`, and if the requested algorithm
     /// is identical we won't compute it twice.
@@ -2032,7 +2036,7 @@ impl<S: SpanEncoder> Encodable<S> for SourceFile {
 impl<D: SpanDecoder> Decodable<D> for SourceFile {
     fn decode(d: &mut D) -> SourceFile {
         let name: FileName = Decodable::decode(d);
-        let src_hash: SourceFileHash = Decodable::decode(d);
+        let src_hash: Option<SourceFileHash> = Decodable::decode(d);
         let checksum_hash: Option<SourceFileHash> = Decodable::decode(d);
         let normalized_source_len: RelativeBytePos = Decodable::decode(d);
         let unnormalized_source_len = Decodable::decode(d);
@@ -2137,18 +2141,15 @@ impl SourceFile {
     pub fn new(
         name: FileName,
         src: impl Into<Arc<String>>,
-        hash_kind: SourceFileHashAlgorithm,
+        hash_kind: Option<SourceFileHashAlgorithm>,
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
     ) -> Result<Self, OffsetOverflowError> {
         let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
-        let src_hash = SourceFileHash::new_in_memory(hash_kind, src.as_bytes());
-        let checksum_hash = checksum_hash_kind.map(|checksum_hash_kind| {
-            if checksum_hash_kind == hash_kind {
-                src_hash
-            } else {
-                SourceFileHash::new_in_memory(checksum_hash_kind, src.as_bytes())
-            }
+        let src_hash = hash_kind.map(|kind| SourceFileHash::new_in_memory(kind, src.as_bytes()));
+        let checksum_hash = checksum_hash_kind.map(|checksum_hash_kind| match src_hash {
+            Some(src_hash) if Some(checksum_hash_kind) == hash_kind => src_hash,
+            _ => SourceFileHash::new_in_memory(checksum_hash_kind, src.as_bytes()),
         });
         // Capture the original source length before normalization.
         let unnormalized_source_len = u32::try_from(src.len()).map_err(|_| OffsetOverflowError)?;
@@ -2281,7 +2282,7 @@ impl SourceFile {
             let src = get_src();
             let src = src.and_then(|mut src| {
                 // The src_hash needs to be computed on the pre-normalized src.
-                self.src_hash.matches(&src).then(|| {
+                self.src_hash.is_some_and(|hash| hash.matches(&src)).then(|| {
                     normalize_src(&mut src);
                     src
                 })

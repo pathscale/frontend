@@ -374,7 +374,9 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
     );
     let file_loader = Box::new(RealFileLoader);
     let path_mapping = config.opts.file_path_mapping();
-    let hash_kind = config.opts.unstable_opts.src_hash_algorithm(&target);
+    // Only when asked for: the default algorithm (`src_hash_algorithm(&target)`) exists for
+    // metadata, dep-info and debuginfo, none of which this crate writes.
+    let hash_kind = config.opts.unstable_opts.src_hash_algorithm;
     let checksum_hash_kind = config.opts.unstable_opts.checksum_hash_algorithm();
 
     util::run_in_thread_pool_with_globals(

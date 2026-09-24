@@ -97,7 +97,7 @@ fn parse_in_session(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
     // The diagnostics are the answer, so they go to a buffer rather than stderr. Same sink and
     // same emitter settings as `check_source`, so one line format serves both.
     let text = Arc::new(eko::thread::Mutex::new(String::new()));
-    let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
+    let sm = Arc::new(SourceMap::for_text(FilePathMapping::empty()));
     let emitter = PlainEmitter::new()
         .sm(Some(Arc::clone(&sm)))
         .short_message(true)
