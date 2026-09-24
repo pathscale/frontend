@@ -78,6 +78,14 @@ impl SymbolGallery {
     pub fn insert(&self, symbol: Symbol, span: Span) {
         self.symbols.lock().entry(symbol).or_insert(span);
     }
+
+    /// `insert` of each pair in order, under one lock.
+    pub fn insert_all(&self, pairs: impl IntoIterator<Item = (Symbol, Span)>) {
+        let mut symbols = self.symbols.lock();
+        for (symbol, span) in pairs {
+            symbols.entry(symbol).or_insert(span);
+        }
+    }
 }
 
 /// Info about a parsing session.

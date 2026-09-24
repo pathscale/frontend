@@ -104,6 +104,8 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         token: Token::dummy(),
         diag_info: TokenTreeDiagInfo::default(),
         tree_buf: Vec::new(),
+        gallery_seen: Vec::new(),
+        gallery_new: Vec::new(),
     };
     let res = lexer.lex_token_trees(/* is_delimited */ false);
 
@@ -159,9 +161,44 @@ struct Lexer<'psess, 'src> {
     /// Scratch stack of the token trees of every open group, innermost last.
     /// See `lex_token_trees`.
     tree_buf: Vec<TokenTree>,
+
+    /// The session's `symbol_gallery` keeps each symbol's first occurrence, so of the
+    /// identifiers this lexer records only the first of each symbol can change it, and nothing
+    /// else touches the gallery while a lexer runs. A lexer therefore records a symbol once, in
+    /// `gallery_new`, marking it in `gallery_seen` (a bitset over symbol indices), and hands the
+    /// list to the gallery when it drops, in order, under one lock: the gallery ends as the
+    /// per-occurrence inserts left it, without a lock and a map probe per identifier.
+    gallery_seen: Vec<u64>,
+    gallery_new: Vec<(Symbol, Span)>,
+}
+
+impl Drop for Lexer<'_, '_> {
+    /// Also on unwinding (a fatal lexer error), so the gallery gets every symbol it would have
+    /// had from the per-occurrence inserts.
+    fn drop(&mut self) {
+        if !self.gallery_new.is_empty() {
+            self.psess.symbol_gallery.insert_all(self.gallery_new.drain(..));
+        }
+    }
 }
 
 impl<'psess, 'src> Lexer<'psess, 'src> {
+    /// `self.psess.symbol_gallery.insert(sym, span)`, deferred to the lexer's drop; see
+    /// `gallery_seen`.
+    #[inline]
+    fn record_symbol(&mut self, sym: Symbol, span: Span) {
+        let index = sym.as_u32() as usize;
+        let (word, bit) = (index / 64, 1u64 << (index % 64));
+        if word >= self.gallery_seen.len() {
+            self.gallery_seen.resize(word + 1, 0);
+        }
+        let seen = &mut self.gallery_seen[word];
+        if *seen & bit == 0 {
+            *seen |= bit;
+            self.gallery_new.push((sym, span));
+        }
+    }
+
     fn dcx(&self) -> DiagCtxtHandle<'psess> {
         self.psess.dcx()
     }
@@ -261,7 +298,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 crate::rustc_lexer::TokenKind::RawIdent => {
                     let sym = nfc_normalize_in(self.str_from(start + BytePos(2)), self.owner);
                     let span = self.mk_sp(start, self.pos);
-                    self.psess.symbol_gallery.insert(sym, span);
+                    self.record_symbol(sym, span);
                     if !sym.can_be_raw() {
                         self.dcx().emit_err(crate::rustc_parse::diagnostics::CannotBeRawIdent { span, ident: sym });
                     }
@@ -521,16 +558,17 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         }
     }
 
-    fn ident(&self, start: BytePos) -> TokenKind {
-        self.ident_text(start, self.str_from(start))
+    fn ident(&mut self, start: BytePos) -> TokenKind {
+        let text = self.str_from(start);
+        self.ident_text(start, text)
     }
 
     /// `ident(start)` given its text, `self.str_from(start)`.
     #[inline]
-    fn ident_text(&self, start: BytePos, text: &str) -> TokenKind {
+    fn ident_text(&mut self, start: BytePos, text: &str) -> TokenKind {
         let sym = nfc_normalize_in(text, self.owner);
         let span = self.mk_sp(start, self.pos);
-        self.psess.symbol_gallery.insert(sym, span);
+        self.record_symbol(sym, span);
         token::Ident(sym, IdentIsRaw::No)
     }
 
