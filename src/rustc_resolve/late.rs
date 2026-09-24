@@ -4807,9 +4807,12 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         path: &Path,
         source: PathSource<'_, 'ast, 'ra>,
     ) {
+        // Every path in the crate comes through here; almost all have a few segments, so they
+        // are held inline instead of in a vector per path.
+        let segments: SmallVec<[Segment; 4]> = path.segments.iter().map(|s| s.into()).collect();
         self.smart_resolve_path_fragment(
             qself,
-            &Segment::from_path(path),
+            &segments,
             source,
             Finalize::new(id, path.span),
             RecordPartialRes::Yes,
@@ -6357,6 +6360,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         let first_fresh = self.next_node_id.as_u32();
         let mut use_injections = Vec::new();
         let mut unused_labels_in_order = Vec::with_capacity(outputs.len());
+        // Size the node maps for every unit's entries at once, instead of growing them unit by
+        // unit. They are `UnordMap`s, so capacity changes no answer.
+        let (partial_res, pat_spans) = outputs.iter().fold((0, 0), |(r, p), output| {
+            (r + output.sink.partial_res_map.len(), p + output.sink.pat_span_map.len())
+        });
+        self.partial_res_map.reserve(partial_res);
+        self.pat_span_map.reserve(pat_spans);
         for output in outputs {
             let LateUnitOutput {
                 use_injections: unit_use_injections,

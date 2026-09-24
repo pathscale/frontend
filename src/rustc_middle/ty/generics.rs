@@ -403,9 +403,22 @@ impl<'tcx> GenericClauses<'tcx> {
         tcx: TyCtxt<'tcx>,
         args: GenericArgsRef<'tcx>,
     ) -> InstantiatedClauses<'tcx> {
-        let mut instantiated = InstantiatedClauses::empty();
+        let mut instantiated = self.presized(tcx);
         self.instantiate_into(tcx, &mut instantiated, args);
         instantiated
+    }
+
+    /// An empty result sized for these clauses and every parent's, so filling it parent first
+    /// allocates each vector once instead of growing it at every level.
+    fn presized(self, tcx: TyCtxt<'tcx>) -> InstantiatedClauses<'tcx> {
+        let mut len = self.clauses.len();
+        let mut parent = self.parent;
+        while let Some(def_id) = parent {
+            let clauses = tcx.clauses_of(def_id);
+            len += clauses.clauses.len();
+            parent = clauses.parent;
+        }
+        InstantiatedClauses { clauses: Vec::with_capacity(len), spans: Vec::with_capacity(len) }
     }
 
     pub fn instantiate_own(
@@ -451,7 +464,7 @@ impl<'tcx> GenericClauses<'tcx> {
     }
 
     pub fn instantiate_identity(self, tcx: TyCtxt<'tcx>) -> InstantiatedClauses<'tcx> {
-        let mut instantiated = InstantiatedClauses::empty();
+        let mut instantiated = self.presized(tcx);
         self.instantiate_identity_into(tcx, &mut instantiated);
         instantiated
     }

@@ -63,7 +63,6 @@ fn collect_nonexhaustive_missing_variants<'p, 'tcx>(
 pub(crate) fn lint_nonexhaustive_missing_variants<'p, 'tcx>(
     rcx: &RustcPatCtxt<'p, 'tcx>,
     arms: &[MatchArm<'p, RustcPatCtxt<'p, 'tcx>>],
-    pat_column: &PatternColumn<'p, RustcPatCtxt<'p, 'tcx>>,
     scrut_ty: RevealedTy<'tcx>,
 ) -> Result<(), ErrorGuaranteed> {
     if !rcx
@@ -71,7 +70,9 @@ pub(crate) fn lint_nonexhaustive_missing_variants<'p, 'tcx>(
         .lint_level_spec_at_node(NON_EXHAUSTIVE_OMITTED_PATTERNS, rcx.match_lint_level)
         .is_allow()
     {
-        let witnesses = collect_nonexhaustive_missing_variants(rcx, pat_column)?;
+        // Built only here: the lint is allowed by default, and nothing else reads the column.
+        let pat_column = PatternColumn::new(arms);
+        let witnesses = collect_nonexhaustive_missing_variants(rcx, &pat_column)?;
         if !witnesses.is_empty() {
             // Report that a match of a `non_exhaustive` enum marked with `non_exhaustive_omitted_patterns`
             // is not exhaustive enough.
