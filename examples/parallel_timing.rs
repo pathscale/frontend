@@ -353,6 +353,17 @@ fn pass_of(text: &str) -> &'static str {
     "other"
 }
 
+/// Hand `executor` to frontend as the pool its stages run on. Only a build with the `parallel`
+/// feature has stages to run there; without it every session is serial and the pool this
+/// program built still runs whole files side by side (`files`).
+fn hand_over(executor: nagoya::Executor) {
+    #[cfg(feature = "parallel")]
+    frontend::rustc_data_structures::sync::set_parallel_executor(executor)
+        .unwrap_or_else(|_| panic!("an executor was already set"));
+    #[cfg(not(feature = "parallel"))]
+    drop(executor);
+}
+
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
 }
@@ -581,8 +592,7 @@ fn main() {
         let executor = runtime.executor().clone_handle();
         // Kept for the life of the program: dropping a `Runtime` does not stop its workers.
         std::mem::forget(runtime);
-        frontend::rustc_data_structures::sync::set_parallel_executor(executor)
-            .unwrap_or_else(|_| panic!("an executor was already set"));
+        hand_over(executor);
         println!("pool: {workers} workers");
     }
     let mut args = raw.into_iter();
@@ -618,8 +628,7 @@ fn main() {
         let pool = Arc::clone(runtime.pool());
         let executor = runtime.executor().clone_handle();
         std::mem::forget(runtime);
-        frontend::rustc_data_structures::sync::set_parallel_executor(executor)
-            .unwrap_or_else(|_| panic!("an executor was already set"));
+        hand_over(executor);
         let run = || -> (Vec<Checked>, f64) {
             let slots: Arc<Vec<std::sync::OnceLock<Checked>>> =
                 Arc::new((0..files.len()).map(|_| std::sync::OnceLock::new()).collect());
