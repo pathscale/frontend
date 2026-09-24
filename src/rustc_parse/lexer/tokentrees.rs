@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_ast::token::{self, Delimiter, Token};
 use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 use crate::rustc_ast_pretty::pprust::token_to_string;
@@ -21,8 +20,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
         // This group's trees go on the end of the lexer's shared `tree_buf`,
         // above any enclosing group's trees, and move out at the close into
-        // one exactly sized `Vec`. One allocation per group instead of one per
-        // doubling. Every exit restores `tree_buf` to `start`.
+        // the stream's one exactly sized allocation. One allocation per group
+        // instead of one per doubling. Every exit restores `tree_buf` to `start`.
         let start = self.tree_buf.len();
         loop {
             if let Some(delim) = self.token.kind.open_delim() {
@@ -61,12 +60,12 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         }
     }
 
-    /// Moves the trees above `start` out of `tree_buf` into a stream whose
-    /// `Vec` has exactly their length as capacity (`Drain` is `TrustedLen`,
-    /// so `collect` allocates once, and not at all for an empty group).
+    /// Moves the trees above `start` out of `tree_buf` straight into the
+    /// stream's `Arc<[TokenTree]>`: `Drain` is `TrustedLen`, so `collect`
+    /// makes one allocation of exactly their length, holding the reference
+    /// counts and the trees together, with no intermediate `Vec`.
     fn take_trees(&mut self, start: usize) -> TokenStream {
-        let tts: Vec<TokenTree> = self.tree_buf.drain(start..).collect();
-        TokenStream::new(tts)
+        self.tree_buf.drain(start..).collect()
     }
 
     fn lex_token_tree_open_delim(

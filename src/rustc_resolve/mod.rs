@@ -2088,6 +2088,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             owners: self.owners,
             lint_buffer: Steal::new(self.lint_buffer),
             disambiguators,
+            desugaring_allow: ty::DesugaringAllowLists::new(
+                self.tcx.features().async_fn_track_caller(),
+            ),
         };
         ResolverOutputs { global_ctxt, ast_lowering }
     }
