@@ -316,6 +316,43 @@ fn main() {
         std::fs::write(&path, format!("{checked:#?}\n{facts:#?}\n")).expect("write dump");
         return;
     }
+    // `parallel_timing overhead`: what one session costs with nothing in it (an empty file,
+    // `no_core`), and with the corpus prelude alone, at widths one and twelve: the fixed cost
+    // every session pays, and what the prelude every generated file repeats adds to it.
+    if only.as_deref() == Some("overhead") {
+        frontend::unwind_janky::install_catcher(catcher);
+        const RUNS: usize = 1000;
+        for (what, file) in [
+            ("an empty file", Arc::new(String::new())),
+            ("the prelude alone", Arc::new(format!("// Session overhead probe.\n{PRELUDE}"))),
+        ]
+        .iter()
+        .flat_map(|probe| [(1usize, probe.clone()), (12, probe.clone())])
+        .map(|(width, (what, file))| ((what, width), file))
+        {
+            let (what, width) = what;
+            let _ = check_shared_source_with_width("probe", Arc::clone(&file), width);
+            let start = Instant::now();
+            for _ in 0..RUNS {
+                std::hint::black_box(check_shared_source_with_width("probe", Arc::clone(&file), width));
+            }
+            let check_us = start.elapsed().as_secs_f64() * 1e6 / RUNS as f64;
+            let ((), allocs, bytes) = counted(|| {
+                let _ = check_shared_source_with_width("probe", Arc::clone(&file), width);
+            });
+            let start = Instant::now();
+            for _ in 0..RUNS {
+                let _ = std::hint::black_box(frontend::frontend_facts::syntax::parses(&file));
+            }
+            let parse_us = start.elapsed().as_secs_f64() * 1e6 / RUNS as f64;
+            println!(
+                "width {width}: one check of {what} ({} bytes) {check_us:.0} us, {allocs} allocations, {:.1} MB allocated; parse only {parse_us:.0} us",
+                file.len(),
+                bytes as f64 / 1e6
+            );
+        }
+        return;
+    }
     match (only.as_deref(), width) {
         (Some(name), Some(width)) => {
             let (_, check_ms, analyze_ms) = pass(width, &corpus(name));
