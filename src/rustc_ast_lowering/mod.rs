@@ -514,7 +514,7 @@ enum TryBlockScope {
 fn index_ast<'tcx>(
     tcx: TyCtxt<'tcx>,
     (): (),
-) -> IndexVec<LocalDefId, Steal<(Arc<ResolverAstLowering<'tcx>>, AstOwner)>> {
+) -> (ResolverAstLowering<'tcx>, IndexVec<LocalDefId, AstOwner>) {
     // Queries that borrow `resolver_for_lowering`.
     tcx.ensure_done().output_filenames(());
     tcx.ensure_done().early_lint_checks(());
@@ -534,10 +534,7 @@ fn index_ast<'tcx>(
     indexer.insert(CRATE_NODE_ID, AstOwner::Crate(Box::new(krate)));
     resolver.next_node_id = indexer.next_node_id;
 
-    let index = indexer.index;
-    let resolver = Arc::new(resolver);
-    let index = index.into_iter().map(|owner| Steal::new((Arc::clone(&resolver), owner))).collect();
-    return index;
+    return (resolver, indexer.index);
 
     struct Indexer<'s, 'hir> {
         owners: &'s NodeMap<PerOwnerResolverData<'hir>>,
@@ -673,8 +670,17 @@ fn index_ast<'tcx>(
 
 #[instrument(level = "trace", skip(tcx))]
 fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
-    let ast_index = tcx.index_ast(());
-    let resolver_and_node = ast_index.get(def_id).map(Steal::steal);
+    // The owner's AST is read in place, not stolen, and so not freed here. It was allocated on
+    // the session's thread (parse, expansion, the indexer), and freeing it here, inside a stage
+    // item, freed it on whichever pool worker ran the item: every worker freeing into the
+    // allocator's free lists of the one thread that allocated, and all of them decrementing the
+    // one shared resolver `Arc`, which cost five times the serial free at width 12. The index
+    // and the resolver now live in the query arena and are freed with it when the session ends,
+    // on the thread that built them, in index order, the order they were allocated in. Nothing
+    // reads an entry after its owner is lowered, so answers do not change; only the time the
+    // memory is returned does.
+    let (resolver, ast_index) = tcx.index_ast(());
+    let node = ast_index.get(def_id);
 
     let fallback_to_ancestor = |parent_id| {
         // The item did not exist in the AST, it was created while lowering another item.
@@ -700,31 +706,27 @@ fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
         })
     };
 
-    let Some((resolver, node)) = resolver_and_node else {
+    let Some(node) = node else {
         // `ast_index` does not contain all definitions, only up-to the highest
         // `LocalDefId` which has a non-trivial `AstOwner`. Gracefully handle
         // other definitions, in particular those nested inside this highest definition.
         return fallback_to_ancestor(tcx.local_parent(def_id));
     };
 
-    let mut item_lowerer = item::ItemLowerer { tcx, resolver: &*resolver };
+    let mut item_lowerer = item::ItemLowerer { tcx, resolver };
 
-    let item = match &node {
+    match node {
         // The item existed in the AST.
-        AstOwner::Crate(c) => item_lowerer.lower_crate(&c),
-        AstOwner::Item(item) => item_lowerer.lower_item(&item),
-        AstOwner::TraitItem(item) => item_lowerer.lower_trait_item(&item),
-        AstOwner::ImplItem(item) => item_lowerer.lower_impl_item(&item),
-        AstOwner::ForeignItem(item) => item_lowerer.lower_foreign_item(&item),
+        AstOwner::Crate(c) => item_lowerer.lower_crate(c),
+        AstOwner::Item(item) => item_lowerer.lower_item(item),
+        AstOwner::TraitItem(item) => item_lowerer.lower_trait_item(item),
+        AstOwner::ImplItem(item) => item_lowerer.lower_impl_item(item),
+        AstOwner::ForeignItem(item) => item_lowerer.lower_foreign_item(item),
         AstOwner::NestedUseTree(owner_id) => fallback_to_ancestor(*owner_id),
         // The item existed in the AST, but is not a HIR owner.
         // Fetch the correct information from its parent.
         AstOwner::NonOwner => fallback_to_ancestor(tcx.local_parent(def_id)),
-    };
-
-    tcx.sess.time("drop_ast", || mem::drop(node));
-
-    item
+    }
 }
 
 /// Lower every HIR owner in the AST index, as one stage, so that the reads which follow find
@@ -742,10 +744,10 @@ fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
 /// its length is the index's, the same shape `frontend_facts::extract` uses over the
 /// definitions table.
 ///
-/// **Which items lower, decided without touching the index.** An index entry is a `Steal`, and
-/// a `Steal` cannot be looked at safely while another thread may steal it: `Steal::steal`
-/// takes the write lock with `try_write` and panics if anyone holds a read. So the entry's
-/// `AstOwner` is never read here. The item asks `def_kind` instead, which the resolver fed when
+/// **Which items lower, decided without touching the index.** The entry's `AstOwner` is not
+/// read here. (Entries were once `Steal`s and could not be read race-free; they are plain,
+/// frozen values now, but the filter stays on `def_kind` so the set of owners the stage lowers
+/// is unchanged.) The item asks `def_kind`, which the resolver fed when
 /// it created the definition (`TyCtxt::create_def`), before this query could run, and which any
 /// thread may read. Definitions whose kind is never a HIR owner (fields, variants, constructors,
 /// generic parameters, anonymous constants, closures, opaque types, synthetic coroutine bodies)
@@ -762,7 +764,7 @@ fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
 /// existed, so it is not a new failure for that entry point, but it is one for `check_source`.
 ///
 /// **Owners do not depend on each other's lowering, with two exceptions, and neither forces an
-/// order.** Each owner's query steals only its own index entry and only its own disambiguator
+/// order.** Each owner's query reads only its own index entry, takes only its own disambiguator
 /// (`LoweringContext::new`), builds its HIR in a context of its own (`next_node_id`,
 /// `node_id_to_def_id`, `children`, `delayed_lints`, `bodies`, `attrs` are all fields of that
 /// context), allocates in the thread's own `hir_arena` (a `WorkerLocal`), and reads the resolver
@@ -786,7 +788,7 @@ pub fn lower_every_owner(tcx: TyCtxt<'_>) {
     // item needs them, and the first item to ask would otherwise compute them inside its own
     // slot. `registered_attr_tools` is read by every `LoweringContext::new`; asked for here so
     // that whatever it emits is emitted before the stage, not by whichever item gets there first.
-    let len = tcx.index_ast(()).len();
+    let len = tcx.index_ast(()).1.len();
     let _ = tcx.registered_attr_tools(());
     crate::rustc_data_structures::sync::run_stage((), len, |_, index| {
         let def_id = LocalDefId::new(index);

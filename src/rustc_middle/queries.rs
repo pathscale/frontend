@@ -213,13 +213,14 @@ rustc_queries! {
         desc { "getting the resolver for lowering" }
     }
 
-    query index_ast(_: ()) -> &'tcx IndexVec<LocalDefId, Steal<(
-        // There is only a single `ResolverAstLowering` for all owners.
-        // We want to drop it once the whole HIR has been lowered.
-        // We rely on reference counting to know when all definitions have been stolen.
-        Arc<ty::ResolverAstLowering<'tcx>>,
-        ast::AstOwner,
-    )>> {
+    query index_ast(_: ()) -> &'tcx (
+        // The one `ResolverAstLowering`, shared by every owner's lowering.
+        ty::ResolverAstLowering<'tcx>,
+        // Each owner's AST, read in place by its `lower_to_hir` and never taken out. The index
+        // and the resolver are freed together with the query arena when the session ends, on
+        // the thread that built them, in index order; see `lower_to_hir`.
+        IndexVec<LocalDefId, ast::AstOwner>,
+    ) {
         arena_cache
         eval_always
         no_hash

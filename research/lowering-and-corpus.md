@@ -106,8 +106,14 @@ unstable `fn_delegation` feature and a target that fails to lower.
   needs the entry, and the entry cannot be read race-free (above). A fix would be the indexer
   recording, in `index_ast`, which entries are owners, which means a change to the query's type
   in `rustc_middle/queries.rs`.
-- **Memory.** Every owner's AST is dropped and the last `Arc` of the resolver goes at the end
-  of the stage, rather than as the walk passes.
+- **Memory.** The AST index and the resolver for lowering are no longer stolen and freed per
+  owner. Freeing each owner's AST inside its stage item freed memory the session's thread had
+  allocated from every pool worker at once, into that one thread's allocator free lists, while
+  every item also decremented the one shared resolver `Arc`: `drop_ast` went from 151 ms at
+  width 1 to 757 ms at width 12. `index_ast` now returns the resolver and a plain
+  `IndexVec<LocalDefId, AstOwner>`, `lower_to_hir` reads its entry in place, and both are freed
+  with the query arena when the session ends, on the session's thread, in index order. The
+  cost is peak memory: the AST stays alive beside the HIR until the session ends.
 
 ## 2. A corpus that reaches analysis
 
