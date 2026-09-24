@@ -528,15 +528,19 @@ macro_rules! __impl_decoder_methods {
     }
 }
 
+/// `Decoder` for a decoder over an opaque one. Methods of `Decoder` the decoder provides itself
+/// (`read_error_guaranteed`) follow its name as `{ fn ... }`, and go into the same impl.
 #[macro_export]
 macro_rules! implement_ty_decoder {
-    ($DecoderName:ident <$($typaram:tt),*>) => {
+    ($DecoderName:ident <$($typaram:tt),*> $(, { $($own:tt)* })?) => {
         mod __ty_decoder_impl {
             use crate::rustc_serialize::Decoder;
 
             use super::$DecoderName;
 
             impl<$($typaram ),*> Decoder for $DecoderName<$($typaram),*> {
+                $($($own)*)?
+
                 $crate::__impl_decoder_methods! {
                     read_usize -> usize;
                     read_u128 -> u128;

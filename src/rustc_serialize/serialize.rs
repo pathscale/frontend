@@ -106,6 +106,19 @@ pub trait Encoder {
             self.emit_u8(b);
         }
     }
+
+    /// Whether this encoder writes an `ErrorGuaranteed`: the proof, inside a value, that the
+    /// session reported an error for it (an error type or constant, a body tainted by an error).
+    ///
+    /// The default is no, and encoding one then panics: a strict session writes no metadata for
+    /// a crate with an error, so one reaching an encoder is a bug. The metadata encoder of a
+    /// library read, which writes its metadata whatever it recorded, says yes. An
+    /// `ErrorGuaranteed` is written as nothing: it has no data, and the variant around it
+    /// (`TyKind::Error`, `Err`, `Some`) already says that the value is an error.
+    #[inline]
+    fn emit_error_guaranteed(&mut self) -> bool {
+        false
+    }
 }
 
 // Note: all the methods in this trait are infallible, which may be surprising.
@@ -182,6 +195,15 @@ pub trait Decoder {
 
     fn peek_byte(&self) -> u8;
     fn position(&self) -> usize;
+
+    /// Whether this decoder produces an `ErrorGuaranteed`, which only a library read writes
+    /// (see `Encoder::emit_error_guaranteed`); it reads nothing. The default is no, and decoding
+    /// one then panics. A decoder that says yes has reported, in its own session, the error the
+    /// value stands for, so the proof it hands back is true there too.
+    #[inline]
+    fn read_error_guaranteed(&mut self) -> bool {
+        false
+    }
 }
 
 /// Trait for types that can be serialized

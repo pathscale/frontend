@@ -403,7 +403,11 @@ fn mir_const_qualif(tcx: TyCtxt<'_>, def: LocalDefId) -> ConstQualifs {
     }
 
     let mut validator = check_consts::check::Checker::new(&ccx);
-    validator.check_body();
+    // Const checking only judges what a const context may do. A library read does not judge:
+    // the qualifs below are read from the body's dataflow, which does not need it.
+    if !tcx.sess.is_library_read() {
+        validator.check_body();
+    }
 
     // We return the qualifs in the return place for every MIR body, even though it is only used
     // when deciding to promote a reference to a `const` for now.
@@ -562,9 +566,17 @@ fn mir_drops_elaborated_and_const_checked(tcx: TyCtxt<'_>, def: LocalDefId) -> &
         tcx.ensure_done().mir_coroutine_witnesses(def);
     }
 
+    // A library read does not judge a body it evaluates at compile time: the borrow check,
+    // transmute sizes and well-formedness below only refuse it, so none of their results taints
+    // the body, and the last two do not run. The borrow check still runs, before the MIR it
+    // reads is stolen below, because it is also what infers an opaque type's hidden type, which
+    // may be asked for later; its errors are recorded and change nothing. Liveness only lints.
+    let library_read = tcx.sess.is_library_read();
+
     // We only need to borrowck non-synthetic MIR.
     let tainted_by_errors = if !tcx.is_synthetic_mir(def) {
-        tcx.mir_borrowck(tcx.typeck_root_def_id_local(def)).err()
+        let borrowck = tcx.mir_borrowck(tcx.typeck_root_def_id_local(def)).err();
+        if library_read { None } else { borrowck }
     } else {
         None
     };
@@ -589,7 +601,7 @@ fn mir_drops_elaborated_and_const_checked(tcx: TyCtxt<'_>, def: LocalDefId) -> &
     }
 
     let root = tcx.typeck_root_def_id_local(def);
-    if let Err(e) = tcx.check_transmutes(root) {
+    if !library_read && let Err(e) = tcx.check_transmutes(root) {
         body.tainted_by_errors = Some(e);
     }
 
@@ -602,7 +614,9 @@ fn mir_drops_elaborated_and_const_checked(tcx: TyCtxt<'_>, def: LocalDefId) -> &
         | DefKind::AssocFn
         | DefKind::Static { .. }
         | DefKind::Const { .. }
-        | DefKind::AssocConst { .. } => {
+        | DefKind::AssocConst { .. }
+            if !library_read =>
+        {
             if let Err(guar) = tcx.ensure_result().check_well_formed(root) {
                 body.tainted_by_errors = Some(guar);
             }

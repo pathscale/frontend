@@ -714,7 +714,28 @@ impl<I: Idx, D: LazyDecoder, T> Decodable<D> for LazyTable<I, T> {
 
 mod meta {
     use super::*;
-    implement_ty_decoder!(MetadataDecodeContext<'a, 'tcx>);
+    implement_ty_decoder!(MetadataDecodeContext<'a, 'tcx>, {
+        fn read_error_guaranteed(&mut self) -> bool {
+            self.report_error_read_from_library()
+        }
+    });
+}
+
+impl<'a, 'tcx> MetadataDecodeContext<'a, 'tcx> {
+    /// An `ErrorGuaranteed` in this crate's metadata: an item a library read wrote as erroneous
+    /// (an error type or constant, a body tainted by an error), which a strict read never writes.
+    /// The error it stands for was reported in the session that wrote the metadata, not in this
+    /// one, so it is reported here too, once per crate (identical diagnostics are emitted once),
+    /// before the proof is handed back: whatever this session builds on the item is then built on
+    /// an error it has really reported, which is what `ErrorGuaranteed` promises.
+    fn report_error_read_from_library(&mut self) -> bool {
+        let name = self.cdata.root.header.name;
+        self.tcx.dcx().err(format!(
+            "`{name}` was read as a library with errors, and this uses an item of it that carries \
+             one: its facts' diagnostics say which"
+        ));
+        true
+    }
 }
 mod blob {
     use super::*;

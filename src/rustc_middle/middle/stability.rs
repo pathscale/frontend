@@ -81,6 +81,11 @@ pub fn report_unstable(
     span: Span,
     kind: UnstableKind,
 ) {
+    // Every stability error goes through here. A library read does not judge which unstable
+    // items the library uses: its own compiler did, under that compiler's feature names.
+    if sess.is_library_read() {
+        return;
+    }
     let qual = match kind {
         UnstableKind::Regular => "",
         UnstableKind::Const(_) => " const",

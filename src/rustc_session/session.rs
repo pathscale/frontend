@@ -526,6 +526,36 @@ impl Session {
         self.opts.test
     }
 
+    /// A library read (`-Z library-read`): the source is a library that its own compiler already
+    /// compiled, of whatever version, and this session only reads it, for its facts and for the
+    /// metadata the crates that depend on it load. It is not judged.
+    ///
+    /// **The one switch.** Every pass whose only job is to reject a program asks this and does
+    /// not run, or runs and cannot refuse, in a library read; every other session is exactly the
+    /// strict compiler. The passes it turns off, each at the place it would otherwise run:
+    ///
+    /// - the whole-crate `analysis` (well-formedness, coherence, every body's type check, borrow
+    ///   check, unsafety, liveness, attribute and stability checks, lints): a library read runs
+    ///   only the part of it that creates definitions (`rustc_interface::passes::analysis`);
+    /// - the feature list and the post-expansion feature gates (`rustc_expand::config::features`,
+    ///   `rustc_interface::passes::early_lint_checks`);
+    /// - the stop after a macro expansion error (`rustc_interface::passes::configure_and_expand`);
+    /// - use of an unstable item (`rustc_middle::middle::stability::report_unstable`);
+    /// - coherence (`rustc_hir_analysis::coherence::coherent_trait`) and overlap errors while the
+    ///   specialization graph is built (`rustc_trait_selection::traits::specialize`);
+    /// - const checking, and the borrow check, transmute and well-formedness results tainting a
+    ///   body evaluated at compile time (`rustc_mir_transform`).
+    ///
+    /// And one barrier is lifted where it is met: the metadata encoder runs each definition's part
+    /// in its own catch for fatal errors (`rustc_metadata::rmeta::encoder`, `isolated`), because
+    /// the strict compiler only ever encodes a crate that `analysis` passed. Whatever is still
+    /// emitted is recorded by the caller and refuses nothing; the caller also caps lints at
+    /// `allow` (`frontend_facts`, `Setup::options`).
+    #[inline]
+    pub fn is_library_read(&self) -> bool {
+        self.opts.unstable_opts.library_read
+    }
+
     /// `feature` must be a language feature.
     #[track_caller]
     pub fn create_feature_err<'a>(&'a self, err: impl Diagnostic<'a>, feature: Symbol) -> Diag<'a> {

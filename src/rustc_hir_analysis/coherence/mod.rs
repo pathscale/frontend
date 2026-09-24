@@ -172,6 +172,13 @@ pub(crate) fn provide(providers: &mut Providers) {
 }
 
 fn coherent_trait(tcx: TyCtxt<'_>, def_id: DefId) -> Result<(), ErrorGuaranteed> {
+    // Coherence only judges a trait's impls: overlap, orphan rules, `unsafe` and the builtin
+    // traits' own rules. A library read does not judge, so a trait's impls are coherent there as
+    // the library's own compiler found them. The specialization graph is still built when
+    // something asks for it (`rustc_trait_selection::traits::specialize`).
+    if tcx.sess.is_library_read() {
+        return Ok(());
+    }
     let impls = tcx.local_trait_impls(def_id);
     // If there are no impls for the trait, then "all impls" are trivially coherent and we won't check anything
     // anyway. Thus we bail out even before the specialization graph, avoiding the dep_graph edge.

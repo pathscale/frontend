@@ -344,6 +344,15 @@ impl<'tcx> Graph {
         Ok(last_lint)
     }
 
+    /// Insert a local impl at the top level of the graph, a child of its trait beside the others,
+    /// without comparing it to them. Where an impl that [`GraphExt::insert`] found overlapping
+    /// goes in a library read (`Session::is_library_read`), which does not judge overlap.
+    fn insert_unchecked(&mut self, tcx: TyCtxt<'tcx>, impl_def_id: DefId) {
+        let trait_def_id = tcx.impl_trait_ref(impl_def_id).skip_binder().def_id;
+        self.parent.insert(impl_def_id, trait_def_id);
+        self.children.entry(trait_def_id).or_default().insert_blindly(tcx, impl_def_id);
+    }
+
     /// Insert cached metadata mapping from a child impl back to its parent.
     fn record_impl_from_cstore(&mut self, tcx: TyCtxt<'tcx>, parent: DefId, child: DefId) {
         if self.parent.insert(child, parent).is_some() {

@@ -53,10 +53,15 @@ pub fn features(sess: &Session, krate_attrs: &[Attribute], crate_name: Symbol) -
         AttributeParser::parse_limited_sym(sess, krate_attrs, &[sym::feature])
     {
         for feature_ident in feature_idents {
-            // If the enabled feature has been removed, issue an error.
+            // If the enabled feature has been removed, issue an error. A library read does not
+            // judge the feature list: the feature is simply not enabled, and anything it gated is
+            // read as this build reads it.
             if let Some(f) =
                 REMOVED_LANG_FEATURES.iter().find(|f| feature_ident.name == f.feature.name)
             {
+                if sess.is_library_read() {
+                    continue;
+                }
                 let pull_note = if let Some(pull) = f.pull {
                     format!(
                         "; see <https://github.com/rust-lang/rust/pull/{pull}> for more information",

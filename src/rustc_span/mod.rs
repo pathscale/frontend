@@ -2858,20 +2858,34 @@ impl ErrorGuaranteed {
     }
 }
 
+/// Written only by an encoder that says it writes one, which is the metadata encoder of a library
+/// read (`Encoder::emit_error_guaranteed`), and then as nothing. Every other encoder keeps
+/// upstream's invariant: a session with an error writes no metadata, so this panics.
 impl<E: crate::rustc_serialize::Encoder> Encodable<E> for ErrorGuaranteed {
     #[inline]
-    fn encode(&self, _e: &mut E) {
-        panic!(
-            "should never serialize an `ErrorGuaranteed`, as we do not write metadata or \
-            incremental caches in case errors occurred"
-        )
+    fn encode(&self, e: &mut E) {
+        if !crate::rustc_serialize::Encoder::emit_error_guaranteed(e) {
+            panic!(
+                "should never serialize an `ErrorGuaranteed`, as we do not write metadata or \
+                incremental caches in case errors occurred"
+            )
+        }
     }
 }
+/// Read back only by a decoder that says it reads one (`Decoder::read_error_guaranteed`), which
+/// has then reported the error in its own session; every other decoder panics, as upstream's.
 impl<D: crate::rustc_serialize::Decoder> Decodable<D> for ErrorGuaranteed {
     #[inline]
-    fn decode(_d: &mut D) -> ErrorGuaranteed {
-        panic!(
-            "`ErrorGuaranteed` should never have been serialized to metadata or incremental caches"
-        )
+    fn decode(d: &mut D) -> ErrorGuaranteed {
+        if !crate::rustc_serialize::Decoder::read_error_guaranteed(d) {
+            panic!(
+                "`ErrorGuaranteed` should never have been serialized to metadata or incremental \
+                caches"
+            )
+        }
+        // Valid: `read_error_guaranteed` has just emitted the error this stands for.
+        #[allow(deprecated)]
+        let guar = ErrorGuaranteed::unchecked_error_guaranteed();
+        guar
     }
 }
