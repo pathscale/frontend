@@ -694,6 +694,10 @@ pub struct LocalTableInContext<'a, V> {
 }
 
 impl<'a, V> LocalTableInContext<'a, V> {
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
     pub fn contains_key(&self, id: HirId) -> bool {
         validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.contains_key(&id.local_id)
@@ -732,6 +736,11 @@ pub struct LocalTableInContextMut<'a, V> {
 }
 
 impl<'a, V> LocalTableInContextMut<'a, V> {
+    /// The table is an `UnordMap`, so its capacity cannot change any answer.
+    pub fn reserve(&mut self, additional: usize) {
+        self.data.reserve(additional)
+    }
+
     pub fn get_mut(&mut self, id: HirId) -> Option<&mut V> {
         validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.get_mut(&id.local_id)

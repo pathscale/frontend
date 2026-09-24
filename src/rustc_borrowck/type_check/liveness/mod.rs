@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use itertools::{Either, Itertools};
-use crate::rustc_data_structures::fx::FxHashSet;
+use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_middle::mir::visit::{TyContext, Visitor};
 use crate::rustc_middle::mir::{Body, Local, Location, SourceInfo};
 use crate::span_bug;
@@ -44,8 +44,9 @@ pub(super) fn generate<'tcx>(
     debug!("liveness::generate");
     let _timer = typeck.tcx().prof.generic_activity("borrowck_liveness");
 
+    let num_region_vars = typeck.infcx.num_region_vars();
     let mut free_regions = regions_that_outlive_free_regions(
-        typeck.infcx.num_region_vars(),
+        num_region_vars,
         &typeck.universal_regions,
         &typeck.constraints.outlives_constraints,
     );
@@ -67,7 +68,10 @@ pub(super) fn generate<'tcx>(
             compute_relevant_live_locals(typeck.tcx(), &free_regions, typeck.body);
         typeck.polonius_context.as_mut().unwrap().boring_nll_locals =
             boring_locals.into_iter().collect();
-        free_regions = typeck.universal_regions.universal_regions_iter().collect();
+        free_regions = DenseBitSet::new_empty(num_region_vars);
+        for r in typeck.universal_regions.universal_regions_iter() {
+            free_regions.insert(r);
+        }
     }
     let (relevant_live_locals, boring_locals) =
         compute_relevant_live_locals(typeck.tcx(), &free_regions, typeck.body);
@@ -92,12 +96,16 @@ pub(super) fn generate<'tcx>(
 // region (i.e., where `R` may be valid for just a subset of the fn body).
 fn compute_relevant_live_locals<'tcx>(
     tcx: TyCtxt<'tcx>,
-    free_regions: &FxHashSet<RegionVid>,
+    free_regions: &DenseBitSet<RegionVid>,
     body: &Body<'tcx>,
 ) -> (Vec<Local>, Vec<Local>) {
+    // A region outside the set's domain is simply not in it, as with the hash set this was.
+    let is_free = |vid: RegionVid| {
+        vid.index() < free_regions.domain_size() && free_regions.contains(vid)
+    };
     let (boring_locals, relevant_live_locals): (Vec<_>, Vec<_>) =
         body.local_decls.iter_enumerated().partition_map(|(local, local_decl)| {
-            if tcx.all_free_regions_meet(&local_decl.ty, |r| free_regions.contains(&r.as_var())) {
+            if tcx.all_free_regions_meet(&local_decl.ty, |r| is_free(r.as_var())) {
                 Either::Left(local)
             } else {
                 Either::Right(local)
@@ -106,7 +114,7 @@ fn compute_relevant_live_locals<'tcx>(
 
     debug!("{} total variables", body.local_decls.len());
     debug!("{} variables need liveness", relevant_live_locals.len());
-    debug!("{} regions outlive free regions", free_regions.len());
+    debug!("{} regions outlive free regions", free_regions.count());
 
     (relevant_live_locals, boring_locals)
 }
@@ -119,7 +127,7 @@ fn regions_that_outlive_free_regions<'tcx>(
     num_region_vars: usize,
     universal_regions: &UniversalRegions<'tcx>,
     constraint_set: &OutlivesConstraintSet<'tcx>,
-) -> FxHashSet<RegionVid> {
+) -> DenseBitSet<RegionVid> {
     // Build a graph of the outlives constraints thus far. This is
     // a reverse graph, so for each constraint `R1: R2` we have an
     // edge `R2 -> R1`. Therefore, if we find all regions
@@ -133,8 +141,12 @@ fn regions_that_outlive_free_regions<'tcx>(
     let mut stack: Vec<_> = universal_regions.universal_regions_iter().collect();
 
     // Set of all free regions, plus anything that outlives them. Initially
-    // just contains the free regions.
-    let mut outlives_free_region: FxHashSet<_> = stack.iter().cloned().collect();
+    // just contains the free regions. Every region is a variable below `num_region_vars`, so a
+    // dense bit set holds it in one allocation, and nothing iterates it.
+    let mut outlives_free_region = DenseBitSet::new_empty(num_region_vars);
+    for &r in &stack {
+        outlives_free_region.insert(r);
+    }
 
     // Do the DFS -- for each thing in the stack, find all things
     // that outlive it and add them to the set. If they are not,
