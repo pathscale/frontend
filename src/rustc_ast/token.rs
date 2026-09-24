@@ -162,6 +162,7 @@ impl Delimiter {
         }
     }
 
+    #[inline]
     pub fn as_open_token_kind(&self) -> TokenKind {
         match *self {
             Delimiter::Parenthesis => OpenParen,
@@ -171,6 +172,7 @@ impl Delimiter {
         }
     }
 
+    #[inline]
     pub fn as_close_token_kind(&self) -> TokenKind {
         match *self {
             Delimiter::Parenthesis => CloseParen,
@@ -375,7 +377,10 @@ impl From<bool> for IdentIsRaw {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Encodable, Decodable, Debug, StableHash)]
+// `PartialEq` is written by hand below: it compares discriminants first so that
+// the parser's checks against a payload-free kind (`token == token::PathSep`,
+// every `check`/`eat` of an `exp!` token) fold to one tag compare once inlined.
+#[derive(Clone, Copy, Eq, Hash, Encodable, Decodable, Debug, StableHash)]
 pub enum TokenKind {
     /* Expression-operator symbols. */
     /// `=`
@@ -525,6 +530,34 @@ pub enum TokenKind {
     Eof,
 }
 
+impl PartialEq for TokenKind {
+    /// Same answer as a derived `eq` (fields compared in declaration order,
+    /// `sp::Ident` through its own `eq`), but the tag compare comes first and
+    /// the payload-free kinds never reach the payload match.
+    #[inline(always)]
+    fn eq(&self, other: &TokenKind) -> bool {
+        if core::mem::discriminant(self) != core::mem::discriminant(other) {
+            return false;
+        }
+        match (self, other) {
+            (OpenInvisible(a), OpenInvisible(b)) | (CloseInvisible(a), CloseInvisible(b)) => {
+                a == b
+            }
+            (Literal(a), Literal(b)) => a == b,
+            (Ident(a, a_raw), Ident(b, b_raw)) | (Lifetime(a, a_raw), Lifetime(b, b_raw)) => {
+                a == b && a_raw == b_raw
+            }
+            (NtIdent(a, a_raw), NtIdent(b, b_raw))
+            | (NtLifetime(a, a_raw), NtLifetime(b, b_raw)) => a == b && a_raw == b_raw,
+            (DocComment(a_kind, a_style, a), DocComment(b_kind, b_style, b)) => {
+                a_kind == b_kind && a_style == b_style && a == b
+            }
+            // Equal discriminants of a payload-free kind.
+            _ => true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Encodable, Decodable, Debug, StableHash)]
 pub struct Token {
     pub kind: TokenKind,
@@ -624,6 +657,7 @@ impl TokenKind {
 }
 
 impl Token {
+    #[inline]
     pub const fn new(kind: TokenKind, span: Span) -> Self {
         Token { kind, span }
     }
@@ -915,8 +949,15 @@ impl Token {
     }
 
     /// Returns `true` if the token is a given keyword, `kw`.
+    /// Same answer as `is_non_raw_ident_where(|id| id.name == kw)`, without
+    /// building the `sp::Ident`: only the symbol is compared.
+    #[inline]
     pub fn is_keyword(&self, kw: Symbol) -> bool {
-        self.is_non_raw_ident_where(|id| id.name == kw)
+        match self.kind {
+            Ident(name, IdentIsRaw::No) => name == kw,
+            NtIdent(ident, IdentIsRaw::No) => ident.name == kw,
+            _ => false,
+        }
     }
 
     /// Returns `true` if the token is a given keyword, `kw` or if `case` is `Insensitive` and this
@@ -977,6 +1018,7 @@ impl Token {
     }
 
     /// Returns `true` if the token is a non-raw identifier for which `pred` holds.
+    #[inline]
     pub fn is_non_raw_ident_where(&self, pred: impl FnOnce(sp::Ident) -> bool) -> bool {
         match self.ident() {
             Some((id, IdentIsRaw::No)) => pred(id),

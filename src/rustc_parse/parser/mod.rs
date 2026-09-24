@@ -1200,8 +1200,14 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Just clone the token cursor and use `next_and_bump`, skipping delimiters as
-        // necessary. Slow but simple.
+        // Walk the borrowed token streams; this gives the same token as the clone
+        // below and allocates nothing.
+        if let Some(token) = self.token_cursor.look_ahead_token(dist) {
+            return looker(&token);
+        }
+
+        // Deeply nested lookahead: clone the token cursor and use `next_and_bump`,
+        // skipping delimiters as necessary. Slow but simple.
         let mut cursor = self.token_cursor.clone();
         let mut i = 0;
         let mut token = Token::dummy();
