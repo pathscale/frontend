@@ -780,6 +780,11 @@ mod parallel {
             }
         }
 
+        /// Chunks nobody has reserved, across every open stage.
+        fn unreserved_chunks(&self) -> usize {
+            self.stages.lock().iter().map(|stage| stage.unreserved_chunks()).sum()
+        }
+
         /// The next stage to sweep, whole, for items reserved by another thread and not reached
         /// yet. Each stage once per thread; `from` is how far this thread has got.
         fn next_sweep(&self, from: &mut usize) -> Option<Batch> {
@@ -803,17 +808,30 @@ mod parallel {
         /// panicking item's batch is dropped unclaimed, which is only items after it in serial
         /// order, all cut off, and settled (failed, unrun) by whichever thread claims them, the
         /// owner at the latest.
-        fn drain(&self) {
+        ///
+        /// `whole` is the owner's run: every unreserved chunk, then the sweep. A pool job runs
+        /// with `whole` false: one chunk, then it returns, and `help` hands the next chunk to a
+        /// new job. The owner is the thread that called into the compiler; a job is fanout work
+        /// that ends when its chunk does, not a worker that keeps taking work.
+        fn drain(&self, whole: bool) {
             let mut chunks_from = 0;
             let mut sweep_from = 0;
             let mut batch: Option<Batch> = None;
+            let mut taken = false;
             // The item this thread claimed and is running, so a panic out of it can be settled.
             let mut running: Option<usize> = None;
+            let mut next = |chunks_from: &mut usize, sweep_from: &mut usize, taken: &mut bool| {
+                if !whole && *taken {
+                    return None;
+                }
+                *taken = true;
+                self.next_chunk(chunks_from).or_else(|| {
+                    if whole { self.next_sweep(sweep_from) } else { None }
+                })
+            };
             loop {
                 if batch.is_none() {
-                    batch = self
-                        .next_chunk(&mut chunks_from)
-                        .or_else(|| self.next_sweep(&mut sweep_from));
+                    batch = next(&mut chunks_from, &mut sweep_from, &mut taken);
                 }
                 // A handle of its own, so `batch` is free to move on to other stages under it.
                 let installer = match &batch {
@@ -824,9 +842,7 @@ mod parallel {
                     installer.enter_context(&mut || {
                         loop {
                             if batch.is_none() {
-                                batch = self
-                                    .next_chunk(&mut chunks_from)
-                                    .or_else(|| self.next_sweep(&mut sweep_from));
+                                batch = next(&mut chunks_from, &mut sweep_from, &mut taken);
                             }
                             let Some(current) = &mut batch else { return };
                             match current.indices.next() {
@@ -865,7 +881,7 @@ mod parallel {
             // a walk of every index in order, waiting at each one a helper was running: at two
             // threads the owner and its one helper went through the same indices side by side,
             // and the owner parked at nearly every other item.
-            self.drain();
+            self.drain(true);
             // Then every item, in stage order, waiting only for what other threads are running.
             // No stage can be added meanwhile: only the owner starts stages, and the owner is
             // here.
@@ -1172,17 +1188,28 @@ mod parallel {
         }
     }
 
-    /// A helper: arrive, take a registry slot, then run unstarted items of any open stage until
-    /// there are none.
+    /// One fanout job: arrive, take a registry slot, run one unreserved chunk, give the slot back,
+    /// and if chunks are left, submit the next job for them.
     ///
-    /// The helper installs what belongs to the thread (its registry slot and the session's
-    /// width) once, here, and the scope's captured context once per run of items, in `drain`.
+    /// A job runs one chunk and ends; it does not loop taking work. Handing the rest on as a new
+    /// job, submitted after this one's slot is free, keeps at most `width - 1` jobs holding slots
+    /// at once, the session's budget, with nagoya's fanout queues deciding where each runs.
     fn help(shared: Arc<ScopeShared>) {
         shared.active.fetch_add(1, Ordering::SeqCst);
         let _leave = Leave(&shared);
         if shared.closed.load(Ordering::SeqCst) {
             return;
         }
+        run_one_chunk(&shared);
+        let more = !shared.closed.load(Ordering::SeqCst) && shared.unreserved_chunks() > 0;
+        if more {
+            let next = Arc::clone(&shared);
+            pool::submit(move || help(next));
+        }
+    }
+
+    /// The body of one `help` job, with its registry slot held only around its chunk.
+    fn run_one_chunk(shared: &ScopeShared) {
         // `drain` never unwinds, so this catches only the scaffolding (a registry or mode
         // scope out of thread-local keys). Nothing is claimed while it can fail except inside
         // `drain`, so a failure here strands no item.
@@ -1199,7 +1226,7 @@ mod parallel {
             };
             let _in_slot = slot.as_ref().map(RegistrySlot::enter);
             let _mode = mode::enter_session_width(shared.width);
-            shared.drain();
+            shared.drain(false);
         });
         if let Err(payload) = outcome {
             shared.stash(u64::MAX, payload);
