@@ -35,7 +35,8 @@ use crate::rustc_ast::token::{
     self, IdentIsRaw, InvisibleOrigin, MetaVarKind, NtExprKind, NtPatKind, Token, TokenKind,
 };
 use crate::rustc_ast::tokenstream::{
-    ParserRange, ParserReplacement, Spacing, TokenCursor, TokenStream, TokenTree, WithTokens,
+    FrameSpare, ParserRange, ParserReplacement, Spacing, TokenCursor, TokenStream, TokenTree,
+    WithTokens,
 };
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast::util::classify;
@@ -201,6 +202,9 @@ pub struct Parser<'a> {
     restrictions: Restrictions,
     expected_token_types: TokenTypeSet,
     token_cursor: TokenCursor,
+    // The token cursor's spare frame, reused for each delimited group the parser enters (see
+    // `FrameSpare`). A cloned parser starts without one.
+    frame_spare: FrameSpare,
     // The number of calls to `bump`, i.e. the position in the token stream.
     num_bump_calls: u32,
     // During parsing we may sometimes need to "unglue" a glued token into two
@@ -353,6 +357,7 @@ impl<'a> Parser<'a> {
         let mut parser = Parser {
             psess,
             token_cursor: TokenCursor::new(stream),
+            frame_spare: FrameSpare::default(),
             subparser_name,
             capture_state: CaptureState {
                 capturing: Capturing::No,
@@ -1146,7 +1151,7 @@ impl<'a> Parser<'a> {
     pub fn bump(&mut self) {
         // Note: destructuring here would give nicer code, but it was found in #96210 to be slower
         // than `.0`/`.1` access.
-        let mut next = self.token_cursor.inlined_next_and_bump();
+        let mut next = self.token_cursor.inlined_next_and_bump_reusing(&mut self.frame_spare);
         self.num_bump_calls += 1;
         // We got a token from the underlying cursor and no longer need to
         // worry about an unglued token. See `break_and_eat` for more details.
