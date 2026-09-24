@@ -6155,7 +6155,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Do, before the stage, every lazy write into the module graph the units could otherwise
     /// make: fill each local module's list of traits (`Module::ensure_traits`, read by
     /// `traits_in_scope`), and compress every `macro_rules` scope chain.
-    fn prepare_frozen_late_resolution(&self) {
+    pub(super) fn prepare_frozen_late_resolution(&self) {
         for module in &self.local_modules {
             module.to_module().ensure_traits(self);
         }
@@ -6446,7 +6446,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Put one unit's `LateSink` into the resolver, by the rule each of its fields names.
-    fn merge_late_sink(&mut self, sink: LateSink<'ra>) {
+    pub(super) fn merge_late_sink(&mut self, sink: LateSink<'ra>) {
         let LateSink {
             partial_res_map,
             pat_span_map,

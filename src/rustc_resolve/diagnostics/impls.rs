@@ -1952,7 +1952,16 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         suggestions.retain(|suggestion| suggestion.is_stable || self.tcx.sess.is_nightly_build());
         suggestions
     }
+}
 
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    /// Suggestions for a macro that did not resolve. Its one write, `record_use` on an import
+    /// the note names, goes where this resolver writes (the resolver, or a macro finalization
+    /// unit's sink).
+    ///
+    /// The caller brings every crate's macros into `extern_macro_map` first
+    /// (`Resolver::register_macros_for_all_crates`), so that unused `derive` macros can be
+    /// suggested: that is a write, and a frozen resolver cannot make it.
     pub(crate) fn unresolved_macro_suggestions(
         &mut self,
         err: &mut Diag<'_>,
@@ -1962,9 +1971,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         krate: &Crate,
         sugg_span: Option<Span>,
     ) {
-        // Bring all unused `derive` macros into `macro_map` so we ensure they can be used for
-        // suggestions.
-        self.register_macros_for_all_crates();
+        debug_assert!(self.all_crate_macros_already_registered);
 
         let is_expected =
             &|res: Res| res.macro_kinds().is_some_and(|k| k.contains(macro_kind.into()));
@@ -2146,7 +2153,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             return;
         }
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Given an attribute macro that failed to be resolved, look for `derive` macros that could
     /// provide it, either as-is or with small typos.
     fn detect_derive_attribute(
