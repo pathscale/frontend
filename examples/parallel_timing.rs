@@ -64,7 +64,8 @@ fn print_sites(traces: &[std::backtrace::Backtrace], every: u64, allocs: u64) {
     let skip = |name: &str| {
         [
             "alloc::", "core::", "std::", "hashbrown", "indexmap", "smallvec", "thin_vec",
-            "rustc_arena", "frontend_arena", "Counting", "record_site", "__rust", "RawVec",
+            "rustc_arena", "frontend_arena", "Counting", "record_site", "track_live",
+            "parallel_timing", "__rust", "RawVec",
             "rustc_data_structures::sharded", "rustc_data_structures::fx", "ToOwned",
             "Clone", "clone", "FromIterator", "Extend", "collect", "backtrace",
         ]
@@ -140,6 +141,15 @@ static MEMCAP: AtomicBool = AtomicBool::new(false);
 static LIVE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static PEAK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static CAP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
+/// Live bytes when the current file's check began: the cap, the peak and the thresholds are
+/// all over that, per file.
+static BASE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// `mem-phases`: the next live-bytes level (over `BASE`) whose first crossing records a
+/// backtrace, and which of the thresholds it is; `i64::MAX` when none is armed.
+static NEXT_LEVEL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
+static LEVEL_TRACES: std::sync::Mutex<Vec<(usize, std::time::Instant, std::backtrace::Backtrace)>> =
+    std::sync::Mutex::new(Vec::new());
+static LEVELS: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
 static OVER: AtomicU64 = AtomicU64::new(0);
 const OVER_EVERY: u64 = 256;
 fn track_live(delta: i64) {
@@ -151,7 +161,21 @@ fn track_live(delta: i64) {
         return;
     }
     PEAK.fetch_max(live, Relaxed);
-    if live > CAP.load(Relaxed) {
+    let over_base = live - BASE.load(Relaxed);
+    if over_base >= NEXT_LEVEL.load(Relaxed) && !IN_SITE.with(|flag| flag.replace(true)) {
+        // Re-check under the lock: another thread may have crossed and advanced it first.
+        let mut levels = LEVELS.lock().unwrap();
+        let armed = NEXT_LEVEL.load(Relaxed);
+        if over_base >= armed {
+            let index = levels.iter().position(|&l| l == armed).unwrap_or(0);
+            let trace = std::backtrace::Backtrace::force_capture();
+            LEVEL_TRACES.lock().unwrap().push((index, std::time::Instant::now(), trace));
+            NEXT_LEVEL.store(levels.get(index + 1).copied().unwrap_or(i64::MAX), Relaxed);
+        }
+        drop(levels);
+        IN_SITE.with(|flag| flag.set(false));
+    }
+    if over_base > CAP.load(Relaxed) {
         let n = OVER.fetch_add(1, Relaxed);
         if n % OVER_EVERY == 0 && !IN_SITE.with(|flag| flag.replace(true)) {
             let trace = std::backtrace::Backtrace::force_capture();
@@ -516,6 +540,143 @@ fn main() {
         let traces = std::mem::take(&mut *SITE_TRACES.lock().unwrap());
         if !traces.is_empty() {
             print_sites(&traces, OVER_EVERY, over);
+        }
+        return;
+    }
+    // `parallel_timing mem-phases [width]`: what runs while each file's live memory climbs to
+    // its peak. A first run records every file's peak; an identical second run records a
+    // backtrace the first time live bytes reach 25%, 50%, 75% and 95% of it, and names the pass
+    // running then. The peak is where many things are in flight at once; what builds memory up
+    // before it is where to look for serial work.
+    if only.as_deref() == Some("mem-phases") {
+        frontend::unwind_janky::install_catcher(catcher);
+        let run_width = width.unwrap_or(1);
+        let files: Vec<Arc<String>> = corpus("clean").into_iter().map(Arc::new).collect();
+        MEMCAP.store(true, Relaxed);
+        let mut peaks = Vec::with_capacity(files.len());
+        for f in &files {
+            let base = LIVE.load(Relaxed);
+            BASE.store(base, Relaxed);
+            PEAK.store(base, Relaxed);
+            let _ = check_shared_source_with_width("corpus", Arc::clone(f), run_width);
+            peaks.push(PEAK.load(Relaxed) - base);
+        }
+        const FRACTIONS: [f64; 4] = [0.25, 0.50, 0.75, 0.95];
+        let mut starts = Vec::with_capacity(files.len());
+        let mut ends = Vec::with_capacity(files.len());
+        for (f, &peak) in files.iter().zip(&peaks) {
+            let levels: Vec<i64> = FRACTIONS.iter().map(|x| (peak as f64 * x) as i64).collect();
+            BASE.store(LIVE.load(Relaxed), Relaxed);
+            NEXT_LEVEL.store(levels[0], Relaxed);
+            *LEVELS.lock().unwrap() = levels;
+            let first = LEVEL_TRACES.lock().unwrap().len();
+            let start = Instant::now();
+            let _ = check_shared_source_with_width("corpus", Arc::clone(f), run_width);
+            NEXT_LEVEL.store(i64::MAX, Relaxed);
+            starts.push((first, start));
+            ends.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+        MEMCAP.store(false, Relaxed);
+        let traces = std::mem::take(&mut *LEVEL_TRACES.lock().unwrap());
+        // The pass a backtrace is in: the innermost frame naming one.
+        const PASSES: [(&str, &str); 26] = [
+            ("rustc_borrowck::", "borrow check"),
+            ("check_liveness", "liveness"),
+            ("rustc_mir_build::", "MIR build"),
+            ("rustc_mir_transform::", "MIR passes"),
+            ("rustc_hir_typeck::", "type check (bodies)"),
+            ("wfcheck", "well-formedness"),
+            ("coherence", "coherence"),
+            ("rustc_lint::", "lints"),
+            ("rustc_privacy::", "privacy"),
+            ("rustc_ast_lowering::", "lowering"),
+            ("late_resolve", "late resolution"),
+            ("rustc_resolve::", "resolution"),
+            ("rustc_expand::", "expansion"),
+            ("rustc_parse::", "parse"),
+            ("frontend_facts::extract", "facts"),
+            ("rustc_hir_analysis::", "hir analysis (other)"),
+            ("drop_in_place", "teardown"),
+            ("new_lint_store", "session: lint store"),
+            ("register_lints", "session: lint store"),
+            ("create_global_ctxt", "session: global context"),
+            ("query_system", "session: query system"),
+            ("Session::", "session"),
+            ("build_session", "session"),
+            ("rustc_session::", "session"),
+            ("rustc_interface::", "interface (other)"),
+            ("rustc_middle::", "middle (other)"),
+        ];
+        let phase_of = |trace: &std::backtrace::Backtrace| -> &'static str {
+            let text = format!("{trace}");
+            let frames: Vec<&str> =
+                text.lines().map(str::trim).filter(|line| !line.starts_with("at ")).collect();
+            // The specific passes first, over every frame, innermost first; the general
+            // markers (session, interface, middle) only when no pass is on the stack, since a
+            // query or an arena from `rustc_middle` is innermost in almost every trace.
+            let (specific, general) = PASSES.split_at(17);
+            for group in [specific, general] {
+                for line in &frames {
+                    if let Some((_, pass)) = group.iter().find(|(pat, _)| line.contains(pat)) {
+                        return pass;
+                    }
+                }
+            }
+            "other"
+        };
+        let mut table: Vec<std::collections::BTreeMap<&str, (u64, f64)>> =
+            (0..FRACTIONS.len()).map(|_| Default::default()).collect();
+        for (file, (first, start)) in starts.iter().enumerate() {
+            let last = starts.get(file + 1).map_or(traces.len(), |next| next.0);
+            for (level, at, trace) in &traces[*first..last] {
+                let ms = at.duration_since(*start).as_secs_f64() * 1e3;
+                let entry = table[*level].entry(phase_of(trace)).or_default();
+                entry.0 += 1;
+                entry.1 += ms / ends[file];
+            }
+        }
+        // For the traces no pass names, the innermost driver step on the stack (a
+        // `rustc_interface` or `frontend_facts` frame), at the first threshold.
+        let mut unnamed: std::collections::BTreeMap<String, u64> = Default::default();
+        for (level, _, trace) in &traces {
+            if *level != 0 || !phase_of(trace).contains("other") {
+                continue;
+            }
+            let text = format!("{trace}");
+            let step = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.starts_with("at "))
+                .find(|line| line.contains("rustc_interface::") || line.contains("frontend_facts::"))
+                .map(|line| line.split_once(": ").map_or(line, |(_, name)| name))
+                .map(|name| name.rsplit_once("::h").map_or(name, |(a, _)| a).to_string())
+                .unwrap_or_else(|| "?".to_string());
+            *unnamed.entry(step).or_default() += 1;
+        }
+        let mut sorted = peaks.clone();
+        sorted.sort();
+        println!(
+            "width {run_width}: {} files, peak live per file median {:.1} MB; which pass is running when live memory first reaches each share of the file's peak (and how far into the file's check, on average):",
+            files.len(),
+            sorted[sorted.len() / 2] as f64 / 1e6
+        );
+        for (i, fraction) in FRACTIONS.iter().enumerate() {
+            let mut rows: Vec<_> = table[i].iter().collect();
+            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            let n: u64 = rows.iter().map(|r| r.1.0).sum();
+            let parts: Vec<String> = rows
+                .iter()
+                .take(5)
+                .map(|(pass, (count, at))| {
+                    format!("{pass} {:.0}% (at {:.0}%)", *count as f64 * 100.0 / n.max(1) as f64, at * 100.0 / *count as f64)
+                })
+                .collect();
+            println!("  {:>3.0}% of peak: {}", fraction * 100.0, parts.join(", "));
+        }
+        let mut unnamed: Vec<_> = unnamed.into_iter().collect();
+        unnamed.sort_by(|a, b| b.1.cmp(&a.1));
+        for (step, n) in unnamed.into_iter().take(6) {
+            println!("    unnamed at 25%: {n} under {step}");
         }
         return;
     }
