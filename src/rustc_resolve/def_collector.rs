@@ -215,7 +215,7 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
             ItemKind::GlobalAsm(..) => DefKind::GlobalAsm,
             ItemKind::Use(_) => {
                 return self.with_owner(i.id, None, DefKind::Use, i.span, |this, feed| {
-                    this.brg_visit_item(i, feed);
+                    this.brg_visit_item(i, feed, DefKind::Use);
                 });
             }
             ItemKind::MacCall(..) => {
@@ -238,7 +238,7 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
 
                 this.with_parent(feed.def_id(), |this| {
                     this.with_impl_trait(ImplTraitContext::Existential, |this| {
-                        this.brg_visit_item(i, feed)
+                        this.brg_visit_item(i, feed, def_kind)
                     })
                 });
             },
