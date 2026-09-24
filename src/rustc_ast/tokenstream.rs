@@ -981,6 +981,13 @@ impl TokenCursor {
         self.stack.last().unwrap().curr().unwrap().clone()
     }
 
+    /// The last token tree of the current token stream, wherever the cursor is in it.
+    #[inline]
+    pub fn last_tree(&self) -> Option<&TokenTree> {
+        let stream = &self.curr.stream;
+        stream.get(stream.len().checked_sub(1)?)
+    }
+
     /// For skipping to the end of the current sequence, in rare circumstances.
     #[inline]
     pub fn bump_to_end(&mut self) {
