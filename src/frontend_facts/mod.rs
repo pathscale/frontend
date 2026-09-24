@@ -43,7 +43,7 @@ use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 #[cfg(not(feature = "force_pinned_sysroot"))]
 use crate::rustc_interface::util::rustc_version_of_sysroot;
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
-use crate::rustc_middle::ty::{TyCtxt, TypeVisitableExt};
+use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::{FileName, SourceFile, Span};
@@ -403,16 +403,43 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
     // `unanalyzed_bodies`, which is never sorted, are the serial walk's sequences exactly.
     let owners = tcx.hir_body_owner_ids();
     //
+    // In rustc's order, in two stages. The first takes every body rustc's own body loop
+    // (`rustc_hir_analysis::check_crate`) type-checks. That loop skips an anon const of the type
+    // system (an array length, a const generic argument): such a const's type is fed while the
+    // signature or body around it is lowered, and rustc lowers every signature before it checks
+    // any body. This walk does not run that crate-wide lowering (it would stop a `no_core` file
+    // on its first missing lang item), so checking those consts in index order reached one before
+    // its type was fed: core, which has no other error to stop at first, ended in delayed bugs.
+    // The second stage takes them after every other body, each after its owner's signature is
+    // lowered (`lower_signature`), which is the state rustc checks them in.
+    //
     // A body weighs its source at type checking's rate (`sync::cost::TYPECK`), which is what
     // most of its fact costs, so a small file's bodies run serially, as width one runs them.
     // The two stages above stay unweighted, cut by count: their items cost a path printed per
     // definition, which is not a cost per byte, and nothing has measured it.
-    let bodies: Vec<Option<BodyFact>> = run_stage_weighted(
-        owners,
-        owners.len(),
-        |owners, i| tcx.stage_weight(owners[i], cost::TYPECK),
-        |owners, i| body_fact(tcx, &names, owners[i]),
+    let (bodies_first, consts): (Vec<usize>, Vec<usize>) =
+        (0..owners.len()).partition(|&i| !is_type_system_anon_const(tcx, owners[i]));
+    let first: Vec<Option<BodyFact>> = run_stage_weighted(
+        &bodies_first[..],
+        bodies_first.len(),
+        |order, i| tcx.stage_weight(owners[order[i]], cost::TYPECK),
+        |order, i| body_fact(tcx, &names, owners[order[i]]),
     );
+    let second: Vec<Option<BodyFact>> = run_stage_weighted(
+        &consts[..],
+        consts.len(),
+        |order, i| tcx.stage_weight(owners[order[i]], cost::TYPECK),
+        |order, i| {
+            let owner = owners[order[i]];
+            lower_signature(tcx, tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(owner)).def_id);
+            body_fact(tcx, &names, owner)
+        },
+    );
+    // Back in owner order, which is the order the facts were always appended in.
+    let mut bodies: Vec<Option<BodyFact>> = (0..owners.len()).map(|_| None).collect();
+    for (i, fact) in bodies_first.into_iter().zip(first).chain(consts.into_iter().zip(second)) {
+        bodies[i] = fact;
+    }
     for body in bodies.into_iter().flatten() {
         match body {
             BodyFact::Checked(references) => facts.references.extend(references),
@@ -626,6 +653,48 @@ enum BodyFact {
 /// The walk collects each reference as the `DefId` it resolved to. Only then are paths
 /// printed: each distinct callee once for this body, its `Arc` shared by every reference to it
 /// here, and the map that dedups them ends with the body.
+/// An anon const of the type system: one whose type rustc feeds while lowering what contains
+/// it, and which rustc's body loop therefore does not type-check as a body of its own.
+fn is_type_system_anon_const(tcx: TyCtxt<'_>, owner: LocalDefId) -> bool {
+    tcx.def_kind(owner) == DefKind::AnonConst
+        && tcx.anon_const_kind(owner.to_def_id()) != ty::AnonConstKind::NonTypeSystemInline
+}
+
+/// Lower `item`'s signature, as rustc's collection does for every item before any body is type
+/// checked: its generics and where clauses, and its type, function signature or impl header. That
+/// is what feeds the type of an anon const written in them. Each query is one rustc runs for
+/// the item anyway; one that stops on a fatal error stops only this lowering.
+fn lower_signature(tcx: TyCtxt<'_>, item: LocalDefId) {
+    let def_id = item.to_def_id();
+    let _ = catch_fatal_errors(|| {
+        let kind = tcx.def_kind(item);
+        if kind.has_generics() {
+            tcx.ensure_ok().generics_of(def_id);
+            tcx.ensure_ok().explicit_clauses_of(def_id);
+        }
+        match kind {
+            DefKind::Fn | DefKind::AssocFn => tcx.ensure_ok().fn_sig(def_id),
+            DefKind::Struct | DefKind::Union | DefKind::Enum => {
+                tcx.ensure_ok().type_of(def_id);
+                for field in tcx.adt_def(def_id).all_fields() {
+                    tcx.ensure_ok().type_of(field.did);
+                }
+            }
+            DefKind::TyAlias
+            | DefKind::Const { .. }
+            | DefKind::Static { .. }
+            | DefKind::AssocConst { .. } => tcx.ensure_ok().type_of(def_id),
+            DefKind::Impl { of_trait } => {
+                tcx.ensure_ok().type_of(def_id);
+                if of_trait {
+                    tcx.ensure_ok().impl_trait_header(def_id);
+                }
+            }
+            _ => {}
+        }
+    });
+}
+
 fn body_fact<'tcx>(
     tcx: TyCtxt<'tcx>,
     names: &Names<'_, 'tcx>,
