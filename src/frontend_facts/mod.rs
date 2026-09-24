@@ -524,16 +524,6 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // The second stage takes them after every other body, each after its owner's signature is
     // lowered (`lower_signature`), which is the state rustc checks them in.
     //
-    // In rustc's order, in two stages. The first takes every body rustc's own body loop
-    // (`rustc_hir_analysis::check_crate`) type-checks. That loop skips an anon const of the type
-    // system (an array length, a const generic argument): such a const's type is fed while the
-    // signature or body around it is lowered, and rustc lowers every signature before it checks
-    // any body. This walk does not run that crate-wide lowering (it would stop a `no_core` file
-    // on its first missing lang item), so checking those consts in index order reached one before
-    // its type was fed: core, which has no other error to stop at first, ended in delayed bugs.
-    // The second stage takes them after every other body, each after its owner's signature is
-    // lowered (`lower_signature`), which is the state rustc checks them in.
-    //
     // A body weighs its source at type checking's rate (`sync::cost::TYPECK`), which is what
     // most of its fact costs, so a small file's bodies run serially, as width one runs them.
     // The two stages above stay unweighted, cut by count: their items cost a path printed per
