@@ -1288,6 +1288,43 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         let content_start = start + BytePos(prefix_len);
         let content_end = end - BytePos(postfix_len);
         let lit_content = self.str_from_to(content_start, content_end);
+        // `check_for_errors` decodes the literal char by char. In a `"..."` literal only a `\`
+        // sequence, a `"` or a `\r` can be an error (every other char unescapes to itself), and
+        // in an `r"..."` literal only a `\r`; all are ASCII, so a byte search finds them. With
+        // none present it would call back with no error, so it is skipped. Other modes also
+        // reject chars no byte search rules out, and always run it.
+        let may_have_errors = match mode {
+            Mode::Str => memchr::memchr3(b'\\', b'"', b'\r', lit_content.as_bytes()).is_some(),
+            Mode::RawStr => memchr::memchr(b'\r', lit_content.as_bytes()).is_some(),
+            _ => true,
+        };
+        if may_have_errors {
+            self.check_quoted(lit_content, mode, &mut kind, start, end, content_start);
+        }
+
+        // We normally exclude the quotes for the symbol, but for errors we
+        // include it because it results in clearer error messages.
+        let sym = if !matches!(kind, token::Err(_)) {
+            self.intern_src(lit_content)
+        } else {
+            self.symbol_from_to(start, end)
+        };
+        (kind, sym)
+    }
+
+    /// The error reporting of `cook_quoted`: every escape error of `lit_content`, the contents
+    /// of the literal `start..end` from `content_start`, is emitted, and a fatal one turns `kind`
+    /// into `token::Err`.
+    #[inline(never)]
+    fn check_quoted(
+        &self,
+        lit_content: &str,
+        mode: Mode,
+        kind: &mut token::LitKind,
+        start: BytePos,
+        end: BytePos,
+        content_start: BytePos,
+    ) {
         check_for_errors(lit_content, mode, |range, err| {
             let span_with_quotes = self.mk_sp(start, end);
             let (start, end) = (range.start as u32, range.end as u32);
@@ -1305,18 +1342,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 err,
             ) {
                 assert!(is_fatal);
-                kind = token::Err(guar);
+                *kind = token::Err(guar);
             }
         });
-
-        // We normally exclude the quotes for the symbol, but for errors we
-        // include it because it results in clearer error messages.
-        let sym = if !matches!(kind, token::Err(_)) {
-            self.intern_src(lit_content)
-        } else {
-            self.symbol_from_to(start, end)
-        };
-        (kind, sym)
     }
 }
 
