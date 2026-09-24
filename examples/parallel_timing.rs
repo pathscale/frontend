@@ -30,12 +30,57 @@
 //! file's first errors and stops, because that is a defect in a unit template to fix, not
 //! something to time around.
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 use frontend::frontend_facts::{
     CrateFacts, Checked, analyze_shared_source_with_width, check_shared_source_with_width,
 };
+
+/// Counts every allocation (and reallocation) this program makes, the compiler's included:
+/// frontend declares no allocator, so this one serves it.
+///
+/// Only while `COUNTING` is set, and never during a timed pass: counting in the allocator is
+/// work on every allocation of every worker, and a shared counter put them all on one cache
+/// line (width 12 fell from 2.8x to 1.0x on the large corpus; sharded counters still cost a
+/// third of the gain). Timed passes run with it off, where the allocator reads one flag nobody
+/// writes, and the counts come from a separate, untimed pass at the same width.
+struct Counting;
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if COUNTING.load(Relaxed) {
+            ALLOCS.fetch_add(1, Relaxed);
+            ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
+        }
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        if COUNTING.load(Relaxed) {
+            ALLOCS.fetch_add(1, Relaxed);
+            ALLOC_BYTES.fetch_add(size as u64, Relaxed);
+        }
+        unsafe { System.realloc(ptr, layout, size) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+/// Allocations and bytes allocated while `f` runs, counted; not for timing.
+fn counted<R>(f: impl FnOnce() -> R) -> (R, u64, u64) {
+    let (a, b) = (ALLOCS.load(Relaxed), ALLOC_BYTES.load(Relaxed));
+    COUNTING.store(true, Relaxed);
+    let r = f();
+    COUNTING.store(false, Relaxed);
+    (r, ALLOCS.load(Relaxed) - a, ALLOC_BYTES.load(Relaxed) - b)
+}
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
@@ -90,16 +135,20 @@ fn generated(name: char, count: usize, min_lines: usize, max_lines: usize, seed:
 type Answers = (Vec<Checked>, Vec<Option<CrateFacts>>);
 
 /// One pass over `files` at stage width `width`: the answers, and milliseconds per entry point.
+/// The check's allocations are left in `LAST_CHECK_ALLOCS`.
 fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
     frontend::unwind_janky::install_catcher(catcher);
     // Shared once, outside the timing: each call below hands its session the same text.
     let files: Vec<Arc<String>> = files.iter().cloned().map(Arc::new).collect();
+    let check_all = || -> Vec<Checked> {
+        files.iter().map(|s| check_shared_source_with_width("corpus", Arc::clone(s), width)).collect()
+    };
     let start = Instant::now();
-    let checked: Vec<Checked> = files
-        .iter()
-        .map(|s| check_shared_source_with_width("corpus", Arc::clone(s), width))
-        .collect();
+    let checked = check_all();
     let check_ms = start.elapsed().as_secs_f64() * 1e3;
+    let (_, allocs, alloc_bytes) = counted(check_all);
+    LAST_CHECK_ALLOCS.store(allocs, Relaxed);
+    LAST_CHECK_ALLOC_BYTES.store(alloc_bytes, Relaxed);
     let start = Instant::now();
     let facts: Vec<Option<CrateFacts>> = files
         .iter()
@@ -109,15 +158,58 @@ fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
     ((checked, facts), check_ms, analyze_ms)
 }
 
+static LAST_CHECK_ALLOCS: AtomicU64 = AtomicU64::new(0);
+static LAST_CHECK_ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Parse-only throughput of a corpus, one thread: `frontend_facts::syntax::parses` over every
+/// file, after one untimed round.
+fn parse_only(label: &str, files: &[String]) {
+    frontend::unwind_janky::install_catcher(catcher);
+    let bytes: usize = files.iter().map(String::len).sum();
+    for f in files {
+        assert!(frontend::frontend_facts::syntax::parses(f).is_ok(), "{label}: a file does not parse");
+    }
+    let parse_all = || {
+        for f in files {
+            let _ = std::hint::black_box(frontend::frontend_facts::syntax::parses(f));
+        }
+    };
+    let start = Instant::now();
+    parse_all();
+    let secs = start.elapsed().as_secs_f64();
+    let ((), allocs, alloc_bytes) = counted(parse_all);
+    println!(
+        "parse only: {:.1} ms, {:.1} MB/s, {allocs} allocations ({:.0} per KB), {:.0} MB allocated",
+        secs * 1e3,
+        bytes as f64 / 1e6 / secs,
+        allocs as f64 / (bytes as f64 / 1e3),
+        alloc_bytes as f64 / 1e6,
+    );
+}
+
 /// Time one corpus at every setting, and hold each setting to the first one's answers.
 fn run(label: &str, files: &[String]) {
     let bytes: usize = files.iter().map(String::len).sum();
     let lines: usize = files.iter().map(|f| f.lines().count()).sum();
-    println!("\n{label}: {} files, {lines} lines, {bytes} bytes", files.len());
-    println!("{:>7} {:>12} {:>8} {:>12} {:>8}", "width", "check ms", "x", "analyze ms", "x");
+    let mb = bytes as f64 / 1e6;
+    println!("\n{label}: {} files, {lines} lines, {mb:.2} MB", files.len());
+    parse_only(label, files);
+    println!(
+        "{:>7} {:>10} {:>8} {:>6} {:>12} {:>10} {:>10} {:>8} {:>6}",
+        "width", "check ms", "MB/s", "x", "allocs", "alloc MB", "analyze ms", "MB/s", "x"
+    );
+    let row = |width: usize, check_ms: f64, analyze_ms: f64, check_x: f64, analyze_x: f64| {
+        println!(
+            "{width:>7} {check_ms:>10.1} {:>8.2} {check_x:>6.2} {:>12} {:>10.0} {analyze_ms:>10.1} {:>8.2} {analyze_x:>6.2}",
+            mb / (check_ms / 1e3),
+            LAST_CHECK_ALLOCS.load(Relaxed),
+            LAST_CHECK_ALLOC_BYTES.load(Relaxed) as f64 / 1e6,
+            mb / (analyze_ms / 1e3),
+        );
+    };
     let one = SETTINGS[0];
     let (want, check_one, analyze_one) = pass(one, files);
-    println!("{one:>7} {check_one:>12.1} {:>8.2} {analyze_one:>12.1} {:>8.2}", 1.0, 1.0);
+    row(one, check_one, analyze_one, 1.0, 1.0);
     assert_clean(label, &want.0);
     for &width in &SETTINGS[1..] {
         let (answers, check_ms, analyze_ms) = pass(width, files);
@@ -136,8 +228,7 @@ fn run(label: &str, files: &[String]) {
             }
             panic!("{label}: width {width} gave a different answer than width one");
         }
-        let (check_x, analyze_x) = (check_one / check_ms, analyze_one / analyze_ms);
-        println!("{width:>7} {check_ms:>12.1} {check_x:>8.2} {analyze_ms:>12.1} {analyze_x:>8.2}");
+        row(width, check_ms, analyze_ms, check_one / check_ms, analyze_one / analyze_ms);
     }
 }
 
@@ -192,7 +283,10 @@ fn main() {
     match (only.as_deref(), width) {
         (Some(name), Some(width)) => {
             let (_, check_ms, analyze_ms) = pass(width, &corpus(name));
-            println!("{name} at {width}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms");
+            println!(
+                "{name} at {width}: check {check_ms:.1} ms, {} allocations, analyze {analyze_ms:.1} ms",
+                LAST_CHECK_ALLOCS.load(Relaxed)
+            );
         }
         (Some(name), None) => run(name, &corpus(name)),
         (None, _) => {
