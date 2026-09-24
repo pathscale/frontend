@@ -1231,7 +1231,17 @@ impl Span {
     ///     self lorem ipsum end
     ///     ^^^^^^^^^^^^^^^^^^^^
     /// ```
+    #[inline]
     pub fn to(self, end: Span) -> Span {
+        match self.to_same_inline_ctxt(end) {
+            Some(span) => span,
+            None => self.to_general(end),
+        }
+    }
+
+    /// `to` for spans that are not both inline-context spans of one context.
+    #[inline(never)]
+    fn to_general(self, end: Span) -> Span {
         match Span::prepare_to_combine(self, end) {
             Ok((from, to, parent)) => {
                 Span::new(cmp::min(from.lo, to.lo), cmp::max(from.hi, to.hi), from.ctxt, parent)

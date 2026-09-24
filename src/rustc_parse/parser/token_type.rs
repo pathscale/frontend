@@ -600,18 +600,22 @@ impl TokenTypeSet {
         TokenTypeSet(0)
     }
 
+    #[inline]
     pub(super) fn is_empty(&self) -> bool {
         self.0 == 0
     }
 
+    #[inline]
     pub(super) fn insert(&mut self, token_type: TokenType) {
         self.0 = self.0 | (1u128 << token_type as u32)
     }
 
+    #[inline]
     pub(super) fn clear(&mut self) {
         self.0 = 0
     }
 
+    #[inline]
     pub(super) fn contains(&self, token_type: TokenType) -> bool {
         self.0 & (1u128 << token_type as u32) != 0
     }

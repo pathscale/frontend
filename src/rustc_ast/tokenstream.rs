@@ -631,14 +631,17 @@ impl TokenStream {
         TokenStream(Arc::new(tts))
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[inline]
     pub fn get(&self, index: usize) -> Option<&TokenTree> {
         self.0.get(index)
     }
@@ -965,6 +968,78 @@ impl TokenCursor {
     #[inline]
     pub fn look_ahead(&self, n: usize) -> Option<&TokenTree> {
         self.curr.look_ahead(n)
+    }
+
+    /// The token that `dist` calls of `next_and_bump` on a clone of this cursor
+    /// would return last, counting only tokens that are not skipped invisible
+    /// delimiters, found by walking the borrowed streams instead of cloning the
+    /// cursor (a `Vec` and an `Arc` count per level). Returns `None`, and the
+    /// caller clones, only if the walk would enter more than
+    /// `LOOK_AHEAD_MAX_ENTERED` delimited sequences.
+    pub fn look_ahead_token(&self, dist: usize) -> Option<Token> {
+        const LOOK_AHEAD_MAX_ENTERED: usize = 8;
+        // Frames are `(stream, next_idx)`: the stream holding a `Delimited`
+        // and the index one past it, as in `self.stack`.
+        let mut entered: [(&TokenStream, usize); LOOK_AHEAD_MAX_ENTERED] =
+            [(&self.curr.stream, 0); LOOK_AHEAD_MAX_ENTERED];
+        let mut n_entered = 0;
+        let mut n_outer = self.stack.len();
+        let mut stream = &self.curr.stream;
+        let mut idx = self.curr.next_idx;
+        let mut token = Token::dummy();
+        let mut i = 0;
+        while i < dist {
+            // One step of `inlined_next_and_bump`.
+            token = loop {
+                if let Some(tree) = stream.get(idx) {
+                    match tree {
+                        &TokenTree::Token(token, _) => {
+                            idx += 1;
+                            break token;
+                        }
+                        &TokenTree::Delimited(sp, _, delim, ref tts) => {
+                            if n_entered == LOOK_AHEAD_MAX_ENTERED {
+                                return None;
+                            }
+                            entered[n_entered] = (stream, idx + 1);
+                            n_entered += 1;
+                            stream = tts;
+                            idx = 0;
+                            if !delim.skip() {
+                                break Token::new(delim.as_open_token_kind(), sp.open);
+                            }
+                        }
+                    }
+                } else {
+                    let (parent, parent_idx) = if n_entered > 0 {
+                        n_entered -= 1;
+                        entered[n_entered]
+                    } else if n_outer > 0 {
+                        n_outer -= 1;
+                        let frame = &self.stack[n_outer];
+                        (&frame.stream, frame.next_idx)
+                    } else {
+                        break Token::new(token::Eof, DUMMY_SP);
+                    };
+                    let Some(&TokenTree::Delimited(span, _, delim, _)) = parent.get(parent_idx - 1)
+                    else {
+                        panic!("parent should be Delimited")
+                    };
+                    stream = parent;
+                    idx = parent_idx;
+                    if !delim.skip() {
+                        break Token::new(delim.as_close_token_kind(), span.close);
+                    }
+                }
+            };
+            if let token::OpenInvisible(origin) | token::CloseInvisible(origin) = token.kind
+                && origin.skip()
+            {
+                continue;
+            }
+            i += 1;
+        }
+        Some(token)
     }
 
     /// Returns the first token tree (if there is one) past the close delimiter of the enclosing
