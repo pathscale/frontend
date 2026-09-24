@@ -4,7 +4,7 @@ use alloc::string::ToString;
 use diagnostics::make_errors_for_mismatched_closing_delims;
 use crate::rustc_ast::ast::{self, AttrStyle};
 use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
-use crate::rustc_ast::tokenstream::TokenStream;
+use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
 use crate::rustc_ast::util::unicode::{TEXT_FLOW_CONTROL_CHARS, contains_text_flow_control_chars};
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, StashKey};
@@ -100,6 +100,7 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         last_lifetime: None,
         token: Token::dummy(),
         diag_info: TokenTreeDiagInfo::default(),
+        tree_buf: Vec::new(),
     };
     let res = lexer.lex_token_trees(/* is_delimited */ false);
 
@@ -148,6 +149,10 @@ struct Lexer<'psess, 'src> {
     token: Token,
 
     diag_info: TokenTreeDiagInfo,
+
+    /// Scratch stack of the token trees of every open group, innermost last.
+    /// See `lex_token_trees`.
+    tree_buf: Vec<TokenTree>,
 }
 
 impl<'psess, 'src> Lexer<'psess, 'src> {
