@@ -20,14 +20,13 @@ use crate::rustc_data_structures::fingerprint::Fingerprint;
 use crate::rustc_data_structures::sorted_map::SortedMap;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use crate::rustc_data_structures::steal::Steal;
-use crate::rustc_data_structures::sync::{DynSend, DynSync, try_par_for_each_in};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalDefIdMap, LocalModId};
 use crate::rustc_hir::lints::DelayedLints;
 use crate::rustc_hir::*;
 use rustc_macros::{Decodable, Encodable, StableHash};
-use crate::rustc_span::{ErrorGuaranteed, ExpnId, Span};
+use crate::rustc_span::{ExpnId, Span};
 
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::TyCtxt;
@@ -112,47 +111,34 @@ impl ModuleItems {
         self.owners().map(|id| id.def_id)
     }
 
+    // The frozen id slices, as they are held: the inputs of stages (`sync::run_stage`), read in
+    // place by index. They replaced `par_items`, `par_trait_items`, `par_impl_items`,
+    // `par_foreign_items`, `par_nested_bodies` and `par_opaques`, which each ran a fallible
+    // closure per id through the `try_par_for_each_in` shim.
+
+    pub fn free_item_ids(&self) -> &[ItemId] {
+        &self.free_items
+    }
+
+    pub fn trait_item_ids(&self) -> &[TraitItemId] {
+        &self.trait_items
+    }
+
+    pub fn impl_item_ids(&self) -> &[ImplItemId] {
+        &self.impl_items
+    }
+
+    pub fn foreign_item_ids(&self) -> &[ForeignItemId] {
+        &self.foreign_items
+    }
+
     /// Closures and inline consts
-    pub fn par_nested_bodies(
-        &self,
-        f: impl Fn(LocalDefId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        try_par_for_each_in(&self.nested_bodies[..], |&&id| f(id))
+    pub fn nested_body_ids(&self) -> &[LocalDefId] {
+        &self.nested_bodies
     }
 
-    pub fn par_items(
-        &self,
-        f: impl Fn(ItemId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        try_par_for_each_in(&self.free_items[..], |&&id| f(id))
-    }
-
-    pub fn par_trait_items(
-        &self,
-        f: impl Fn(TraitItemId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        try_par_for_each_in(&self.trait_items[..], |&&id| f(id))
-    }
-
-    pub fn par_impl_items(
-        &self,
-        f: impl Fn(ImplItemId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        try_par_for_each_in(&self.impl_items[..], |&&id| f(id))
-    }
-
-    pub fn par_foreign_items(
-        &self,
-        f: impl Fn(ForeignItemId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        try_par_for_each_in(&self.foreign_items[..], |&&id| f(id))
-    }
-
-    pub fn par_opaques(
-        &self,
-        f: impl Fn(LocalDefId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        try_par_for_each_in(&self.opaques[..], |&&id| f(id))
+    pub fn opaque_ids(&self) -> &[LocalDefId] {
+        &self.opaques
     }
 }
 

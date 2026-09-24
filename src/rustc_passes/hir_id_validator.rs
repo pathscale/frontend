@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use alloc::string::String;
-use crate::rustc_data_structures::sync::Lock;
+use crate::rustc_data_structures::sync::{Lock, run_stage};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_hir::{HirId, ItemLocalId, intravisit};
@@ -9,16 +9,20 @@ use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::ty::TyCtxt;
 
 pub fn check_crate(tcx: TyCtxt<'_>) {
-    let errors = Lock::new(Vec::new());
-
-    tcx.par_hir_for_each_module(|module_id| {
+    // One stage over the modules. Each module's errors are that item's output, collected in its
+    // own list and merged in module order below, rather than pushed by every module into one
+    // shared locked list in whatever order the modules finished.
+    let modules = tcx.hir_module_ids();
+    let per_module = run_stage(modules, modules.len(), |modules, index| {
+        let errors = Lock::new(Vec::new());
         let mut v =
             HirIdValidator { tcx, owner: None, hir_ids_seen: Default::default(), errors: &errors };
 
-        tcx.hir_visit_item_likes_in_module(module_id, &mut v);
+        tcx.hir_visit_item_likes_in_module(modules[index], &mut v);
+        errors.into_inner()
     });
 
-    let errors = errors.into_inner();
+    let errors: Vec<String> = per_module.into_iter().flatten().collect();
 
     if !errors.is_empty() {
         let message = errors.iter().fold(String::new(), |s1, s2| s1 + "\n" + s2);

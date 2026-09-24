@@ -22,7 +22,9 @@ use alloc::vec::Vec;
 use eko::file;
 use eko::path;
 
-use crate::rustc_data_structures::sync::{IntoDynSyncSend, MappedReadGuard, ReadGuard, RwLock};
+use crate::rustc_data_structures::sync::{
+    IntoDynSyncSend, LockFreeAppendOnlyVec, MappedReadGuard, ReadGuard, RwLock,
+};
 use crate::rustc_data_structures::unhash::UnhashMap;
 use tracing::{debug, instrument, trace};
 
@@ -166,12 +168,33 @@ impl core::fmt::Debug for SourceMapFiles {
 pub struct SourceMapInputs {
     pub file_loader: Box<dyn FileLoader + Send + Sync>,
     pub path_mapping: FilePathMapping,
-    pub hash_kind: SourceFileHashAlgorithm,
+    /// `None`: source files are not hashed (see `SourceFile::src_hash`).
+    pub hash_kind: Option<SourceFileHashAlgorithm>,
     pub checksum_hash_kind: Option<SourceFileHashAlgorithm>,
 }
 
+/// A file of the map, as the lock-free index holds it: where it starts, and the file.
+///
+/// The pointer is `Arc::as_ptr` of the `Arc` in `SourceMapFiles::source_files`, which holds
+/// every file for the map's whole life (files are only appended), so it is valid for as long as
+/// the map is, and a `SourceFile` is `Sync`.
+#[derive(Clone, Copy)]
+struct FileAt {
+    start: BytePos,
+    file: core::ptr::NonNull<SourceFile>,
+}
+
+// SAFETY: see `FileAt`: the pointee outlives every reader (the map owns it), and `SourceFile`
+// is `Sync`, so reading it from any thread is sound.
+unsafe impl Send for FileAt {}
+
 pub struct SourceMap {
     files: RwLock<SourceMapFiles>,
+    /// `files.source_files` again, as start positions and pointers readable without the lock:
+    /// every span lookup reads it, from every worker of a parallel stage at once, and the lock
+    /// word and each file's `Arc` count were the stage's most contended lines. Appended under
+    /// `files`' write lock, in the same order.
+    index: LockFreeAppendOnlyVec<FileAt>,
     file_loader: IntoDynSyncSend<Box<dyn FileLoader + Sync + Send>>,
 
     // This is used to apply the file path remapping as specified via
@@ -181,8 +204,8 @@ pub struct SourceMap {
     /// Current working directory
     working_dir: RealFileName,
 
-    /// The algorithm used for hashing the contents of each source file.
-    hash_kind: SourceFileHashAlgorithm,
+    /// The algorithm used for hashing the contents of each source file, if they are hashed.
+    hash_kind: Option<SourceFileHashAlgorithm>,
 
     /// Similar to `hash_kind`, however this algorithm is used for checksums to determine if a crate is fresh.
     /// `cargo` is the primary user of these.
@@ -193,8 +216,10 @@ pub struct SourceMap {
 
 impl core::fmt::Debug for SourceMap {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // `index` repeats `files`, so it is not printed.
         let SourceMap {
             files,
+            index: _,
             file_loader,
             path_mapping,
             working_dir,
@@ -218,9 +243,25 @@ impl SourceMap {
         Self::with_inputs(SourceMapInputs {
             file_loader: Box::new(RealFileLoader),
             path_mapping,
-            hash_kind: SourceFileHashAlgorithm::Md5,
+            hash_kind: None,
             checksum_hash_kind: None,
         })
+    }
+
+    /// A map for text held in memory that loads no file: it asks the operating system for no
+    /// working directory, which only makes a loaded file's relative path absolute. For parsing a
+    /// string, pretty-printing, and reading a snippet; a session, which can load `mod` files,
+    /// uses [`with_inputs`](Self::with_inputs). Its files are not hashed.
+    pub fn for_text(path_mapping: FilePathMapping) -> SourceMap {
+        SourceMap {
+            files: Default::default(),
+            index: LockFreeAppendOnlyVec::new(),
+            working_dir: RealFileName::empty(),
+            file_loader: IntoDynSyncSend(Box::new(RealFileLoader)),
+            path_mapping,
+            hash_kind: None,
+            checksum_hash_kind: None,
+        }
     }
 
     pub fn with_inputs(
@@ -233,6 +274,7 @@ impl SourceMap {
         debug!(?working_dir);
         SourceMap {
             files: Default::default(),
+            index: LockFreeAppendOnlyVec::new(),
             working_dir,
             file_loader: IntoDynSyncSend(file_loader),
             path_mapping,
@@ -315,6 +357,11 @@ impl SourceMap {
 
         let file = Arc::new(file);
         files.source_files.push(Arc::clone(&file));
+        // Under the write lock, so the index gets the files in `source_files` order.
+        self.index.push(FileAt {
+            start: file.start_pos,
+            file: core::ptr::NonNull::from(&*file),
+        });
         files.stable_id_to_source_file.insert(file_id, Arc::clone(&file));
 
         Ok(file)
@@ -323,8 +370,15 @@ impl SourceMap {
     /// Creates a new `SourceFile`.
     /// If a file already exists in the `SourceMap` with the same ID, that file is returned
     /// unmodified.
-    pub fn new_source_file(&self, filename: FileName, src: String) -> Arc<SourceFile> {
-        self.try_new_source_file(filename, src).unwrap_or_else(|OffsetOverflowError| {
+    ///
+    /// `src` is kept as the file's text without a copy unless normalization changes it; see
+    /// [`SourceFile::new`].
+    pub fn new_source_file(
+        &self,
+        filename: FileName,
+        src: impl Into<Arc<String>>,
+    ) -> Arc<SourceFile> {
+        self.try_new_source_file(filename, src.into()).unwrap_or_else(|OffsetOverflowError| {
             eko::eprintln!(
                 "fatal error: rustc does not support text files larger than {} bytes",
                 SourceFile::MAX_FILE_SIZE
@@ -336,7 +390,7 @@ impl SourceMap {
     fn try_new_source_file(
         &self,
         filename: FileName,
-        src: String,
+        src: Arc<String>,
     ) -> Result<Arc<SourceFile>, OffsetOverflowError> {
         // Note that filename may not be a valid path, eg it may be `<anon>` etc,
         // but this is okay because the directory determined by `path.pop()` will
@@ -365,7 +419,7 @@ impl SourceMap {
     pub fn new_imported_source_file(
         &self,
         filename: FileName,
-        src_hash: SourceFileHash,
+        src_hash: Option<SourceFileHash>,
         checksum_hash: Option<SourceFileHash>,
         stable_id: StableSourceFileId,
         normalized_source_len: u32,
@@ -417,8 +471,40 @@ impl SourceMap {
 
     /// Return the SourceFile that contains the given `BytePos`
     pub fn lookup_source_file(&self, pos: BytePos) -> Arc<SourceFile> {
-        let idx = self.lookup_source_file_idx(pos);
-        Arc::clone(&(*self.files.borrow().source_files)[idx])
+        self.shared_file(self.index_at(pos))
+    }
+
+    /// The file holding `pos`, borrowed from the map: no lock and no `Arc` count touched.
+    pub fn lookup_file(&self, pos: BytePos) -> &SourceFile {
+        // SAFETY: see `FileAt`: the file lives as long as `self`.
+        unsafe { self.index_at(pos).file.as_ref() }
+    }
+
+    /// The index entry of the file holding `pos`: the last file starting at or before it.
+    fn index_at(&self, pos: BytePos) -> FileAt {
+        let (mut lo, mut hi) = (0, self.index.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.index.get(mid).expect("below the published length").start <= pos {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        self.index.get(lo.checked_sub(1).expect("a position before the first file"))
+            .expect("below the published length")
+    }
+
+    /// An owned handle to an indexed file.
+    fn shared_file(&self, at: FileAt) -> Arc<SourceFile> {
+        let file = at.file.as_ptr().cast_const();
+        // SAFETY: `file` is `Arc::as_ptr` of an `Arc` the map holds (see `FileAt`), so the
+        // allocation is alive with a strong count of at least one; adding one and taking it as
+        // an `Arc` is what `Arc::clone` does.
+        unsafe {
+            Arc::increment_strong_count(file);
+            Arc::from_raw(file)
+        }
     }
 
     /// Looks up source information about a `BytePos`.
@@ -580,36 +666,36 @@ impl SourceMap {
     where
         F: FnMut(&str, usize, usize) -> Result<T, SpanSnippetError>,
     {
-        let local_begin = self.lookup_byte_offset(sp.lo());
-        let local_end = self.lookup_byte_offset(sp.hi());
+        let (begin_sf, begin_pos) = self.lookup_byte_offset_in(sp.lo());
+        let (end_sf, end_pos) = self.lookup_byte_offset_in(sp.hi());
 
-        if local_begin.sf.start_pos != local_end.sf.start_pos {
+        if begin_sf.start_pos != end_sf.start_pos {
             Err(SpanSnippetError::DistinctSources(Box::new(DistinctSources {
-                begin: (local_begin.sf.name.clone(), local_begin.sf.start_pos),
-                end: (local_end.sf.name.clone(), local_end.sf.start_pos),
+                begin: (begin_sf.name.clone(), begin_sf.start_pos),
+                end: (end_sf.name.clone(), end_sf.start_pos),
             })))
         } else {
-            self.ensure_source_file_source_present(&local_begin.sf);
+            self.ensure_source_file_source_present(begin_sf);
 
-            let start_index = local_begin.pos.to_usize();
-            let end_index = local_end.pos.to_usize();
-            let source_len = local_begin.sf.normalized_source_len.to_usize();
+            let start_index = begin_pos.to_usize();
+            let end_index = end_pos.to_usize();
+            let source_len = begin_sf.normalized_source_len.to_usize();
 
             if start_index > end_index || end_index > source_len {
                 return Err(SpanSnippetError::MalformedForSourcemap(MalformedSourceMapPositions {
-                    name: local_begin.sf.name.clone(),
+                    name: begin_sf.name.clone(),
                     source_len,
-                    begin_pos: local_begin.pos,
-                    end_pos: local_end.pos,
+                    begin_pos,
+                    end_pos,
                 }));
             }
 
-            if let Some(ref src) = local_begin.sf.src {
+            if let Some(ref src) = begin_sf.src {
                 extract_source(src, start_index, end_index)
-            } else if let Some(src) = local_begin.sf.external_src.read().get_source() {
+            } else if let Some(src) = begin_sf.external_src.read().get_source() {
                 extract_source(src, start_index, end_index)
             } else {
-                Err(SpanSnippetError::SourceNotAvailable { filename: local_begin.sf.name.clone() })
+                Err(SpanSnippetError::SourceNotAvailable { filename: begin_sf.name.clone() })
             }
         }
     }
@@ -1052,17 +1138,31 @@ impl SourceMap {
 
     /// For a global `BytePos`, computes the local offset within the containing `SourceFile`.
     pub fn lookup_byte_offset(&self, bpos: BytePos) -> SourceFileAndBytePos {
-        let idx = self.lookup_source_file_idx(bpos);
-        let sf = Arc::clone(&(*self.files.borrow().source_files)[idx]);
-        let offset = bpos - sf.start_pos;
-        SourceFileAndBytePos { sf, pos: offset }
+        let at = self.index_at(bpos);
+        SourceFileAndBytePos { sf: self.shared_file(at), pos: bpos - at.start }
+    }
+
+    /// [`lookup_byte_offset`](Self::lookup_byte_offset), borrowing the file.
+    pub fn lookup_byte_offset_in(&self, bpos: BytePos) -> (&SourceFile, BytePos) {
+        let at = self.index_at(bpos);
+        // SAFETY: see `FileAt`.
+        (unsafe { at.file.as_ref() }, bpos - at.start)
     }
 
     /// Returns the index of the [`SourceFile`] (in `self.files`) that contains `pos`.
     /// This index is guaranteed to be valid for the lifetime of this `SourceMap`,
     /// since `source_files` is a `MonotonicVec`
     pub fn lookup_source_file_idx(&self, pos: BytePos) -> usize {
-        self.files.borrow().source_files.partition_point(|x| x.start_pos <= pos) - 1
+        let (mut lo, mut hi) = (0, self.index.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.index.get(mid).expect("below the published length").start <= pos {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo - 1
     }
 
     pub fn count_lines(&self) -> usize {

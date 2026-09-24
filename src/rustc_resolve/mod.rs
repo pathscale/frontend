@@ -98,6 +98,7 @@ use crate::rustc_resolve::diagnostics::impls::{
     ImportSuggestion, LabelSuggestion, OnUnknownData, StructCtor, Suggestion,
 };
 use crate::rustc_resolve::imports::{ImportResolution, NameResolutionRef};
+use crate::rustc_resolve::ref_mut::frozen::FrozenFlag;
 use crate::rustc_resolve::ref_mut::speculative::SpeculativeFlag;
 use crate::rustc_resolve::ref_mut::{CmCell, CmRef, CmRefCell};
 
@@ -842,7 +843,13 @@ impl<'ra> Module<'ra> {
     }
 
     /// This modifies `self` in place. The traits will be stored in `self.traits`.
+    ///
+    /// Reads first and writes only when the traits are not there yet: late resolution fills
+    /// them for every local module before its frozen stage, where the write path asserts.
     fn ensure_traits<'tcx>(self, resolver: &Resolver<'ra, 'tcx>) {
+        if self.traits.borrow_checked(resolver).is_some() {
+            return;
+        }
         let mut traits = self.traits.borrow_mut_checked(resolver);
         if traits.is_none() {
             let mut collected_traits = Vec::new();
@@ -1372,6 +1379,11 @@ pub struct Resolver<'ra, 'tcx> {
     /// Assert that we are in speculative resolution mode (unsafe field).
     speculative_flag: SpeculativeFlag,
 
+    /// Set while late resolution runs its units as a stage: the module graph is frozen, every
+    /// `CmRefCell` read is untracked and every lazy write path asserts it is not taken (unsafe
+    /// field, see `FrozenFlag::set`).
+    frozen_flag: FrozenFlag,
+
     prelude: Option<Module<'ra>>,
     extern_prelude: FxIndexMap<IdentKey, ExternPreludeEntry<'ra>>,
 
@@ -1696,16 +1708,37 @@ impl<'tcx> Resolver<'_, 'tcx> {
         span: Span,
         is_owner: bool,
     ) -> TyCtxtFeed<'tcx, LocalDefId> {
-        assert!(
-            !self.current_owner.node_id_to_def_id.contains_key(&node_id),
-            "adding a def for node-id {:?}, name {:?}, data {:?} but a previous def exists: {:?}",
-            node_id,
-            name,
-            def_kind,
-            self.tcx
-                .definitions_untracked()
-                .def_key(self.current_owner.node_id_to_def_id[&node_id]),
-        );
+        // Some things for which we allocate `LocalDefId`s don't correspond to
+        // anything in the AST, so they don't have a `NodeId`. For these cases
+        // we don't need a mapping from `NodeId` to `LocalDefId`.
+        //
+        // When the mapping is recorded, the slot is found once: the same lookup checks that
+        // no previous def exists (the same panic, before anything is created) and is filled
+        // below, instead of a `contains_key` here and an `insert` at the end.
+        let vacant = if node_id != ast::DUMMY_NODE_ID && !is_owner {
+            match self.current_owner.node_id_to_def_id.entry(node_id) {
+                hashbrown::hash_map::Entry::Occupied(previous) => panic!(
+                    "adding a def for node-id {:?}, name {:?}, data {:?} but a previous def exists: {:?}",
+                    node_id,
+                    name,
+                    def_kind,
+                    self.tcx.def_table_untracked().def_key(*previous.get()),
+                ),
+                hashbrown::hash_map::Entry::Vacant(vacant) => Some(vacant),
+            }
+        } else {
+            assert!(
+                !self.current_owner.node_id_to_def_id.contains_key(&node_id),
+                "adding a def for node-id {:?}, name {:?}, data {:?} but a previous def exists: {:?}",
+                node_id,
+                name,
+                def_kind,
+                self.tcx
+                    .def_table_untracked()
+                    .def_key(self.current_owner.node_id_to_def_id[&node_id]),
+            );
+            None
+        };
 
         let disambiguator = self.disambiguators.get_or_create(parent);
 
@@ -1723,12 +1756,9 @@ impl<'tcx> Resolver<'_, 'tcx> {
         let _id = self.tcx.untracked().source_span.push(span);
         debug_assert_eq!(_id, def_id);
 
-        // Some things for which we allocate `LocalDefId`s don't correspond to
-        // anything in the AST, so they don't have a `NodeId`. For these cases
-        // we don't need a mapping from `NodeId` to `LocalDefId`.
-        if node_id != ast::DUMMY_NODE_ID && !is_owner {
+        if let Some(vacant) = vacant {
             debug!("create_def: def_id_to_node_id[{:?}] <-> {:?}", def_id, node_id);
-            self.current_owner.node_id_to_def_id.insert(node_id, def_id);
+            vacant.insert(def_id);
         }
 
         feed
@@ -1846,6 +1876,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             graph_root,
             // Only set/cleared in Resolver::resolve_imports for now
             speculative_flag: SpeculativeFlag::default(),
+            frozen_flag: FrozenFlag::default(),
             extern_prelude,
 
             empty_module,
@@ -2075,6 +2106,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             owners: self.owners,
             lint_buffer: Steal::new(self.lint_buffer),
             disambiguators,
+            desugaring_allow: ty::DesugaringAllowLists::new(
+                self.tcx.features().async_fn_track_caller(),
+            ),
         };
         ResolverOutputs { global_ctxt, ast_lowering }
     }
@@ -2167,73 +2201,6 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         self.tcx.untracked().freeze_cstore();
     }
 
-    fn traits_in_scope(
-        &mut self,
-        current_trait: Option<Module<'ra>>,
-        parent_scope: &ParentScope<'ra>,
-        sp: Span,
-        assoc_item: Option<(Symbol, Namespace)>,
-    ) -> &'tcx [TraitCandidate<'tcx>] {
-        let mut found_traits = Vec::new();
-
-        if let Some(module) = current_trait {
-            if self.trait_may_have_item(Some(module), assoc_item) {
-                let def_id = module.def_id();
-                found_traits.push(TraitCandidate {
-                    def_id,
-                    import_ids: &[],
-                    lint_ambiguous: false,
-                });
-            }
-        }
-
-        let scope_set = ScopeSet::All(TypeNS);
-        let ctxt = Macros20NormalizedSyntaxContext::new(sp.ctxt());
-        let cmr = self.cm_mut();
-        cmr.visit_scopes(scope_set, parent_scope, ctxt, sp, None, |mut this, scope, _, _| {
-            match scope {
-                Scope::ModuleNonGlobs(module, _) => {
-                    this.get_mut().traits_in_module(module, assoc_item, &mut found_traits);
-                }
-                Scope::ModuleGlobs(..) => {
-                    // Already handled in `ModuleNonGlobs` (but see #144993).
-                }
-                Scope::StdLibPrelude => {
-                    if let Some(module) = this.prelude {
-                        this.get_mut().traits_in_module(module, assoc_item, &mut found_traits);
-                    }
-                }
-                Scope::ExternPreludeItems
-                | Scope::ExternPreludeFlags
-                | Scope::ToolAttributePrelude
-                | Scope::BuiltinTypes => {}
-                _ => unreachable!(),
-            }
-            ControlFlow::<()>::Continue(())
-        });
-
-        self.tcx.hir_arena.alloc_slice(&found_traits)
-    }
-
-    fn traits_in_module(
-        &mut self,
-        module: Module<'ra>,
-        assoc_item: Option<(Symbol, Namespace)>,
-        found_traits: &mut Vec<TraitCandidate<'tcx>>,
-    ) {
-        module.ensure_traits(self);
-        let traits = module.traits.borrow(self);
-        for &(trait_name, trait_binding, trait_module, lint_ambiguous) in
-            traits.as_ref().unwrap().iter()
-        {
-            if self.trait_may_have_item(trait_module, assoc_item) {
-                let def_id = trait_binding.res().def_id();
-                let import_ids = self.find_transitive_imports(&trait_binding.kind, trait_name);
-                found_traits.push(TraitCandidate { def_id, import_ids, lint_ambiguous });
-            }
-        }
-    }
-
     // List of traits in scope is pruned on best effort basis. We reject traits not having an
     // associated item with the given name and namespace (if specified). This is a conservative
     // optimization, proper hygienic type-based resolution of associated items is done in typeck.
@@ -2253,22 +2220,23 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    fn find_transitive_imports(
-        &mut self,
-        mut kind: &DeclKind<'_>,
-        trait_name: Symbol,
-    ) -> &'tcx [LocalDefId] {
-        let mut import_ids: SmallVec<[LocalDefId; 1]> = smallvec![];
-        while let DeclKind::Import { import, source_decl, .. } = kind {
-            if let Some(def_id) = import.def_id() {
-                self.maybe_unused_trait_imports.insert(def_id);
-                import_ids.push(def_id);
-            }
-            self.add_to_glob_map(*import, trait_name);
-            kind = &source_decl.kind;
+    /// Read one of the lazily filled external tables (`extern_module_map`, `extern_macro_map`).
+    ///
+    /// While frozen (late resolution's stage) several threads read them at once and nothing
+    /// writes them: every write path asserts it is not frozen, and the stage runs only with no
+    /// external crate loaded. `RefCell::borrow` would still bump a non-atomic counter on each
+    /// read, a data race between readers that later reads as "already mutably borrowed", so a
+    /// frozen read takes no borrow at all.
+    fn read_external<'a, T>(&self, cell: &'a CacheRefCell<T>) -> CmRef<'a, T> {
+        if self.frozen_flag.is_frozen() {
+            // SAFETY: frozen mode never writes these cells (asserted on each write path), so no
+            // `RefMut` exists or is created while this reference lives.
+            CmRef::Untracked(unsafe {
+                cell.try_borrow_unguarded().expect("external table written while frozen")
+            })
+        } else {
+            CmRef::Tracked(cell.borrow())
         }
-
-        self.tcx.hir_arena.alloc_slice(&import_ids)
     }
 
     fn resolutions(&self, module: Module<'ra>) -> CmRef<'ra, ResolutionTable<'ra>> {
@@ -2319,89 +2287,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     /// Test if AmbiguityError ambi is any identical to any one inside ambiguity_errors
     fn matches_previous_ambiguity_error(&self, ambi: &AmbiguityError<'_>) -> bool {
-        for ambiguity_error in &self.ambiguity_errors {
-            // if the span location and ident as well as its span are the same
-            if ambiguity_error.kind == ambi.kind
-                && ambiguity_error.ident == ambi.ident
-                && ambiguity_error.ident.span == ambi.ident.span
-                && ambiguity_error.b1.span == ambi.b1.span
-                && ambiguity_error.b2.span == ambi.b2.span
-            {
-                return true;
-            }
-        }
-        false
+        // if the span location and ident as well as its span are the same
+        self.ambiguity_errors.iter().any(|ambiguity_error| same_ambiguity_error(ambiguity_error, ambi))
     }
 
+    /// `CmResolver::record_use` on this resolver, for the many callers that hold it mutably.
+    /// (Built directly rather than through `cm_mut`, which would add an assertion this method
+    /// never made.)
     fn record_use(&mut self, ident: Ident, used_decl: Decl<'ra>, used: Used) {
-        if let Some((b2, warning)) = used_decl.ambiguity.get() {
-            let ambiguity_error = AmbiguityError {
-                kind: AmbiguityKind::GlobVsGlob,
-                ambig_vis: None,
-                ident,
-                b1: used_decl,
-                b2,
-                scope1: Scope::ModuleGlobs(used_decl.parent_module.unwrap(), None),
-                scope2: Scope::ModuleGlobs(b2.parent_module.unwrap(), None),
-                warning: if warning { Some(AmbiguityWarning::GlobImport) } else { None },
-            };
-            if !self.matches_previous_ambiguity_error(&ambiguity_error) {
-                // avoid duplicated span information to be emit out
-                self.ambiguity_errors.push(ambiguity_error);
-            }
-        }
-        if let DeclKind::Import { import, source_decl } = used_decl.kind {
-            if let ImportKind::MacroUse { warn_private: true } = import.kind {
-                // Do not report the lint if the macro name resolves in stdlib prelude
-                // even without the problematic `macro_use` import.
-                let found_in_stdlib_prelude = self.prelude.is_some_and(|prelude| {
-                    let empty_module = self.empty_module;
-                    let arenas = self.arenas;
-                    self.cm()
-                        .maybe_resolve_ident_in_module(
-                            ModuleOrUniformRoot::Module(prelude),
-                            ident,
-                            MacroNS,
-                            &ParentScope::module(empty_module, arenas),
-                            None,
-                        )
-                        .is_ok()
-                });
-                if !found_in_stdlib_prelude {
-                    self.lint_buffer().buffer_lint(
-                        PRIVATE_MACRO_USE,
-                        import.root_id,
-                        ident.span,
-                        diagnostics::MacroIsPrivate { ident },
-                    );
-                }
-            }
-            // Avoid marking `extern crate` items that refer to a name from extern prelude,
-            // but not introduce it, as used if they are accessed from lexical scope.
-            if used == Used::Scope
-                && let Some(entry) = self.extern_prelude.get(&IdentKey::new(ident))
-                && let Some((item_decl, _, false)) = entry.item_decl
-                && item_decl == used_decl
-            {
-                return;
-            }
-            let old_used = self.import_use_map.entry(import).or_insert(used);
-            if *old_used < used {
-                *old_used = used;
-            }
-            if let Some(id) = import.id() {
-                self.used_imports.insert(id);
-            }
-            self.add_to_glob_map(import, ident.name);
-            self.record_use(ident, source_decl, Used::Other);
-        }
-    }
-
-    #[inline]
-    fn add_to_glob_map(&mut self, import: Import<'_>, name: Symbol) {
-        if let ImportKind::Glob { def_id, .. } = import.kind {
-            self.glob_map.entry(def_id).or_default().insert(name);
-        }
+        CmResolver::Mut(self).record_use(ident, used_decl, used)
     }
 
     fn resolve_crate_root(&self, ident: Ident) -> Module<'ra> {
@@ -2493,11 +2387,6 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    fn record_pat_span(&mut self, node: NodeId, span: Span) {
-        debug!("(recording pat) recording {:?} for {:?}", node, span);
-        self.pat_span_map.insert(node, span);
-    }
-
     fn is_accessible_from(&self, vis: Visibility<impl Into<DefId>>, module: Module<'ra>) -> bool {
         vis.is_accessible_from(module.nearest_parent_mod(), self.tcx)
     }
@@ -2533,10 +2422,165 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         let entry = self.extern_prelude.get(&ident);
         entry.and_then(|entry| entry.item_decl).map(|(decl, ..)| {
             if finalize {
-                self.get_mut().record_use(ident.orig(orig_ident_span), decl, Used::Scope);
+                self.record_use(ident.orig(orig_ident_span), decl, Used::Scope);
             }
             decl
         })
+    }
+
+    fn record_use(&mut self, ident: Ident, used_decl: Decl<'ra>, used: Used) {
+        if let Some((b2, warning)) = used_decl.ambiguity.get() {
+            let ambiguity_error = AmbiguityError {
+                kind: AmbiguityKind::GlobVsGlob,
+                ambig_vis: None,
+                ident,
+                b1: used_decl,
+                b2,
+                scope1: Scope::ModuleGlobs(used_decl.parent_module.unwrap(), None),
+                scope2: Scope::ModuleGlobs(b2.parent_module.unwrap(), None),
+                warning: if warning { Some(AmbiguityWarning::GlobImport) } else { None },
+            };
+            // avoid duplicated span information to be emit out
+            self.push_ambiguity_error(ambiguity_error, true);
+        }
+        if let DeclKind::Import { import, source_decl } = used_decl.kind {
+            if let ImportKind::MacroUse { warn_private: true } = import.kind {
+                // Do not report the lint if the macro name resolves in stdlib prelude
+                // even without the problematic `macro_use` import.
+                let found_in_stdlib_prelude = self.prelude.is_some_and(|prelude| {
+                    let empty_module = self.empty_module;
+                    let arenas = self.arenas;
+                    self.cm()
+                        .maybe_resolve_ident_in_module(
+                            ModuleOrUniformRoot::Module(prelude),
+                            ident,
+                            MacroNS,
+                            &ParentScope::module(empty_module, arenas),
+                            None,
+                        )
+                        .is_ok()
+                });
+                if !found_in_stdlib_prelude {
+                    self.lint_buffer_mut().buffer_lint(
+                        PRIVATE_MACRO_USE,
+                        import.root_id,
+                        ident.span,
+                        diagnostics::MacroIsPrivate { ident },
+                    );
+                }
+            }
+            // Avoid marking `extern crate` items that refer to a name from extern prelude,
+            // but not introduce it, as used if they are accessed from lexical scope.
+            if used == Used::Scope
+                && let Some(entry) = self.extern_prelude.get(&IdentKey::new(ident))
+                && let Some((item_decl, _, false)) = entry.item_decl
+                && item_decl == used_decl
+            {
+                return;
+            }
+            let old_used = self.import_use_map_mut().entry(import).or_insert(used);
+            if *old_used < used {
+                *old_used = used;
+            }
+            if let Some(id) = import.id() {
+                self.used_imports_mut().insert(id);
+            }
+            self.add_to_glob_map(import, ident.name);
+            self.record_use(ident, source_decl, Used::Other);
+        }
+    }
+
+    #[inline]
+    fn add_to_glob_map(&mut self, import: Import<'_>, name: Symbol) {
+        if let ImportKind::Glob { def_id, .. } = import.kind {
+            self.glob_map_mut().entry(def_id).or_default().insert(name);
+        }
+    }
+
+    fn traits_in_scope(
+        mut self,
+        current_trait: Option<Module<'ra>>,
+        parent_scope: &ParentScope<'ra>,
+        sp: Span,
+        assoc_item: Option<(Symbol, Namespace)>,
+    ) -> &'tcx [TraitCandidate<'tcx>] {
+        let mut found_traits = Vec::new();
+
+        if let Some(module) = current_trait {
+            if self.trait_may_have_item(Some(module), assoc_item) {
+                let def_id = module.def_id();
+                found_traits.push(TraitCandidate {
+                    def_id,
+                    import_ids: &[],
+                    lint_ambiguous: false,
+                });
+            }
+        }
+
+        let scope_set = ScopeSet::All(TypeNS);
+        let ctxt = Macros20NormalizedSyntaxContext::new(sp.ctxt());
+        self.reborrow().visit_scopes(scope_set, parent_scope, ctxt, sp, None, |mut this, scope, _, _| {
+            match scope {
+                Scope::ModuleNonGlobs(module, _) => {
+                    this.traits_in_module(module, assoc_item, &mut found_traits);
+                }
+                Scope::ModuleGlobs(..) => {
+                    // Already handled in `ModuleNonGlobs` (but see #144993).
+                }
+                Scope::StdLibPrelude => {
+                    if let Some(module) = this.prelude {
+                        this.traits_in_module(module, assoc_item, &mut found_traits);
+                    }
+                }
+                Scope::ExternPreludeItems
+                | Scope::ExternPreludeFlags
+                | Scope::ToolAttributePrelude
+                | Scope::BuiltinTypes => {}
+                _ => unreachable!(),
+            }
+            ControlFlow::<()>::Continue(())
+        });
+
+        self.tcx.hir_arena.alloc_slice(&found_traits)
+    }
+
+    fn traits_in_module(
+        &mut self,
+        module: Module<'ra>,
+        assoc_item: Option<(Symbol, Namespace)>,
+        found_traits: &mut Vec<TraitCandidate<'tcx>>,
+    ) {
+        // Filled for every local module before a frozen stage starts (`late_resolve_crate`), so
+        // this writes nothing there.
+        module.ensure_traits(&**self);
+        let traits = module.traits.borrow_checked(&**self);
+        for &(trait_name, trait_binding, trait_module, lint_ambiguous) in
+            traits.as_ref().unwrap().iter()
+        {
+            if self.trait_may_have_item(trait_module, assoc_item) {
+                let def_id = trait_binding.res().def_id();
+                let import_ids = self.find_transitive_imports(&trait_binding.kind, trait_name);
+                found_traits.push(TraitCandidate { def_id, import_ids, lint_ambiguous });
+            }
+        }
+    }
+
+    fn find_transitive_imports(
+        &mut self,
+        mut kind: &DeclKind<'_>,
+        trait_name: Symbol,
+    ) -> &'tcx [LocalDefId] {
+        let mut import_ids: SmallVec<[LocalDefId; 1]> = smallvec![];
+        while let DeclKind::Import { import, source_decl, .. } = kind {
+            if let Some(def_id) = import.def_id() {
+                self.maybe_unused_trait_imports_mut().insert(def_id);
+                import_ids.push(def_id);
+            }
+            self.add_to_glob_map(*import, trait_name);
+            kind = &source_decl.kind;
+        }
+
+        self.tcx.hir_arena.alloc_slice(&import_ids)
     }
 }
 
@@ -2584,6 +2628,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     }
                 }
             };
+            // A lazy write, and `--extern` flags are one of the reasons late resolution stays
+            // serial (`late_resolve_crate`), so it never runs frozen.
+            debug_assert!(!self.frozen_flag.is_frozen(), "extern prelude written while frozen");
             flag_decl.set((PendingDecl::Ready(decl), finalize || finalized, is_open));
             decl.or_else(|| finalize.then_some(self.dummy_decl))
         })
@@ -2688,7 +2735,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Checks if an expression refers to a function marked with
     /// `#[rustc_legacy_const_generics]` and returns the argument index list
     /// from the attribute.
-    fn legacy_const_generic_args(&mut self, expr: &Expr) -> Option<Vec<usize>> {
+    ///
+    /// Called during late resolution, so the expression's resolution is in the unit's `sink`.
+    fn legacy_const_generic_args(&self, expr: &Expr, sink: &LateSink<'ra>) -> Option<Vec<usize>> {
         let ExprKind::Path(None, path) = &expr.kind else {
             return None;
         };
@@ -2698,7 +2747,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             return None;
         }
 
-        let def_id = self.partial_res_map.get(&expr.id)?.full_res()?.opt_def_id()?;
+        let def_id = sink.partial_res(self, expr.id)?.full_res()?.opt_def_id()?;
 
         // We only support cross-crate argument rewriting. Uses
         // within the same crate should be updated to use the new
@@ -2925,12 +2974,280 @@ pub fn provide(providers: &mut Providers) {
     providers.registered_lint_tools = macros::registered_lint_tools;
 }
 
-/// A wrapper around `&mut Resolver` that may be mutable or immutable, depending on a conditions.
+/// A resolver that may be written to, read only, or read only with its writes going to a sink.
 ///
 /// `Cm` stands for "conditionally mutable".
 ///
+/// - `Ref`: nothing may be written; a write path panics.
+/// - `Mut`: writes go into the resolver, as they always did.
+/// - `Late`: late resolution's case. The resolver is shared and frozen (read by every unit of
+///   the stage at once), and every write name lookup makes during late resolution goes into the
+///   unit's own `LateSink` instead, which the unit hands back and the merge puts into the
+///   resolver in unit order. Reads of state the sink holds (`partial_res`, `pat_span`,
+///   `privacy_errors_len`, the ambiguity deduplication) read the sink first, then the resolver.
+///
 /// Prefer constructing it through `Resolver::cm(_mut)` to ensure correctness.
-type CmResolver<'r, 'ra, 'tcx> = ref_mut::RefOrMut<'r, Resolver<'ra, 'tcx>>;
+enum CmResolver<'r, 'ra, 'tcx> {
+    Ref(&'r Resolver<'ra, 'tcx>),
+    Mut(&'r mut Resolver<'ra, 'tcx>),
+    Late(&'r Resolver<'ra, 'tcx>, &'r mut LateSink<'ra>),
+}
+
+impl<'r, 'ra, 'tcx> core::ops::Deref for CmResolver<'r, 'ra, 'tcx> {
+    type Target = Resolver<'ra, 'tcx>;
+
+    fn deref(&self) -> &Resolver<'ra, 'tcx> {
+        match self {
+            CmResolver::Ref(r) => r,
+            CmResolver::Mut(r) => r,
+            CmResolver::Late(r, _) => r,
+        }
+    }
+}
+
+impl<'r, 'ra, 'tcx> AsRef<Resolver<'ra, 'tcx>> for CmResolver<'r, 'ra, 'tcx> {
+    fn as_ref(&self) -> &Resolver<'ra, 'tcx> {
+        self
+    }
+}
+
+/// Every write late resolution's name lookups make, owned by one unit of the stage (see
+/// `LateUnit` in `late.rs`) and merged into the resolver in unit order by
+/// `Resolver::merge_late_units`, with the merge rule each field names.
+///
+/// Every key here is a node or an import the unit itself reached, and every reader during the
+/// unit reads this first and the frozen resolver after, so a unit sees exactly what the single
+/// crate walk would have seen of its own writes.
+#[derive(Default)]
+struct LateSink<'ra> {
+    /// `Resolver::partial_res_map`. Keys are the unit's own nodes: extended.
+    partial_res_map: NodeMap<PartialRes>,
+    /// `Resolver::pat_span_map`. Keys are the unit's own patterns: extended.
+    pat_span_map: NodeMap<Span>,
+    /// `Resolver::privacy_errors`. Concatenated in unit order; `resolve_path_with_ribs` rewrites
+    /// only the tail it pushed, which is this unit's.
+    privacy_errors: Vec<PrivacyError<'ra>>,
+    /// `Resolver::ambiguity_errors`, each with whether its push was deduplicated (`record_use`
+    /// deduplicates, the other pushes do not). Replayed in unit order, deduplicating again
+    /// against everything merged before it: equality is an equivalence, so "first of its kind
+    /// wins" applied per unit and then across units keeps exactly what the walk kept.
+    ambiguity_errors: Vec<(AmbiguityError<'ra>, bool)>,
+    /// `Resolver::issue_145575_hack_applied`, only ever set: or-ed.
+    issue_145575_hack_applied: bool,
+    /// `Resolver::macro_expanded_macro_export_errors`, a `BTreeSet`: united.
+    macro_expanded_macro_export_errors: BTreeSet<(Span, Span)>,
+    /// `Resolver::lint_buffer`: each node's lints appended in unit order, which is the order the
+    /// walk buffered them in, and a node first seen in an earlier unit keeps its place.
+    lint_buffer: LintBuffer,
+    /// `Resolver::import_use_map`: entry, keeping the larger `Used`.
+    import_use_map: FxHashMap<Import<'ra>, Used>,
+    /// `Resolver::used_imports`: united.
+    used_imports: FxHashSet<NodeId>,
+    /// `Resolver::glob_map`: replayed in unit order, so keys and names keep first-insertion order.
+    glob_map: FxIndexMap<LocalDefId, FxIndexSet<Symbol>>,
+    /// `Resolver::maybe_unused_trait_imports`: replayed in unit order.
+    maybe_unused_trait_imports: FxIndexSet<LocalDefId>,
+}
+
+impl<'ra> LateSink<'ra> {
+    /// The partial resolution of `id`: the unit's own, else what resolution before late
+    /// resolution recorded.
+    fn partial_res(&self, r: &Resolver<'ra, '_>, id: NodeId) -> Option<PartialRes> {
+        self.partial_res_map.get(&id).or_else(|| r.partial_res_map.get(&id)).copied()
+    }
+
+    /// `Resolver::record_partial_res`, into the sink, with the same "resolved twice" check
+    /// against both places a resolution can be.
+    fn record_partial_res(&mut self, r: &Resolver<'ra, '_>, node_id: NodeId, resolution: PartialRes) {
+        debug!("(recording res) recording {:?} for {}", resolution, node_id);
+        if let Some(prev_res) = r.partial_res_map.get(&node_id) {
+            panic!("path resolved multiple times ({prev_res:?} before, {resolution:?} now)");
+        }
+        if let Some(prev_res) = self.partial_res_map.insert(node_id, resolution) {
+            panic!("path resolved multiple times ({prev_res:?} before, {resolution:?} now)");
+        }
+    }
+
+    /// Record the span of the pattern binding `node`. Only late resolution records these, so
+    /// they only ever go into a sink.
+    fn record_pat_span(&mut self, node: NodeId, span: Span) {
+        debug!("(recording pat) recording {:?} for {:?}", node, span);
+        self.pat_span_map.insert(node, span);
+    }
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    /// This is needed because the type may allow mutable access and is therefore not `Copy`.
+    pub(crate) fn reborrow(&mut self) -> CmResolver<'_, 'ra, 'tcx> {
+        match self {
+            CmResolver::Ref(r) => CmResolver::Ref(r),
+            CmResolver::Mut(r) => CmResolver::Mut(r),
+            CmResolver::Late(r, sink) => CmResolver::Late(r, sink),
+        }
+    }
+
+    /// Returns a mutable reference to the resolver if allowed.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless this is `Mut`: a `Late` resolver is shared, and its writes go through the
+    /// accessors below, which name the sink.
+    #[track_caller]
+    pub(crate) fn get_mut(&mut self) -> &mut Resolver<'ra, 'tcx> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => r,
+            CmResolver::Late(..) => panic!("can't mutably borrow a frozen late resolver"),
+        }
+    }
+
+    #[track_caller]
+    fn lint_buffer_mut(&mut self) -> &mut LintBuffer {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.lint_buffer,
+            CmResolver::Late(_, sink) => &mut sink.lint_buffer,
+        }
+    }
+
+    #[track_caller]
+    fn privacy_errors_mut(&mut self) -> &mut Vec<PrivacyError<'ra>> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.privacy_errors,
+            CmResolver::Late(_, sink) => &mut sink.privacy_errors,
+        }
+    }
+
+    /// How many privacy errors are recorded where this resolver writes them.
+    fn privacy_errors_len(&self) -> usize {
+        match self {
+            CmResolver::Ref(r) => r.privacy_errors.len(),
+            CmResolver::Mut(r) => r.privacy_errors.len(),
+            CmResolver::Late(_, sink) => sink.privacy_errors.len(),
+        }
+    }
+
+    #[track_caller]
+    fn macro_expanded_macro_export_errors_mut(&mut self) -> &mut BTreeSet<(Span, Span)> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.macro_expanded_macro_export_errors,
+            CmResolver::Late(_, sink) => &mut sink.macro_expanded_macro_export_errors,
+        }
+    }
+
+    #[track_caller]
+    fn import_use_map_mut(&mut self) -> &mut FxHashMap<Import<'ra>, Used> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.import_use_map,
+            CmResolver::Late(_, sink) => &mut sink.import_use_map,
+        }
+    }
+
+    #[track_caller]
+    fn used_imports_mut(&mut self) -> &mut FxHashSet<NodeId> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.used_imports,
+            CmResolver::Late(_, sink) => &mut sink.used_imports,
+        }
+    }
+
+    #[track_caller]
+    fn glob_map_mut(&mut self) -> &mut FxIndexMap<LocalDefId, FxIndexSet<Symbol>> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.glob_map,
+            CmResolver::Late(_, sink) => &mut sink.glob_map,
+        }
+    }
+
+    #[track_caller]
+    fn maybe_unused_trait_imports_mut(&mut self) -> &mut FxIndexSet<LocalDefId> {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => &mut r.maybe_unused_trait_imports,
+            CmResolver::Late(_, sink) => &mut sink.maybe_unused_trait_imports,
+        }
+    }
+
+    #[track_caller]
+    fn set_issue_145575_hack_applied(&mut self) {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => r.issue_145575_hack_applied = true,
+            CmResolver::Late(_, sink) => sink.issue_145575_hack_applied = true,
+        }
+    }
+
+    /// Push an ambiguity error; with `dedup`, only if no equal one is recorded yet (the check
+    /// `record_use` makes). In the `Late` case the check covers the unit's own errors and the
+    /// frozen resolver's, and the merge repeats it across units.
+    #[track_caller]
+    fn push_ambiguity_error(&mut self, error: AmbiguityError<'ra>, dedup: bool) {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => {
+                if !(dedup && r.matches_previous_ambiguity_error(&error)) {
+                    r.ambiguity_errors.push(error);
+                }
+            }
+            CmResolver::Late(r, sink) => {
+                if dedup
+                    && (r.matches_previous_ambiguity_error(&error)
+                        || sink
+                            .ambiguity_errors
+                            .iter()
+                            .any(|(previous, _)| same_ambiguity_error(previous, &error)))
+                {
+                    return;
+                }
+                sink.ambiguity_errors.push((error, dedup));
+            }
+        }
+    }
+
+    /// The partial resolution recorded for `id`, reading the sink first in the `Late` case.
+    fn partial_res(&self, id: NodeId) -> Option<PartialRes> {
+        match self {
+            CmResolver::Ref(r) => r.partial_res_map.get(&id).copied(),
+            CmResolver::Mut(r) => r.partial_res_map.get(&id).copied(),
+            CmResolver::Late(r, sink) => sink.partial_res(r, id),
+        }
+    }
+
+    /// The span recorded for the pattern `id`, reading the sink first in the `Late` case.
+    fn pat_span(&self, id: NodeId) -> Option<Span> {
+        match self {
+            CmResolver::Ref(r) => r.pat_span_map.get(&id).copied(),
+            CmResolver::Mut(r) => r.pat_span_map.get(&id).copied(),
+            CmResolver::Late(r, sink) => {
+                sink.pat_span_map.get(&id).or_else(|| r.pat_span_map.get(&id)).copied()
+            }
+        }
+    }
+
+    #[track_caller]
+    fn record_partial_res(&mut self, node_id: NodeId, resolution: PartialRes) {
+        match self {
+            CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
+            CmResolver::Mut(r) => r.record_partial_res(node_id, resolution),
+            CmResolver::Late(r, sink) => sink.record_partial_res(r, node_id, resolution),
+        }
+    }
+}
+
+/// Whether two ambiguity errors are the same error for deduplication: same kind, same
+/// identifier at the same place, same two declarations' spans.
+fn same_ambiguity_error(a: &AmbiguityError<'_>, b: &AmbiguityError<'_>) -> bool {
+    a.kind == b.kind
+        && a.ident == b.ident
+        && a.ident.span == b.ident.span
+        && a.b1.span == b.b1.span
+        && a.b2.span == b.b2.span
+}
 
 // FIXME: These are cells for caches that can be populated even during speculative resolution,
 // and should be replaced with mutexes, atomics, or other synchronized data when migrating to
@@ -2944,50 +3261,10 @@ mod ref_mut {
 
     use crate::rustc_resolve::Resolver;
 
-    /// A reference type that conditionally allows mutable access.
-    pub(crate) enum RefOrMut<'a, T> {
-        Ref(&'a T),
-        Mut(&'a mut T),
-    }
-
-    impl<'a, T> Deref for RefOrMut<'a, T> {
-        type Target = T;
-
-        fn deref(&self) -> &Self::Target {
-            match self {
-                RefOrMut::Ref(r) => r,
-                RefOrMut::Mut(r) => r,
-            }
-        }
-    }
-
-    impl<'a, T> AsRef<T> for RefOrMut<'a, T> {
-        fn as_ref(&self) -> &T {
-            &*self
-        }
-    }
-
-    impl<'a, T> RefOrMut<'a, T> {
-        /// This is needed because the type may allow mutable access and is therefore not `Copy`.
-        pub(crate) fn reborrow(&mut self) -> RefOrMut<'_, T> {
-            match self {
-                RefOrMut::Ref(r) => RefOrMut::Ref(r),
-                RefOrMut::Mut(r) => RefOrMut::Mut(r),
-            }
-        }
-
-        /// Returns a mutable reference to the inner value if allowed.
-        ///
-        /// # Panics
-        ///
-        /// Panics if the wrapped reference is immutable.
-        #[track_caller]
-        pub(crate) fn get_mut(&mut self) -> &mut T {
-            match self {
-                RefOrMut::Ref(_) => panic!("can't mutably borrow an immutable reference"),
-                RefOrMut::Mut(r) => r,
-            }
-        }
+    /// Whether a lazy write into the module graph is allowed now: not during speculative
+    /// resolution, and not while late resolution's units run as a stage over a frozen graph.
+    fn writes_allowed(r: &Resolver<'_, '_>) -> bool {
+        !r.speculative_flag.is_speculative() && !r.frozen_flag.is_frozen()
     }
 
     /// A wrapper around a [`Cell`] that only allows mutation based on a condition in the resolver.
@@ -3032,8 +3309,8 @@ mod ref_mut {
 
         pub(crate) fn set_checked<'ra, 'tcx>(&self, val: T, r: &Resolver<'ra, 'tcx>) {
             assert!(
-                !r.speculative_flag.is_speculative(),
-                "Cannot mutate `CmCell` during speculative resolution"
+                writes_allowed(r),
+                "Cannot mutate `CmCell` during speculative resolution or a frozen late stage"
             );
             self.0.set(val);
         }
@@ -3082,6 +3359,33 @@ mod ref_mut {
         }
     }
 
+    pub(crate) mod frozen {
+        /// Set for exactly the span of late resolution's stage, when the units read the module
+        /// graph from several threads at once and nothing may write it.
+        ///
+        /// Distinct from `SpeculativeFlag`: speculative resolution still performs the lazy writes
+        /// it is allowed (`cm_mut` asserts only that it is not speculative), and frozen mode
+        /// performs none, so the two cannot share a flag without one of them lying.
+        #[derive(Debug, Clone, Copy, Default)]
+        pub(crate) struct FrozenFlag(bool);
+
+        impl FrozenFlag {
+            /// # SAFETY
+            ///
+            /// Same contract as `SpeculativeFlag::set`: every borrow `CmRefCell::borrow_checked`
+            /// handed out must be dropped before the flag changes (tracked ones before it is set,
+            /// untracked ones before it is cleared), and nothing may write a `CmRefCell`, a
+            /// `CmCell` or a lazily filled cache of the module graph while it is set.
+            pub(crate) unsafe fn set(&mut self, value: bool) {
+                self.0 = value;
+            }
+
+            pub(crate) fn is_frozen(&self) -> bool {
+                self.0
+            }
+        }
+    }
+
     /// A wrapper around a [`RefCell`] that only allows writes (mutable borrows) based on a condition in the resolver.
     #[derive(Default)]
     pub(crate) struct CmRefCell<T>(RefCell<T>);
@@ -3110,8 +3414,9 @@ mod ref_mut {
             r: &Resolver<'ra, 'tcx>,
         ) -> Result<RefMut<'_, T>, BorrowMutError> {
             assert!(
-                !r.speculative_flag.is_speculative(),
-                "Cannot mutate `CmRefCell` state/value during speculative resolution"
+                writes_allowed(r),
+                "Cannot mutate `CmRefCell` state/value during speculative resolution or a frozen \
+                 late stage"
             );
             self.0.try_borrow_mut()
         }
@@ -3129,13 +3434,14 @@ mod ref_mut {
         }
 
         pub(crate) fn borrow_checked<'ra, 'tcx>(&self, r: &Resolver<'ra, 'tcx>) -> CmRef<'_, T> {
-            if r.speculative_flag.is_speculative() {
+            if r.speculative_flag.is_speculative() || r.frozen_flag.is_frozen() {
                 // `try_borrow_unguarded` is unsafe because it returns a `&T` instead
                 // of `Ref<'_, T>`. It does provides an extra check to make sure no live
                 // `RefMut`s are still alive, but the other way can not be checked, so:
                 //
                 // SAFETY: This is only safe because we know that every `Untracked` borrow
-                // is only created during the import resolutions phase:
+                // is only created during the import resolutions phase, or during late
+                // resolution's frozen stage:
                 //
                 // ```rust
                 // // tracked borrows
@@ -3145,8 +3451,11 @@ mod ref_mut {
                 // // tracked borrows
                 // ```
                 //
-                // `speculative::Flag` requires all of the borrows that happened during a
-                // particular phase are dropped before being set to true/false.
+                // `speculative::Flag` and `frozen::FrozenFlag` require all of the borrows that
+                // happened during a particular phase are dropped before being set to true/false.
+                // While frozen, no `RefMut` is ever taken (every write path asserts it), so the
+                // untracked reads may run on several threads at once: nothing touches the
+                // `RefCell`'s borrow counter, which is not atomic.
                 CmRef::Untracked(unsafe { self.0.try_borrow_unguarded().unwrap() })
             } else {
                 CmRef::Tracked(self.0.borrow())
@@ -3156,8 +3465,11 @@ mod ref_mut {
 
     impl<T: Default> CmRefCell<T> {
         pub(crate) fn take<'ra, 'tcx>(&self, r: &Resolver<'ra, 'tcx>) -> T {
-            if r.speculative_flag.is_speculative() {
-                panic!("not allowed to mutate a CmRefCell during speculative resolution");
+            if !writes_allowed(r) {
+                panic!(
+                    "not allowed to mutate a CmRefCell during speculative resolution or a frozen \
+                     late stage"
+                );
             }
             self.0.take()
         }

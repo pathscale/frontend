@@ -23,6 +23,7 @@ use alloc::borrow::Cow;
 use core::hash::{Hash, Hasher};
 use alloc::sync::Arc;
 
+use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_errors::{Applicability, Diag, EmissionGuarantee, ErrorGuaranteed};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::HirId;
@@ -43,13 +44,19 @@ use crate::rustc_middle::ty::{self, AdtKind, GenericArgsRef, Ty};
 
 /// The reason why we incurred this obligation; used for error reporting.
 ///
-/// Non-misc `ObligationCauseCode`s are stored on the heap. This gives the
-/// best trade-off between keeping the type small (which makes copies cheaper)
-/// while not doing too many heap allocations.
+/// A code that carries data is stored on the heap; a code that carries none
+/// (see `InlineCode`) is stored as a one-byte tag, so creating or cloning it
+/// allocates nothing and touches no reference count. The tag sits in what was
+/// padding, so the type stays 24 bytes. The code is stored as the two fields
+/// of an `ObligationCauseCodeHandle` rather than as one, because a nested
+/// struct would keep its own padding and grow the cause by 8 bytes.
 ///
 /// We do not want to intern this as there are a lot of obligation causes which
 /// only live for a short period of time.
-#[derive(Clone, Debug, PartialEq, Eq, StableHash, TyEncodable, TyDecodable)]
+///
+/// `Debug` and `StableHash` are written out below so that they print and hash
+/// exactly what the derived impls over a single `code` field did.
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable)]
 #[derive(TypeVisitable, TypeFoldable)]
 pub struct ObligationCause<'tcx> {
     pub span: Span,
@@ -62,7 +69,28 @@ pub struct ObligationCause<'tcx> {
     /// information.
     pub body_def_id: LocalDefId,
 
-    code: ObligationCauseCodeHandle<'tcx>,
+    /// The two halves of an `ObligationCauseCodeHandle`, with its invariant.
+    code: Option<Arc<ObligationCauseCode<'tcx>>>,
+    inline: InlineCode,
+}
+
+impl core::fmt::Debug for ObligationCause<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ObligationCause")
+            .field("span", &self.span)
+            .field("body_def_id", &self.body_def_id)
+            .field("code", self.code())
+            .finish()
+    }
+}
+
+impl StableHash for ObligationCause<'_> {
+    #[inline]
+    fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
+        self.span.stable_hash(hcx, hasher);
+        self.body_def_id.stable_hash(hcx, hasher);
+        stable_hash_code(self.code(), hcx, hasher);
+    }
 }
 
 // This custom hash function speeds up hashing for `Obligation` deduplication
@@ -84,7 +112,8 @@ impl<'tcx> ObligationCause<'tcx> {
         body_def_id: LocalDefId,
         code: ObligationCauseCode<'tcx>,
     ) -> ObligationCause<'tcx> {
-        ObligationCause { span, body_def_id, code: code.into() }
+        let ObligationCauseCodeHandle { code, inline } = ObligationCauseCodeHandle::new(code);
+        ObligationCause { span, body_def_id, code, inline }
     }
 
     pub fn misc(span: Span, body_def_id: LocalDefId) -> ObligationCause<'tcx> {
@@ -98,19 +127,39 @@ impl<'tcx> ObligationCause<'tcx> {
 
     #[inline(always)]
     pub fn dummy_with_span(span: Span) -> ObligationCause<'tcx> {
-        ObligationCause { span, body_def_id: CRATE_DEF_ID, code: Default::default() }
+        ObligationCause { span, body_def_id: CRATE_DEF_ID, code: None, inline: InlineCode::Misc }
     }
 
     #[inline]
     pub fn code(&self) -> &ObligationCauseCode<'tcx> {
-        &self.code
+        match &self.code {
+            Some(code) => &**code,
+            None => self.inline.code(),
+        }
+    }
+
+    /// Moves the code out as a handle, leaving `Misc` behind.
+    #[inline]
+    fn take_code(&mut self) -> ObligationCauseCodeHandle<'tcx> {
+        ObligationCauseCodeHandle {
+            code: self.code.take(),
+            inline: core::mem::replace(&mut self.inline, InlineCode::Misc),
+        }
+    }
+
+    #[inline]
+    fn set_code(&mut self, code: ObligationCauseCode<'tcx>) {
+        let ObligationCauseCodeHandle { code, inline } = ObligationCauseCodeHandle::new(code);
+        self.code = code;
+        self.inline = inline;
     }
 
     pub fn map_code(
         &mut self,
         f: impl FnOnce(ObligationCauseCodeHandle<'tcx>) -> ObligationCauseCode<'tcx>,
     ) {
-        self.code = f(core::mem::take(&mut self.code)).into();
+        let parent = self.take_code();
+        self.set_code(f(parent));
     }
 
     pub fn derived_cause(
@@ -131,7 +180,8 @@ impl<'tcx> ObligationCause<'tcx> {
         // NOTE(flaper87): As of now, it keeps track of the whole error
         // chain. Ideally, we should have a way to configure this either
         // by using -Z verbose-internals or just a CLI argument.
-        self.code = variant(DerivedCause { parent_trait_pred, parent_code: self.code }).into();
+        let parent_code = self.take_code();
+        self.set_code(variant(DerivedCause { parent_trait_pred, parent_code }));
         self
     }
 
@@ -140,7 +190,8 @@ impl<'tcx> ObligationCause<'tcx> {
         parent_host_clause: ty::Binder<'tcx, ty::HostEffectClause<'tcx>>,
         variant: impl FnOnce(DerivedHostCause<'tcx>) -> ObligationCauseCode<'tcx>,
     ) -> ObligationCause<'tcx> {
-        self.code = variant(DerivedHostCause { parent_host_clause, parent_code: self.code }).into();
+        let parent_code = self.take_code();
+        self.set_code(variant(DerivedHostCause { parent_host_clause, parent_code }));
         self
     }
 
@@ -156,12 +207,32 @@ impl<'tcx> ObligationCause<'tcx> {
 }
 
 /// A compact form of `ObligationCauseCode`.
-#[derive(Clone, PartialEq, Eq, Default, StableHash)]
+///
+/// Invariant: `code` is `Some` exactly when the code carries data
+/// (`InlineCode::of` is `None`), and then `inline` is `Misc`; otherwise `code`
+/// is `None` and `inline` names the code. Every handle is built by `new` (or
+/// decoded or folded from one that was), so each code has exactly one
+/// representation and the derived `PartialEq` is equality of codes, as it was
+/// when `Misc` was `None` and every other code sat in an `Arc`. Folding keeps
+/// the invariant: it never changes a variant, and no code with a type in it is
+/// inlined.
+#[derive(Clone, PartialEq, Eq, Default)]
 #[derive(TypeVisitable, TypeFoldable, TyEncodable, TyDecodable)]
 pub struct ObligationCauseCodeHandle<'tcx> {
-    /// `None` for `ObligationCauseCode::Misc` (a common case, occurs ~60% of
-    /// the time). `Some` otherwise.
     code: Option<Arc<ObligationCauseCode<'tcx>>>,
+    inline: InlineCode,
+}
+
+impl<'tcx> ObligationCauseCodeHandle<'tcx> {
+    #[inline(always)]
+    fn new(code: ObligationCauseCode<'tcx>) -> ObligationCauseCodeHandle<'tcx> {
+        match InlineCode::of(&code) {
+            Some(inline) => ObligationCauseCodeHandle { code: None, inline },
+            None => {
+                ObligationCauseCodeHandle { code: Some(Arc::new(code)), inline: InlineCode::Misc }
+            }
+        }
+    }
 }
 
 impl<'tcx> core::fmt::Debug for ObligationCauseCodeHandle<'tcx> {
@@ -171,20 +242,146 @@ impl<'tcx> core::fmt::Debug for ObligationCauseCodeHandle<'tcx> {
     }
 }
 
-impl<'tcx> ObligationCauseCode<'tcx> {
-    #[inline(always)]
-    fn into(self) -> ObligationCauseCodeHandle<'tcx> {
-        ObligationCauseCodeHandle {
-            code: if let ObligationCauseCode::Misc = self { None } else { Some(Arc::new(self)) },
-        }
+/// Hashes as the former `Option<Arc<ObligationCauseCode>>` did: `None` for
+/// `Misc`, `Some(code)` for every other code.
+impl StableHash for ObligationCauseCodeHandle<'_> {
+    #[inline]
+    fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
+        stable_hash_code(self, hcx, hasher);
     }
+}
+
+#[inline]
+fn stable_hash_code<Hcx: StableHashCtxt>(
+    code: &ObligationCauseCode<'_>,
+    hcx: &mut Hcx,
+    hasher: &mut StableHasher,
+) {
+    let code = if let ObligationCauseCode::Misc = code { None } else { Some(code) };
+    code.stable_hash(hcx, hasher);
 }
 
 impl<'tcx> core::ops::Deref for ObligationCauseCodeHandle<'tcx> {
     type Target = ObligationCauseCode<'tcx>;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
-        self.code.as_deref().unwrap_or(&ObligationCauseCode::Misc)
+        match &self.code {
+            Some(code) => &**code,
+            None => self.inline.code(),
+        }
+    }
+}
+
+/// The `ObligationCauseCode`s that carry no data, stored in a handle as this
+/// tag instead of on the heap. `code` hands out a reference to a promoted
+/// constant of the same value, so a reader cannot tell the two storages apart.
+// `Debug` because `TypeVisitable` requires it of every field; the handles' own `Debug` impls
+// are written out and never print it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Encodable, Decodable)]
+#[derive(TypeVisitable, TypeFoldable)]
+enum InlineCode {
+    #[default]
+    Misc,
+    SliceOrArrayElem,
+    TupleElem,
+    AssignmentLhsSized,
+    TupleInitializerSized,
+    StructInitializerSized,
+    SizedArgumentTypeNone,
+    SizedReturnType,
+    SizedCallReturnType,
+    SizedYieldType,
+    InlineAsmSized,
+    SizedConstOrStatic,
+    SharedStatic,
+    ExprAssignable,
+    IfExpressionWithNoElse,
+    MainFunctionType,
+    IntrinsicType,
+    LetElse,
+    MethodReceiver,
+    ReturnNoExpression,
+    OpaqueReturnTypeNone,
+    TrivialBound,
+    ForLoopIterator,
+    QuestionMark,
+    WellFormedNone,
+    RustCall,
+    AlwaysApplicableImpl,
+}
+
+impl InlineCode {
+    /// The tag for `code`, or `None` when `code` carries data. The inverse of
+    /// `code`: `InlineCode::of(c) == Some(t)` exactly when `*t.code() == *c`.
+    #[inline(always)]
+    fn of(code: &ObligationCauseCode<'_>) -> Option<InlineCode> {
+        use ObligationCauseCode as C;
+        Some(match code {
+            C::Misc => InlineCode::Misc,
+            C::SliceOrArrayElem => InlineCode::SliceOrArrayElem,
+            C::TupleElem => InlineCode::TupleElem,
+            C::AssignmentLhsSized => InlineCode::AssignmentLhsSized,
+            C::TupleInitializerSized => InlineCode::TupleInitializerSized,
+            C::StructInitializerSized => InlineCode::StructInitializerSized,
+            C::SizedArgumentType(None) => InlineCode::SizedArgumentTypeNone,
+            C::SizedReturnType => InlineCode::SizedReturnType,
+            C::SizedCallReturnType => InlineCode::SizedCallReturnType,
+            C::SizedYieldType => InlineCode::SizedYieldType,
+            C::InlineAsmSized => InlineCode::InlineAsmSized,
+            C::SizedConstOrStatic => InlineCode::SizedConstOrStatic,
+            C::SharedStatic => InlineCode::SharedStatic,
+            C::ExprAssignable => InlineCode::ExprAssignable,
+            C::IfExpressionWithNoElse => InlineCode::IfExpressionWithNoElse,
+            C::MainFunctionType => InlineCode::MainFunctionType,
+            C::IntrinsicType => InlineCode::IntrinsicType,
+            C::LetElse => InlineCode::LetElse,
+            C::MethodReceiver => InlineCode::MethodReceiver,
+            C::ReturnNoExpression => InlineCode::ReturnNoExpression,
+            C::OpaqueReturnType(None) => InlineCode::OpaqueReturnTypeNone,
+            C::TrivialBound => InlineCode::TrivialBound,
+            C::ForLoopIterator => InlineCode::ForLoopIterator,
+            C::QuestionMark => InlineCode::QuestionMark,
+            C::WellFormed(None) => InlineCode::WellFormedNone,
+            C::RustCall => InlineCode::RustCall,
+            C::AlwaysApplicableImpl => InlineCode::AlwaysApplicableImpl,
+            _ => return None,
+        })
+    }
+
+    /// The code this tag stands for, as a promoted constant (no allocation).
+    #[inline(always)]
+    fn code<'a, 'tcx>(self) -> &'a ObligationCauseCode<'tcx> {
+        use ObligationCauseCode as C;
+        match self {
+            InlineCode::Misc => &C::Misc,
+            InlineCode::SliceOrArrayElem => &C::SliceOrArrayElem,
+            InlineCode::TupleElem => &C::TupleElem,
+            InlineCode::AssignmentLhsSized => &C::AssignmentLhsSized,
+            InlineCode::TupleInitializerSized => &C::TupleInitializerSized,
+            InlineCode::StructInitializerSized => &C::StructInitializerSized,
+            InlineCode::SizedArgumentTypeNone => &C::SizedArgumentType(None),
+            InlineCode::SizedReturnType => &C::SizedReturnType,
+            InlineCode::SizedCallReturnType => &C::SizedCallReturnType,
+            InlineCode::SizedYieldType => &C::SizedYieldType,
+            InlineCode::InlineAsmSized => &C::InlineAsmSized,
+            InlineCode::SizedConstOrStatic => &C::SizedConstOrStatic,
+            InlineCode::SharedStatic => &C::SharedStatic,
+            InlineCode::ExprAssignable => &C::ExprAssignable,
+            InlineCode::IfExpressionWithNoElse => &C::IfExpressionWithNoElse,
+            InlineCode::MainFunctionType => &C::MainFunctionType,
+            InlineCode::IntrinsicType => &C::IntrinsicType,
+            InlineCode::LetElse => &C::LetElse,
+            InlineCode::MethodReceiver => &C::MethodReceiver,
+            InlineCode::ReturnNoExpression => &C::ReturnNoExpression,
+            InlineCode::OpaqueReturnTypeNone => &C::OpaqueReturnType(None),
+            InlineCode::TrivialBound => &C::TrivialBound,
+            InlineCode::ForLoopIterator => &C::ForLoopIterator,
+            InlineCode::QuestionMark => &C::QuestionMark,
+            InlineCode::WellFormedNone => &C::WellFormed(None),
+            InlineCode::RustCall => &C::RustCall,
+            InlineCode::AlwaysApplicableImpl => &C::AlwaysApplicableImpl,
+        }
     }
 }
 
@@ -540,8 +737,16 @@ impl<'tcx> ObligationCauseCode<'tcx> {
 }
 
 // `ObligationCauseCode` is used a lot. Make sure it doesn't unintentionally get bigger.
+// 56, not 48: a nested `ObligationCauseCodeHandle` is 16 bytes (its tag makes a
+// data-free parent free to store), so `DerivedCause` and `DerivedHostCause` are 48
+// and the enum needs its own tag. The code lives on the heap, so this costs one
+// size class per `Arc`, not a byte of `ObligationCause`, which stays 24.
 #[cfg(target_pointer_width = "64")]
-crate::static_assert_size!(ObligationCauseCode<'_>, 48);
+crate::static_assert_size!(ObligationCauseCode<'_>, 56);
+#[cfg(target_pointer_width = "64")]
+crate::static_assert_size!(ObligationCause<'_>, 24);
+#[cfg(target_pointer_width = "64")]
+crate::static_assert_size!(ObligationCauseCodeHandle<'_>, 16);
 
 #[derive(Clone, Debug, PartialEq, Eq, StableHash, TyEncodable, TyDecodable)]
 #[derive(TypeVisitable, TypeFoldable)]

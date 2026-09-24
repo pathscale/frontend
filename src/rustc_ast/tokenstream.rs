@@ -631,14 +631,17 @@ impl TokenStream {
         TokenStream(Arc::new(tts))
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[inline]
     pub fn get(&self, index: usize) -> Option<&TokenTree> {
         self.0.get(index)
     }
@@ -939,25 +942,105 @@ pub struct TokenCursor {
     // Cursor for the current (innermost) token stream. The `next_idx` within the
     // cursor can point to any token tree in the stream (or one past the end).
     // The delimiters for this token stream are found in the current token tree
-    // in `self.stack.last()`; if that is `None` we are in the outermost token
+    // in the innermost frame of `self.stack`; if that is `None` we are in the outermost token
     // stream which never has delimiters.
     curr: TokenTreeCursor,
 
-    // Token streams surrounding the current one. The `next_idx` within each cursor
-    // is always greater than zero and always points one past the current
-    // `TokenTree::Delimited`.
-    stack: Vec<TokenTreeCursor>,
+    // Token streams surrounding the current one, innermost first. The `next_idx`
+    // within each cursor is always greater than zero and always points one past
+    // the current `TokenTree::Delimited`.
+    //
+    // The frames are frozen and shared: cloning a `TokenCursor` (every
+    // `collect_tokens` start position, every parser snapshot) is two reference
+    // count increments, not a fresh copy of the whole stack. A frame is
+    // allocated once per descent into a delimited group, or taken from a
+    // `FrameSpare`, and freed or kept as the spare on the way out unless a clone
+    // still holds it.
+    stack: Option<Arc<TokenCursorFrame>>,
+}
+
+#[derive(Debug)]
+struct TokenCursorFrame {
+    cursor: TokenTreeCursor,
+    parent: Option<Arc<TokenCursorFrame>>,
+    /// Number of frames from this one to the outermost, inclusive.
+    depth: usize,
+}
+
+/// The frames a cursor popped while nothing else held them, kept so later descents into
+/// delimited groups write into them instead of allocating. A parse enters and leaves every group
+/// once, so without them each group costs an allocation and a free. They are a free list linked
+/// through their own `parent` fields, the most recently popped first, so it is as deep as the
+/// deepest nesting seen and needs no allocation of its own.
+///
+/// Owned by whoever drives the cursor (the parser), not by `TokenCursor`, whose size every
+/// lazily collected token stream pays for. Each still holds the cursor of the stream it last
+/// left until a descent overwrites it. A clone starts empty, so the list always has one owner.
+#[derive(Debug, Default)]
+pub struct FrameSpare(Option<Arc<TokenCursorFrame>>);
+
+impl Clone for FrameSpare {
+    fn clone(&self) -> Self {
+        FrameSpare(None)
+    }
 }
 
 impl TokenCursor {
     #[inline]
     pub fn new(stream: TokenStream) -> Self {
-        TokenCursor { curr: TokenTreeCursor::new(stream), stack: vec![] }
+        TokenCursor { curr: TokenTreeCursor::new(stream), stack: None }
+    }
+
+    /// The cursor of the innermost enclosing token stream, if any.
+    #[inline]
+    fn parent(&self) -> Option<&TokenTreeCursor> {
+        self.stack.as_deref().map(|frame| &frame.cursor)
+    }
+
+    /// Enters a delimited group: `cursor` (the enclosing stream, just past the group) becomes
+    /// the innermost frame, written into the first spare frame when there is one.
+    #[inline]
+    fn push_frame(&mut self, cursor: TokenTreeCursor, spare: &mut FrameSpare) {
+        let parent = self.stack.take();
+        let depth = parent.as_ref().map_or(0, |frame| frame.depth) + 1;
+        let frame = TokenCursorFrame { cursor, parent, depth };
+        if let Some(mut reused) = spare.0.take()
+            && let Some(slot) = Arc::get_mut(&mut reused)
+        {
+            spare.0 = slot.parent.take();
+            *slot = frame;
+            self.stack = Some(reused);
+        } else {
+            self.stack = Some(Arc::new(frame));
+        }
+    }
+
+    /// Leaves the innermost group: the innermost frame's cursor becomes `curr`. A frame no
+    /// clone shares gives its cursor up by a swap and goes onto the spare list; a shared one is
+    /// cloned from (one reference count). `false` at the outermost stream.
+    #[inline]
+    fn pop_frame(&mut self, spare: &mut FrameSpare) -> bool {
+        let Some(mut frame) = self.stack.take() else {
+            return false;
+        };
+        match Arc::get_mut(&mut frame) {
+            Some(owned) => {
+                self.stack = owned.parent.take();
+                mem::swap(&mut self.curr, &mut owned.cursor);
+                owned.parent = spare.0.take();
+                spare.0 = Some(frame);
+            }
+            None => {
+                self.stack = frame.parent.clone();
+                self.curr = frame.cursor.clone();
+            }
+        }
+        true
     }
 
     /// Gets the next token and advances the cursor by one.
     pub fn next_and_bump(&mut self) -> (Token, Spacing) {
-        self.inlined_next_and_bump()
+        self.inlined_next_and_bump_reusing(&mut FrameSpare::default())
     }
 
     /// An `n` of 1 is the next token tree in the current token stream; won't look outside the
@@ -967,18 +1050,90 @@ impl TokenCursor {
         self.curr.look_ahead(n)
     }
 
+    /// The token that `dist` calls of `next_and_bump` on a clone of this cursor
+    /// would return last, counting only tokens that are not skipped invisible
+    /// delimiters, found by walking the borrowed streams instead of cloning the
+    /// cursor (a `Vec` and an `Arc` count per level). Returns `None`, and the
+    /// caller clones, only if the walk would enter more than
+    /// `LOOK_AHEAD_MAX_ENTERED` delimited sequences.
+    pub fn look_ahead_token(&self, dist: usize) -> Option<Token> {
+        const LOOK_AHEAD_MAX_ENTERED: usize = 8;
+        // Frames are `(stream, next_idx)`: the stream holding a `Delimited`
+        // and the index one past it, as in a frame of `self.stack`.
+        let mut entered: [(&TokenStream, usize); LOOK_AHEAD_MAX_ENTERED] =
+            [(&self.curr.stream, 0); LOOK_AHEAD_MAX_ENTERED];
+        let mut n_entered = 0;
+        // The enclosing frames, innermost first, walked through their shared parents.
+        let mut outer: Option<&TokenCursorFrame> = self.stack.as_deref();
+        let mut stream = &self.curr.stream;
+        let mut idx = self.curr.next_idx;
+        let mut token = Token::dummy();
+        let mut i = 0;
+        while i < dist {
+            // One step of `inlined_next_and_bump`.
+            token = loop {
+                if let Some(tree) = stream.get(idx) {
+                    match tree {
+                        &TokenTree::Token(token, _) => {
+                            idx += 1;
+                            break token;
+                        }
+                        &TokenTree::Delimited(sp, _, delim, ref tts) => {
+                            if n_entered == LOOK_AHEAD_MAX_ENTERED {
+                                return None;
+                            }
+                            entered[n_entered] = (stream, idx + 1);
+                            n_entered += 1;
+                            stream = tts;
+                            idx = 0;
+                            if !delim.skip() {
+                                break Token::new(delim.as_open_token_kind(), sp.open);
+                            }
+                        }
+                    }
+                } else {
+                    let (parent, parent_idx) = if n_entered > 0 {
+                        n_entered -= 1;
+                        entered[n_entered]
+                    } else if let Some(frame) = outer {
+                        outer = frame.parent.as_deref();
+                        (&frame.cursor.stream, frame.cursor.next_idx)
+                    } else {
+                        break Token::new(token::Eof, DUMMY_SP);
+                    };
+                    let Some(&TokenTree::Delimited(span, _, delim, _)) = parent.get(parent_idx - 1)
+                    else {
+                        panic!("parent should be Delimited")
+                    };
+                    stream = parent;
+                    idx = parent_idx;
+                    if !delim.skip() {
+                        break Token::new(delim.as_close_token_kind(), span.close);
+                    }
+                }
+            };
+            if let token::OpenInvisible(origin) | token::CloseInvisible(origin) = token.kind
+                && origin.skip()
+            {
+                continue;
+            }
+            i += 1;
+        }
+        Some(token)
+    }
+
     /// Returns the first token tree (if there is one) past the close delimiter of the enclosing
     /// delimited sequence. Panics if we are not within a delimited sequence.
     #[inline]
     pub fn look_ahead_past_close_delim(&self) -> Option<&TokenTree> {
-        self.stack.last().unwrap().next()
+        self.parent().unwrap().next()
     }
 
     /// Clones the `TokenTree::Delimited` that we are currently within. Panics if we are not within
     /// a delimited sequence.
     #[inline]
     pub fn clone_enclosing_delim(&self) -> TokenTree {
-        self.stack.last().unwrap().curr().unwrap().clone()
+        self.parent().unwrap().curr().unwrap().clone()
     }
 
     /// For skipping to the end of the current sequence, in rare circumstances.
@@ -990,13 +1145,13 @@ impl TokenCursor {
     /// Note: the outermost stream has depth of 0.
     #[inline]
     pub fn depth(&self) -> usize {
-        self.stack.len()
+        self.stack.as_ref().map_or(0, |frame| frame.depth)
     }
 
     /// Returns details about the parent delimited sequence, if there is one.
     #[inline]
     pub fn parent_delim_and_span(&self) -> Option<(Delimiter, DelimSpan)> {
-        if let Some(last) = self.stack.last()
+        if let Some(last) = self.parent()
             && let Some(TokenTree::Delimited(span, _, delim, _)) = last.curr()
         {
             Some((*delim, *span))
@@ -1006,8 +1161,33 @@ impl TokenCursor {
     }
 
     /// This always-inlined version should only be used on hot code paths.
+    ///
+    /// Only the common case, a plain token in the current stream, is inlined:
+    /// one bounds check, one tag test and one index increment. Entering or
+    /// leaving a delimited sequence and reaching the end go through
+    /// `next_and_bump_delimited`, which runs the full loop from the same
+    /// state and so returns the same token.
     #[inline(always)]
     pub fn inlined_next_and_bump(&mut self) -> (Token, Spacing) {
+        self.inlined_next_and_bump_reusing(&mut FrameSpare::default())
+    }
+
+    /// `inlined_next_and_bump`, entering a delimited group through `spare`'s frame when it
+    /// holds one and leaving the frame there on the way out. The parser's step.
+    #[inline(always)]
+    pub fn inlined_next_and_bump_reusing(&mut self, spare: &mut FrameSpare) -> (Token, Spacing) {
+        if let Some(&TokenTree::Token(token, spacing)) = self.curr.next() {
+            debug_assert!(!token.kind.is_delim());
+            self.curr.bump();
+            return (token, spacing);
+        }
+        self.next_and_bump_delimited(spare)
+    }
+
+    /// The general step of `inlined_next_and_bump`: descends into and climbs
+    /// out of delimited sequences, skipping invisible delimiters.
+    #[inline(never)]
+    fn next_and_bump_delimited(&mut self, spare: &mut FrameSpare) -> (Token, Spacing) {
         loop {
             // FIXME: we currently don't return `Delimiter::Invisible` open/close delims. To fix
             // #67062 we will need to, whereupon the `delim != Delimiter::Invisible` conditions
@@ -1023,19 +1203,19 @@ impl TokenCursor {
                     &TokenTree::Delimited(sp, spacing, delim, ref tts) => {
                         let trees = TokenTreeCursor::new(tts.clone());
                         self.curr.bump(); // move past the `Delimited`
-                        self.stack.push(mem::replace(&mut self.curr, trees));
+                        let outer = mem::replace(&mut self.curr, trees);
+                        self.push_frame(outer, spare);
                         if !delim.skip() {
                             return (Token::new(delim.as_open_token_kind(), sp.open), spacing.open);
                         }
                         // No open delimiter to return; continue on to the next iteration.
                     }
                 };
-            } else if let Some(parent) = self.stack.pop() {
-                // We have exhausted this token stream. Move back to its parent token stream.
-                let Some(&TokenTree::Delimited(span, spacing, delim, _)) = parent.curr() else {
+            } else if self.pop_frame(spare) {
+                // We have exhausted this token stream and moved back to its parent token stream.
+                let Some(&TokenTree::Delimited(span, spacing, delim, _)) = self.curr.curr() else {
                     panic!("parent should be Delimited")
                 };
-                self.curr = parent;
                 if !delim.skip() {
                     return (Token::new(delim.as_close_token_kind(), span.close), spacing.close);
                 }
@@ -1097,7 +1277,7 @@ mod size_asserts {
     static_assert_size!(AttrTokenStream, 8);
     static_assert_size!(AttrTokenTree, 32);
     static_assert_size!(LazyAttrTokenStream, 8);
-    static_assert_size!(LazyAttrTokenStreamInner, 88);
+    static_assert_size!(LazyAttrTokenStreamInner, 72);
     static_assert_size!(Option<LazyAttrTokenStream>, 8); // must be small, used in many AST nodes
     static_assert_size!(TokenStream, 8);
     static_assert_size!(TokenTree, 32);

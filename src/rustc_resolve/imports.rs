@@ -812,13 +812,16 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             // weird thing is done, all `tracked` borrows done in the previous call of
             // `resolve_imports` are dropped when that call ended.
             unsafe { self.speculative_flag.set(true) };
-            crate::rustc_data_structures::sync::par_for_each_slice(
-                &mut imports_to_resolve,
-                |(import, resolution, indeterminate_count)| {
-                    (*resolution, *indeterminate_count) = self.resolve_import(*import);
-                },
-            );
-            // SAFETY: All `untracked` borrows are dropped after the `par_for_each_slice` call,
+            // A plain loop. It was `par_for_each_slice`, which was serial in every mode: each
+            // `resolve_import` reads and writes the resolver's `Cell`s and `CmRefCell`s through
+            // `&self`, state every import shares with no synchronisation, so two imports cannot
+            // run at once. Making this a stage means making each import's resolution its own
+            // output over frozen resolver data, which the batch-then-commit shape of this loop
+            // (resolve all, then `write_import_resolutions`) is most of the way to.
+            for (import, resolution, indeterminate_count) in &mut imports_to_resolve {
+                (*resolution, *indeterminate_count) = self.resolve_import(*import);
+            }
+            // SAFETY: All `untracked` borrows are dropped after the loop above,
             // as they cannot escape since they are tied to the `CmRefCell` they borrowed from.
             //
             // Note: Some `CmRefCell`s are arena allocated and thus have the `'ra` lifetime,
@@ -1362,7 +1365,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     // 2 segments, so the `resolve_path` above won't trigger it.
                     let mut full_path = import.module_path.clone();
                     full_path.push(Segment::from_ident(Ident::dummy()));
-                    self.lint_if_path_starts_with_module(finalize, &full_path, None);
+                    self.cm_mut().lint_if_path_starts_with_module(finalize, &full_path, None);
                 }
 
                 if let ModuleOrUniformRoot::Module(module) = module
@@ -1666,7 +1669,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             full_path.push(Segment::from_ident(ident));
             self.per_ns_mut(|this, ns| {
                 if let Some(binding) = bindings[ns].get().decl().map(|b| b.import_source()) {
-                    this.lint_if_path_starts_with_module(finalize, &full_path, Some(binding));
+                    this.cm_mut().lint_if_path_starts_with_module(finalize, &full_path, Some(binding));
                 }
             });
         }

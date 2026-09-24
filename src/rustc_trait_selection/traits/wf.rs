@@ -365,8 +365,44 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
 
         let cause = self.cause(ObligationCauseCode::WellFormed(None));
         let param_env = self.param_env;
-        let mut obligations = PredicateObligations::with_capacity(self.out.len());
-        for mut obligation in self.out {
+        let recursion_depth = self.recursion_depth;
+
+        // Common case: no predicate yields a nested obligation, so the result is `self.out`
+        // with each predicate normalized, and it is normalized in place without a second
+        // vector. The calls run in the same order as the general loop below, so the
+        // inference side effects are identical.
+        let mut out = self.out;
+        let mut nested = PredicateObligations::new();
+        let mut done = 0;
+        while done < out.len() {
+            let obligation = &mut out[done];
+            assert!(!obligation.has_escaping_bound_vars());
+            let mut selcx = traits::SelectionContext::new(infcx);
+            obligation.predicate = traits::normalize::normalize_with_depth_to(
+                &mut selcx,
+                param_env,
+                cause.clone(),
+                recursion_depth,
+                ty::Unnormalized::new_wip(obligation.predicate),
+                &mut nested,
+            );
+            done += 1;
+            if !nested.is_empty() {
+                break;
+            }
+        }
+        if nested.is_empty() {
+            return out;
+        }
+
+        // `out[..done]` are normalized, and `nested` came from `out[done - 1]`, so it goes
+        // right before that obligation, as the general loop would have placed it.
+        let mut obligations = PredicateObligations::with_capacity(out.len() + nested.len());
+        let mut rest = out.into_iter();
+        obligations.extend(rest.by_ref().take(done - 1));
+        obligations.append(&mut nested);
+        obligations.extend(rest.next());
+        for mut obligation in rest {
             assert!(!obligation.has_escaping_bound_vars());
             let mut selcx = traits::SelectionContext::new(infcx);
             // Don't normalize the whole obligation, the param env is either
@@ -376,7 +412,7 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                 &mut selcx,
                 param_env,
                 cause.clone(),
-                self.recursion_depth,
+                recursion_depth,
                 ty::Unnormalized::new_wip(obligation.predicate),
                 &mut obligations,
             );

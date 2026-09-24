@@ -19,37 +19,54 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         // Move past the opening delimiter.
         let open_spacing = self.bump_minimal();
 
-        let mut buf = Vec::new();
+        // This group's trees go on the end of the lexer's shared `tree_buf`,
+        // above any enclosing group's trees, and move out at the close into
+        // one exactly sized `Vec`. One allocation per group instead of one per
+        // doubling. Every exit restores `tree_buf` to `start`.
+        let start = self.tree_buf.len();
         loop {
             if let Some(delim) = self.token.kind.open_delim() {
                 // Invisible delimiters cannot occur here because `TokenTreesReader` parses
                 // code directly from strings, with no macro expansion involved.
                 debug_assert!(!matches!(delim, Delimiter::Invisible(_)));
-                buf.push(match self.lex_token_tree_open_delim(delim) {
-                    Ok(val) => val,
-                    Err(errs) => return Err(errs),
-                })
+                match self.lex_token_tree_open_delim(delim) {
+                    Ok(val) => self.tree_buf.push(val),
+                    Err(errs) => {
+                        self.tree_buf.truncate(start);
+                        return Err(errs);
+                    }
+                }
             } else if let Some(delim) = self.token.kind.close_delim() {
                 // Invisible delimiters cannot occur here because `TokenTreesReader` parses
                 // code directly from strings, with no macro expansion involved.
                 debug_assert!(!matches!(delim, Delimiter::Invisible(_)));
                 return if is_delimited {
-                    Ok((open_spacing, TokenStream::new(buf)))
+                    Ok((open_spacing, self.take_trees(start)))
                 } else {
+                    self.tree_buf.truncate(start);
                     Err(self.close_delim_err(delim))
                 };
             } else if self.token.kind == token::Eof {
                 return if is_delimited {
+                    self.tree_buf.truncate(start);
                     Err(self.eof_err())
                 } else {
-                    Ok((open_spacing, TokenStream::new(buf)))
+                    Ok((open_spacing, self.take_trees(start)))
                 };
             } else {
                 // Get the next normal token.
                 let (this_tok, this_spacing) = self.bump();
-                buf.push(TokenTree::Token(this_tok, this_spacing));
+                self.tree_buf.push(TokenTree::Token(this_tok, this_spacing));
             }
         }
+    }
+
+    /// Moves the trees above `start` out of `tree_buf` into a stream whose
+    /// `Vec` has exactly their length as capacity (`Drain` is `TrustedLen`,
+    /// so `collect` allocates once, and not at all for an empty group).
+    fn take_trees(&mut self, start: usize) -> TokenStream {
+        let tts: Vec<TokenTree> = self.tree_buf.drain(start..).collect();
+        TokenStream::new(tts)
     }
 
     fn lex_token_tree_open_delim(

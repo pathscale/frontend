@@ -16,7 +16,7 @@ fn test_lookup_line() {
     let mut sf = SourceFile::new(
         FileName::Anon(Hash64::ZERO),
         source,
-        SourceFileHashAlgorithm::Sha256,
+        Some(SourceFileHashAlgorithm::Sha256),
         Some(SourceFileHashAlgorithm::Sha256),
     )
     .unwrap();
@@ -120,7 +120,7 @@ fn test_unnormalized_source_length() {
     let sf = SourceFile::new(
         FileName::Anon(Hash64::ZERO),
         source,
-        SourceFileHashAlgorithm::Sha256,
+        Some(SourceFileHashAlgorithm::Sha256),
         Some(SourceFileHashAlgorithm::Sha256),
     )
     .unwrap();

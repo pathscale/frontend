@@ -322,6 +322,30 @@ impl<'a> Parser<'a> {
         } else {
             &[exp!(Gen), exp!(Const), exp!(Async), exp!(Unsafe), exp!(Safe), exp!(Extern)]
         };
+
+        // Cheap rejection first. Every check below needs the current token to be a
+        // non-raw identifier, and with `Case::Sensitive` one named `fn` or a
+        // qualifier (`extern` is among `quals`). Otherwise every
+        // `check_keyword_case` below fails, `&&` skips each lookahead, and the only
+        // effect is recording `fn`, each qualifier and `extern` as expected, which
+        // this does directly.
+        let may_match = match self.token.ident() {
+            Some((ident, IdentIsRaw::No)) => {
+                case == Case::Insensitive
+                    || ident.name == kw::Fn
+                    || quals.iter().any(|exp| exp.kw == ident.name)
+            }
+            _ => false,
+        };
+        if !may_match {
+            self.expected_token_types.insert(exp!(Fn).token_type);
+            for exp in quals {
+                self.expected_token_types.insert(exp.token_type);
+            }
+            self.expected_token_types.insert(exp!(Extern).token_type);
+            return false;
+        }
+
         self.check_keyword_case(exp!(Fn), case) // Definitely an `fn`.
             // `$qual fn` or `$qual $qual`:
             || quals.iter().any(|&exp| self.check_keyword_case(exp, case))
@@ -783,7 +807,10 @@ impl<'a> Parser<'a> {
                 (pat, this.parse_ty_for_param()?)
             } else {
                 debug!("parse_param_general ident_to_pat");
-                let parser_snapshot_before_ty = this.create_snapshot_for_diagnostic();
+                // Only the `recover_arg_parse` arm below restores this snapshot, so a caller
+                // that does not recover (parenthesized `Fn(A, B)` sugar) takes none.
+                let parser_snapshot_before_ty =
+                    recover_arg_parse.then(|| this.create_snapshot_for_diagnostic());
                 this.eat_incorrect_doc_comment_for_param_type();
                 let mut ty = this.parse_ty_for_param();
 
@@ -818,7 +845,10 @@ impl<'a> Parser<'a> {
                     Err(err) if recover_arg_parse => {
                         // Recover from attempting to parse the argument as a type without pattern.
                         err.cancel();
-                        this.restore_snapshot(parser_snapshot_before_ty);
+                        // Always `Some` here: it is taken exactly when `recover_arg_parse`.
+                        if let Some(snapshot) = parser_snapshot_before_ty {
+                            this.restore_snapshot(snapshot);
+                        }
                         this.recover_arg_parse(fn_parse_mode.context)?
                     }
                     Err(err) => return Err(err),

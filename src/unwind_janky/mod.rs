@@ -48,8 +48,11 @@
 //!   catcher can catch anything.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use core::any::Any;
 use core::sync::atomic::{AtomicPtr, Ordering};
+
+use eko::thread::ThreadLocal;
 
 /// What a caught panic carries.
 ///
@@ -124,12 +127,26 @@ pub fn resume(_payload: Payload) -> ! {
     // writer, which is right for an ordinary sequence of panics and wrong for exactly this one:
     // the message here carries no information, and the one it would displace is the whole reason
     // the slot exists.
-    RESUMING.store(true, core::sync::atomic::Ordering::Release);
+    //
+    // `None` means this thread has no thread-local slot at all. The flag is then simply not set,
+    // and the re-raise's message replaces the original's; that is a worse report, not a wrong one.
+    let _ = RESUMING.with(|| false, |resuming| *resuming = true);
     panic!("resuming a caught panic")
 }
 
 /// Set across [`resume`]'s own raise, so [`record_panic`] can decline it.
-static RESUMING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+///
+/// Per thread, because the raise it marks is. It was one process-wide flag, and then one thread's
+/// `resume` could make a *different* thread's next panic go unrecorded: the flag was set here,
+/// the other thread's `record_panic` swapped it back to false and declined its own message, and
+/// this thread's re-raise was then recorded over the original it existed to protect. The panic
+/// handler runs on the panicking thread, so the thread that set the flag is the thread that
+/// reads it.
+///
+/// An `eko::thread::ThreadLocal` rather than `eko::thread_local!`, because its `with` returns an
+/// `Option` where `LocalKey::with` panics. [`record_panic`] runs inside the panic handler, and a
+/// panic there is a double panic, which aborts.
+static RESUMING: ThreadLocal<bool> = ThreadLocal::new();
 
 /// Whether [`catch`] can actually catch: unwinding is compiled in and a catcher is installed.
 ///
@@ -153,43 +170,52 @@ pub fn unwinding_is_enabled() -> bool {
 /// by the time the daemon catches one the message has already been replaced. Recording it where
 /// it is still in hand costs one pointer and does not wait on fixing the raise path.
 ///
-/// An atomic pointer rather than a lock because this crate has no dependencies, and the panic
-/// path is not where a lock should first be taken. The last writer wins, which is the right
-/// answer: a panic while panicking is the one still unwinding.
+/// # Per thread, because a panic is
+///
+/// The slot is one per thread. The panic handler runs on the thread that panicked, and the
+/// [`catch`] that stops the unwind runs on that same thread, so the writer and the reader of one
+/// panic always share a slot. It was one process-wide pointer, and that was wrong the moment two
+/// threads each served a request: thread A's panic could be taken by thread B's catch and
+/// reported against B's request, and A then found `None`. Per thread, each request reads exactly
+/// its own panic, with no lock taken on the panic path.
+///
+/// Within a thread the last writer wins, which is the right answer: a panic while panicking is
+/// the one still unwinding.
+///
+/// An `eko::thread::ThreadLocal` rather than `eko::thread_local!` for the reason given on
+/// [`RESUMING`]: its `with` answers `None` instead of panicking, and this is written from inside
+/// the panic handler. A thread with no slot records nothing, the same answer `std`'s `try_with`
+/// gives a thread that is tearing down.
 ///
 /// Written by the `#[panic_handler]` in `unwind-runtime`, which is the only thing that sees a
 /// `PanicInfo`. This half lives here because any target may link this crate, and only a `no_std`
 /// binary may link that one.
-static LAST_PANIC: core::sync::atomic::AtomicPtr<alloc::string::String> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static LAST_PANIC: ThreadLocal<Option<String>> = ThreadLocal::new();
 
-/// Record what a panic said. Called from the panic handler, before the raise.
-pub fn record_panic(what: alloc::string::String) {
-    use core::sync::atomic::Ordering;
+/// Record what a panic said, on the calling thread. Called from the panic handler, before the
+/// raise, which runs on the panicking thread; so the message lands in the slot of the thread
+/// whose [`catch`] will stop the unwind.
+///
+/// Must not panic: a panic here is a panic inside the panic handler, which aborts. Every access
+/// below is a plain `mem::replace` on a value this thread owns, and a missing slot is ignored.
+pub fn record_panic(what: String) {
     // `resume`'s own raise says only "resuming a caught panic", and it happens *after* the panic
     // worth reporting. Declining it is what makes the slot hold the original message rather than
     // the re-raise that replaced its payload.
-    if RESUMING.swap(false, Ordering::AcqRel) {
+    if RESUMING.with(|| false, |resuming| core::mem::replace(resuming, false)) == Some(true) {
         return;
     }
-    let boxed = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(what));
-    let previous = LAST_PANIC.swap(boxed, Ordering::AcqRel);
-    if !previous.is_null() {
-        // Safe: only this function stores into the slot, and only with `Box::into_raw`.
-        drop(unsafe { alloc::boxed::Box::from_raw(previous) });
-    }
+    // The displaced message is returned out of the closure and dropped here, so nothing runs
+    // while this thread's slot is borrowed.
+    let previous = LAST_PANIC.with(|| None, |slot| slot.replace(what));
+    drop(previous);
 }
 
-/// What the last panic said, taking it.
+/// What the last panic on the calling thread said, taking it.
 ///
 /// `None` once it has been read, so a later request cannot report a panic that belonged to an
-/// earlier one. A caller that catches and finds `None` was not the thing that panicked.
-pub fn take_last_panic() -> Option<alloc::string::String> {
-    use core::sync::atomic::Ordering;
-    let taken = LAST_PANIC.swap(core::ptr::null_mut(), Ordering::AcqRel);
-    if taken.is_null() {
-        return None;
-    }
-    // Safe: as above.
-    Some(*unsafe { alloc::boxed::Box::from_raw(taken) })
+/// earlier one. A caller that catches and finds `None` was not the thing that panicked. Another
+/// thread's panic is never visible here; see `LAST_PANIC`.
+pub fn take_last_panic() -> Option<String> {
+    LAST_PANIC.with(|| None, Option::take).flatten()
 }

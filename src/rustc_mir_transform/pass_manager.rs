@@ -8,11 +8,9 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::cell::RefCell;
-use hashbrown::hash_map::Entry;
 use core::sync::atomic::Ordering;
 
-use crate::rustc_data_structures::fx::{FxHashMap, FxIndexSet};
+use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_middle::mir::{Body, MirDumper, MirPhase, RuntimePhase};
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_session::Session;
@@ -21,56 +19,12 @@ use tracing::trace;
 use crate::rustc_mir_transform::lint::lint_body;
 use crate::rustc_mir_transform::{diagnostics, validate};
 
-/// Maps MIR pass names to a snake case form to match profiling naming style
-///
-/// `#![no_std]`: was `std::thread_local!`. `eko::thread::ThreadLocal` is a plain
-/// `static` with a `const` constructor and takes the initialiser at each use rather than in the
-/// declaration, so the `RefCell` and the map type move down into `to_profiler_name`.
-static PASS_TO_PROFILER_NAMES: eko::thread::ThreadLocal<
-    RefCell<FxHashMap<&'static str, &'static str>>,
-> = eko::thread::ThreadLocal::new();
-
-/// Builds the snake case form of a pass name and leaks it, so the result is `&'static str`.
-fn leak_profiler_name(type_name: &'static str) -> &'static str {
-    let snake_case: String = type_name
-        .chars()
-        .flat_map(|c| {
-            if c.is_ascii_uppercase() {
-                vec!['_', c.to_ascii_lowercase()]
-            } else if c == '-' {
-                vec!['_']
-            } else {
-                vec![c]
-            }
-        })
-        .collect();
-    &*String::leak(format!("mir_pass{}", snake_case))
-}
-
-/// Converts a MIR pass name into a snake case form to match the profiling naming style.
-fn to_profiler_name(type_name: &'static str) -> &'static str {
-    // `ThreadLocal::with` returns `None` when the key could not be created, which is a process
-    // out of thread-local slots. That is a cache miss and nothing more, so fall back to building
-    // the name uncached - the same value the caching arm would have produced.
-    PASS_TO_PROFILER_NAMES
-        .with(
-            || RefCell::new(FxHashMap::default()),
-            |names| match names.borrow_mut().entry(type_name) {
-                Entry::Occupied(e) => *e.get(),
-                Entry::Vacant(e) => {
-                    let result = leak_profiler_name(type_name);
-                    e.insert(result);
-                    result
-                }
-            },
-        )
-        // **Not `leak_profiler_name` again.** The cached arm leaks once per distinct pass name,
-        // which is bounded by the pass list; leaking on the uncached arm would leak once per
-        // *call*, which is unbounded, and it would do so in exactly the situation where the
-        // process is already short of resources. A profiler label is not worth that, so this
-        // arm gives up the name instead of the memory.
-        .unwrap_or("mir_pass")
-}
+// `PASS_TO_PROFILER_NAMES`, `leak_profiler_name` and `to_profiler_name` were here: a per-thread
+// map from a pass's type name to a leaked `mir_pass_snake_case` string, so the self-profiler
+// could label each pass. The self-profiler is gone (`SelfProfilerRef::generic_activity_with_arg`
+// ignores its label), so the map cached a string nothing reads, and with passes running on
+// nagoya workers it leaked one copy of every pass name per worker thread. Deleted rather than
+// made thread-safe; `MirPass::profiler_name` now returns the static name it was built from.
 
 // A function that simplifies a pass's type_name. E.g. `Baz`, `Baz<'_>`,
 // `foo::bar::Baz`, and `foo::bar::Baz<'a, 'b>` all become `Baz`.
@@ -165,8 +119,11 @@ pub(super) trait MirPass<'tcx> {
         simplify_pass_type_name(core::any::type_name::<Self>())
     }
 
+    /// The label handed to the (disabled) self-profiler. It was a leaked snake-case copy of
+    /// `name` built through a per-thread cache; the label is never read, so the name itself is
+    /// passed and nothing is allocated.
     fn profiler_name(&self) -> &'static str {
-        to_profiler_name(self.name())
+        self.name()
     }
 
     /// Describes how this pass is enabled and which mechanisms may disable it.

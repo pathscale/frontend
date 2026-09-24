@@ -13,9 +13,10 @@ pub use self::calls::{TyCtxtAt, TyCtxtEnsureDone, TyCtxtEnsureOk, TyCtxtEnsureRe
 pub use self::into_query_key::IntoQueryKey;
 pub use self::job::{
     ActiveKeyStatus, QueryCycle, QueryJob, QueryJobId, QueryLatch, QueryStackFrame, QueryState,
-    QueryWaiter,
+    QueryWaitGraph, QueryWaiter, thread_token,
 };
 pub use self::keys::{LocalCrate, QueryKey};
+pub use self::node_diagnostics::NodeDiagnostics;
 pub use self::system::{QueryMode, QuerySystem, QueryVTable};
 pub use crate::rustc_middle::queries::Providers;
 
@@ -26,6 +27,7 @@ pub mod erase;
 mod into_query_key;
 mod job;
 mod keys;
+mod node_diagnostics;
 pub(crate) mod modifiers;
 pub mod on_disk_cache;
 pub(crate) mod query_api;

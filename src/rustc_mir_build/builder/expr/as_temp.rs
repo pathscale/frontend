@@ -73,7 +73,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                 _ => LocalInfo::Boring,
             };
-            **local_decl.local_info.as_mut().unwrap_crate_local() = local_info;
+            *local_decl.local_info_mut() = local_info;
             this.local_decls.push(local_decl)
         };
         debug!(?temp);

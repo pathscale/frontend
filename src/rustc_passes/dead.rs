@@ -11,13 +11,15 @@ use core::sync::atomic::Ordering;
 use hir::def_id::{LocalDefIdMap, LocalDefIdSet};
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
+use crate::rustc_data_structures::sync::{DynSend, DynSync, StageScope, cost, stages};
 use crate::rustc_errors::{ErrorGuaranteed, MultiSpan};
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalModId};
 use crate::rustc_hir::intravisit::{self, Visitor};
-use crate::rustc_hir::{self as hir, ForeignItemId, ItemId, Node, PatKind, QPath, find_attr};
+use crate::rustc_hir::{self as hir, ItemId, Node, PatKind, QPath, find_attr};
 use crate::rustc_lint_defs::builtin::{DEAD_CODE, DEAD_CODE_PUB_IN_BINARY};
 use crate::rustc_lint_defs::{self as lint, Lint, StableLintExpectationId};
+use crate::rustc_middle::hir::ModuleItems;
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::middle::dead_code::{DeadCodeLivenessSnapshot, DeadCodeLivenessSummary};
 use crate::rustc_middle::middle::privacy::Level;
@@ -1393,6 +1395,14 @@ impl<'tcx> DeadVisitor<'tcx> {
     }
 }
 
+/// The whole-crate liveness (`live_symbols_and_ignored_derived_traits`) is one worklist over the
+/// crate and stays one query, computed once; what is per module is the reporting, and that is
+/// per item. `DeadVisitor` is a `TyCtxt`, a lint and two frozen references into the liveness
+/// result, and nothing it does writes to it, so one free or foreign item's report reads nothing
+/// another item's wrote. Each report is therefore a stage over the module's free items then its
+/// foreign items (the order the loops walked them), each item with a visitor of its own. The two
+/// lints stay two passes, `DEAD_CODE_PUB_IN_BINARY` first, so every item's first-lint report
+/// still comes before any item's second-lint report.
 fn check_mod_deathness(tcx: TyCtxt<'_>, module: LocalModId) {
     let Ok(DeadCodeLivenessSummary { pre_deferred_seeding, final_result }) =
         tcx.live_symbols_and_ignored_derived_traits(()).as_ref()
@@ -1402,127 +1412,159 @@ fn check_mod_deathness(tcx: TyCtxt<'_>, module: LocalModId) {
 
     let module_items = tcx.hir_module_items(module);
 
-    if tcx.crate_types().contains(&CrateType::Executable) {
-        let is_unused_pub = |def_id: LocalDefId| {
-            tcx.effective_visibilities(()).is_public_at_level(def_id, Level::Reachable)
-                && !pre_deferred_seeding.live_symbols.contains(&def_id)
-        };
+    stages(|scope| {
+        if tcx.crate_types().contains(&CrateType::Executable) {
+            let effective_visibilities = tcx.effective_visibilities(());
+            let live_symbols = &pre_deferred_seeding.live_symbols;
+            lint_dead_codes(
+                scope,
+                tcx,
+                DEAD_CODE_PUB_IN_BINARY,
+                module,
+                live_symbols,
+                &pre_deferred_seeding.ignored_derived_traits,
+                module_items,
+                move |def_id| {
+                    effective_visibilities.is_public_at_level(def_id, Level::Reachable)
+                        && !live_symbols.contains(&def_id)
+                },
+            );
+        }
 
         lint_dead_codes(
+            scope,
             tcx,
-            DEAD_CODE_PUB_IN_BINARY,
+            DEAD_CODE,
             module,
-            &pre_deferred_seeding.live_symbols,
-            &pre_deferred_seeding.ignored_derived_traits,
-            module_items.free_items().filter(|free_item| is_unused_pub(free_item.owner_id.def_id)),
-            module_items
-                .foreign_items()
-                .filter(|foreign_item| is_unused_pub(foreign_item.owner_id.def_id)),
+            &final_result.live_symbols,
+            &final_result.ignored_derived_traits,
+            module_items,
+            |_| true,
         );
-    }
-
-    lint_dead_codes(
-        tcx,
-        DEAD_CODE,
-        module,
-        &final_result.live_symbols,
-        &final_result.ignored_derived_traits,
-        module_items.free_items(),
-        module_items.foreign_items(),
-    );
+    });
 }
 
-fn lint_dead_codes<'tcx>(
+/// One stage in `scope` over the module's free items, then its foreign items: item `i` reports
+/// the `i`th of them if `reported` says so.
+fn lint_dead_codes<'scope, 'tcx: 'scope>(
+    scope: &'scope StageScope<'scope, '_>,
     tcx: TyCtxt<'tcx>,
     target_lint: &'static Lint,
     module: LocalModId,
     live_symbols: &'tcx LocalDefIdSet,
     ignored_derived_traits: &'tcx LocalDefIdMap<FxIndexSet<DefId>>,
-    free_items: impl Iterator<Item = ItemId>,
-    foreign_items: impl Iterator<Item = ForeignItemId>,
+    module_items: &'tcx ModuleItems,
+    reported: impl Fn(LocalDefId) -> bool + DynSync + DynSend + 'scope,
 ) {
-    let mut visitor = DeadVisitor { tcx, target_lint, live_symbols, ignored_derived_traits };
-    for item in free_items {
-        let def_kind = tcx.def_kind(item.owner_id);
-
-        let mut dead_codes = Vec::new();
-        // Only diagnose unused assoc items in inherent impl and used trait,
-        // for unused assoc items in impls of trait,
-        // we have diagnosed them in the trait if they are unused,
-        // for unused assoc items in unused trait,
-        // we have diagnosed the unused trait.
-        if def_kind == (DefKind::Impl { of_trait: false })
-            || (def_kind == DefKind::Trait && live_symbols.contains(&item.owner_id.def_id))
-        {
-            for &def_id in tcx.associated_item_def_ids(item.owner_id.def_id) {
-                if let Some(local_def_id) = def_id.as_local()
-                    && !visitor.is_live_code(local_def_id)
-                {
-                    let name = tcx.item_name(def_id);
-                    let level_plus = visitor.def_lint_level_plus(local_def_id);
-                    dead_codes.push(DeadItem { def_id: local_def_id, name, level_plus });
+    let len = module_items.free_item_ids().len() + module_items.foreign_item_ids().len();
+    // An item weighs its source at a walk's rate: an upper bound, since the lint reads the
+    // item's definitions and not its bodies.
+    let weight = move |module_items: &&'tcx ModuleItems, index: usize| {
+        let free_items = module_items.free_item_ids();
+        let def_id = match free_items.get(index) {
+            Some(item) => item.owner_id.def_id,
+            None => module_items.foreign_item_ids()[index - free_items.len()].owner_id.def_id,
+        };
+        tcx.stage_weight(def_id, cost::WALK)
+    };
+    scope.stage_weighted(module_items, len, weight, move |module_items, index| {
+        let mut visitor = DeadVisitor { tcx, target_lint, live_symbols, ignored_derived_traits };
+        let free_items = module_items.free_item_ids();
+        match free_items.get(index) {
+            Some(&item) => {
+                if reported(item.owner_id.def_id) {
+                    lint_dead_free_item(&mut visitor, module, item);
+                }
+            }
+            None => {
+                let foreign_item = module_items.foreign_item_ids()[index - free_items.len()];
+                if reported(foreign_item.owner_id.def_id) {
+                    visitor.check_definition(foreign_item.owner_id.def_id);
                 }
             }
         }
-        if !dead_codes.is_empty() {
-            visitor.warn_multiple(item.owner_id.def_id, "used", dead_codes, ReportOn::NamedField);
-        }
+    });
+}
 
-        if !live_symbols.contains(&item.owner_id.def_id) {
-            let parent = tcx.local_parent(item.owner_id.def_id);
-            if parent != module.to_local_def_id() && !live_symbols.contains(&parent) {
-                // We already have diagnosed something.
-                continue;
+/// What the free-item loop of `lint_dead_codes` did for one item.
+fn lint_dead_free_item<'tcx>(visitor: &mut DeadVisitor<'tcx>, module: LocalModId, item: ItemId) {
+    let tcx = visitor.tcx;
+    let live_symbols = visitor.live_symbols;
+    let def_kind = tcx.def_kind(item.owner_id);
+
+    let mut dead_codes = Vec::new();
+    // Only diagnose unused assoc items in inherent impl and used trait,
+    // for unused assoc items in impls of trait,
+    // we have diagnosed them in the trait if they are unused,
+    // for unused assoc items in unused trait,
+    // we have diagnosed the unused trait.
+    if def_kind == (DefKind::Impl { of_trait: false })
+        || (def_kind == DefKind::Trait && live_symbols.contains(&item.owner_id.def_id))
+    {
+        for &def_id in tcx.associated_item_def_ids(item.owner_id.def_id) {
+            if let Some(local_def_id) = def_id.as_local()
+                && !visitor.is_live_code(local_def_id)
+            {
+                let name = tcx.item_name(def_id);
+                let level_plus = visitor.def_lint_level_plus(local_def_id);
+                dead_codes.push(DeadItem { def_id: local_def_id, name, level_plus });
             }
-            visitor.check_definition(item.owner_id.def_id);
-            continue;
-        }
-
-        if let DefKind::Struct | DefKind::Union | DefKind::Enum = def_kind {
-            let adt = tcx.adt_def(item.owner_id);
-            let mut dead_variants = Vec::new();
-
-            for variant in adt.variants() {
-                let def_id = variant.def_id.expect_local();
-                if !live_symbols.contains(&def_id) {
-                    // Record to group diagnostics.
-                    let level_plus = visitor.def_lint_level_plus(def_id);
-                    dead_variants.push(DeadItem { def_id, name: variant.name, level_plus });
-                    continue;
-                }
-
-                let is_positional = variant.fields.raw.first().is_some_and(|field| {
-                    field.name.as_str().starts_with(|c: char| c.is_ascii_digit())
-                });
-                let report_on =
-                    if is_positional { ReportOn::TupleField } else { ReportOn::NamedField };
-                let dead_fields = variant
-                    .fields
-                    .iter()
-                    .filter_map(|field| {
-                        let def_id = field.did.expect_local();
-                        if let ShouldWarnAboutField::Yes = visitor.should_warn_about_field(field) {
-                            let level_plus = visitor.def_lint_level_plus(def_id);
-                            Some(DeadItem { def_id, name: field.name, level_plus })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                visitor.warn_multiple(def_id, "read", dead_fields, report_on);
-            }
-
-            visitor.warn_multiple(
-                item.owner_id.def_id,
-                "constructed",
-                dead_variants,
-                ReportOn::NamedField,
-            );
         }
     }
+    if !dead_codes.is_empty() {
+        visitor.warn_multiple(item.owner_id.def_id, "used", dead_codes, ReportOn::NamedField);
+    }
 
-    for foreign_item in foreign_items {
-        visitor.check_definition(foreign_item.owner_id.def_id);
+    if !live_symbols.contains(&item.owner_id.def_id) {
+        let parent = tcx.local_parent(item.owner_id.def_id);
+        if parent != module.to_local_def_id() && !live_symbols.contains(&parent) {
+            // We already have diagnosed something.
+            return;
+        }
+        visitor.check_definition(item.owner_id.def_id);
+        return;
+    }
+
+    if let DefKind::Struct | DefKind::Union | DefKind::Enum = def_kind {
+        let adt = tcx.adt_def(item.owner_id);
+        let mut dead_variants = Vec::new();
+
+        for variant in adt.variants() {
+            let def_id = variant.def_id.expect_local();
+            if !live_symbols.contains(&def_id) {
+                // Record to group diagnostics.
+                let level_plus = visitor.def_lint_level_plus(def_id);
+                dead_variants.push(DeadItem { def_id, name: variant.name, level_plus });
+                continue;
+            }
+
+            let is_positional = variant.fields.raw.first().is_some_and(|field| {
+                field.name.as_str().starts_with(|c: char| c.is_ascii_digit())
+            });
+            let report_on =
+                if is_positional { ReportOn::TupleField } else { ReportOn::NamedField };
+            let dead_fields = variant
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    let def_id = field.did.expect_local();
+                    if let ShouldWarnAboutField::Yes = visitor.should_warn_about_field(field) {
+                        let level_plus = visitor.def_lint_level_plus(def_id);
+                        Some(DeadItem { def_id, name: field.name, level_plus })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            visitor.warn_multiple(def_id, "read", dead_fields, report_on);
+        }
+
+        visitor.warn_multiple(
+            item.owner_id.def_id,
+            "constructed",
+            dead_variants,
+            ReportOn::NamedField,
+        );
     }
 }
 

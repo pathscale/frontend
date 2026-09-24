@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::Debug;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_index::Idx;
@@ -62,7 +62,7 @@ enum LiveRegions {
 #[derive(Clone)] // FIXME(#146079)
 pub(crate) struct LivenessValues {
     /// The map from locations to points.
-    location_map: Rc<DenseLocationMap>,
+    location_map: Arc<DenseLocationMap>,
 
     /// Where a region is live.
     live_regions: LiveRegions,
@@ -73,7 +73,7 @@ pub(crate) struct LivenessValues {
 
 impl LivenessValues {
     /// Create an empty map of regions to locations where they're live.
-    pub(crate) fn with_specific_points(location_map: Rc<DenseLocationMap>) -> Self {
+    pub(crate) fn with_specific_points(location_map: Arc<DenseLocationMap>) -> Self {
         LivenessValues {
             live_regions: LiveRegions::AtPoints(SparseIntervalMatrix::new(
                 location_map.num_points(),
@@ -87,7 +87,7 @@ impl LivenessValues {
     ///
     /// Unlike `with_specific_points`, does not track exact locations where something is live, only
     /// which regions are live.
-    pub(crate) fn without_specific_points(location_map: Rc<DenseLocationMap>) -> Self {
+    pub(crate) fn without_specific_points(location_map: Arc<DenseLocationMap>) -> Self {
         LivenessValues {
             live_regions: LiveRegions::InBody(Default::default()),
             location_map,
@@ -277,7 +277,7 @@ impl<'tcx> PlaceholderIndices<'tcx> {
 /// because (since it is returned) it must live for at least `'a`. But
 /// it would also contain various points from within the function.
 pub(crate) struct RegionValues<'tcx, N: Idx> {
-    location_map: Rc<DenseLocationMap>,
+    location_map: Arc<DenseLocationMap>,
     placeholder_indices: PlaceholderIndices<'tcx>,
     points: SparseIntervalMatrix<N, PointIndex>,
     free_regions: SparseBitMatrix<N, RegionVid>,
@@ -292,7 +292,7 @@ impl<'tcx, N: Idx> RegionValues<'tcx, N> {
     /// Each of the regions in num_region_variables will be initialized with an
     /// empty set of points and no causal information.
     pub(crate) fn new(
-        location_map: Rc<DenseLocationMap>,
+        location_map: Arc<DenseLocationMap>,
         num_universal_regions: usize,
         placeholder_indices: PlaceholderIndices<'tcx>,
     ) -> Self {

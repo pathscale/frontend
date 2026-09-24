@@ -22,7 +22,9 @@ use crate::rustc_middle::dep_graph::{
 use crate::rustc_middle::ich::StableHashState;
 use crate::rustc_middle::queries::{ExternProviders, Providers, QueryArenas, QueryVTables, TaggedQueryKey};
 use crate::rustc_middle::query::on_disk_cache::OnDiskCache;
-use crate::rustc_middle::query::{QueryCache, QueryCycle, QueryKey, QueryState};
+use crate::rustc_middle::query::{
+    NodeDiagnostics, QueryCache, QueryCycle, QueryKey, QueryState, QueryWaitGraph,
+};
 use crate::rustc_middle::ty::TyCtxt;
 
 #[derive(Debug)]
@@ -139,5 +141,18 @@ pub struct QuerySystem<'tcx> {
 
     pub jobs: AtomicU64,
 
-    pub cycle_handler_nesting: Lock<u8>,
+    /// Serialises changes to the query wait graph, so a thread about to sleep on another
+    /// thread's query can check that it is not closing a cycle. See [`QueryWaitGraph`].
+    ///
+    /// This replaced `cycle_handler_nesting: Lock<u8>`, a session-wide count of cycle
+    /// handlers on the stack. "Nested" means a cycle handler that itself hit a cycle, which is
+    /// a property of one stack; a shared count made two threads handling unrelated cycles at
+    /// once look nested, and three look doubly nested, which is a fatal error. The count is now
+    /// per thread, in `rustc_query_impl::execution`.
+    pub wait_graph: QueryWaitGraph,
+
+    /// The diagnostics part of query outputs, for the queries that have one: those that ran
+    /// inside a par item of a parallel session and emitted, or consumed a query that did. Keyed
+    /// like the values, by `DepNodeIndex`, and consumed with them. See [`NodeDiagnostics`].
+    pub diagnostics: NodeDiagnostics,
 }

@@ -32,7 +32,7 @@ use crate::rustc_data_structures::defer;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_data_structures::profiling::SelfProfilerRef;
-use crate::rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
+use crate::rustc_data_structures::sharded::{InternKey, InternSet, IntoPointer};
 use crate::rustc_data_structures::stable_hash::StableHash;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::sync::{
@@ -139,7 +139,8 @@ impl<'tcx> crate::rustc_type_ir::inherent::Span<TyCtxt<'tcx>> for Span {
     }
 }
 
-type InternedSet<'tcx, T> = ShardedHashMap<InternedInSet<'tcx, T>, ()>;
+/// Looking up a value already interned takes no lock; see [`InternSet`].
+type InternedSet<'tcx, T> = InternSet<InternedInSet<'tcx, T>>;
 
 pub struct CtxtInterners<'tcx> {
     /// The arena that types, regions, etc. are allocated from.
@@ -959,14 +960,12 @@ impl<'tcx> TyCtxt<'tcx> {
         current_gcx: CurrentGcx,
         f: impl FnOnce(TyCtxt<'tcx>) -> T,
     ) -> T {
-        // **Before the first interning, because this arena is about to hand out addresses a dead
-        // arena used to own.** Two `StableHash` implementations memoize on the address of an
-        // interned value - `&'tcx RawList<H, T>` and `AdtDefData` - in a thread-local that
-        // outlives the arena those addresses came from. One `GlobalCtxt` per process hides that;
-        // a second one in the same process does not, and a stale entry makes two structurally
-        // different query keys hash to one `DepNode`. See `stable_hash::bump_address_cache_generation` and
-        // Reusing an arena address for a new type would otherwise hash the two as equal.
-        crate::rustc_data_structures::stable_hash::bump_address_cache_generation();
+        // A call to `stable_hash::bump_address_cache_generation` was here, retiring the
+        // thread-local, address-keyed stable-hash memos of `RawList` and `AdtDefData` before this
+        // arena could reuse a dead arena's addresses. Those memos are gone: the memo now lives in
+        // each `StableHashState` and dies with the hashing computation that filled it, so no
+        // entry can outlive the arena its address came from and there is nothing to retire.
+        // See `StableHashCtxt::memoized_address_hash`.
         let data_layout = sess.target.parse_data_layout().unwrap_or_else(|err| {
             sess.dcx().emit_fatal(err);
         });
@@ -1105,7 +1104,7 @@ impl<'tcx> TyCtxt<'tcx> {
         let id = id.into_query_key();
         // Accessing the DefKey is ok, since it is part of DefPathHash.
         if let Some(id) = id.as_local() {
-            self.definitions_untracked().def_key(id)
+            self.def_table_untracked().def_key(id)
         } else {
             self.cstore_untracked().def_key(id)
         }
@@ -1119,7 +1118,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn def_path(self, id: DefId) -> crate::rustc_hir::definitions::DefPath {
         // Accessing the DefPath is ok, since it is part of DefPathHash.
         if let Some(id) = id.as_local() {
-            self.definitions_untracked().def_path(id)
+            self.def_table_untracked().def_path(id)
         } else {
             self.cstore_untracked().def_path(id)
         }
@@ -1129,7 +1128,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn def_path_hash(self, def_id: DefId) -> crate::rustc_hir::definitions::DefPathHash {
         // Accessing the DefPathHash is ok, it is incr. comp. stable.
         if let Some(def_id) = def_id.as_local() {
-            self.definitions_untracked().def_path_hash(def_id)
+            self.def_table_untracked().def_path_hash(def_id)
         } else {
             self.cstore_untracked().def_path_hash(def_id)
         }
@@ -1155,7 +1154,12 @@ impl<'tcx> TyCtxt<'tcx> {
         // - debug_assertions: for the "fingerprint the result" check in
         //   `crate::rustc_query_impl::execution::execute_job`.
         // - incremental: for query lookups.
-        // - needs_metadata: it is included in the crate metadata through the crate_hash query
+        // - metadata output: the crate metadata carries the hash through the `crate_hash`
+        //   query. Asked of the session's outputs rather than `needs_metadata`, which is true of
+        //   every `Rlib`: only a session that writes metadata (`frontend_facts` reading a
+        //   dependency) reads the hash, and otherwise hashing every HIR owner as it is lowered
+        //   read each def path hash under the definitions lock while other items created defs
+        //   under it, which made lowering the most contended stage of a parallel session.
         // - instrument_coverage: for putting into coverage data (see
         //   `hash_mir_source`).
         // - metrics_dir: metrics use the strict version hash in the filenames
@@ -1164,9 +1168,13 @@ impl<'tcx> TyCtxt<'tcx> {
         //   of the proof of concept impl for the metrics initiative project goal)
         cfg!(debug_assertions)
             || self.sess.opts.incremental.is_some()
-            || self.needs_metadata()
             || self.sess.instrument_coverage()
             || self.sess.opts.unstable_opts.metrics_dir.is_some()
+            || self
+                .sess
+                .opts
+                .output_types
+                .contains_key(&crate::rustc_session::config::OutputType::Metadata)
     }
 
     #[inline]
@@ -1363,6 +1371,7 @@ impl<'tcx> TyCtxt<'tcx> {
         self.ensure_ok().analysis(());
 
         let definitions = &self.untracked.definitions;
+        let def_table = &*self.untracked.def_table;
         // This was a `gen {}` block (unstable), rewritten as a hand-rolled state machine. `done`
         // makes it fused like the gen block was, so `freeze` runs exactly once.
         let mut i = 0;
@@ -1373,7 +1382,7 @@ impl<'tcx> TyCtxt<'tcx> {
             }
             // Recompute the number of definitions each time, because our caller may be creating
             // new ones.
-            if i < { definitions.read().num_definitions() } {
+            if i < def_table.num_definitions() {
                 let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
                 i += 1;
                 return Some(LocalDefId { local_def_index });
@@ -1424,11 +1433,42 @@ impl<'tcx> TyCtxt<'tcx> {
         self.untracked.definitions.read()
     }
 
+    /// The key and path hash of every local definition, read with no lock (see
+    /// `DefTable`): the path `def_key`, `def_path` and `def_path_hash` take, which a
+    /// parallel stage hits from every item. Only `create_def` appends to it.
+    ///
+    /// Note that this is *untracked* and should only be used within the query
+    /// system if the result is otherwise tracked through queries
+    #[inline]
+    pub fn def_table_untracked(self) -> &'tcx crate::rustc_hir::definitions::DefTable {
+        &self.untracked.def_table
+    }
+
     /// Note that this is *untracked* and should only be used within the query
     /// system if the result is otherwise tracked through queries
     #[inline]
     pub fn source_span_untracked(self, def_id: LocalDefId) -> Span {
         self.untracked.source_span.get(def_id).unwrap_or(DUMMY_SP)
+    }
+
+    /// The expected cost of a stage item over `def_id`, for `sync::run_stage_weighted`: the
+    /// bytes of source the definition covers times `ns_per_byte`, its pass's rate
+    /// (`sync::cost`). Read from the resolver's span table, with no query and no dependency
+    /// tracking, so asking has no effect a serial session would not have; a definition with no
+    /// span weighs nothing, which the stage counts as one.
+    #[inline]
+    pub fn stage_weight(self, def_id: LocalDefId, ns_per_byte: u32) -> u32 {
+        crate::rustc_data_structures::sync::cost::weight(
+            self.source_span_untracked(def_id).byte_len_untracked(),
+            ns_per_byte,
+        )
+    }
+
+    /// [`stage_weight`](Self::stage_weight) of the whole crate: the weight of a stage item that
+    /// walks every item of it.
+    #[inline]
+    pub fn crate_stage_weight(self, ns_per_byte: u32) -> u32 {
+        self.stage_weight(CRATE_DEF_ID, ns_per_byte)
     }
 
     #[inline(always)]
@@ -1788,14 +1828,12 @@ macro_rules! sty_debug_print {
                 };
                 $(let mut $variant = total;)*
 
-                for shard in tcx.interners.type_.lock_shards() {
-                    // It seems that ordering doesn't affect anything here.
-                    let types = shard.iter();
-                    for &(InternedInSet(t), ()) in types {
+                // Counts only, so the set's order does not matter.
+                tcx.interners.type_.for_each(|InternedInSet(t)| {
                         let variant = match t.internee {
                             ty::Bool | ty::Char | ty::Int(..) | ty::Uint(..) |
-                                ty::Float(..) | ty::Str | ty::Never => continue,
-                            ty::Error(_) => /* unimportant */ continue,
+                                ty::Float(..) | ty::Str | ty::Never => return,
+                            ty::Error(_) => /* unimportant */ return,
                             $(ty::$variant(..) => &mut $variant,)*
                         };
                         let lt = t.flags.intersects(ty::TypeFlags::HAS_RE_INFER);
@@ -1808,8 +1846,7 @@ macro_rules! sty_debug_print {
                         if ty { total.ty_infer += 1; variant.ty_infer += 1 }
                         if ct { total.ct_infer += 1; variant.ct_infer += 1 }
                         if lt && ty && ct { total.all_infer += 1; variant.all_infer += 1 }
-                    }
-                }
+                });
                 writeln!(fmt, "Ty interner             total           ty lt ct all")?;
                 $(writeln!(fmt, "    {:18}: {uses:6} {usespc:4.1}%, \
                             {ty:4.1}% {lt:5.1}% {ct:4.1}% {all:4.1}%",
@@ -1893,6 +1930,24 @@ impl<'tcx, T: 'tcx + ?Sized> IntoPointer for InternedInSet<'tcx, T> {
         self.0 as *const _ as *const ()
     }
 }
+
+// SAFETY: the pointer is the `&'tcx T` itself, which lives in the `'tcx` arena and is never
+// written after interning; the `InternSet`s holding it are `CtxtInterners`' fields, which the
+// `'tcx` arena outlives. `from_raw` rebuilds the same reference.
+unsafe impl<'tcx, T: 'tcx> InternKey for InternedInSet<'tcx, T> {
+    #[inline]
+    fn into_raw(self) -> core::ptr::NonNull<()> {
+        core::ptr::NonNull::from(self.0).cast()
+    }
+
+    #[inline]
+    unsafe fn from_raw(raw: core::ptr::NonNull<()>) -> Self {
+        // SAFETY: `raw` came from `into_raw` of an `InternedInSet<'tcx, T>`, whose pointee lives
+        // for `'tcx`.
+        InternedInSet(unsafe { raw.cast::<T>().as_ref() })
+    }
+}
+
 impl<'tcx, T> Borrow<T> for InternedInSet<'tcx, WithCachedTypeInfo<T>> {
     fn borrow(&self) -> &T {
         &self.0.internee

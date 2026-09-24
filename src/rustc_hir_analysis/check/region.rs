@@ -872,6 +872,13 @@ pub(crate) fn region_scope_tree(tcx: TyCtxt<'_>, def_id: LocalDefId) -> &ScopeTr
         };
 
         visitor.scope_tree.root_body = Some(body.value.hir_id);
+        // Nearly every scope belongs to one of the owner's HIR nodes, so the owner's node count
+        // sizes `parent_map` once instead of regrowing it. Only when this body is the whole
+        // owner. An index map iterates in insertion order, so capacity changes no answer.
+        let owner = body.value.hir_id.owner;
+        if owner.def_id == def_id {
+            visitor.scope_tree.parent_map.reserve(tcx.hir_owner_nodes(owner).nodes.len());
+        }
         visitor.visit_body(&body);
         visitor.scope_tree
     } else {

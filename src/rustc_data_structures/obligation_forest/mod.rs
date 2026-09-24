@@ -80,15 +80,16 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::Cell;
-use hashbrown::hash_map::Entry;
 use core::fmt::Debug;
 use core::hash;
 use core::marker::PhantomData;
 
+use smallvec::{SmallVec, smallvec};
 use thin_vec::ThinVec;
 use tracing::debug;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use crate::rustc_data_structures::sso::{SsoHashMap, SsoHashSet};
 
 
 #[cfg(test)]
@@ -166,19 +167,24 @@ pub struct ObligationForest<O: ForestObligation> {
     /// [`crate::rustc_index::newtype_index!`] indices, because this code is hot enough
     /// that the `u32`-to-`usize` conversions that would be required are
     /// significant, and space considerations are not important.
-    nodes: Vec<Node<O>>,
+    ///
+    /// Most forests are small (a handful of obligations for one query or one item), so the
+    /// first few nodes and both caches are held inline and such a forest allocates nothing
+    /// for them. The caches are never iterated for an answer (only probed, and `retain`ed
+    /// with an order-independent rewrite), so the inline form changes no result.
+    nodes: SmallVec<[Node<O>; 4]>,
 
     /// A cache of predicates that have been successfully completed.
-    done_cache: FxHashSet<O::CacheKey>,
+    done_cache: SsoHashSet<O::CacheKey>,
 
     /// A cache of the nodes in `nodes`, indexed by predicate. Unfortunately,
     /// its contents are not guaranteed to match those of `nodes`. See the
     /// comments in `Self::process_obligation` for details.
-    active_cache: FxHashMap<O::CacheKey, usize>,
+    active_cache: SsoHashMap<O::CacheKey, usize>,
 
     /// A vector reused in [Self::compress()] and [Self::find_cycles_from_node()],
-    /// to avoid allocating new vectors.
-    reused_node_vec: Vec<usize>,
+    /// to avoid allocating new vectors. Inline up to 16 entries.
+    reused_node_vec: SmallVec<[usize; 16]>,
 
     obligation_tree_id_generator: ObligationTreeIdGenerator,
 
@@ -198,8 +204,9 @@ struct Node<O> {
     state: Cell<NodeState>,
 
     /// Obligations that depend on this obligation for their completion. They
-    /// must all be in a non-pending state.
-    dependents: Vec<usize>,
+    /// must all be in a non-pending state. Almost always just the parent, so it is
+    /// held inline and a child node costs no allocation.
+    dependents: SmallVec<[usize; 1]>,
 
     /// If true, `dependents[0]` points to a "parent" node, which requires
     /// special treatment upon error but is otherwise treated the same.
@@ -217,7 +224,11 @@ impl<O> Node<O> {
         Node {
             obligation,
             state: Cell::new(NodeState::Pending),
-            dependents: if let Some(parent_index) = parent { vec![parent_index] } else { vec![] },
+            dependents: if let Some(parent_index) = parent {
+                smallvec![parent_index]
+            } else {
+                SmallVec::new()
+            },
             has_parent: parent.is_some(),
             obligation_tree_id,
         }
@@ -329,10 +340,10 @@ mod helper {
     impl<O: ForestObligation> ObligationForest<O> {
         pub fn new() -> ObligationForest<O> {
             ObligationForest {
-                nodes: vec![],
+                nodes: SmallVec::new(),
                 done_cache: Default::default(),
                 active_cache: Default::default(),
-                reused_node_vec: vec![],
+                reused_node_vec: SmallVec::new(),
                 obligation_tree_id_generator: (0..)
                     .map(ObligationTreeId as fn(usize) -> ObligationTreeId),
                 error_cache: Default::default(),
@@ -363,9 +374,9 @@ impl<O: ForestObligation> ObligationForest<O> {
             return Ok(());
         }
 
-        match self.active_cache.entry(cache_key) {
-            Entry::Occupied(o) => {
-                let node = &mut self.nodes[*o.get()];
+        match self.active_cache.get(&cache_key).copied() {
+            Some(index) => {
+                let node = &mut self.nodes[index];
                 if let Some(parent_index) = parent {
                     // If the node is already in `active_cache`, it has already
                     // had its chance to be marked with a parent. So if it's
@@ -377,7 +388,7 @@ impl<O: ForestObligation> ObligationForest<O> {
                 }
                 if let NodeState::Error = node.state.get() { Err(()) } else { Ok(()) }
             }
-            Entry::Vacant(v) => {
+            None => {
                 let obligation_tree_id = match parent {
                     Some(parent_index) => self.nodes[parent_index].obligation_tree_id,
                     None => self.obligation_tree_id_generator.next().unwrap(),
@@ -387,13 +398,13 @@ impl<O: ForestObligation> ObligationForest<O> {
                     && self
                         .error_cache
                         .get(&obligation_tree_id)
-                        .is_some_and(|errors| errors.contains(v.key()));
+                        .is_some_and(|errors| errors.contains(&cache_key));
 
                 if already_failed {
                     Err(())
                 } else {
                     let new_index = self.nodes.len();
-                    v.insert(new_index);
+                    self.active_cache.insert(cache_key, new_index);
                     self.nodes.push(Node::new(parent, obligation, obligation_tree_id));
                     Ok(())
                 }
@@ -622,7 +633,7 @@ impl<O: ForestObligation> ObligationForest<O> {
 
     fn find_cycles_from_node<P>(
         &self,
-        stack: &mut Vec<usize>,
+        stack: &mut SmallVec<[usize; 16]>,
         processor: &mut P,
         index: usize,
         outcome: &mut P::OUT,
@@ -660,7 +671,7 @@ impl<O: ForestObligation> ObligationForest<O> {
     #[inline(never)]
     fn compress(&mut self, mut outcome_cb: impl FnMut(&O)) {
         let orig_nodes_len = self.nodes.len();
-        let mut node_rewrites: Vec<_> = core::mem::take(&mut self.reused_node_vec);
+        let mut node_rewrites = core::mem::take(&mut self.reused_node_vec);
         debug_assert!(node_rewrites.is_empty());
         node_rewrites.extend(0..orig_nodes_len);
         let mut dead_nodes = 0;

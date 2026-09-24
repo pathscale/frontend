@@ -608,6 +608,13 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         self.cx.force_mode = orig_force_mode;
 
         // Finally incorporate all the expanded macros into the input AST fragment.
+        // With nothing expanded the walk below finds no placeholder (every placeholder is
+        // an invocation, and every invocation that leaves the loop has an expanded fragment;
+        // `remove` unwraps, so a stray one could only panic) and changes nothing, so it is
+        // skipped: on a fragment with no macros it would visit every node for nothing.
+        if expanded_fragments_len == 0 {
+            return fragment_with_placeholders;
+        }
         let mut placeholder_expander = PlaceholderExpander::with_capacity(expanded_fragments_len);
         while let Some(expanded_fragments) = expanded_fragments.pop() {
             for (expn_id, expanded_fragment) in expanded_fragments.into_iter().rev() {
@@ -2251,6 +2258,12 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
                     attr_pos = Some(pos); // a non-cfg attr found, still may find a cfg attr
                 }
             }
+        }
+
+        // Nothing to take (the common case, a node with no attributes): the closure below
+        // would return without touching the attributes.
+        if cfg_pos.is_none() && attr_pos.is_none() {
+            return None;
         }
 
         item.visit_attrs(|attrs| {

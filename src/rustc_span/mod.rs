@@ -139,6 +139,9 @@ pub struct SessionGlobals {
     /// Collisions are possible and processed in `maybe_use_metavar_location` on best effort basis.
     metavar_spans: MetavarSpansMap,
     hygiene_data: Lock<hygiene::HygieneData>,
+    /// The edition `hygiene_data`'s root expansion was created with, which never changes: read
+    /// by `SyntaxContext::edition` for the root context without taking the lock.
+    root_edition: Edition,
 
     /// The session's source map, if there is one. This field should only be
     /// used in places where the `Session` is truly not available, such as
@@ -157,6 +160,7 @@ impl SessionGlobals {
             span_interner: Lock::new(span_encoding::SpanInterner::default()),
             metavar_spans: Default::default(),
             hygiene_data: Lock::new(hygiene::HygieneData::new(edition)),
+            root_edition: edition,
             source_map: sm_inputs.map(|inputs| Arc::new(SourceMap::with_inputs(inputs))),
         }
     }
@@ -205,6 +209,17 @@ where
     F: FnOnce(&SessionGlobals) -> R,
 {
     SESSION_GLOBALS.with(f)
+}
+
+/// Whether this thread has `SessionGlobals` installed.
+///
+/// For a parallel stage's item context (`rustc_middle::ty::tls::ItemContext`), which captures
+/// the session's globals where a stage scope opens, installs them around an item on a pool
+/// thread that has none, and leaves them alone on a thread (the session's own) that already has
+/// them.
+#[inline]
+pub fn session_globals_are_set() -> bool {
+    SESSION_GLOBALS.is_set()
 }
 
 /// Default edition, no source map.
@@ -773,6 +788,15 @@ impl Ord for Span {
 }
 
 impl Span {
+    /// How many bytes of source this span covers, read without tracking its parent (see
+    /// `data_untracked`). For sizing work (a stage item's weight, `sync::cost`), never for
+    /// anything a diagnostic shows.
+    #[inline]
+    pub fn byte_len_untracked(self) -> u32 {
+        let data = self.data_untracked();
+        data.hi.0.saturating_sub(data.lo.0)
+    }
+
     #[inline]
     pub fn lo(self) -> BytePos {
         self.data().lo
@@ -1207,7 +1231,17 @@ impl Span {
     ///     self lorem ipsum end
     ///     ^^^^^^^^^^^^^^^^^^^^
     /// ```
+    #[inline]
     pub fn to(self, end: Span) -> Span {
+        match self.to_same_inline_ctxt(end) {
+            Some(span) => span,
+            None => self.to_general(end),
+        }
+    }
+
+    /// `to` for spans that are not both inline-context spans of one context.
+    #[inline(never)]
+    fn to_general(self, end: Span) -> Span {
         match Span::prepare_to_combine(self, end) {
             Ok((from, to, parent)) => {
                 Span::new(cmp::min(from.lo, to.lo), cmp::max(from.hi, to.hi), from.ctxt, parent)
@@ -1881,8 +1915,12 @@ pub struct SourceFile {
     pub name: FileName,
     /// The complete source code.
     pub src: Option<Arc<String>>,
-    /// The source code's hash.
-    pub src_hash: SourceFileHash,
+    /// The source code's hash, when the session asked for one (`-Z src-hash-algorithm`), and
+    /// always for a file imported from a crate's metadata. Only metadata, dep-info and the check
+    /// of an imported file's external source read it, and this crate writes neither metadata nor
+    /// dep-info, so a session that did not ask does not hash its sources: hashing every file
+    /// was 6% of a parse.
+    pub src_hash: Option<SourceFileHash>,
     /// Used to enable cargo to use checksums to check if a crate is fresh rather
     /// than mtimes. This might be the same as `src_hash`, and if the requested algorithm
     /// is identical we won't compute it twice.
@@ -2008,7 +2046,7 @@ impl<S: SpanEncoder> Encodable<S> for SourceFile {
 impl<D: SpanDecoder> Decodable<D> for SourceFile {
     fn decode(d: &mut D) -> SourceFile {
         let name: FileName = Decodable::decode(d);
-        let src_hash: SourceFileHash = Decodable::decode(d);
+        let src_hash: Option<SourceFileHash> = Decodable::decode(d);
         let checksum_hash: Option<SourceFileHash> = Decodable::decode(d);
         let normalized_source_len: RelativeBytePos = Decodable::decode(d);
         let unnormalized_source_len = Decodable::decode(d);
@@ -2107,20 +2145,21 @@ impl StableSourceFileId {
 impl SourceFile {
     const MAX_FILE_SIZE: u32 = u32::MAX - 1;
 
+    /// A file of `src`. The file keeps `src` itself as its text, so a caller that holds the
+    /// same `Arc` shares it rather than copying it. Normalization is the only copy, and it
+    /// happens only when it changes the text (a BOM, or a `\r\n`) while `src` is shared.
     pub fn new(
         name: FileName,
-        mut src: String,
-        hash_kind: SourceFileHashAlgorithm,
+        src: impl Into<Arc<String>>,
+        hash_kind: Option<SourceFileHashAlgorithm>,
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
     ) -> Result<Self, OffsetOverflowError> {
+        let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
-        let src_hash = SourceFileHash::new_in_memory(hash_kind, src.as_bytes());
-        let checksum_hash = checksum_hash_kind.map(|checksum_hash_kind| {
-            if checksum_hash_kind == hash_kind {
-                src_hash
-            } else {
-                SourceFileHash::new_in_memory(checksum_hash_kind, src.as_bytes())
-            }
+        let src_hash = hash_kind.map(|kind| SourceFileHash::new_in_memory(kind, src.as_bytes()));
+        let checksum_hash = checksum_hash_kind.map(|checksum_hash_kind| match src_hash {
+            Some(src_hash) if Some(checksum_hash_kind) == hash_kind => src_hash,
+            _ => SourceFileHash::new_in_memory(checksum_hash_kind, src.as_bytes()),
         });
         // Capture the original source length before normalization.
         let unnormalized_source_len = u32::try_from(src.len()).map_err(|_| OffsetOverflowError)?;
@@ -2128,7 +2167,13 @@ impl SourceFile {
             return Err(OffsetOverflowError);
         }
 
-        let normalized_pos = normalize_src(&mut src);
+        // Text that normalization would leave alone is not touched, so a shared `src` stays
+        // shared. `make_mut` copies only a shared `src` that does change.
+        let normalized_pos = if needs_normalization(&src) {
+            normalize_src(Arc::make_mut(&mut src))
+        } else {
+            Vec::new()
+        };
 
         let stable_id = StableSourceFileId::from_filename_in_current_crate(&name);
         let normalized_source_len = u32::try_from(src.len()).map_err(|_| OffsetOverflowError)?;
@@ -2140,7 +2185,7 @@ impl SourceFile {
 
         Ok(SourceFile {
             name,
-            src: Some(Arc::new(src)),
+            src: Some(src),
             src_hash,
             checksum_hash,
             external_src: FreezeLock::frozen(ExternalSource::Unneeded),
@@ -2247,7 +2292,7 @@ impl SourceFile {
             let src = get_src();
             let src = src.and_then(|mut src| {
                 // The src_hash needs to be computed on the pre-normalized src.
-                self.src_hash.matches(&src).then(|| {
+                self.src_hash.is_some_and(|hash| hash.matches(&src)).then(|| {
                     normalize_src(&mut src);
                     src
                 })
@@ -2496,6 +2541,12 @@ pub fn char_width(ch: char) -> usize {
 
 pub fn str_width(s: &str) -> usize {
     s.chars().map(char_width).sum()
+}
+
+/// Whether [`normalize_src`] would change `src`: it starts with a BOM or has a `\r\n`. A lone
+/// `\r` is left as it is by `normalize_newlines`, so it does not count.
+fn needs_normalization(src: &str) -> bool {
+    src.starts_with('\u{feff}') || (src.as_bytes().contains(&b'\r') && src.contains("\r\n"))
 }
 
 /// Normalizes the source code and records the normalizations.

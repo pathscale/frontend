@@ -8,18 +8,14 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::cell::RefCell;
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
 use core::str;
 
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, ReprOptions, VariantIdx};
 use crate::rustc_data_structures::fingerprint::Fingerprint;
-use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::intern::Interned;
-use crate::rustc_data_structures::stable_hash::{
-    self, StableHash, StableHashControls, StableHashCtxt, StableHasher,
-};
+use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, DefKind, Res};
@@ -164,55 +160,25 @@ impl Hash for AdtDefData {
 
 impl StableHash for AdtDefData {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        // Keyed on an address, so it is only valid for as long as the arena that handed that
-        // address out. this frontend outlives many of those; the generation retires the entries
-        // a dead arena's addresses were filled for. See
-        // `stable_hash::bump_address_cache_generation`.
-        // `std::thread_local!` was replaced by `eko::thread::ThreadLocal`, which is
-        // `pthread_key_create` and hands the closure `&mut T` rather than `&T`. Its `with`
-        // returns `Option`, because a process out of thread-local slots cannot make a key; that
-        // is a caching failure and not a hashing one, so the lookup and the store are separate
-        // visits and a `None` from either just means this hash was not memoized.
-        static CACHE: eko::thread::ThreadLocal<
-            RefCell<(u64, FxHashMap<(usize, StableHashControls), Fingerprint>)>,
-        > = eko::thread::ThreadLocal::new();
-
+        // Memoized per hashing computation on `hcx`, keyed by the interned address (which
+        // `memoize_address_hash` pairs with the current `StableHashControls`). It was a
+        // thread-local retired by a process-wide generation counter; see
+        // `StableHashCtxt::memoized_address_hash` for why it moved and what it still buys.
         let addr = self as *const AdtDefData as usize;
-        let stable_hash_controls = hcx.stable_hash_controls();
 
-        let cached: Option<Fingerprint> = CACHE
-            .with(
-                || RefCell::new((stable_hash::address_cache_generation(), Default::default())),
-                |cache| {
-                    let generation = stable_hash::address_cache_generation();
-                    let mut cache = cache.borrow_mut();
-                    if cache.0 != generation {
-                        cache.0 = generation;
-                        cache.1.clear();
-                    }
-                    cache.1.get(&(addr, stable_hash_controls)).copied()
-                },
-            )
-            .flatten();
-
-        let hash: Fingerprint = match cached {
+        let hash: Fingerprint = match hcx.memoized_address_hash(addr) {
             Some(hash) => hash,
             None => {
                 let ty::AdtDefData { did, ref variants, ref flags, ref repr } = *self;
 
-                let mut hasher = StableHasher::new();
-                did.stable_hash(hcx, &mut hasher);
-                variants.stable_hash(hcx, &mut hasher);
-                flags.stable_hash(hcx, &mut hasher);
-                repr.stable_hash(hcx, &mut hasher);
+                let mut adt_hasher = StableHasher::new();
+                did.stable_hash(hcx, &mut adt_hasher);
+                variants.stable_hash(hcx, &mut adt_hasher);
+                flags.stable_hash(hcx, &mut adt_hasher);
+                repr.stable_hash(hcx, &mut adt_hasher);
 
-                let hash: Fingerprint = hasher.finish();
-                let _ = CACHE.with(
-                    || RefCell::new((stable_hash::address_cache_generation(), Default::default())),
-                    |cache| {
-                        cache.borrow_mut().1.insert((addr, stable_hash_controls), hash);
-                    },
-                );
+                let hash: Fingerprint = adt_hasher.finish();
+                hcx.memoize_address_hash(addr, hash);
                 hash
             }
         };

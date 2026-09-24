@@ -14,6 +14,9 @@ use alloc::vec::Vec;
 use core::mem;
 use alloc::sync::Arc;
 
+use crate::rustc_data_structures::fx::FxHashSet;
+use crate::rustc_data_structures::sync::run_stage;
+
 use crate::rustc_ast::{self as ast, Crate, DelegationSuffixes, NodeId};
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_attr_parsing::AttributeParser;
@@ -52,7 +55,7 @@ use crate::rustc_resolve::hygiene::Macros20NormalizedSyntaxContext;
 use crate::rustc_resolve::imports::Import;
 use crate::rustc_resolve::{
     BindingKey, CacheCell, CmResolver, Decl, DeclKind, DeriveData, Determinacy, Finalize, IdentKey,
-    InvocationParent, ModuleKind, ModuleOrUniformRoot, ParentScope, PathResult, Res,
+    InvocationParent, LateSink, ModuleKind, ModuleOrUniformRoot, ParentScope, PathResult, Res,
     ResolutionError, Resolver, ScopeSet, Segment, Used,
 };
 
@@ -819,14 +822,22 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                 PathResult::Module(..) => unreachable!(),
             };
 
-            self.multi_segment_macro_resolutions.borrow_mut_checked(&self).push((
-                path,
-                path_span,
-                kind,
-                *parent_scope,
-                res.ok(),
-                ns,
-            ));
+            // Recorded for `finalize_macro_resolutions`. A `Late` resolver is one of the two
+            // passes after it (macro finalization's units, reaching here through a derive helper's
+            // `DeriveHelpersCompat` scope, and late resolution), which run once the lists were
+            // taken, so what they would record is never read: skipping it changes nothing, and a
+            // frozen resolver cannot write it. A `Ref` made with `cm()` inside a frozen unit is the
+            // same case, so the frozen flag is checked as well as the variant.
+            if !matches!(self, CmResolver::Late(..)) && !self.frozen_flag.is_frozen() {
+                self.multi_segment_macro_resolutions.borrow_mut_checked(&self).push((
+                    path,
+                    path_span,
+                    kind,
+                    *parent_scope,
+                    res.ok(),
+                    ns,
+                ));
+            }
 
             self.prohibit_imported_non_macro_attrs(None, res.ok(), path_span);
             res
@@ -846,13 +857,16 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                 return Err(Determinacy::Undetermined);
             }
 
-            self.single_segment_macro_resolutions.borrow_mut_checked(&self).push((
-                path[0].ident,
-                kind,
-                *parent_scope,
-                binding.ok(),
-                suggestion_span,
-            ));
+            // See the multi-segment case above.
+            if !matches!(self, CmResolver::Late(..)) && !self.frozen_flag.is_frozen() {
+                self.single_segment_macro_resolutions.borrow_mut_checked(&self).push((
+                    path[0].ident,
+                    kind,
+                    *parent_scope,
+                    binding.ok(),
+                    suggestion_span,
+                ));
+            }
 
             let res = binding.map(|binding| binding.res());
             self.prohibit_imported_non_macro_attrs(binding.ok(), res.ok(), path_span);
@@ -886,66 +900,260 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 }
 
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
+    /// Check every macro resolution recorded during expansion again, now that expansion is
+    /// done, reporting what did not resolve.
+    ///
+    /// Each recorded resolution is one unit (`CmResolver::finalize_macro_resolution`): it
+    /// resolves against the resolver, reports its own diagnostics, and writes nothing else but
+    /// the bookkeeping a finalizing lookup makes (uses, ambiguity and privacy errors, lints),
+    /// which is exactly what a `LateSink` holds. So when the resolver can be frozen
+    /// (`macro_finalization_can_freeze`), the units run as a stage over `&Resolver`, each into a
+    /// sink of its own, and the sinks are merged in unit order, which is the order the loop
+    /// below runs them in. Otherwise that loop runs them on the resolver itself, as before.
     pub(crate) fn finalize_macro_resolutions(&mut self, krate: &Crate) {
-        let check_consistency = |this: &Self,
-                                 path: &[Segment],
-                                 span,
-                                 kind: MacroKind,
-                                 initial_res: Option<Res>,
-                                 res: Res| {
-            if let Some(initial_res) = initial_res {
-                if res != initial_res {
-                    if this.ambiguity_errors.is_empty() {
-                        // Make sure compilation does not succeed if preferred macro resolution
-                        // has changed after the macro had been expanded. In theory all such
-                        // situations should be reported as errors, so this is a bug.
-                        this.dcx().span_delayed_bug(span, "inconsistent resolution for a macro");
-                    }
-                }
-            } else if this.tcx.dcx().has_errors().is_none() && this.privacy_errors.is_empty() {
-                // It's possible that the macro was unresolved (indeterminate) and silently
-                // expanded into a dummy fragment for recovery during expansion.
-                // Now, post-expansion, the resolution may succeed, but we can't change the
-                // past and need to report an error.
-                // However, non-speculative `resolve_path` can successfully return private items
-                // even if speculative `resolve_path` returned nothing previously, so we skip this
-                // less informative error if no other error is reported elsewhere.
-
-                let err = this.dcx().create_err(CannotDetermineMacroResolution {
-                    span,
-                    kind: kind.descr(),
-                    path: Segment::names_to_string(path),
-                });
-                err.stash(span, StashKey::UndeterminedMacroResolution);
+        if self.macro_finalization_can_freeze() {
+            // All three lists are taken at once, where the loop takes each after the list before
+            // it has run. Nothing can be pushed in between: a push comes from resolving a derive
+            // path in a `DeriveHelpersCompat` scope, which only a single-segment `MacroNS`
+            // lookup visits (the multi list's paths resolve their last segment in a module, or,
+            // for a glob delegation, in the type namespace), and a
+            // `Late` resolver does not record it anyway (`resolve_macro_or_delegation_path`).
+            let mut resolutions = MacroResolutions {
+                multi: self.multi_segment_macro_resolutions.take(self),
+                single: self.single_segment_macro_resolutions.take(self),
+                builtin_attrs: mem::take(&mut self.builtin_attrs),
+            };
+            resolutions.clear_segment_ids();
+            // No crate is loaded, so this only sets its flag; the suggestions for an unresolved
+            // macro need it done, and a frozen resolver cannot do it.
+            self.register_macros_for_all_crates();
+            // The lazy writes into the module graph a lookup could make: every module's trait
+            // list, and every `macro_rules` scope chain late resolution reaches, then the chains
+            // the recorded parent scopes enter. Both are what the lookups would have written
+            // before reading, so no answer changes.
+            self.prepare_frozen_late_resolution();
+            self.compress_macro_rules_scopes_from(resolutions.macro_rules_scopes());
+            // SAFETY: we hold the resolver mutably, so no borrow `CmRefCell::borrow_checked`
+            // handed out is live; and while the flag is set nothing writes the module graph
+            // (every lazy write path asserts it, and the writes the units would otherwise make
+            // are done above).
+            unsafe { self.frozen_flag.set(true) };
+            let this: &Resolver<'ra, 'tcx> = self;
+            let len = resolutions.len();
+            // SAFETY: the stage settles every unit before the phase ends, and a unit's reads of
+            // the definitions end with it. Nothing creates a definition while the resolver is
+            // frozen.
+            let sinks = unsafe {
+                this.tcx.untracked().definitions.read_phase(|| {
+                    run_stage(resolutions, len, |resolutions, index| {
+                        let mut sink = LateSink::default();
+                        CmResolver::Late(this, &mut sink)
+                            .finalize_macro_resolution(resolutions, index, krate);
+                        sink
+                    })
+                })
+            };
+            // SAFETY: the stage has settled every unit, and a unit's untracked borrows end with
+            // it.
+            unsafe { self.frozen_flag.set(false) };
+            for sink in sinks {
+                self.merge_late_sink(sink);
             }
-        };
+        } else {
+            let mut resolutions = MacroResolutions {
+                multi: self.multi_segment_macro_resolutions.take(self),
+                single: Vec::new(),
+                builtin_attrs: Vec::new(),
+            };
+            resolutions.clear_segment_ids();
+            for index in 0..resolutions.multi.len() {
+                self.cm_mut().finalize_macro_resolution(&resolutions, index, krate);
+            }
+            resolutions.single = self.single_segment_macro_resolutions.take(self);
+            let start = resolutions.multi.len();
+            for index in start..start + resolutions.single.len() {
+                self.cm_mut().finalize_macro_resolution(&resolutions, index, krate);
+            }
+            resolutions.builtin_attrs = mem::take(&mut self.builtin_attrs);
+            let start = resolutions.multi.len() + resolutions.single.len();
+            for index in start..start + resolutions.builtin_attrs.len() {
+                self.cm_mut().finalize_macro_resolution(&resolutions, index, krate);
+            }
+        }
+    }
 
-        let macro_resolutions = self.multi_segment_macro_resolutions.take(self);
-        for (mut path, path_span, kind, parent_scope, initial_res, ns) in macro_resolutions {
-            // FIXME: Path resolution will ICE if segment IDs present.
-            for seg in &mut path {
+    /// Whether the units of `finalize_macro_resolutions` may run as a stage over a frozen
+    /// resolver, with every answer the loop's.
+    ///
+    /// - Nothing external can be reached (no crate loaded, no `--extern` flag that would load one
+    ///   on first use): external modules and macros are materialised on first use, a write. The
+    ///   same condition as late resolution's, without its doc link part, which finalization
+    ///   does not touch. With no sysroot named (the default) there is nothing external.
+    /// - An error has been counted already, and delayed bugs are not emitted eagerly. The one
+    ///   place a unit reads what the units before it did is its consistency check
+    ///   (`check_macro_resolution_consistency`): `has_errors`, `ambiguity_errors` and
+    ///   `privacy_errors`. With an error counted (the count only grows here: nothing in this
+    ///   pass steals a stashed error) it stashes nothing, and its delayed bug is dropped on
+    ///   arrival (`DiagCtxtInner::emit_diagnostic`), so the check does nothing in any order.
+    ///   Without one, a unit's answer would depend on whether an earlier unit emitted an error
+    ///   inside its lookup, which no unit can know, so the loop runs.
+    fn macro_finalization_can_freeze(&self) -> bool {
+        self.tcx.dcx().has_errors().is_some()
+            && !self.tcx.sess.opts.unstable_opts.eagerly_emit_delayed_bugs
+            && self.cstore().iter_crate_data().next().is_none()
+            && self.extern_prelude.values().all(|entry| entry.flag_decl.is_none())
+    }
+
+    /// The path compression `visit_scopes` performs on each `macro_rules` scope it passes
+    /// (`ident.rs`), done ahead for every scope reachable from `roots` by the steps
+    /// `visit_scopes` takes (a definition to the scope it was planted in, an unexpanded
+    /// invocation to the scope it was invoked in), each scope once. The same walk as late
+    /// resolution's `compress_macro_rules_scopes`, from roots the caller names.
+    fn compress_macro_rules_scopes_from(
+        &self,
+        roots: impl Iterator<Item = MacroRulesScopeRef<'ra>>,
+    ) {
+        let mut seen: FxHashSet<*const ()> = FxHashSet::default();
+        let mut pending: Vec<MacroRulesScopeRef<'ra>> = roots.collect();
+        while let Some(cell) = pending.pop() {
+            if !seen.insert(core::ptr::from_ref(cell).cast::<()>()) {
+                continue;
+            }
+            let mut scope = cell.get();
+            while let MacroRulesScope::Invocation(invoc_id) = scope {
+                match self.output_macro_rules_scopes.get(&invoc_id) {
+                    Some(next) => {
+                        scope = next.get();
+                        cell.set(scope);
+                    }
+                    None => break,
+                }
+            }
+            match scope {
+                MacroRulesScope::Def(binding) => pending.push(binding.parent_macro_rules_scope),
+                MacroRulesScope::Invocation(invoc_id) => {
+                    pending.push(self.invocation_parent_scopes[&invoc_id].macro_rules)
+                }
+                MacroRulesScope::Empty => {}
+            }
+        }
+    }
+
+    /// The consistency check of a finalized macro resolution against the one expansion used.
+    ///
+    /// Reads what the units before it wrote (`ambiguity_errors`, `privacy_errors`) and
+    /// whether any error was counted; see `macro_finalization_can_freeze` for why that is
+    /// exact in both modes.
+    fn check_macro_resolution_consistency(
+        &self,
+        path: &[Segment],
+        span: Span,
+        kind: MacroKind,
+        initial_res: Option<Res>,
+        res: Res,
+    ) {
+        if let Some(initial_res) = initial_res {
+            if res != initial_res {
+                if self.ambiguity_errors.is_empty() {
+                    // Make sure compilation does not succeed if preferred macro resolution
+                    // has changed after the macro had been expanded. In theory all such
+                    // situations should be reported as errors, so this is a bug.
+                    self.dcx().span_delayed_bug(span, "inconsistent resolution for a macro");
+                }
+            }
+        } else if self.tcx.dcx().has_errors().is_none() && self.privacy_errors.is_empty() {
+            // It's possible that the macro was unresolved (indeterminate) and silently
+            // expanded into a dummy fragment for recovery during expansion.
+            // Now, post-expansion, the resolution may succeed, but we can't change the
+            // past and need to report an error.
+            // However, non-speculative `resolve_path` can successfully return private items
+            // even if speculative `resolve_path` returned nothing previously, so we skip this
+            // less informative error if no other error is reported elsewhere.
+
+            let err = self.dcx().create_err(CannotDetermineMacroResolution {
+                span,
+                kind: kind.descr(),
+                path: Segment::names_to_string(path),
+            });
+            err.stash(span, StashKey::UndeterminedMacroResolution);
+        }
+    }
+}
+
+/// The macro resolutions expansion recorded, taken by `finalize_macro_resolutions`: unit `i` of
+/// the finalization is the `i`th of the multi-segment paths, then the single-segment names, then
+/// the built-in attribute names, each list in the order it was recorded.
+struct MacroResolutions<'ra> {
+    multi: Vec<(Vec<Segment>, Span, MacroKind, ParentScope<'ra>, Option<Res>, Namespace)>,
+    single: Vec<(Ident, MacroKind, ParentScope<'ra>, Option<Decl<'ra>>, Option<Span>)>,
+    builtin_attrs: Vec<(Ident, ParentScope<'ra>)>,
+}
+
+impl<'ra> MacroResolutions<'ra> {
+    fn len(&self) -> usize {
+        self.multi.len() + self.single.len() + self.builtin_attrs.len()
+    }
+
+    /// Path resolution will ICE if segment IDs are present (a FIXME carried from the loop,
+    /// which cleared them on each path before resolving it). Cleared in place, once, so a
+    /// unit reads its path as it is.
+    fn clear_segment_ids(&mut self) {
+        for (path, ..) in &mut self.multi {
+            for seg in path {
                 seg.id = None;
             }
-            match self.cm_mut().resolve_path(
-                &path,
+        }
+    }
+
+    /// The `macro_rules` scope every unit's lookup starts from.
+    fn macro_rules_scopes(&self) -> impl Iterator<Item = MacroRulesScopeRef<'ra>> + '_ {
+        self.multi
+            .iter()
+            .map(|(_, _, _, parent_scope, ..)| parent_scope.macro_rules)
+            .chain(self.single.iter().map(|(_, _, parent_scope, ..)| parent_scope.macro_rules))
+            .chain(self.builtin_attrs.iter().map(|(_, parent_scope)| parent_scope.macro_rules))
+    }
+}
+
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
+    /// Unit `index` of `finalize_macro_resolutions`: resolve one recorded macro path or name
+    /// again, finalizing, and report it if it does not resolve.
+    ///
+    /// Through a `Mut` resolver this is the loop's body as it always was. Through a `Late` one
+    /// every write goes to the unit's sink (`record_use`, the lookups' bookkeeping, the
+    /// `LEGACY_DERIVE_HELPERS` lint) and every diagnostic is emitted from the unit, which a stage
+    /// replays in unit order.
+    fn finalize_macro_resolution(
+        mut self,
+        resolutions: &MacroResolutions<'ra>,
+        index: usize,
+        krate: &Crate,
+    ) {
+        let multi = resolutions.multi.len();
+        let single = resolutions.single.len();
+        if index < multi {
+            let (ref path, path_span, kind, ref parent_scope, initial_res, ns) =
+                resolutions.multi[index];
+            match self.reborrow().resolve_path(
+                path,
                 Some(ns),
-                &parent_scope,
+                parent_scope,
                 Some(Finalize::new(ast::CRATE_NODE_ID, path_span)),
                 None,
                 None,
             ) {
                 PathResult::NonModule(path_res) if let Some(res) = path_res.full_res() => {
-                    check_consistency(self, &path, path_span, kind, initial_res, res)
+                    self.check_macro_resolution_consistency(path, path_span, kind, initial_res, res)
                 }
                 // This may be a trait for glob delegation expansions.
-                PathResult::Module(ModuleOrUniformRoot::Module(module)) => check_consistency(
-                    self,
-                    &path,
-                    path_span,
-                    kind,
-                    initial_res,
-                    module.res().unwrap(),
-                ),
+                PathResult::Module(ModuleOrUniformRoot::Module(module)) => self
+                    .check_macro_resolution_consistency(
+                        path,
+                        path_span,
+                        kind,
+                        initial_res,
+                        module.res().unwrap(),
+                    ),
                 path_res @ (PathResult::NonModule(..) | PathResult::Failed { .. }) => {
                     let mut suggestion = None;
                     let (span, message, label, module, segment, help) = match path_res {
@@ -955,7 +1163,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                             // try to suggest if it's not a macro, maybe a function
                             if let PathResult::NonModule(partial_res) = self
                                 .cm()
-                                .maybe_resolve_path(&path, Some(ValueNS), &parent_scope, None)
+                                .maybe_resolve_path(path, Some(ValueNS), parent_scope, None)
                                 && partial_res.unresolved_segments() == 0
                             {
                                 let sm = self.tcx.sess.source_map();
@@ -964,7 +1172,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                     vec![(exclamation_span, "".to_string())],
                                     format!(
                                         "{} is not a macro, but a {}, try to remove `!`",
-                                        Segment::names_to_string(&path),
+                                        Segment::names_to_string(path),
                                         partial_res.base_res().descr()
                                     ),
                                     Applicability::MaybeIncorrect,
@@ -1023,14 +1231,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 }
                 PathResult::Module(..) | PathResult::Indeterminate => unreachable!(),
             }
-        }
-
-        let macro_resolutions = self.single_segment_macro_resolutions.take(self);
-        for (ident, kind, parent_scope, initial_binding, sugg_span) in macro_resolutions {
-            match self.cm_mut().resolve_ident_in_scope_set(
+        } else if index < multi + single {
+            let (ident, kind, ref parent_scope, initial_binding, sugg_span) =
+                resolutions.single[index - multi];
+            match self.reborrow().resolve_ident_in_scope_set(
                 ident,
                 ScopeSet::Macro(kind),
-                &parent_scope,
+                parent_scope,
                 Some(Finalize::new(ast::CRATE_NODE_ID, ident.span)),
                 None,
                 None,
@@ -1042,7 +1249,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     });
                     let res = binding.res();
                     let seg = Segment::from_ident(ident);
-                    check_consistency(self, &[seg], ident.span, kind, initial_res, res);
+                    self.check_macro_resolution_consistency(
+                        &[seg],
+                        ident.span,
+                        kind,
+                        initial_res,
+                        res,
+                    );
                     if res == Res::NonMacroAttr(NonMacroAttrKind::DeriveHelperCompat) {
                         let node_id = self
                             .invocation_parents
@@ -1050,7 +1263,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                             .map_or(ast::CRATE_NODE_ID, |parent| {
                                 self.def_id_to_node_id(parent.parent_def)
                             });
-                        self.lint_buffer.buffer_lint(
+                        self.lint_buffer_mut().buffer_lint(
                             LEGACY_DERIVE_HELPERS,
                             node_id,
                             ident.span,
@@ -1066,10 +1279,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         expected,
                         ident,
                     });
+                    // Bring all unused `derive` macros into `macro_map` so we ensure they can be
+                    // used for suggestions. The stage did this before it froze the resolver.
+                    if let CmResolver::Mut(r) = &mut self {
+                        r.register_macros_for_all_crates();
+                    }
                     self.unresolved_macro_suggestions(
                         &mut err,
                         kind,
-                        &parent_scope,
+                        parent_scope,
                         ident,
                         krate,
                         sugg_span,
@@ -1077,21 +1295,21 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     err.emit();
                 }
             }
-        }
-
-        let builtin_attrs = mem::take(&mut self.builtin_attrs);
-        for (ident, parent_scope) in builtin_attrs {
-            let _ = self.cm_mut().resolve_ident_in_scope_set(
+        } else {
+            let (ident, ref parent_scope) = resolutions.builtin_attrs[index - multi - single];
+            let _ = self.resolve_ident_in_scope_set(
                 ident,
                 ScopeSet::Macro(MacroKind::Attr),
-                &parent_scope,
+                parent_scope,
                 Some(Finalize::new(ast::CRATE_NODE_ID, ident.span)),
                 None,
                 None,
             );
         }
     }
+}
 
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     fn check_stability_and_deprecation(
         &mut self,
         ext: &SyntaxExtension,

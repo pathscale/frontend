@@ -10,7 +10,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::{fmt, iter, mem};
 
 use crate::rustc_abi::FieldIdx;
@@ -114,12 +114,12 @@ pub(crate) fn type_check<'tcx>(
     borrow_set: &BorrowSet<'tcx>,
     polonius_facts: &mut Option<PoloniusFacts>,
     move_data: &MoveData<'tcx>,
-    location_map: Rc<DenseLocationMap>,
+    location_map: Arc<DenseLocationMap>,
 ) -> MirTypeckResults<'tcx> {
     let mut constraints = MirTypeckRegionConstraints {
         placeholder_indices: PlaceholderIndices::default(),
         placeholder_index_to_region: IndexVec::default(),
-        liveness_constraints: LivenessValues::with_specific_points(Rc::clone(&location_map)),
+        liveness_constraints: LivenessValues::with_specific_points(Arc::clone(&location_map)),
         outlives_constraints: OutlivesConstraintSet::default(),
         type_tests: Vec::default(),
         universe_causes: FxIndexMap::default(),
@@ -529,7 +529,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         let polonius_facts = &mut None;
         let mut constraints = Default::default();
         let mut liveness_constraints =
-            LivenessValues::without_specific_points(Rc::new(DenseLocationMap::new(promoted_body)));
+            LivenessValues::without_specific_points(Arc::new(DenseLocationMap::new(promoted_body)));
         let mut deferred_closure_requirements = Default::default();
 
         // Don't try to add borrow_region facts for the promoted MIR as they refer

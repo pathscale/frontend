@@ -154,10 +154,20 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                     // used to avoid long scope chains, see the comments on `MacroRulesScopeRef`.
                     // As another consequence of this optimization visitors never observe invocation
                     // scopes for macros that were already expanded.
+                    //
+                    // Late resolution's frozen stage compresses every reachable scope before it
+                    // starts (`Resolver::compress_macro_rules_scopes`), so there this loop finds
+                    // nothing to rewrite. A rewrite while frozen would be a write to a cell other
+                    // threads read, and skipping it would change what the rest of this walk sees,
+                    // so it is a hard assertion rather than either.
                     let mut scope = macro_rules_scope.get();
                     while let MacroRulesScope::Invocation(invoc_id) = scope {
                         if let Some(next) = self.output_macro_rules_scopes.get(&invoc_id) {
                             scope = next.get();
+                            assert!(
+                                !self.frozen_flag.is_frozen(),
+                                "`macro_rules` scope compressed during a frozen late stage"
+                            );
                             macro_rules_scope.set(scope);
                         } else {
                             break;
@@ -299,7 +309,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         None
     }
+}
 
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// This resolves the identifier `ident` in the namespace `ns` in the current lexical scope.
     /// More specifically, we proceed up the hierarchy of scopes and return the binding for
     /// `ident` in the first scope that defines it (or None if no scopes define it).
@@ -319,7 +331,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// import resolution.
     #[instrument(level = "debug", skip(self, ribs))]
     pub(crate) fn resolve_ident_in_lexical_scope(
-        &mut self,
+        mut self,
         mut ident: Ident,
         ns: Namespace,
         parent_scope: &ParentScope<'ra>,
@@ -360,7 +372,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     diag_metadata,
                 )));
             } else if let RibKind::Block(Some(module)) = rib.kind
-                && let Ok(binding) = self.cm_mut().resolve_ident_in_scope_set(
+                && let Ok(binding) = self.reborrow().resolve_ident_in_scope_set(
                     ident,
                     ScopeSet::Module(ns, module.to_module()),
                     parent_scope,
@@ -376,7 +388,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 let parent_scope = &ParentScope { module: module.to_module(), ..*parent_scope };
                 let finalize = finalize.map(|f| Finalize { stage: Stage::Late, ..f });
                 return self
-                    .cm_mut()
+                    .reborrow()
                     .resolve_ident_in_scope_set(
                         orig_ident,
                         ScopeSet::All(ns),
@@ -512,7 +524,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                             }
                             Some(Finalize { import, .. }) => import,
                         };
-                        this.get_mut().maybe_push_glob_vs_glob_vis_ambiguity(
+                        this.maybe_push_glob_vs_glob_vis_ambiguity(
                             ident,
                             orig_ident_span,
                             decl,
@@ -521,7 +533,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
                         if let Some(&(innermost_decl, _)) = innermost_results.first() {
                             // Found another solution, if the first one was "weak", report an error.
-                            if this.get_mut().maybe_push_ambiguity(
+                            if this.maybe_push_ambiguity(
                                 ident,
                                 orig_ident_span,
                                 ns,
@@ -663,7 +675,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                 match decl {
                     Ok(decl) => {
                         if let Some(lint_id) = derive_fallback_lint_id {
-                            self.get_mut().lint_buffer.buffer_lint(
+                            self.lint_buffer_mut().buffer_lint(
                                 PROC_MACRO_DERIVE_RESOLUTION_FALLBACK,
                                 lint_id,
                                 orig_ident_span,
@@ -714,7 +726,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                 match binding {
                     Ok(binding) => {
                         if let Some(lint_id) = derive_fallback_lint_id {
-                            self.get_mut().lint_buffer.buffer_lint(
+                            self.lint_buffer_mut().buffer_lint(
                                 PROC_MACRO_DERIVE_RESOLUTION_FALLBACK,
                                 lint_id,
                                 orig_ident_span,
@@ -820,7 +832,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     }
 }
 
-impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     fn maybe_push_glob_vs_glob_vis_ambiguity(
         &mut self,
         ident: IdentKey,
@@ -832,7 +844,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         let vis1 = self.import_decl_vis(decl, import);
         let vis2 = self.import_decl_vis_ext(decl, import, true);
         if vis1 != vis2 {
-            self.ambiguity_errors.push(AmbiguityError {
+            let error = AmbiguityError {
                 kind: AmbiguityKind::GlobVsGlob,
                 ambig_vis: Some((vis1, vis2)),
                 ident: ident.orig(orig_ident_span),
@@ -841,7 +853,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 scope1: Scope::ModuleGlobs(decl.parent_module.unwrap(), None),
                 scope2: Scope::ModuleGlobs(decl.parent_module.unwrap(), None),
                 warning: Some(AmbiguityWarning::GlobImport),
-            });
+            };
+            self.push_ambiguity_error(error, false);
         }
     }
 
@@ -943,7 +956,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             };
 
             if issue_145575_hack || issue_149681_hack {
-                self.issue_145575_hack_applied = true;
+                self.set_issue_145575_hack_applied();
             } else {
                 // Turn ambiguity errors for core vs std panic into warnings.
                 // FIXME: Remove with lang team approval.
@@ -964,7 +977,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     None
                 };
 
-                self.ambiguity_errors.push(AmbiguityError {
+                let error = AmbiguityError {
                     kind,
                     ambig_vis,
                     ident: ident.orig(orig_ident_span),
@@ -973,7 +986,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     scope1: innermost_scope,
                     scope2: scope,
                     warning,
-                });
+                };
+                self.push_ambiguity_error(error, false);
                 return true;
             }
         }
@@ -1144,7 +1158,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         let binding = resolution.non_glob_decl.filter(|b| Some(*b) != ignore_decl);
 
         if let Some(finalize) = finalize {
-            return self.get_mut().finalize_module_binding(
+            return self.finalize_module_binding(
                 ident,
                 orig_ident_span,
                 binding,
@@ -1186,7 +1200,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         if let Some(finalize) = finalize {
             // finalize implies that the module is fully expanded
             assert!(!module.has_unexpanded_invocations(&self));
-            return self.get_mut().finalize_module_binding(
+            return self.finalize_module_binding(
                 ident,
                 orig_ident_span,
                 binding,
@@ -1252,7 +1266,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         if let Some(finalize) = finalize {
             // finalize implies that the module is fully expanded
             assert!(!module.has_unexpanded_invocations(&self));
-            return self.get_mut().finalize_module_binding(
+            return self.finalize_module_binding(
                 ident,
                 orig_ident_span,
                 binding,
@@ -1371,9 +1385,9 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     }
 }
 
-impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
+impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     fn finalize_module_binding(
-        &mut self,
+        mut self,
         ident: IdentKey,
         orig_ident_span: Span,
         binding: Option<Decl<'ra>>,
@@ -1390,7 +1404,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         let ident = ident.orig(orig_ident_span);
         if !self.is_accessible_from(binding.vis(), parent_scope.module) {
             if report_private {
-                self.privacy_errors.push(PrivacyError {
+                self.privacy_errors_mut().push(PrivacyError {
                     ident,
                     decl: binding,
                     dedup_span: path_span,
@@ -1409,7 +1423,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             && let DeclKind::Import { import, .. } = binding.kind
             && matches!(import.kind, ImportKind::MacroExport)
         {
-            self.macro_expanded_macro_export_errors.insert((path_span, binding.span));
+            self.macro_expanded_macro_export_errors_mut().insert((path_span, binding.span));
         }
 
         self.record_use(ident, binding, used);
@@ -1891,7 +1905,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         let mut second_binding = None;
 
         // We'll provide more context to the privacy errors later, up to `len`.
-        let privacy_errors_len = self.privacy_errors.len();
+        let privacy_errors_len = self.privacy_errors_len();
         fn record_segment_res<'r, 'ra, 'tcx>(
             mut this: CmResolver<'r, 'ra, 'tcx>,
             finalize: Option<Finalize>,
@@ -1900,10 +1914,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         ) {
             if finalize.is_some()
                 && let Some(id) = id
-                && !this.partial_res_map.contains_key(&id)
+                && this.partial_res(id).is_none()
             {
                 assert!(id != ast::DUMMY_NODE_ID, "Trying to resolve dummy id");
-                this.get_mut().record_partial_res(id, PartialRes::new(res));
+                this.record_partial_res(id, PartialRes::new(res));
             }
         }
 
@@ -2043,7 +2057,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                 && let Some(TypeNS | ValueNS) = opt_ns
             {
                 assert!(ignore_import.is_none());
-                match self.get_mut().resolve_ident_in_lexical_scope(
+                match self.reborrow().resolve_ident_in_lexical_scope(
                     ident,
                     ns,
                     parent_scope,
@@ -2086,7 +2100,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                     // to detect the item the user cares about and either find an alternative import, or tell
                     // the user it is not accessible.
                     if finalize.is_some() {
-                        for error in &mut self.get_mut().privacy_errors[privacy_errors_len..] {
+                        for error in &mut self.privacy_errors_mut()[privacy_errors_len..] {
                             error.outermost_res = Some((res, ident));
                             error.source = match source {
                                 Some(PathSource::Struct(Some(expr)))
@@ -2119,7 +2133,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                         return PathResult::NonModule(PartialRes::new(Res::Err));
                     } else if opt_ns.is_some() && (is_last || maybe_assoc) {
                         if let Some(finalize) = finalize {
-                            self.get_mut().lint_if_path_starts_with_module(
+                            self.lint_if_path_starts_with_module(
                                 finalize,
                                 path,
                                 second_binding,
@@ -2198,7 +2212,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                         ));
                     }
 
-                    let mut this = self.reborrow();
+                    let this = self.reborrow();
                     return PathResult::failed(
                         ident,
                         is_last,
@@ -2207,7 +2221,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                         module,
                         || {
                             let (message, label, suggestion, help) =
-                                this.get_mut().report_path_resolution_error(
+                                this.report_path_resolution_error(
                                     path,
                                     opt_ns,
                                     parent_scope,
@@ -2227,7 +2241,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         }
 
         if let Some(finalize) = finalize {
-            self.get_mut().lint_if_path_starts_with_module(finalize, path, second_binding);
+            self.lint_if_path_starts_with_module(finalize, path, second_binding);
         }
 
         PathResult::Module(match module {

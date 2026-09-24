@@ -168,7 +168,7 @@ fn run(
         // Reuses the caller's globals when there are some; otherwise builds the lightest set
         // there is, with no source map attached, because the parse session brings its own.
         create_session_if_not_set_then(Edition::Edition2024, |_| {
-            let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
+            let sm = Arc::new(SourceMap::for_text(FilePathMapping::empty()));
             let emitter = PlainEmitter::new()
                 .sm(Some(sm.clone()))
                 .short_message(true)

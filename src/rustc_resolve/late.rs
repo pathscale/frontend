@@ -3,6 +3,10 @@
 //! It runs when the crate is fully expanded and its module structure is fully built.
 //! So it just walks through the crate and resolves all the expressions, types, etc.
 //!
+//! The walk is cut into units, one per item at module level, each walked by a visitor of its
+//! own and handing back what it produced; see `LateUnit` and the comment above it, and
+//! `research/late-resolution.md` for what stands between that and running the units as a stage.
+//!
 //! If you wonder why there's no `early.rs`, that's because it's split into three files -
 //! `build_reduced_graph.rs`, `macros.rs` and `imports.rs`.
 
@@ -28,22 +32,27 @@ use crate::rustc_ast::visit::{
 use crate::rustc_ast::*;
 use crate::rustc_data_structures::either::Either;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
-use crate::rustc_data_structures::unord::{UnordMap, UnordSet};
+use crate::rustc_ast::node_id::NodeMap;
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
+use crate::rustc_data_structures::unord::{ExtendUnord, UnordMap, UnordSet};
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{
     Applicability, Diag, DiagArgValue, Diagnostic, ErrorGuaranteed, IntoDiagArg, MultiSpan,
     StashKey, Suggestions, elided_lifetime_in_path_suggestion, pluralize,
 };
 use crate::rustc_hir::def::Namespace::{self, *};
-use crate::rustc_hir::def::{CtorKind, DefKind, LifetimeRes, NonMacroAttrKind, PartialRes, PerNS};
+use crate::rustc_hir::def::{
+    CtorKind, DefKind, DocLinkResMap, LifetimeRes, NonMacroAttrKind, PartialRes, PerNS,
+};
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
-use crate::rustc_hir::{MissingLifetimeKind, PrimTy};
+use crate::rustc_hir::{MissingLifetimeKind, PrimTy, TraitCandidate};
 use crate::rustc_lint_defs::builtin::{ELIDED_LIFETIMES_IN_PATHS, UNUSED_LABELS};
 use crate::rustc_middle::middle::resolve_bound_vars::Set1;
-use crate::rustc_middle::ty::{AssocTag, DelegationInfo, Visibility};
+use crate::rustc_middle::ty::{AssocTag, DelegationInfo, PerOwnerResolverData, Visibility};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_session::config::ResolveDocLinks;
 use crate::rustc_session::diagnostics::feature_err;
+use crate::rustc_span::def_id::LocalModId;
 use crate::rustc_span::{BytePos, DUMMY_SP, Ident, Span, Spanned, Symbol, kw, respan, sym};
 use crate::rustc_structures::CrateType;
 use smallvec::{SmallVec, smallvec};
@@ -51,10 +60,22 @@ use thin_vec::ThinVec;
 use tracing::{debug, instrument, trace};
 
 use crate::rustc_resolve::{
-    BindingError, BindingKey, Decl, DelegationFnSig, Finalize, IdentKey, LateDecl, LocalModule,
-    Module, ModuleOrUniformRoot, ParentScope, PathResult, Res, ResolutionError, Resolver, Segment,
-    Stage, TyCtxt, UseError, Used, path_names_to_string, rustdoc, with_owner,
+    BindingError, BindingKey, Decl, DelegationFnSig, Finalize, IdentKey, LateDecl, LateSink,
+    LocalModule, MacroRulesScope, MacroRulesScopeRef, Module, ModuleOrUniformRoot, ParentScope,
+    PathResult, Res,
+    ResolutionError, Resolver, Segment, Stage, TyCtxt, UseError, Used, path_names_to_string,
+    rustdoc, with_owner,
 };
+
+/// The resolver as the name lookups of a `LateResolutionVisitor` see it: the frozen resolver,
+/// writing into the visitor's own sink. A macro and not a method so that the call borrows only
+/// the `r` and `sink` fields, and the rest of the visitor (ribs, scope, metadata) can be passed
+/// alongside. Defined before `mod diagnostics` so that module sees it too.
+macro_rules! late_cm {
+    ($this:expr) => {
+        crate::rustc_resolve::CmResolver::Late($this.r, &mut $this.sink)
+    };
+}
 
 mod diagnostics;
 
@@ -713,12 +734,12 @@ enum MaybeExported<'a> {
 }
 
 impl MaybeExported<'_> {
-    fn eval(self, r: &Resolver<'_, '_>) -> bool {
+    fn eval(self, r: &Resolver<'_, '_>, current_owner: &LateOwner<'_, '_>) -> bool {
         let def_id = match self {
-            MaybeExported::Ok(node_id) => Some(if r.current_owner.id == node_id {
-                r.current_owner.def_id
+            MaybeExported::Ok(node_id) => Some(if current_owner.id == node_id {
+                current_owner.def_id
             } else {
-                r.current_owner.node_id_to_def_id[&node_id]
+                current_owner.node_id_to_def_id[&node_id]
             }),
             MaybeExported::Impl(Some(trait_def_id)) | MaybeExported::ImplItem(Ok(trait_def_id)) => {
                 trait_def_id.as_local()
@@ -811,7 +832,9 @@ pub(crate) struct DiagMetadata<'ast> {
 }
 
 struct LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
-    r: &'a mut Resolver<'ra, 'tcx>,
+    /// Shared, and frozen while the units run as a stage: every write goes to `sink`, `out`
+    /// or `current_owner`, which this visitor owns.
+    r: &'a Resolver<'ra, 'tcx>,
 
     /// The module that represents the current item scope.
     parent_scope: ParentScope<'ra>,
@@ -851,22 +874,126 @@ struct LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// Count the number of places a lifetime is used.
     lifetime_uses: FxHashMap<LocalDefId, LifetimeUseSet>,
 
-    /// `use` injections are delayed for better placement and deduplication.
-    use_injections: Vec<UseError<'tcx>>,
+    /// What this visitor's unit writes that is not read back while the crate is walked: owned
+    /// here, handed back by `into_output`, and merged into the resolver in unit order by
+    /// `Resolver::merge_late_units`. See `LateUnitOutput`.
+    out: LateUnitOutput<'ra, 'tcx>,
+
+    /// Where every write the name lookups make goes (`CmResolver::Late`), read back by the unit
+    /// before the frozen resolver. See `LateSink`.
+    sink: LateSink<'ra>,
+
+    /// The owner being resolved, and the tables late resolution writes for it. Was
+    /// `Resolver::current_owner`; see `with_owner`.
+    current_owner: LateOwner<'a, 'tcx>,
+
+    /// The owners enclosing `current_owner` inside this unit, outermost first. A serial walk
+    /// had these (and the crate) out of `Resolver::owners`, which one diagnostic observes; see
+    /// `open_owner`.
+    enclosing_owners: Vec<NodeId>,
+
+    /// The next node id this unit hands out for a lifetime late resolution conjures. Starts at
+    /// the resolver's `next_node_id`, which is above every id that exists, and is renumbered by
+    /// the merge (`LateUnitOutput::node_ids`).
+    next_node_id: NodeId,
+
+    /// The doc link tables of the modules this unit resolves links in, which `resolve_doc_links`
+    /// uses as a cache across the items of one module. See `LateDocLinks`.
+    doc_links: LateDocLinks,
+
+    /// The `mod` item this visitor's unit is, when it is one. Its items are units of their own
+    /// (see `LateUnit`), so resolving it stops at its items instead of walking into them.
+    defer_children_of: Option<NodeId>,
+
+    /// Always empty. A top-level pattern's bindings map whose entries were copied into a rib
+    /// that already had bindings (the second and later `let`s of a block) is drained and kept
+    /// here, and the next top-level pattern collects into it instead of allocating a new one.
+    /// Only its capacity carries over; an `FxIndexMap` iterates in insertion order, so nothing
+    /// observable changes.
+    spare_pattern_bindings: FxIndexMap<Ident, Res>,
+}
+
+/// The tables late resolution writes into one owner's `PerOwnerResolverData`, owned by the
+/// unit that resolves the owner and put into `Resolver::owners` by the merge. Only late
+/// resolution writes these fields, so before it they are empty.
+#[derive(Default)]
+struct LateOwnerTables<'tcx> {
+    lifetimes_res_map: NodeMap<LifetimeRes>,
+    lifetime_elision_allowed: bool,
+    label_res_map: NodeMap<NodeId>,
+    trait_map: NodeMap<&'tcx [TraitCandidate<'tcx>]>,
+    extra_lifetime_params_map: NodeMap<Vec<(Ident, NodeId, MissingLifetimeKind)>>,
+}
+
+/// The owner a visitor is resolving: what def collection recorded for it, read in place from
+/// the frozen `Resolver::owners`, and the tables late resolution writes for it, owned. The
+/// field names are `PerOwnerResolverData`'s, which this stands in for.
+struct LateOwner<'a, 'tcx> {
+    id: NodeId,
+    def_id: LocalDefId,
+    node_id_to_def_id: &'a NodeMap<LocalDefId>,
+    lifetimes_res_map: NodeMap<LifetimeRes>,
+    lifetime_elision_allowed: bool,
+    label_res_map: NodeMap<NodeId>,
+    trait_map: NodeMap<&'tcx [TraitCandidate<'tcx>]>,
+    extra_lifetime_params_map: NodeMap<Vec<(Ident, NodeId, MissingLifetimeKind)>>,
+}
+
+impl<'a, 'tcx> LateOwner<'a, 'tcx> {
+    fn enter(data: &'a PerOwnerResolverData<'tcx>) -> LateOwner<'a, 'tcx> {
+        LateOwner {
+            id: data.id,
+            def_id: data.def_id,
+            node_id_to_def_id: &data.node_id_to_def_id,
+            lifetimes_res_map: Default::default(),
+            lifetime_elision_allowed: false,
+            label_res_map: Default::default(),
+            trait_map: Default::default(),
+            extra_lifetime_params_map: Default::default(),
+        }
+    }
+
+    fn into_tables(self) -> (NodeId, LateOwnerTables<'tcx>) {
+        let LateOwner {
+            id,
+            lifetimes_res_map,
+            lifetime_elision_allowed,
+            label_res_map,
+            trait_map,
+            extra_lifetime_params_map,
+            ..
+        } = self;
+        let tables = LateOwnerTables {
+            lifetimes_res_map,
+            lifetime_elision_allowed,
+            label_res_map,
+            trait_map,
+            extra_lifetime_params_map,
+        };
+        (id, tables)
+    }
+}
+
+/// `Resolver::doc_link_resolutions` and `Resolver::doc_link_traits_in_scope`, which
+/// `resolve_doc_links` also reads as a cache across the items of one module.
+///
+/// Serially (the only way late resolution runs with doc links on, see `late_resolve_crate`)
+/// the tables are moved from each unit into the next, so every unit sees what the units before
+/// it cached, as the single walk did. In the stage, with doc links off, they stay empty.
+#[derive(Default)]
+struct LateDocLinks {
+    resolutions: FxIndexMap<LocalModId, DocLinkResMap>,
+    traits_in_scope: FxIndexMap<LocalModId, Vec<DefId>>,
 }
 
 impl<'ra, 'tcx> AsRef<Resolver<'ra, 'tcx>> for LateResolutionVisitor<'_, '_, 'ra, 'tcx> {
     fn as_ref(&self) -> &Resolver<'ra, 'tcx> {
-        &self.r
-    }
-}
-impl<'ra, 'tcx> AsMut<Resolver<'ra, 'tcx>> for LateResolutionVisitor<'_, '_, 'ra, 'tcx> {
-    fn as_mut(&mut self) -> &mut Resolver<'ra, 'tcx> {
-        &mut self.r
+        self.r
     }
 }
 
-/// Walks the whole crate in DFS order, visiting each item, resolving names as it goes.
+/// Walks one unit of the crate (see `LateUnit`) in DFS order, visiting each item, resolving names
+/// as it goes.
 impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
     type Result = ();
 
@@ -878,7 +1005,7 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
         let prev = replace(&mut self.diag_metadata.current_item, Some(item));
         // Always report errors in items we just entered.
         let old_ignore = replace(&mut self.in_func_body, false);
-        with_owner(self, item.id, |this| {
+        self.with_owner(item.id, |this| {
             this.with_lifetime_rib(LifetimeRibKind::Item, |this| this.resolve_item(item))
         });
         self.in_func_body = old_ignore;
@@ -956,7 +1083,7 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
 
                 // Check whether we should interpret this as a bare trait object.
                 if qself.is_none()
-                    && let Some(partial_res) = self.r.partial_res_map.get(&ty.id)
+                    && let Some(partial_res) = self.partial_res(ty.id)
                     && let Some(Res::Def(DefKind::Trait | DefKind::TraitAlias, _)) =
                         partial_res.full_res()
                 {
@@ -986,7 +1113,7 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
                         None,
                     )
                     .map_or(Res::Err, |d| d.res());
-                self.r.record_partial_res(ty.id, PartialRes::new(res));
+                self.record_partial_res(ty.id, PartialRes::new(res));
                 visit::walk_ty(self, ty)
             }
             TyKind::ImplTrait(..) => {
@@ -1094,9 +1221,9 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
         );
     }
     fn visit_foreign_item(&mut self, foreign_item: &'ast ForeignItem) {
-        with_owner(self, foreign_item.id, |this| {
+        self.with_owner(foreign_item.id, |this| {
             this.resolve_doc_links(&foreign_item.attrs, MaybeExported::Ok(foreign_item.id));
-            let def_kind = this.r.tcx.def_kind(this.r.current_owner.def_id);
+            let def_kind = this.r.tcx.def_kind(this.current_owner.def_id);
             match foreign_item.kind {
                 ForeignItemKind::TyAlias(ref ty_alias) => {
                     let generics = &ty_alias.generics;
@@ -1544,14 +1671,27 @@ impl<'ast, 'ra, 'tcx> Visitor<'ast> for LateResolutionVisitor<'_, 'ast, 'ra, 'tc
 }
 
 impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
-    fn new(resolver: &'a mut Resolver<'ra, 'tcx>) -> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
+    /// A visitor standing at `parent_scope`, with only the crate root's ribs pushed. The unit
+    /// driver (`Resolver::resolve_late_unit`) pushes the ribs of the modules a unit sits in.
+    ///
+    /// It stands in the crate's owner, as every unit starts inside `with_owner(CRATE_NODE_ID)`,
+    /// and holds `doc_links` (see `LateDocLinks`).
+    fn new(
+        resolver: &'a Resolver<'ra, 'tcx>,
+        parent_scope: ParentScope<'ra>,
+        doc_links: LateDocLinks,
+    ) -> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         // During late resolution we only track the module component of the parent scope,
         // although it may be useful to track other components as well for diagnostics.
         let graph_root = resolver.graph_root;
-        let parent_scope = ParentScope::module(graph_root, resolver.arenas);
         let start_rib_kind = RibKind::Module(graph_root);
         LateResolutionVisitor {
             r: resolver,
+            sink: LateSink::default(),
+            current_owner: LateOwner::enter(&resolver.owners[&CRATE_NODE_ID]),
+            enclosing_owners: Vec::new(),
+            next_node_id: resolver.next_node_id,
+            doc_links,
             parent_scope,
             ribs: PerNS {
                 value_ns: vec![Rib::new(start_rib_kind)],
@@ -1567,8 +1707,100 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             // errors at module scope should always be reported
             in_func_body: false,
             lifetime_uses: Default::default(),
-            use_injections: Vec::new(),
+            out: Default::default(),
+            defer_children_of: None,
+            spare_pattern_bindings: Default::default(),
         }
+    }
+
+    /// Everything this visitor's unit produced, moved out.
+    fn into_output(self) -> LateUnitOutput<'ra, 'tcx> {
+        let LateResolutionVisitor {
+            r,
+            mut out,
+            diag_metadata,
+            sink,
+            current_owner,
+            enclosing_owners,
+            next_node_id,
+            doc_links,
+            ..
+        } = self;
+        debug_assert!(enclosing_owners.is_empty(), "a unit ended inside an owner");
+        let DiagMetadata { unused_labels, .. } = *diag_metadata;
+        out.unused_labels = unused_labels;
+        out.sink = sink;
+        // The crate's tables, which every unit starts in and may write to.
+        out.owners.push(current_owner.into_tables());
+        out.node_ids = next_node_id.as_u32() - r.next_node_id.as_u32();
+        out.doc_links = doc_links;
+        out
+    }
+
+    /// Run `work` with `owner` as the current owner, and hand the tables it wrote to the
+    /// output. Was the free `with_owner`, which swapped `Resolver::current_owner` with the
+    /// owner's entry of `Resolver::owners`; here the entry stays where it is, frozen, and is
+    /// read in place.
+    fn with_owner<T>(&mut self, owner: NodeId, work: impl FnOnce(&mut Self) -> T) -> T {
+        let r: &'a Resolver<'ra, 'tcx> = self.r;
+        let entered = LateOwner::enter(&r.owners[&owner]);
+        let outer = replace(&mut self.current_owner, entered);
+        self.enclosing_owners.push(outer.id);
+        let ret = work(self);
+        self.enclosing_owners.pop();
+        let done = replace(&mut self.current_owner, outer);
+        self.out.owners.push(done.into_tables());
+        ret
+    }
+
+    /// The frozen tables of `owner`, unless a serial walk would have had them out of
+    /// `Resolver::owners` at this point: the crate's, and every owner this visitor is inside.
+    fn open_owner_tables(&self, owner: NodeId) -> Option<&'a PerOwnerResolverData<'tcx>> {
+        if owner == CRATE_NODE_ID
+            || owner == self.current_owner.id
+            || self.enclosing_owners.contains(&owner)
+        {
+            return None;
+        }
+        let r: &'a Resolver<'ra, 'tcx> = self.r;
+        r.owners.get(&owner)
+    }
+
+    /// Get the `DefId` of a child of the current owner. Was `Resolver::local_def_id`.
+    fn local_def_id(&self, node: NodeId) -> LocalDefId {
+        self.current_owner
+            .node_id_to_def_id
+            .get(&node)
+            .copied()
+            .unwrap_or_else(|| panic!("no entry for node id: `{node:?}`"))
+    }
+
+    /// A fresh node id for a lifetime late resolution conjures. Was `Resolver::next_node_id`;
+    /// the merge renumbers it (see `LateUnitOutput::node_ids`).
+    fn next_node_id(&mut self) -> NodeId {
+        let start = self.next_node_id;
+        let next = start.as_u32().checked_add(1).expect("input too large; ran out of NodeIds");
+        self.next_node_id = NodeId::from_u32(next);
+        start
+    }
+
+    /// `count` fresh node ids. Was `Resolver::next_node_ids`.
+    fn next_node_ids(&mut self, count: usize) -> Range<NodeId> {
+        let start = self.next_node_id;
+        let end = start.as_usize().checked_add(count).expect("input too large; ran out of NodeIds");
+        self.next_node_id = NodeId::from_usize(end);
+        start..self.next_node_id
+    }
+
+    /// The partial resolution of `id`: this unit's, else the one recorded before late
+    /// resolution. Was a read of `Resolver::partial_res_map`.
+    fn partial_res(&self, id: NodeId) -> Option<PartialRes> {
+        self.sink.partial_res(self.r, id)
+    }
+
+    /// Was `Resolver::record_partial_res`.
+    fn record_partial_res(&mut self, node_id: NodeId, resolution: PartialRes) {
+        self.sink.record_partial_res(self.r, node_id, resolution);
     }
 
     fn maybe_resolve_ident_in_lexical_scope(
@@ -1576,7 +1808,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         ident: Ident,
         ns: Namespace,
     ) -> Option<LateDecl<'ra>> {
-        self.r.resolve_ident_in_lexical_scope(
+        late_cm!(self).resolve_ident_in_lexical_scope(
             ident,
             ns,
             &self.parent_scope,
@@ -1594,7 +1826,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         finalize: Option<Finalize>,
         ignore_decl: Option<Decl<'ra>>,
     ) -> Option<LateDecl<'ra>> {
-        self.r.resolve_ident_in_lexical_scope(
+        late_cm!(self).resolve_ident_in_lexical_scope(
             ident,
             ns,
             &self.parent_scope,
@@ -1612,7 +1844,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         finalize: Option<Finalize>,
         source: PathSource<'_, 'ast, 'ra>,
     ) -> PathResult<'ra> {
-        self.r.cm_mut().resolve_path_with_ribs(
+        late_cm!(self).resolve_path_with_ribs(
             path,
             opt_ns,
             &self.parent_scope,
@@ -2166,7 +2398,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     #[instrument(level = "debug", skip(self))]
     fn resolve_elided_lifetime(&mut self, anchor_id: NodeId, span: Span) {
-        let id = self.r.next_node_id();
+        let id = self.next_node_id();
         let lt = Lifetime { id, ident: Ident::new(kw::UnderscoreLifetime, span) };
 
         self.record_lifetime_use(
@@ -2188,13 +2420,12 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         debug!(?ident.span);
 
         // Leave the responsibility to create the `LocalDefId` to lowering.
-        let param = self.r.next_node_id();
+        let param = self.next_node_id();
         let res = LifetimeRes::Fresh { param, kind };
         self.record_lifetime_def(param, res);
 
         // Record the created lifetime parameter so lowering can pick it up and add it to HIR.
-        self.r
-            .current_owner
+        self.current_owner
             .extra_lifetime_params_map
             .entry(binder)
             .or_insert_with(Vec::new)
@@ -2253,7 +2484,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 continue;
             }
 
-            let node_ids = self.r.next_node_ids(expected_lifetimes);
+            let node_ids = self.next_node_ids(expected_lifetimes);
             self.record_lifetime_use(
                 segment_id,
                 LifetimeRes::ElidedAnchor { start: node_ids.start, end: node_ids.end },
@@ -2399,7 +2630,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
             if should_lint {
                 let include_angle_bracket = !segment.has_generic_args;
-                self.r.lint_buffer.dyn_buffer_lint_any(
+                self.sink.lint_buffer.dyn_buffer_lint_any(
                     ELIDED_LIFETIMES_IN_PATHS,
                     segment_id,
                     elided_lifetime_span,
@@ -2454,7 +2685,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// Define a new lifetime (e.g. in generics)
     #[instrument(level = "debug", skip(self))]
     fn record_lifetime_def(&mut self, id: NodeId, res: LifetimeRes) {
-        if let Some(prev_res) = self.r.current_owner.lifetimes_res_map.insert(id, res) {
+        if let Some(prev_res) = self.current_owner.lifetimes_res_map.insert(id, res) {
             panic!(
                 "lifetime parameter {id:?} resolved multiple times ({prev_res:?} before, {res:?} now)"
             )
@@ -2482,8 +2713,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
             let outer_failures = take(&mut this.diag_metadata.current_elision_failures);
             let output_rib = if let Ok(res) = elision_lifetime.as_ref() {
-                if fn_id == this.r.current_owner.id {
-                    this.r.current_owner.lifetime_elision_allowed = true;
+                if fn_id == this.current_owner.id {
+                    this.current_owner.lifetime_elision_allowed = true;
                 }
                 LifetimeRibKind::elided(*res)
             } else {
@@ -2642,6 +2873,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         /// contains Self.
         struct FindReferenceVisitor<'a, 'ra, 'tcx> {
             r: &'a Resolver<'ra, 'tcx>,
+            /// The unit's own partial resolutions, read before `r`'s.
+            sink: &'a LateSink<'ra>,
+            /// The current owner's lifetime resolutions (was `r.current_owner`'s).
+            lifetimes_res_map: &'a NodeMap<LifetimeRes>,
             impl_self: Option<Res>,
             lifetime: Set1<LifetimeRes>,
         }
@@ -2653,19 +2888,23 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 trace!("FindReferenceVisitor considering ty={:?}", ty);
                 if let TyKind::Ref(lt, _) | TyKind::PinnedRef(lt, _) = ty.kind {
                     // See if anything inside the &thing contains Self
-                    let mut visitor =
-                        SelfVisitor { r: self.r, impl_self: self.impl_self, self_found: false };
+                    let mut visitor = SelfVisitor {
+                        r: self.r,
+                        sink: self.sink,
+                        impl_self: self.impl_self,
+                        self_found: false,
+                    };
                     visitor.visit_ty(ty);
                     trace!("FindReferenceVisitor: SelfVisitor self_found={:?}", visitor.self_found);
                     if visitor.self_found {
                         let lt_id = if let Some(lt) = lt {
                             lt.id
                         } else {
-                            let res = self.r.current_owner.lifetimes_res_map[&ty.id];
+                            let res = self.lifetimes_res_map[&ty.id];
                             let LifetimeRes::ElidedAnchor { start, .. } = res else { bug!() };
                             start
                         };
-                        let lt_res = self.r.current_owner.lifetimes_res_map[&lt_id];
+                        let lt_res = self.lifetimes_res_map[&lt_id];
                         trace!("FindReferenceVisitor inserting res={:?}", lt_res);
                         self.lifetime.insert(lt_res);
                     }
@@ -2682,6 +2921,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         /// Thing contains Self
         struct SelfVisitor<'a, 'ra, 'tcx> {
             r: &'a Resolver<'ra, 'tcx>,
+            /// The unit's own partial resolutions, read before `r`'s.
+            sink: &'a LateSink<'ra>,
             impl_self: Option<Res>,
             self_found: bool,
         }
@@ -2692,7 +2933,11 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 match ty.kind {
                     TyKind::ImplicitSelf => true,
                     TyKind::Path(None, _) => {
-                        let path_res = self.r.partial_res_map[&ty.id].full_res();
+                        let path_res = self
+                            .sink
+                            .partial_res(self.r, ty.id)
+                            .expect("a path type without a partial resolution")
+                            .full_res();
                         if let Some(Res::SelfTyParam { .. } | Res::SelfTyAlias { .. }) = path_res {
                             return true;
                         }
@@ -2725,7 +2970,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             .current_self_type
             .and_then(|ty| {
                 if let TyKind::Path(None, _) = ty.kind {
-                    self.r.partial_res_map.get(&ty.id)
+                    self.partial_res(ty.id)
                 } else {
                     None
                 }
@@ -2740,7 +2985,13 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     Res::Def(DefKind::Struct | DefKind::Union | DefKind::Enum, _,) | Res::PrimTy(_)
                 )
             });
-        let mut visitor = FindReferenceVisitor { r: self.r, impl_self, lifetime: Set1::Empty };
+        let mut visitor = FindReferenceVisitor {
+            r: self.r,
+            sink: &self.sink,
+            lifetimes_res_map: &self.current_owner.lifetimes_res_map,
+            impl_self,
+            lifetime: Set1::Empty,
+        };
         visitor.visit_ty(ty);
         trace!("FindReferenceVisitor found={:?}", visitor.lifetime);
         visitor.lifetime
@@ -2792,7 +3043,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     fn resolve_adt(&mut self, item: &'ast Item, generics: &'ast Generics) {
         debug!("resolve_adt");
-        let kind = self.r.tcx.def_kind(self.r.current_owner.def_id);
+        let kind = self.r.tcx.def_kind(self.current_owner.def_id);
         self.with_current_self_item(item, |this| {
             this.with_generic_param_rib(
                 &generics.params,
@@ -2801,7 +3052,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 LifetimeBinderKind::Item,
                 generics.span,
                 |this| {
-                    let item_def_id = this.r.current_owner.def_id.to_def_id();
+                    let item_def_id = this.current_owner.def_id.to_def_id();
                     this.with_self_rib(
                         Res::SelfTyAlias { alias_to: item_def_id, is_trait_impl: false },
                         |this| {
@@ -2865,7 +3116,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
         debug!("(resolving item) resolving {:?} ({:?})", item.kind.ident(), item.kind);
 
-        let def_kind = self.r.tcx.def_kind(self.r.current_owner.def_id);
+        let def_kind = self.r.tcx.def_kind(self.current_owner.def_id);
         match &item.kind {
             ItemKind::TyAlias(ty_alias) => {
                 let TyAlias { generics, .. } = &**ty_alias;
@@ -2924,7 +3175,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     LifetimeBinderKind::Item,
                     generics.span,
                     |this| {
-                        let local_def_id = this.r.current_owner.def_id.to_def_id();
+                        let local_def_id = this.current_owner.def_id.to_def_id();
                         this.with_self_rib(Res::SelfTyParam { trait_: local_def_id }, |this| {
                             this.visit_generics(generics);
                             walk_list!(this, visit_param_bound, bounds, BoundKind::SuperTraits);
@@ -2944,7 +3195,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     LifetimeBinderKind::Item,
                     generics.span,
                     |this| {
-                        let local_def_id = this.r.current_owner.def_id.to_def_id();
+                        let local_def_id = this.current_owner.def_id.to_def_id();
                         this.with_self_rib(Res::SelfTyParam { trait_: local_def_id }, |this| {
                             this.visit_generics(generics);
                             walk_list!(this, visit_param_bound, bounds, BoundKind::Bound);
@@ -2954,20 +3205,28 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             }
 
             ItemKind::Mod(..) => {
-                let module = self.r.expect_module(self.r.current_owner.def_id.to_def_id());
+                let module = self.r.expect_module(self.current_owner.def_id.to_def_id());
                 let orig_module = replace(&mut self.parent_scope.module, module);
                 self.with_rib(ValueNS, RibKind::Module(module.expect_local()), |this| {
                     this.with_rib(TypeNS, RibKind::Module(module.expect_local()), |this| {
                         if mod_inner_docs {
                             this.resolve_doc_links(&item.attrs, MaybeExported::Ok(item.id));
                         }
+                        if this.defer_children_of == Some(item.id) {
+                            // This `mod` is a unit, and its items are the units after it, which
+                            // stand inside it on their own (`LateUnit`). What `walk_item` would
+                            // visit of the `mod` itself, short of its items, is its visibility
+                            // (its id, attributes, safety, name and spans resolve nothing), and
+                            // the `macro_rules` scope it leaves behind is worked out by
+                            // `collect_late_units`, with the same rule as below.
+                            this.visit_vis(&item.vis);
+                            return;
+                        }
                         let old_macro_rules = this.parent_scope.macro_rules;
                         visit::walk_item(this, item);
                         // Maintain macro_rules scopes in the same way as during early resolution
                         // for diagnostics and doc links.
-                        if item.attrs.iter().all(|attr| {
-                            !attr.has_name(sym::macro_use) && !attr.has_name(sym::macro_escape)
-                        }) {
+                        if !leaks_macro_rules(item) {
                             this.parent_scope.macro_rules = old_macro_rules;
                         }
                     })
@@ -3079,7 +3338,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 // Maintain macro_rules scopes in the same way as during early resolution
                 // for diagnostics and doc links.
                 if macro_def.macro_rules {
-                    let def_id = self.r.current_owner.def_id;
+                    let def_id = self.current_owner.def_id;
                     self.parent_scope.macro_rules = self.r.macro_rules_scopes[&def_id];
                 }
 
@@ -3203,7 +3462,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         };
 
                         // Taint the resolution in case of errors to prevent follow up errors in typeck
-                        self.r.record_partial_res(param.id, PartialRes::new(Res::Err));
+                        self.record_partial_res(param.id, PartialRes::new(Res::Err));
                         rib.bindings.insert(ident, Res::Err);
                         continue;
                     }
@@ -3247,7 +3506,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     continue;
                 }
 
-                let def_id = self.r.local_def_id(param.id);
+                let def_id = self.local_def_id(param.id);
 
                 // Plain insert (no renaming).
                 let (rib, def_kind) = match param.kind {
@@ -3280,7 +3539,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     }
                     _ => span_bug!(param.ident.span, "Unexpected rib kind {:?}", kind),
                 };
-                self.r.record_partial_res(param.id, PartialRes::new(res));
+                self.record_partial_res(param.id, PartialRes::new(res));
                 rib.bindings.insert(ident, res);
             }
         }
@@ -3385,7 +3644,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             replace(&mut self.diag_metadata.current_trait_assoc_items, Some(trait_items));
 
         for item in trait_items {
-            with_owner(self, item.id, |this| this.resolve_trait_item(item));
+            self.with_owner(item.id, |this| this.resolve_trait_item(item));
         }
 
         self.diag_metadata.current_trait_assoc_items = trait_assoc_items;
@@ -3541,7 +3800,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         // If applicable, create a rib for the type parameters.
         self.with_generic_param_rib(
             &generics.params,
-            RibKind::Item(HasGenericParams::Yes(generics.span), self.r.tcx.def_kind(self.r.current_owner.def_id)),
+            RibKind::Item(HasGenericParams::Yes(generics.span), self.r.tcx.def_kind(self.current_owner.def_id)),
             item_id,
             LifetimeBinderKind::ImplBlock,
             generics.span,
@@ -3561,15 +3820,12 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                                 |this, trait_id| {
                                     this.resolve_doc_links(attrs, MaybeExported::Impl(trait_id));
 
-                                    let item_def_id = this.r.current_owner.def_id;
+                                    let item_def_id = this.current_owner.def_id;
 
                                     // Register the trait definitions from here.
+                                    // Replayed into `Resolver::trait_impls` by the merge.
                                     if let Some(trait_id) = trait_id {
-                                        this.r
-                                            .trait_impls
-                                            .entry(trait_id)
-                                            .or_default()
-                                            .push(item_def_id);
+                                        this.out.trait_impls.push((trait_id, item_def_id));
                                     }
 
                                     let item_def_id = item_def_id.to_def_id();
@@ -3593,7 +3849,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                                                 debug!("resolve_implementation with_self_rib_ns(ValueNS, ...)");
                                                 let mut seen_trait_items = Default::default();
                                                 for item in impl_items {
-                                                    with_owner(this, item.id, |this| {
+                                                    this.with_owner(item.id, |this| {
                                                         this.resolve_impl_item(&**item, &mut seen_trait_items, trait_id, of_trait.is_some());
                                                     })
                                                 }
@@ -3619,7 +3875,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             &generics.params,
             RibKind::Item(
                 HasGenericParams::Yes(generics.span),
-                self.r.tcx.def_kind(self.r.current_owner.def_id),
+                self.r.tcx.def_kind(self.current_owner.def_id),
             ),
             item_id,
             LifetimeBinderKind::ImplBlock,
@@ -3850,7 +4106,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             // HACK: because we don't want to track the `TyCtxtFeed` through the resolver to here
             // in a hash-map, we instead conjure a `TyCtxtFeed` for any `DefId` here, but prevent
             // it from being used generally.
-            this.r.tcx.feed_visibility_for_trait_impl_item(this.r.current_owner.def_id, vis);
+            this.r.tcx.feed_visibility_for_trait_impl_item(this.current_owner.def_id, vis);
         };
 
         let Some(decl) = decl else {
@@ -3889,7 +4145,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             | (DefKind::AssocFn, AssocItemKind::Fn(..))
             | (DefKind::AssocConst { .. }, AssocItemKind::Const(..))
             | (DefKind::AssocFn, AssocItemKind::Delegation(..)) => {
-                self.r.record_partial_res(id, PartialRes::new(res));
+                self.record_partial_res(id, PartialRes::new(res));
                 return;
             }
             _ => {}
@@ -3966,9 +4222,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
         let resolution_node_id = if is_in_trait_impl { item_id } else { delegation.id };
         let def_id = self
-            .r
-            .partial_res_map
-            .get(&resolution_node_id)
+            .partial_res(resolution_node_id)
             .and_then(|r| r.expect_full_res().opt_def_id());
 
         let resolution_id = def_id.ok_or_else(|| {
@@ -3981,7 +4235,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         });
 
         let info = DelegationInfo { resolution_id };
-        self.r.delegation_infos.insert(self.r.current_owner.def_id, info);
+        // Keyed by this owner, so no other unit writes the entry; merged after the walk.
+        self.out.delegation_infos.push((self.current_owner.def_id, info));
 
         let Some(body) = &delegation.body else { return };
         self.with_rib(ValueNS, RibKind::FnOrCoroutine, |this| {
@@ -4081,7 +4336,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     fn is_base_res_local(&self, nid: NodeId) -> bool {
         matches!(
-            self.r.partial_res_map.get(&nid).map(|res| res.expect_full_res()),
+            self.partial_res(nid).map(|res| res.expect_full_res()),
             Some(Res::Local(..))
         )
     }
@@ -4201,7 +4456,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     /// Arising from `source`, resolve a top level pattern.
     fn resolve_pattern_top(&mut self, pat: &'ast Pat, pat_src: PatternSource) {
-        let mut bindings = smallvec![(PatBoundCtx::Product, Default::default())];
+        // Empty, possibly with capacity (see `spare_pattern_bindings`).
+        let spare = take(&mut self.spare_pattern_bindings);
+        debug_assert!(spare.is_empty());
+        let mut bindings = smallvec![(PatBoundCtx::Product, spare)];
         self.resolve_pattern(pat, pat_src, &mut bindings);
         self.apply_pattern_bindings(bindings);
     }
@@ -4209,7 +4467,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// Apply the bindings from a pattern to the innermost rib of the current scope.
     fn apply_pattern_bindings(&mut self, mut pat_bindings: PatternBindings) {
         let rib_bindings = self.innermost_rib_bindings(ValueNS);
-        let Some((_, pat_bindings)) = pat_bindings.pop() else {
+        let Some((_, mut pat_bindings)) = pat_bindings.pop() else {
             bug!("tried applying nonexistent bindings from pattern");
         };
 
@@ -4218,7 +4476,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             // In this case, we can move the bindings over directly.
             *rib_bindings = pat_bindings;
         } else {
-            rib_bindings.extend(pat_bindings);
+            // Same entries, same order as `extend(pat_bindings)`; the emptied map's
+            // allocation is kept for the next top-level pattern.
+            rib_bindings.extend(pat_bindings.drain(..));
+            self.spare_pattern_bindings = pat_bindings;
         }
     }
 
@@ -4277,8 +4538,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     let res = self
                         .try_resolve_as_non_binding(pat_src, bmode, ident, has_sub)
                         .unwrap_or_else(|| self.fresh_binding(ident, pat.id, pat_src, bindings));
-                    self.r.record_partial_res(pat.id, PartialRes::new(res));
-                    self.r.record_pat_span(pat.id, pat.span);
+                    self.record_partial_res(pat.id, PartialRes::new(res));
+                    self.sink.record_pat_span(pat.id, pat.span);
                 }
                 PatKind::TupleStruct(ref qself, ref path, ref sub_patterns) => {
                     self.smart_resolve_path(
@@ -4358,7 +4619,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         match rest {
             ast::PatFieldsRest::Rest(_) | ast::PatFieldsRest::Recovered(_) => {
                 // Record that the pattern doesn't introduce all the bindings it could.
-                if let Some(partial_res) = self.r.partial_res_map.get(&pat.id)
+                if let Some(partial_res) = self.partial_res(pat.id)
                     && let Some(res) = partial_res.full_res()
                     && let Some(def_id) = res.opt_def_id()
                 {
@@ -4457,7 +4718,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 // whether they can be shadowed by fresh bindings or not, so force an error.
                 // issues/33118#issuecomment-233962221 (see below) still applies here,
                 // but we have to ignore it for backward compatibility.
-                self.r.record_use(ident, binding, Used::Other);
+                late_cm!(self).record_use(ident, binding, Used::Other);
                 return None;
             }
             LateDecl::Decl(binding) => (binding.res(), Some(binding)),
@@ -4472,7 +4733,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             ) if is_syntactic_ambiguity => {
                 // Disambiguate in favor of a unit struct/variant or constant pattern.
                 if let Some(binding) = binding {
-                    self.r.record_use(ident, binding, Used::Other);
+                    late_cm!(self).record_use(ident, binding, Used::Other);
                 }
                 Some(res)
             }
@@ -4560,9 +4821,12 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         path: &Path,
         source: PathSource<'_, 'ast, 'ra>,
     ) {
+        // Every path in the crate comes through here; almost all have a few segments, so they
+        // are held inline instead of in a vector per path.
+        let segments: SmallVec<[Segment; 4]> = path.segments.iter().map(|s| s.into()).collect();
         self.smart_resolve_path_fragment(
             qself,
-            &Segment::from_path(path),
+            &segments,
             source,
             Finalize::new(id, path.span),
             RecordPartialRes::Yes,
@@ -4642,7 +4906,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                     is_call: source.is_call(),
                 };
 
-                this.use_injections.push(ue);
+                this.out.use_injections.push(ue);
             }
 
             PartialRes::new(Res::Err)
@@ -4746,7 +5010,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         }
                     } else {
                         // If there are suggested imports, the error reporting is delayed
-                        this.use_injections.push(UseError {
+                        this.out.use_injections.push(UseError {
                             err,
                             candidates,
                             node_id,
@@ -4824,8 +5088,10 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         // Check if we wrote `str::from_utf8` instead of `core::str::from_utf8`
                         let item_span = path.last().map_or(path_span, |segment| segment.ident.span);
 
-                        self.r.confused_type_with_std_module.insert(item_span, path_span);
-                        self.r.confused_type_with_std_module.insert(path_span, path_span);
+                        // Only read once resolution is over, so the unit keeps its inserts
+                        // and the merge replays them in unit order.
+                        self.out.confused_type_with_std_module.push((item_span, path_span));
+                        self.out.confused_type_with_std_module.push((path_span, path_span));
                     }
                 }
 
@@ -4845,7 +5111,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
         if record_partial_res == RecordPartialRes::Yes {
             // Avoid recording definition of `A::B` in `<T as A>::B::C`.
-            self.r.record_partial_res(node_id, partial_res);
+            self.record_partial_res(node_id, partial_res);
             self.resolve_elided_lifetimes_in_path(partial_res, path, source, path_span);
             self.lint_unused_qualifications(path, ns, finalize);
         }
@@ -4948,7 +5214,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 )));
             }
 
-            let num_privacy_errors = self.r.privacy_errors.len();
+            let num_privacy_errors = self.sink.privacy_errors.len();
             // Make sure that `A` in `<T as A>::B::C` is a trait.
             let trait_res = self.smart_resolve_path_fragment(
                 &None,
@@ -4965,7 +5231,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
             // Truncate additional privacy errors reported above,
             // because they'll be recomputed below.
-            self.r.privacy_errors.truncate(num_privacy_errors);
+            self.sink.privacy_errors.truncate(num_privacy_errors);
 
             // Make sure `A::B` in `<T as A>::B::C` is a trait item.
             //
@@ -5042,7 +5308,9 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
                 // Fix up partial res of segment from `resolve_path` call.
                 if let Some(id) = path[0].id {
-                    self.r.partial_res_map.insert(id, PartialRes::new(Res::PrimTy(prim)));
+                    // An overwrite, as it was: the merge extends the resolver's map with the
+                    // sink's, so this value wins there too.
+                    self.sink.partial_res_map.insert(id, PartialRes::new(Res::PrimTy(prim)));
                 }
 
                 PartialRes::with_unresolved_segments(Res::PrimTy(prim), path.len() - 1)
@@ -5242,7 +5510,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 match self.resolve_label(label.ident) {
                     Ok((node_id, _)) => {
                         // Since this res is a label, it is never read.
-                        self.r.current_owner.label_res_map.insert(expr.id, node_id);
+                        self.current_owner.label_res_map.insert(expr.id, node_id);
                         self.diag_metadata.unused_labels.swap_remove(&node_id);
                     }
                     Err(error) => {
@@ -5335,7 +5603,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
             ExprKind::Call(ref callee, ref arguments) => {
                 self.resolve_expr(callee, Some(expr));
-                let const_args = self.r.legacy_const_generic_args(callee).unwrap_or_default();
+                let const_args =
+                    self.r.legacy_const_generic_args(callee, &self.sink).unwrap_or_default();
                 for (idx, argument) in arguments.iter().enumerate() {
                     // Constant arguments need to be treated as AnonConst since
                     // that is how they will be later lowered to HIR.
@@ -5429,20 +5698,20 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     }
 
     fn record_traits_in_scope(&mut self, node_id: NodeId, ident: Ident) {
-        let traits = self.r.traits_in_scope(
+        let traits = late_cm!(self).traits_in_scope(
             self.current_trait_ref.as_ref().map(|(module, _)| *module),
             &self.parent_scope,
             ident.span,
             Some((ident.name, ValueNS)),
         );
-        self.r.current_owner.trait_map.insert(node_id, traits);
+        self.current_owner.trait_map.insert(node_id, traits);
     }
 
     fn resolve_and_cache_rustdoc_path(&mut self, path_str: &str, ns: Namespace) -> Option<Res> {
         // FIXME: This caching may be incorrect in case of multiple `macro_rules`
         // items with the same name in the same module.
         // Also hygiene is not considered.
-        let mut doc_link_resolutions = core::mem::take(&mut self.r.doc_link_resolutions);
+        let mut doc_link_resolutions = core::mem::take(&mut self.doc_links.resolutions);
         let res = *doc_link_resolutions
             .entry(self.parent_scope.module.nearest_parent_mod().expect_local())
             .or_default()
@@ -5459,7 +5728,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                 }
                 res
             });
-        self.r.doc_link_resolutions = doc_link_resolutions;
+        self.doc_links.resolutions = doc_link_resolutions;
         res
     }
 
@@ -5478,12 +5747,12 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             ResolveDocLinks::None => return,
             ResolveDocLinks::ExportedMetadata
                 if !self.r.tcx.crate_types().iter().copied().any(CrateType::has_metadata)
-                    || !maybe_exported.eval(self.r) =>
+                    || !maybe_exported.eval(self.r, &self.current_owner) =>
             {
                 return;
             }
             ResolveDocLinks::Exported
-                if !maybe_exported.eval(self.r)
+                if !maybe_exported.eval(self.r, &self.current_owner)
                     && !rustdoc::has_primitive_or_keyword_or_attribute_docs(attrs) =>
             {
                 return;
@@ -5527,12 +5796,13 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
         if need_traits_in_scope {
             // FIXME: hygiene is not considered.
-            let mut doc_link_traits_in_scope = core::mem::take(&mut self.r.doc_link_traits_in_scope);
+            let mut doc_link_traits_in_scope = core::mem::take(&mut self.doc_links.traits_in_scope);
             doc_link_traits_in_scope
                 .entry(self.parent_scope.module.nearest_parent_mod().expect_local())
                 .or_insert_with(|| {
-                    self.r
-                        .traits_in_scope(None, &self.parent_scope, DUMMY_SP, None)
+                    let traits =
+                        late_cm!(self).traits_in_scope(None, &self.parent_scope, DUMMY_SP, None);
+                    traits
                         .into_iter()
                         .filter_map(|tr| {
                             if self.is_invalid_proc_macro_item_for_doc(tr.def_id) {
@@ -5544,7 +5814,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
                         })
                         .collect()
                 });
-            self.r.doc_link_traits_in_scope = doc_link_traits_in_scope;
+            self.doc_links.traits_in_scope = doc_link_traits_in_scope;
         }
     }
 
@@ -5574,13 +5844,13 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
             // If the final path segment is beyond `end_pos` all the segments to check will
             // use the type namespace
             let ns = if i + 1 == path.len() { ns } else { TypeNS };
-            let res = self.r.partial_res_map.get(&seg.id?)?.full_res()?;
+            let res = self.partial_res(seg.id?)?.full_res()?;
             let binding = self.resolve_ident_in_lexical_scope(seg.ident, ns, None, None)?;
             (res == binding.res()).then_some((seg, binding))
         });
 
         if let Some((seg, decl)) = unqualified {
-            self.r.potentially_unnecessary_qualifications.push(UnnecessaryQualification {
+            self.out.potentially_unnecessary_qualifications.push(UnnecessaryQualification {
                 decl,
                 node_id: finalize.node_id,
                 path_span: finalize.path_span,
@@ -5726,32 +5996,551 @@ impl<'ast> Visitor<'ast> for ItemInfoCollector<'_, 'ast, '_, '_> {
     }
 }
 
+// ---- late resolution, one unit at a time ----------------------------------------------------
+//
+// Late resolution used to be one `LateResolutionVisitor` walking the whole crate with
+// `&mut Resolver`. It is now one visitor per *unit*, an item at module level, each started from
+// state rebuilt out of the module graph rather than inherited from the unit before it, each
+// reading the resolver through a shared reference, and each handing back everything it wrote
+// as an owned `LateUnitOutput` that is merged in unit order afterwards.
+//
+// That is a stage (`rustc_data_structures::sync::run_stage`): a function of the frozen input and
+// an index, one owned output per index, serial and in order when the session is. The writes a
+// unit makes go to three places it owns: its `LateSink` (everything the name lookups in
+// `ident.rs` record, through `CmResolver::Late`), its `LateOwner` tables (what used to go to
+// `Resolver::current_owner`), and its `LateUnitOutput` (the visitor's own writes). The module
+// graph is frozen while the stage runs (`FrozenFlag`): its lazily filled parts are filled before
+// (`prepare_frozen_late_resolution`), and every lazy write path asserts it is not taken.
+// `research/late-resolution.md` has the inventory and each table's merge rule.
+//
+// Two things keep late resolution a serial loop over the same units, with the same function:
+// external crates (their modules and macros are materialised on first use, which is a write
+// with no bound on what to fill up front), and doc links (they cache across the items of a
+// module, so a unit reads what the units before it wrote). See `late_resolution_can_freeze`.
+
+/// Whether a `mod` item leaves the `macro_rules!` definitions made inside it in scope after it:
+/// `#[macro_use]`, or the old `#[macro_escape]`, on the module. Early resolution's rule, which
+/// late resolution follows for diagnostics and doc links.
+fn leaks_macro_rules(item: &Item) -> bool {
+    item.attrs.iter().any(|attr| attr.has_name(sym::macro_use) || attr.has_name(sym::macro_escape))
+}
+
+/// One unit of late resolution: an item at module level, or the crate root's own attributes.
+///
+/// # The granularity
+///
+/// A unit is every item directly in a module, the crate root's and every `mod` item's, found by
+/// descending through `mod` items and through nothing else. So:
+///
+/// - A `mod` item is a unit of its own, for what it resolves itself (its doc links and its
+///   visibility), and each of its items is a unit after it. Modules are only containers, and
+///   this crate's own source is a tree of them, so stopping at the root's items would leave a
+///   handful of huge units.
+/// - An `impl` or a `trait` is one unit with all of its associated items: they sit inside its
+///   generic parameter ribs, its `Self`, and its trait reference, which are state the unit would
+///   otherwise have to rebuild per associated item.
+/// - A function is one unit with its body, and with every item nested in the body, which sit in
+///   the body's anonymous block modules and ribs.
+///
+/// That is the finest cut whose starting state is nothing but the module graph: inside a module,
+/// between two of its items, the visitor holds only the ribs of the enclosing modules, the
+/// module, and the `macro_rules` scope, and all of those are rebuilt here.
+#[derive(Clone, Copy)]
+struct LateUnit<'ast, 'ra> {
+    /// The item, or `None` for unit 0, the crate root's inner attributes (their doc links).
+    item: Option<&'ast Item>,
+    /// The unit of the `mod` item this one sits directly in; `None` for the crate root's items.
+    parent: Option<usize>,
+    /// For a `mod` unit, the module it opens, which its items' units sit in.
+    opens: Option<LocalModule<'ra>>,
+    /// The `macro_rules` scope in force where the item is, which is the one piece of a walk's
+    /// state that depends on the items before it: every `macro_rules!` item before it in its
+    /// module moves the scope on, and so does a `#[macro_use]` module before it, by everything
+    /// defined inside that module (see `collect_late_units_in`).
+    macro_rules: MacroRulesScopeRef<'ra>,
+}
+
+/// Everything one unit of late resolution wrote, owned by the unit and merged by
+/// `Resolver::merge_late_units`, in unit order.
+///
+/// Every entry is kept as the unit made it, in the order it made it, so that replaying the units
+/// in order performs exactly the inserts one crate walk performed, in the same order. That keeps
+/// every `IndexMap` here in the order the walk gave it, and it keeps the one table whose later
+/// insert overwrites an earlier one (`confused_type_with_std_module`, a `Span` to `Span` map two
+/// units can both write) ending on the value the walk ended on.
+#[derive(Default)]
+struct LateUnitOutput<'ra, 'tcx> {
+    /// Errors whose `use` suggestions are placed and deduplicated across the whole crate, in
+    /// `report_with_use_injections`. Concatenated.
+    use_injections: Vec<UseError<'tcx>>,
+    /// Labels the unit declared and never used, which become `UNUSED_LABELS` lints. A label is
+    /// declared and used inside one function body, so one unit, and the lint buffer keeps lints
+    /// by node, so the order units buffer them in does not reach the output.
+    unused_labels: FxIndexMap<NodeId, Span>,
+    /// Inserts into `Resolver::confused_type_with_std_module`, in order.
+    confused_type_with_std_module: Vec<(Span, Span)>,
+    /// Pushes onto `Resolver::potentially_unnecessary_qualifications`, read by `check_unused`.
+    potentially_unnecessary_qualifications: Vec<UnnecessaryQualification<'ra>>,
+    /// Inserts into `Resolver::delegation_infos`, keyed by the delegation item's own owner, so
+    /// no two units write one key.
+    delegation_infos: Vec<(LocalDefId, DelegationInfo)>,
+    /// Pushes onto `Resolver::trait_impls[trait]`, in order: replayed, which keeps the map's key
+    /// order and each list's order the walk's.
+    trait_impls: Vec<(DefId, LocalDefId)>,
+    /// What the unit's name lookups wrote. See `LateSink` for each table's merge rule.
+    sink: LateSink<'ra>,
+    /// The tables late resolution wrote for each owner the unit resolved, the crate's last (every
+    /// unit starts in it). Put into `Resolver::owners`, with the unit's node ids renumbered.
+    owners: Vec<(NodeId, LateOwnerTables<'tcx>)>,
+    /// How many node ids the unit handed out (`LateResolutionVisitor::next_node_id`). A unit
+    /// numbers them from the resolver's `next_node_id`; the merge gives unit `i` the ids after
+    /// those of the units before it, which is exactly how the single walk numbered them, since
+    /// nothing else allocates node ids during late resolution.
+    node_ids: u32,
+    /// The doc link tables the unit ended with (see `LateDocLinks`). Merged first-wins, in unit
+    /// order; serially they are moved on to the next unit instead, and this is empty.
+    doc_links: LateDocLinks,
+}
+
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Returns the `use` and `extern crate` items of the crate, for use by `check_unused`.
     pub(crate) fn late_resolve_crate<'ast>(
         &mut self,
         krate: &'ast Crate,
     ) -> (Vec<&'ast Item>, Vec<UseError<'tcx>>) {
-        with_owner(self, CRATE_NODE_ID, |this| {
+        // Serial, and before any unit: it writes what the units read (lifetime counts,
+        // delegation signatures, generic argument suggestions), for every item.
+        let use_items = with_owner(self, CRATE_NODE_ID, |this| {
             let mut info_collector = ItemInfoCollector { r: this, use_items: Vec::new() };
             visit::walk_crate(&mut info_collector, krate);
-            let use_items = info_collector.use_items;
-            let mut late_resolution_visitor = LateResolutionVisitor::new(this);
-            late_resolution_visitor
-                .resolve_doc_links(&krate.attrs, MaybeExported::Ok(CRATE_NODE_ID));
-            visit::walk_crate(&mut late_resolution_visitor, krate);
-            let LateResolutionVisitor { use_injections, diag_metadata, .. } =
-                late_resolution_visitor;
-            for (id, span) in diag_metadata.unused_labels.iter() {
-                this.lint_buffer.buffer_lint(
+            info_collector.use_items
+        });
+
+        // The one `ParentScope` every unit's scope is made from: the crate root, and the
+        // empty `macro_rules` scope allocated once, as the single visitor allocated it.
+        let root_scope = ParentScope::module(self.graph_root, self.arenas);
+        let units = self.collect_late_units(krate, root_scope.macro_rules);
+
+        let outputs = if self.late_resolution_can_freeze() {
+            self.prepare_frozen_late_resolution();
+            // SAFETY: we hold the resolver mutably, so no borrow `CmRefCell::borrow_checked`
+            // handed out is live; and while the flag is set nothing writes the module graph
+            // (every lazy write path asserts it, and `prepare_frozen_late_resolution` has done
+            // the writes the units would otherwise make).
+            unsafe { self.frozen_flag.set(true) };
+            let this: &Resolver<'ra, 'tcx> = self;
+            // A unit weighs its item's source at late resolution's rate (`sync::cost::RESOLVE`).
+            // A `mod` unit weighs one: its items are units of their own, and its span would
+            // count them again; unit 0, the crate root's attributes, weighs one too.
+            // SAFETY: the stage settles every unit before the phase ends, and a unit's reads of
+            // the definitions end with it. Nothing creates a definition while the resolver is
+            // frozen. The typo and import suggestions read a def key for every candidate, and
+            // that read was the stage's most contended lock.
+            let outputs = unsafe { this.tcx.untracked().definitions.read_phase(|| run_stage_weighted(
+                &units[..],
+                units.len(),
+                |units, index| {
+                    let unit = &units[index];
+                    match unit.item {
+                        Some(item) if unit.opens.is_none() => {
+                            cost::weight(item.span.byte_len_untracked(), cost::RESOLVE)
+                        }
+                        _ => 1,
+                    }
+                },
+                |units, index| {
+                    this.resolve_late_unit(krate, root_scope, units, index, LateDocLinks::default())
+                },
+            )) };
+            // SAFETY: the stage has settled every unit, and a unit's untracked borrows end with
+            // it.
+            unsafe { self.frozen_flag.set(false) };
+            outputs
+        } else {
+            // One unit after another, in the order the crate walk visited them, each taking the
+            // doc link tables from the unit before it.
+            let mut doc_links = LateDocLinks {
+                resolutions: take(&mut self.doc_link_resolutions),
+                traits_in_scope: take(&mut self.doc_link_traits_in_scope),
+            };
+            let mut outputs = Vec::with_capacity(units.len());
+            for index in 0..units.len() {
+                let mut output = self.resolve_late_unit(krate, root_scope, &units, index, doc_links);
+                doc_links = take(&mut output.doc_links);
+                outputs.push(output);
+            }
+            self.doc_link_resolutions = doc_links.resolutions;
+            self.doc_link_traits_in_scope = doc_links.traits_in_scope;
+            outputs
+        };
+        let use_injections = self.merge_late_units(outputs);
+        (use_items, use_injections)
+    }
+
+    /// Whether the units may run as a stage over a frozen resolver: nothing external can be
+    /// reached (no crate loaded, no `--extern` flag that would load one on first use), so every
+    /// module and macro a unit can meet is already built, and doc links are off, so no unit
+    /// reads another's doc link cache.
+    ///
+    /// With no sysroot named (the default, see `AGENTS.md`) there is no external crate.
+    fn late_resolution_can_freeze(&self) -> bool {
+        matches!(self.tcx.sess.opts.resolve_doc_links, ResolveDocLinks::None)
+            && self.cstore().iter_crate_data().next().is_none()
+            && self.extern_prelude.values().all(|entry| entry.flag_decl.is_none())
+    }
+
+    /// Do, before the stage, every lazy write into the module graph the units could otherwise
+    /// make: fill each local module's list of traits (`Module::ensure_traits`, read by
+    /// `traits_in_scope`), and compress every `macro_rules` scope chain.
+    pub(super) fn prepare_frozen_late_resolution(&self) {
+        for module in &self.local_modules {
+            module.to_module().ensure_traits(self);
+        }
+        self.compress_macro_rules_scopes();
+    }
+
+    /// The path compression `visit_scopes` performs on each `macro_rules` scope it passes
+    /// (`ident.rs`), done once for every scope late resolution can reach, so that none is left
+    /// for the frozen stage.
+    ///
+    /// A late unit enters the chains at a `macro_rules!` definition's scope (its own
+    /// `macro_rules` scope, and the ones `resolve_item` moves to inside blocks), or at an empty
+    /// scope; an import's lookup enters them at the import's scope. From there `visit_scopes`
+    /// steps from a definition to the scope it was planted in and from an unexpanded
+    /// invocation to the scope it was invoked in. Every scope on those paths is reached here
+    /// from the same starting points by the same steps, each once. Compressing ahead of use
+    /// changes no answer: a compressed scope is what `visit_scopes` would have made of it before
+    /// reading it.
+    fn compress_macro_rules_scopes(&self) {
+        let mut seen: FxHashSet<*const ()> = FxHashSet::default();
+        let mut pending: Vec<MacroRulesScopeRef<'ra>> = Vec::new();
+        pending.extend(self.macro_rules_scopes.values().copied());
+        pending.extend(self.output_macro_rules_scopes.values().copied());
+        pending.extend(self.invocation_parent_scopes.values().map(|scope| scope.macro_rules));
+        pending.extend(self.determined_imports.iter().map(|import| import.parent_scope.macro_rules));
+        pending.extend(
+            self.indeterminate_imports.iter().map(|(import, ..)| import.parent_scope.macro_rules),
+        );
+        while let Some(cell) = pending.pop() {
+            if !seen.insert(core::ptr::from_ref(cell).cast::<()>()) {
+                continue;
+            }
+            let mut scope = cell.get();
+            while let MacroRulesScope::Invocation(invoc_id) = scope {
+                match self.output_macro_rules_scopes.get(&invoc_id) {
+                    Some(next) => {
+                        scope = next.get();
+                        cell.set(scope);
+                    }
+                    None => break,
+                }
+            }
+            match scope {
+                MacroRulesScope::Def(binding) => pending.push(binding.parent_macro_rules_scope),
+                MacroRulesScope::Invocation(invoc_id) => {
+                    pending.push(self.invocation_parent_scopes[&invoc_id].macro_rules)
+                }
+                MacroRulesScope::Empty => {}
+            }
+        }
+    }
+
+    /// Every unit of the crate, in the order a walk of the crate reaches them: unit 0 for the
+    /// crate root's attributes, then its items, each `mod` item followed by its own items.
+    fn collect_late_units<'ast>(
+        &self,
+        krate: &'ast Crate,
+        root_macro_rules: MacroRulesScopeRef<'ra>,
+    ) -> Vec<LateUnit<'ast, 'ra>> {
+        let mut units =
+            vec![LateUnit { item: None, parent: None, opens: None, macro_rules: root_macro_rules }];
+        let mut macro_rules = root_macro_rules;
+        self.collect_late_units_in(&krate.items, None, &mut macro_rules, &mut units);
+        units
+    }
+
+    /// The units for `items`, the items of the module opened by unit `parent`, and the
+    /// `macro_rules` scope each one starts in.
+    ///
+    /// `macro_rules` is the scope in force before the first of `items` and is left at the scope
+    /// in force after the last, by the rules `resolve_item` applies as it walks: a `macro_rules!`
+    /// item moves it to the scope that item's definition produced, and a module puts it back to
+    /// what it was before the module unless the module is `#[macro_use]`. Those rules read only
+    /// the items and tables early resolution finished writing, so the whole sequence is known
+    /// before any unit runs.
+    fn collect_late_units_in<'ast>(
+        &self,
+        items: &'ast [Box<Item>],
+        parent: Option<usize>,
+        macro_rules: &mut MacroRulesScopeRef<'ra>,
+        units: &mut Vec<LateUnit<'ast, 'ra>>,
+    ) {
+        for item in items {
+            let item: &'ast Item = item;
+            let index = units.len();
+            // The module a `mod` item opens, found the way `resolve_item` finds it.
+            let opens = match item.kind {
+                ItemKind::Mod(..) => {
+                    let def_id = self.owner_def_id(item.id).to_def_id();
+                    Some(self.expect_module(def_id).expect_local())
+                }
+                _ => None,
+            };
+            units.push(LateUnit { item: Some(item), parent, opens, macro_rules: *macro_rules });
+            match &item.kind {
+                ItemKind::MacroDef(_, macro_def) if macro_def.macro_rules => {
+                    *macro_rules = self.macro_rules_scopes[&self.owner_def_id(item.id)];
+                }
+                ItemKind::Mod(_, _, mod_kind) => {
+                    let before = *macro_rules;
+                    if let ModKind::Loaded(items, ..) = mod_kind {
+                        self.collect_late_units_in(items, Some(index), macro_rules, units);
+                    }
+                    if !leaks_macro_rules(item) {
+                        *macro_rules = before;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Resolve unit `index` of `units` with a visitor of its own, and hand back what it
+    /// produced.
+    ///
+    /// The visitor starts where the crate walk stood when it reached the unit's item: inside the
+    /// ribs of every enclosing module (a module's value and type ribs, and the item lifetime
+    /// rib its `mod` item pushed), with that module as the scope's module and the unit's
+    /// `macro_rules` scope. Everything else a walk holds between two items of a module is empty
+    /// there (label ribs, the trait reference, elision candidates, the diagnostic metadata the
+    /// items before it set and restored), so a fresh visitor has it already.
+    ///
+    /// One piece of state is *not* carried over from the unit before, on purpose:
+    /// `last_block_rib`, the last block a walk left, which diagnostics consult for "the binding
+    /// is available in a different scope in the same function". A function resets it on entry to
+    /// its body, but nothing else did, so an unresolved name in a later `const`, `static` or
+    /// type could be pointed at a block of an earlier item, in a message that calls it the same
+    /// function. Each unit starts without one.
+    fn resolve_late_unit<'ast>(
+        &self,
+        krate: &'ast Crate,
+        root_scope: ParentScope<'ra>,
+        units: &[LateUnit<'ast, 'ra>],
+        index: usize,
+        doc_links: LateDocLinks,
+    ) -> LateUnitOutput<'ra, 'tcx> {
+        let unit = units[index];
+        // The modules the unit sits in, outermost first, from its chain of `mod` units.
+        let mut enclosing: SmallVec<[LocalModule<'ra>; 8]> = SmallVec::new();
+        let mut up = unit.parent;
+        while let Some(parent) = up {
+            let parent = &units[parent];
+            enclosing.push(parent.opens.expect("a late unit's parent is a `mod` unit"));
+            up = parent.parent;
+        }
+        enclosing.reverse();
+        let module = enclosing.last().map_or(root_scope.module, |module| module.to_module());
+        let parent_scope = ParentScope { module, macro_rules: unit.macro_rules, ..root_scope };
+
+        let mut visitor = LateResolutionVisitor::new(self, parent_scope, doc_links);
+        for &module in &enclosing {
+            visitor.ribs[ValueNS].push(Rib::new(RibKind::Module(module)));
+            visitor.ribs[TypeNS].push(Rib::new(RibKind::Module(module)));
+            visitor.lifetime_ribs.push(LifetimeRib::new(LifetimeRibKind::Item));
+        }
+        match unit.item {
+            None => visitor.resolve_doc_links(&krate.attrs, MaybeExported::Ok(CRATE_NODE_ID)),
+            Some(item) => {
+                if unit.opens.is_some() {
+                    visitor.defer_children_of = Some(item.id);
+                }
+                visitor.visit_item(item);
+            }
+        }
+        visitor.into_output()
+    }
+
+    /// Merge every unit's output into the resolver, in unit order, and hand back the `use`
+    /// injections for `report_errors`.
+    ///
+    /// The `UNUSED_LABELS` lints are buffered after every unit's other lints, where the loop
+    /// before this put them (it buffered every other lint while the units ran, and the unused
+    /// labels in its merge).
+    fn merge_late_units(
+        &mut self,
+        outputs: Vec<LateUnitOutput<'ra, 'tcx>>,
+    ) -> Vec<UseError<'tcx>> {
+        // Every unit numbered its node ids from here.
+        let first_fresh = self.next_node_id.as_u32();
+        let mut use_injections = Vec::new();
+        let mut unused_labels_in_order = Vec::with_capacity(outputs.len());
+        // Size the node maps for every unit's entries at once, instead of growing them unit by
+        // unit. They are `UnordMap`s, so capacity changes no answer.
+        let (partial_res, pat_spans) = outputs.iter().fold((0, 0), |(r, p), output| {
+            (r + output.sink.partial_res_map.len(), p + output.sink.pat_span_map.len())
+        });
+        self.partial_res_map.reserve(partial_res);
+        self.pat_span_map.reserve(pat_spans);
+        for output in outputs {
+            let LateUnitOutput {
+                use_injections: unit_use_injections,
+                unused_labels,
+                confused_type_with_std_module,
+                potentially_unnecessary_qualifications,
+                delegation_infos,
+                trait_impls,
+                sink,
+                owners,
+                node_ids,
+                doc_links,
+            } = output;
+
+            // This unit's ids come after the ids of the units before it.
+            let offset = self.next_node_id.as_u32() - first_fresh;
+            let _ = self.next_node_ids(node_ids as usize);
+            let renumber = move |id: NodeId| {
+                if id.as_u32() >= first_fresh { NodeId::from_u32(id.as_u32() + offset) } else { id }
+            };
+            for (owner, tables) in owners {
+                self.merge_late_owner_tables(owner, tables, offset, renumber);
+            }
+
+            self.merge_late_sink(sink);
+            use_injections.extend(unit_use_injections);
+            unused_labels_in_order.push(unused_labels);
+            for (item_span, path_span) in confused_type_with_std_module {
+                self.confused_type_with_std_module.insert(item_span, path_span);
+            }
+            self.potentially_unnecessary_qualifications
+                .extend(potentially_unnecessary_qualifications);
+            for (def_id, info) in delegation_infos {
+                self.delegation_infos.insert(def_id, info);
+            }
+            for (trait_id, impl_def_id) in trait_impls {
+                self.trait_impls.entry(trait_id).or_default().push(impl_def_id);
+            }
+            // First wins, in unit order: the value the single walk cached.
+            for (module, links) in doc_links.resolutions {
+                let merged = self.doc_link_resolutions.entry(module).or_default();
+                for (key, res) in links {
+                    merged.entry(key).or_insert(res);
+                }
+            }
+            for (module, traits) in doc_links.traits_in_scope {
+                self.doc_link_traits_in_scope.entry(module).or_insert(traits);
+            }
+        }
+        for unused_labels in unused_labels_in_order {
+            for (id, span) in unused_labels {
+                self.lint_buffer.buffer_lint(
                     UNUSED_LABELS,
-                    *id,
-                    *span,
+                    id,
+                    span,
                     crate::rustc_resolve::diagnostics::UnusedLabel,
                 );
             }
-            (use_items, use_injections)
-        })
+        }
+        use_injections
+    }
+
+    /// Put one owner's late tables into its entry of `owners`, renumbering the unit's node ids
+    /// (`offset` is what `renumber` adds to them; zero for the first unit, which then moves the
+    /// maps as they are).
+    ///
+    /// A node id late resolution conjures is stored in exactly these places: as a key of
+    /// `lifetimes_res_map`, inside a `LifetimeRes` there (`Fresh`, `ElidedAnchor`), and as the
+    /// parameter of an `extra_lifetime_params_map` entry. A new place has to be added here.
+    fn merge_late_owner_tables(
+        &mut self,
+        owner: NodeId,
+        tables: LateOwnerTables<'tcx>,
+        offset: u32,
+        renumber: impl core::ops::Fn(NodeId) -> NodeId + Copy,
+    ) {
+        let LateOwnerTables {
+            lifetimes_res_map,
+            lifetime_elision_allowed,
+            label_res_map,
+            trait_map,
+            extra_lifetime_params_map,
+        } = tables;
+        let data = self.owners.get_mut(&owner).expect("a late unit's owner is in `owners`");
+        data.lifetime_elision_allowed |= lifetime_elision_allowed;
+        if offset == 0 {
+            data.lifetimes_res_map.extend_unord(lifetimes_res_map.into_items());
+            data.extra_lifetime_params_map.extend_unord(extra_lifetime_params_map.into_items());
+        } else {
+            data.lifetimes_res_map.extend_unord(
+                lifetimes_res_map
+                    .into_items()
+                    .map(move |(id, res)| (renumber(id), renumber_lifetime_res(res, renumber))),
+            );
+            data.extra_lifetime_params_map.extend_unord(extra_lifetime_params_map.into_items().map(
+                move |(binder, params)| {
+                    let params: Vec<(Ident, NodeId, MissingLifetimeKind)> = params
+                        .into_iter()
+                        .map(|(ident, param, kind)| (ident, renumber(param), kind))
+                        .collect();
+                    (renumber(binder), params)
+                },
+            ));
+        }
+        data.label_res_map.extend_unord(label_res_map.into_items());
+        data.trait_map.extend_unord(trait_map.into_items());
+    }
+
+    /// Put one unit's `LateSink` into the resolver, by the rule each of its fields names.
+    pub(super) fn merge_late_sink(&mut self, sink: LateSink<'ra>) {
+        let LateSink {
+            partial_res_map,
+            pat_span_map,
+            privacy_errors,
+            ambiguity_errors,
+            issue_145575_hack_applied,
+            macro_expanded_macro_export_errors,
+            lint_buffer,
+            import_use_map,
+            used_imports,
+            glob_map,
+            maybe_unused_trait_imports,
+        } = sink;
+        self.partial_res_map.extend_unord(partial_res_map.into_items());
+        self.pat_span_map.extend_unord(pat_span_map.into_items());
+        self.privacy_errors.extend(privacy_errors);
+        for (error, dedup) in ambiguity_errors {
+            if dedup && self.matches_previous_ambiguity_error(&error) {
+                continue;
+            }
+            self.ambiguity_errors.push(error);
+        }
+        self.issue_145575_hack_applied |= issue_145575_hack_applied;
+        self.macro_expanded_macro_export_errors.extend(macro_expanded_macro_export_errors);
+        for (node_id, lints) in lint_buffer.map {
+            self.lint_buffer.map.entry(node_id).or_default().extend(lints);
+        }
+        for (import, used) in import_use_map {
+            let old_used = self.import_use_map.entry(import).or_insert(used);
+            if *old_used < used {
+                *old_used = used;
+            }
+        }
+        self.used_imports.extend(used_imports);
+        for (def_id, names) in glob_map {
+            self.glob_map.entry(def_id).or_default().extend(names);
+        }
+        self.maybe_unused_trait_imports.extend(maybe_unused_trait_imports);
+    }
+}
+
+/// `res` with its node ids renumbered (see `Resolver::merge_late_owner_tables`).
+fn renumber_lifetime_res(res: LifetimeRes, renumber: impl core::ops::Fn(NodeId) -> NodeId) -> LifetimeRes {
+    match res {
+        LifetimeRes::Fresh { param, kind } => LifetimeRes::Fresh { param: renumber(param), kind },
+        LifetimeRes::ElidedAnchor { start, end } => {
+            LifetimeRes::ElidedAnchor { start: renumber(start), end: renumber(end) }
+        }
+        LifetimeRes::Param { param, binder } => LifetimeRes::Param { param, binder: renumber(binder) },
+        other => other,
     }
 }
 

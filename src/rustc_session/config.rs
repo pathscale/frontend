@@ -898,8 +898,9 @@ pub enum Input {
     Str {
         /// A string that is shown in place of a filename.
         name: FileName,
-        /// An anonymous string containing the source code.
-        input: String,
+        /// An anonymous string containing the source code. Shared with the `SourceFile` it
+        /// becomes, so the text is not copied between the caller and the source map.
+        input: alloc::sync::Arc<String>,
     },
 }
 

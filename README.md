@@ -65,6 +65,106 @@ scripts and one proc macro - and every one of them still yields to a value you s
 The `.cargo/config.toml` here configures *this* workspace's own build. Cargo does not apply it to
 dependents, and dependents do not need it.
 
+## Performance: before and after
+
+`check_source` on the repository's two generated corpora of valid source
+(`examples/parallel_timing.rs`). The clean corpus is 200 files, 4.66 MB; the large one is 6
+files, 0.98 MB. "Before" is the earliest measurement on record (commit `6774475`); "after" is
+this branch, on the same 16-core machine, best of back-to-back runs.
+
+| | before | after |
+| --- | ---: | ---: |
+| clean, one file at a time, serial | 2,491 ms (1.9 MB/s) | 2,310 to 2,420 ms (2.0 MB/s) |
+| clean, one file at a time, best width | 1,325 ms (3.5 MB/s) | 1,020 to 1,050 ms (4.5 MB/s) |
+| clean, 200 files in parallel, 12 workers | not measured | 280 to 290 ms (16.5 MB/s) |
+| same, with mimalloc | not measured | 207 to 225 ms (21 to 22 MB/s) |
+| large, serial | 488 ms (2.0 MB/s) | 471 to 478 ms (2.1 MB/s) |
+| large, best width | 203 ms (4.8 MB/s) | 143 to 148 ms (6.7 MB/s) |
+| large, 6 files in parallel, each at width 2 | not measured | 78 ms (12.6 MB/s) |
+| allocations, clean, serial | 13.9 million (4.72 GB) | 11.8 million (2.80 GB) |
+| peak memory per file, clean, serial | 12.7 MB | 5.2 MB |
+| parse alone | about 43 MB/s | about 43 MB/s |
+
+Answers (every diagnostic and fact) are identical at every width and in every row. The largest
+gains come from running files in parallel and from the allocator, both of which are the calling
+program's choice: see the next section.
+
+## Integrating it: allocator and parallelism
+
+Two choices belong to the program that links frontend, not to frontend. Both are large, and both
+are easy to miss. Make them before you measure anything.
+
+### 1. Use mimalloc as your global allocator
+
+frontend declares no allocator: whatever your binary declares serves it. The compiler allocates
+heavily (about 12 million allocations for 200 small files), so the allocator is a large share of
+its time, and a larger one the more threads run.
+
+```rust
+// In your binary, once:
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+```
+
+```toml
+[dependencies]
+mimalloc = { version = "^0.1", default-features = false }
+```
+
+Measured on the repository's clean corpus (200 files), checking every file, against the system
+allocator:
+
+| | system allocator | mimalloc |
+| --- | ---: | ---: |
+| one file after another | about 2,450 ms | about 2,250 ms (8% less) |
+| 200 files on 12 workers | about 285 ms | about 215 ms (24% less) |
+
+`mimalloc`'s Rust crates are `#![no_std]`; the library underneath is C, built with `cc`, and
+needs an operating system for pages and thread-local storage, as `malloc` does. A `no_std`
+binary on an OS (one whose allocator is `ekostd::heap::Malloc`) can swap it in the same way.
+
+To measure your own build: `RUSTFLAGS="--cfg bench_mimalloc" cargo run --release --features
+parallel --example parallel_timing -- files clean 12`, against the same without the flag.
+
+### 2. Run files in parallel, not one file wide
+
+A check of one file is about 45% serial (parse, macro expansion, name resolution, session setup
+and teardown), so running one file's stages on many workers stops paying at about width 4:
+
+| clean corpus, one file at a time | width 1 | width 2 | width 4 | width 8 | width 12 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| wall clock | 2,400 ms | 1,800 ms | 1,380 ms | 1,140 ms | 1,030 ms |
+
+Files share nothing, so checking several at once scales almost linearly: the same 200 files on
+12 workers, each file serial, take about 285 ms (8.7x), about 215 ms with mimalloc.
+
+- **Many files:** one call per file (`check_shared_source_with_width`,
+  `analyze_shared_source_with_width`, `read_crate`), each at width 1, spread over a pool, for
+  example nagoya's `par_for`. Answers are identical to running them one after another.
+- **Fewer files than workers** (a few large files): the same, each at width 2 to 4.
+- **One large file:** width 4 is the sweet spot; wider costs CPU for little.
+
+Width above 1 needs the `parallel` cargo feature. Workers that run sessions need a large stack
+(the timing example uses 16 MiB), and every entry point needs a panic catcher installed first
+(`unwind_janky::install_catcher`) and `panic = "unwind"`.
+
+## Future work
+
+Each of these is measured, not guessed; the sizes are shares of a serial check of the clean
+corpus unless they say otherwise. `research/FINDINGS.md` has the profiles.
+
+| Work | What it would save | Why it is not done |
+| --- | --- | --- |
+| A batch entry point, one session per file on nagoya's pool, answers in input order | Nothing new in time (a caller gets the 8.7x today with `par_for`); it saves every caller writing it | `run_stage` outside a session runs serially, so it needs a helper in `sync::pool` |
+| Borrowck's MIR type check without a fulfillment context for operations that register no obligations | Part of MIR type check, which is 12% (279 ms of 2.3 s) | Needs a prototype to size |
+| Borrowck without cloning each body (renumber regions into a side table) | About 3% (clone, renumber, copy) | Other passes read the unrenumbered MIR after borrowck |
+| One shard lock per query run instead of two | About 2%, more at higher widths | Contained, not yet done |
+| Free the AST once lowering finishes | About 13% of peak memory per file | The AST sits in the `index_ast` query result, which one fallback path still reads |
+| Parse: fewer allocations per node (a `Box` per expression, a `ThinVec` per path), and no separate `Vec` and `Arc` per delimited group | Parse is about 4% of a check; it sits at about 43 MB/s | Changes AST types every later pass uses |
+| A NEON or SSE table-driven lexer core (on stable, through `core::arch`) | Lexing is about a quarter of parse, so about 1% of a check | Small next to the rest |
+| Serial front of a file: macro expansion and definition collection in one walk, then per item | Expansion, resolution and lowering are about 13% of a serial check, the serial start of every file | Definition order must stay exactly as it is |
+| Per-body arenas for inference and obligation vectors | Part of the allocator's 11% | Stable Rust cannot give the standard collections another allocator |
+
 ## Syntax-level diagnostics
 
 Behind the `diagnostics` cargo feature, which is off by default:
