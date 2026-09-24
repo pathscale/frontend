@@ -58,9 +58,26 @@ static REALLOCS: AtomicU64 = AtomicU64::new(0);
 fn size_class(size: usize) -> usize {
     (usize::BITS - size.max(1).leading_zeros() - 1).min(31) as usize
 }
+/// `alloc-sites`: every `SITE_EVERY`th counted allocation records its backtrace. Off unless set.
+static SITES: AtomicBool = AtomicBool::new(false);
+const SITE_EVERY: u64 = 1024;
+static SITE_TRACES: std::sync::Mutex<Vec<std::backtrace::Backtrace>> = std::sync::Mutex::new(Vec::new());
+thread_local! {
+    /// Set while this thread records a backtrace, whose own allocations must not record.
+    static IN_SITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn record_site(n: u64) {
+    if !SITES.load(Relaxed) || n % SITE_EVERY != 0 || IN_SITE.with(|flag| flag.replace(true)) {
+        return;
+    }
+    let trace = std::backtrace::Backtrace::force_capture();
+    SITE_TRACES.lock().unwrap().push(trace);
+    IN_SITE.with(|flag| flag.set(false));
+}
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Relaxed) {
+            record_site(ALLOCS.load(Relaxed));
             ALLOCS.fetch_add(1, Relaxed);
             ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
             BY_SIZE[size_class(layout.size())].fetch_add(1, Relaxed);
@@ -338,6 +355,94 @@ fn main() {
         let path = std::env::args().nth(3).expect("dump needs an output file");
         let ((checked, facts), _, _) = pass(1, &corpus(&name));
         std::fs::write(&path, format!("{checked:#?}\n{facts:#?}\n")).expect("write dump");
+        return;
+    }
+    // `parallel_timing alloc-sites`: where the clean corpus's check allocates, at width one:
+    // every 1,024th allocation's backtrace, grouped by the nearest compiler frame that is not
+    // collection or allocator machinery, and by that frame's caller.
+    if only.as_deref() == Some("alloc-sites") {
+        frontend::unwind_janky::install_catcher(catcher);
+        let files: Vec<Arc<String>> =
+            corpus("clean").into_iter().map(Arc::new).collect();
+        SITES.store(true, Relaxed);
+        let ((), allocs, _) = counted(|| {
+            for f in &files {
+                let _ = check_shared_source_with_width("corpus", Arc::clone(f), 1);
+            }
+        });
+        SITES.store(false, Relaxed);
+        let traces = std::mem::take(&mut *SITE_TRACES.lock().unwrap());
+        let skip = |name: &str| {
+            [
+                "alloc::", "core::", "std::", "hashbrown", "indexmap", "smallvec", "thin_vec",
+                "rustc_arena", "frontend_arena", "Counting", "record_site", "__rust", "RawVec",
+                "rustc_data_structures::sharded", "rustc_data_structures::fx", "ToOwned",
+                "Clone", "clone", "FromIterator", "Extend", "collect", "backtrace",
+            ]
+            .iter()
+            .any(|pat| name.contains(pat))
+        };
+        let mut by_site: std::collections::HashMap<String, u64> = Default::default();
+        let mut by_pair: std::collections::HashMap<String, u64> = Default::default();
+        let mut by_line: std::collections::HashMap<String, u64> = Default::default();
+        for trace in &traces {
+            let text = format!("{trace}");
+            // (function, the `at file:line` of the frame, if the trace has one), innermost first.
+            let mut frames: Vec<(&str, &str)> = Vec::new();
+            for line in text.lines() {
+                let line = line.trim();
+                if let Some(at) = line.strip_prefix("at ") {
+                    if let Some(last) = frames.last_mut() {
+                        if last.1.is_empty() {
+                            last.1 = at;
+                        }
+                    }
+                } else if let Some((_, name)) = line.split_once(": ") {
+                    frames.push((name, ""));
+                }
+            }
+            // The last allocator/collection frame's location is the line in the site that
+            // allocated: the frame right below the site.
+            // A site is a frame of this crate's own code: by location when the build has line
+            // tables (`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`), else by name. Container
+            // modules (index vectors, unification tables, arenas, sharded maps) are not sites.
+            let own = |(name, at): &(&str, &str)| {
+                if at.is_empty() {
+                    return !skip(name);
+                }
+                // std's frames sit under `/rustc/<commit>/library`, dependencies' under `.cargo`;
+                // this crate's are relative (`./src/..`) or under its own directory.
+                ![
+                    "/rustc/", ".cargo/", "/library/", "rustc_index/", "/ena/", "rustc_arena",
+                    "frontend_arena", "sharded.rs", "thin_vec", "smallvec", "examples/",
+                ]
+                .iter()
+                .any(|pat| at.contains(pat))
+            };
+            let first_own = frames.iter().position(|frame| own(frame));
+            let site = first_own.map_or("?", |i| frames[i].0);
+            let site_at = first_own.map_or("", |i| frames[i].1);
+            let caller = first_own
+                .and_then(|i| frames[i + 1..].iter().find(|frame| own(frame)))
+                .map_or("?", |f| f.0);
+            let trim = |s: &str| s.rsplit_once("::h").map_or(s, |(a, _)| a).to_string();
+            let short = |at: &str| at.rsplit_once("/src/").map_or(at, |(_, rest)| rest).to_string();
+            *by_site.entry(trim(site)).or_default() += 1;
+            *by_pair.entry(format!("{}  <-  {}", trim(site), trim(caller))).or_default() += 1;
+            *by_line.entry(format!("{}  ({})", short(site_at), trim(site))).or_default() += 1;
+        }
+        let total = traces.len() as u64;
+        println!("{allocs} allocations, {total} sampled (1 in {SITE_EVERY})");
+        for (title, map) in
+            [("by site", by_site), ("by site and caller", by_pair), ("by line", by_line)]
+        {
+            println!("\n{title}:");
+            let mut rows: Vec<_> = map.into_iter().collect();
+            rows.sort_by(|a, b| b.1.cmp(&a.1));
+            for (name, n) in rows.into_iter().take(80) {
+                println!("{:>6.2}%  ~{:>9}  {name}", n as f64 * 100.0 / total as f64, n * SITE_EVERY);
+            }
+        }
         return;
     }
     // `parallel_timing overhead`: what one session costs with nothing in it (an empty file,
