@@ -446,7 +446,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // `def_kind`, which `analysis` used to force as a side effect. Without it the first
     // `def_kind` below is an unprovided query and an internal compiler error.
     let _ = tcx.hir_crate_items(());
-    let count = tcx.untracked().definitions.read().num_definitions();
+    let count = tcx.untracked().def_table.num_definitions();
 
     // The input file's name, printed once and shared by every span in it.
     let input = input_file(tcx);

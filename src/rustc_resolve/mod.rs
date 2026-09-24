@@ -1715,7 +1715,7 @@ impl<'tcx> Resolver<'_, 'tcx> {
             name,
             def_kind,
             self.tcx
-                .definitions_untracked()
+                .def_table_untracked()
                 .def_key(self.current_owner.node_id_to_def_id[&node_id]),
         );
 

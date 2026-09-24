@@ -221,18 +221,18 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn hir_def_key(self, def_id: LocalDefId) -> DefKey {
         // Accessing the DefKey is ok, since it is part of DefPathHash.
-        self.definitions_untracked().def_key(def_id)
+        self.def_table_untracked().def_key(def_id)
     }
 
     pub fn hir_def_path(self, def_id: LocalDefId) -> DefPath {
         // Accessing the DefPath is ok, since it is part of DefPathHash.
-        self.definitions_untracked().def_path(def_id)
+        self.def_table_untracked().def_path(def_id)
     }
 
     #[inline]
     pub fn hir_def_path_hash(self, def_id: LocalDefId) -> DefPathHash {
         // Accessing the DefPathHash is ok, it is incr. comp. stable.
-        self.definitions_untracked().def_path_hash(def_id)
+        self.def_table_untracked().def_path_hash(def_id)
     }
 
     pub fn hir_get_if_local(self, id: DefId) -> Option<Node<'tcx>> {

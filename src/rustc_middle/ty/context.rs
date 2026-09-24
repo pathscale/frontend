@@ -1103,7 +1103,7 @@ impl<'tcx> TyCtxt<'tcx> {
         let id = id.into_query_key();
         // Accessing the DefKey is ok, since it is part of DefPathHash.
         if let Some(id) = id.as_local() {
-            self.definitions_untracked().def_key(id)
+            self.def_table_untracked().def_key(id)
         } else {
             self.cstore_untracked().def_key(id)
         }
@@ -1117,7 +1117,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn def_path(self, id: DefId) -> crate::rustc_hir::definitions::DefPath {
         // Accessing the DefPath is ok, since it is part of DefPathHash.
         if let Some(id) = id.as_local() {
-            self.definitions_untracked().def_path(id)
+            self.def_table_untracked().def_path(id)
         } else {
             self.cstore_untracked().def_path(id)
         }
@@ -1127,7 +1127,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn def_path_hash(self, def_id: DefId) -> crate::rustc_hir::definitions::DefPathHash {
         // Accessing the DefPathHash is ok, it is incr. comp. stable.
         if let Some(def_id) = def_id.as_local() {
-            self.definitions_untracked().def_path_hash(def_id)
+            self.def_table_untracked().def_path_hash(def_id)
         } else {
             self.cstore_untracked().def_path_hash(def_id)
         }
@@ -1365,6 +1365,7 @@ impl<'tcx> TyCtxt<'tcx> {
         self.ensure_ok().analysis(());
 
         let definitions = &self.untracked.definitions;
+        let def_table = &*self.untracked.def_table;
         // This was a `gen {}` block (unstable), rewritten as a hand-rolled state machine. `done`
         // makes it fused like the gen block was, so `freeze` runs exactly once.
         let mut i = 0;
@@ -1375,7 +1376,7 @@ impl<'tcx> TyCtxt<'tcx> {
             }
             // Recompute the number of definitions each time, because our caller may be creating
             // new ones.
-            if i < { definitions.read().num_definitions() } {
+            if i < def_table.num_definitions() {
                 let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
                 i += 1;
                 return Some(LocalDefId { local_def_index });
@@ -1424,6 +1425,17 @@ impl<'tcx> TyCtxt<'tcx> {
     #[inline]
     pub fn definitions_untracked(self) -> FreezeReadGuard<'tcx, Definitions> {
         self.untracked.definitions.read()
+    }
+
+    /// The key and path hash of every local definition, read with no lock (see
+    /// `DefTable`): the path `def_key`, `def_path` and `def_path_hash` take, which a
+    /// parallel stage hits from every item. Only `create_def` appends to it.
+    ///
+    /// Note that this is *untracked* and should only be used within the query
+    /// system if the result is otherwise tracked through queries
+    #[inline]
+    pub fn def_table_untracked(self) -> &'tcx crate::rustc_hir::definitions::DefTable {
+        &self.untracked.def_table
     }
 
     /// Note that this is *untracked* and should only be used within the query

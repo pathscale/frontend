@@ -181,7 +181,7 @@ impl<'a> StableHashCtxt for StableHashState<'a> {
     fn def_path_hash(&self, raw_def_id: RawDefId) -> Fingerprint {
         let def_id = DefId::from_raw_def_id(raw_def_id);
         if let Some(def_id) = def_id.as_local() {
-            self.untracked.definitions.read().def_path_hash(def_id)
+            self.untracked.def_table.def_path_hash(def_id)
         } else {
             self.untracked.cstore.read().def_path_hash(def_id)
         }
