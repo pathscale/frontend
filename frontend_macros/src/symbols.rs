@@ -327,16 +327,9 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
             #symbols_stream
         }
 
-        impl Interner {
-            /// Creates an `Interner` with the predefined symbols from the `symbols!` macro and
-            /// any extra symbols provided by external drivers such as Clippy
-            pub(crate) fn with_extra_symbols(extra_symbols: &[&'static str]) -> Self {
-                Interner::prefill(
-                    &[#prefill_stream],
-                    extra_symbols,
-                )
-            }
-        }
+        /// Every predefined symbol's string, at its index: entry `i` is the string of
+        /// `Symbol::new(i)`. The interner's static table is built from this at compile time.
+        const PREDEFINED_SYMBOL_LIST: [&str; PREDEFINED_SYMBOLS_COUNT as usize] = [#prefill_stream];
     };
 
     (output, errors.list)
