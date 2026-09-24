@@ -13,6 +13,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::hash::{BuildHasher, Hash, Hasher};
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::{fmt, str};
 
 use crate::rustc_arena::DroplessArena;
@@ -2520,8 +2522,8 @@ impl Ident {
         Ident::new(self.name, self.span.normalize_to_macro_rules())
     }
 
-    /// Access the underlying string. This is a slowish operation because it
-    /// requires locking the symbol interner.
+    /// Access the underlying string. Takes no lock: the interner's index to string table is
+    /// read without it (see `SymbolStrs`).
     ///
     /// Note that the lifetime of the return value is a lie. See
     /// `Symbol::as_str()` for details.
@@ -2703,8 +2705,8 @@ impl Symbol {
         with_session_globals(|session_globals| session_globals.symbol_interner.intern_str(str))
     }
 
-    /// Access the underlying string. This is a slowish operation because it
-    /// requires locking the symbol interner.
+    /// Access the underlying string. Takes no lock: the interner's index to string table is
+    /// read without it (see `SymbolStrs`).
     ///
     /// Note that the lifetime of the return value is a lie. It's not the same
     /// as `&self`, but actually tied to the lifetime of the underlying
@@ -2832,7 +2834,18 @@ impl StableHash for ByteSymbol {
 // string with identical contents (e.g. "foo" and b"foo") are both interned,
 // only one copy will be stored and the resulting `Symbol` and `ByteSymbol`
 // will have the same index.
-pub(crate) struct Interner(Lock<InternerInner>);
+//
+// Interning takes the lock; reading a symbol's string (`Symbol::as_str`) does not. A parallel
+// session's stage items call `as_str` for every candidate of every typo suggestion, and with
+// the read behind the same lock as the write, every worker took one mutex, on one cache line,
+// per candidate name: the items ran one at a time and the line moved between cores on every
+// call. Reads now go to `SymbolStrs`, an append-only table the lock's holder publishes into.
+pub(crate) struct Interner {
+    /// The write side: the arena the strings live in and the string to index table.
+    inner: Lock<InternerInner>,
+    /// The read side: index to string, read without the lock.
+    strs: SymbolStrs,
+}
 
 // The `&'static [u8]`s in this type actually point into the arena.
 //
@@ -2842,7 +2855,103 @@ pub(crate) struct Interner(Lock<InternerInner>);
 struct InternerInner {
     arena: DroplessArena,
     indices: HashTable<(&'static [u8], u32)>,
-    byte_strs: Vec<&'static [u8]>,
+}
+
+/// log2 of the first bucket's length in [`SymbolStrs`]. Bucket `b` holds `1 << (b + this)`
+/// entries, so the predefined symbols (a few thousand) fill the first two or three.
+const SYMBOL_STRS_FIRST_BITS: u32 = 10;
+
+/// Enough buckets for every `u32` index: index `i` is in bucket
+/// `log2(i + (1 << SYMBOL_STRS_FIRST_BITS)) - SYMBOL_STRS_FIRST_BITS`, at most
+/// `32 - SYMBOL_STRS_FIRST_BITS`.
+const SYMBOL_STRS_BUCKETS: usize = (u32::BITS - SYMBOL_STRS_FIRST_BITS + 1) as usize;
+
+/// Every interned string by index: append-only, written only by the holder of the interner's
+/// lock, read by anyone without it.
+///
+/// Buckets of doubling size, so an entry never moves once written and a reader never sees a
+/// reallocation. Publication: the writer writes the entry (and, first, the bucket pointer), then
+/// stores `len` with `Release`; a reader loads `len` with `Acquire` and reads only below it. A
+/// reader that loads a length `n` sees every entry below `n`: the writer that stored `n` wrote
+/// its own entry before the store, and each writer before it released the lock after its own
+/// store, which the next writer acquired. A `Symbol` of this interner is below `len` by
+/// construction; any other index panics, as indexing the `Vec` this replaced did.
+struct SymbolStrs {
+    len: AtomicUsize,
+    buckets: [AtomicPtr<&'static [u8]>; SYMBOL_STRS_BUCKETS],
+}
+
+impl SymbolStrs {
+    fn new() -> SymbolStrs {
+        SymbolStrs {
+            len: AtomicUsize::new(0),
+            buckets: core::array::from_fn(|_| AtomicPtr::new(core::ptr::null_mut())),
+        }
+    }
+
+    /// The bucket and the offset in it of entry `index`.
+    #[inline]
+    fn locate(index: usize) -> (usize, usize) {
+        let biased = index as u64 + (1u64 << SYMBOL_STRS_FIRST_BITS);
+        let log = u64::BITS - 1 - biased.leading_zeros();
+        let bucket = (log - SYMBOL_STRS_FIRST_BITS) as usize;
+        let offset = (biased - (1u64 << log)) as usize;
+        (bucket, offset)
+    }
+
+    #[inline]
+    fn bucket_len(bucket: usize) -> usize {
+        1usize << (bucket as u32 + SYMBOL_STRS_FIRST_BITS)
+    }
+
+    /// Append `byte_str` and return its index. Only the lock's holder calls this (or the
+    /// interner's constructor, before anyone else can see it), so there is one writer.
+    fn push(&self, byte_str: &'static [u8]) -> u32 {
+        let index = self.len.load(Ordering::Relaxed);
+        let index32 = u32::try_from(index).expect("symbol table overflowed a u32 index");
+        let (bucket, offset) = Self::locate(index);
+        let mut entries = self.buckets[bucket].load(Ordering::Relaxed);
+        if entries.is_null() {
+            let fresh: Box<[MaybeUninit<&'static [u8]>]> =
+                Box::new_uninit_slice(Self::bucket_len(bucket));
+            entries = Box::into_raw(fresh).cast::<&'static [u8]>();
+            self.buckets[bucket].store(entries, Ordering::Release);
+        }
+        // SAFETY: `offset < bucket_len(bucket)` by `locate`; the slot is past `len`, so no
+        // reader looks at it, and this is the one writer.
+        unsafe { entries.add(offset).write(byte_str) };
+        self.len.store(index + 1, Ordering::Release);
+        index32
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> &'static [u8] {
+        let len = self.len.load(Ordering::Acquire);
+        assert!(index < len, "symbol index {index} out of range for an interner of {len}");
+        let (bucket, offset) = Self::locate(index);
+        let entries = self.buckets[bucket].load(Ordering::Acquire);
+        // SAFETY: `index < len`, and the `Acquire` load of `len` makes the bucket pointer and the
+        // entry, both written before `len` passed `index`, visible (see the type's comment).
+        unsafe { *entries.add(offset) }
+    }
+}
+
+impl Drop for SymbolStrs {
+    fn drop(&mut self) {
+        for (bucket, entries) in self.buckets.iter_mut().enumerate() {
+            let entries = *entries.get_mut();
+            if !entries.is_null() {
+                // SAFETY: allocated by `push` as a boxed slice of exactly this length, and
+                // dropped once; the entries are references, with nothing to drop.
+                drop(unsafe {
+                    Box::from_raw(core::ptr::slice_from_raw_parts_mut(
+                        entries.cast::<MaybeUninit<&'static [u8]>>(),
+                        Self::bucket_len(bucket),
+                    ))
+                });
+            }
+        }
+    }
 }
 
 impl Interner {
@@ -2857,15 +2966,15 @@ impl Interner {
         let mut indices: HashTable<(&'static [u8], u32)> = HashTable::with_capacity(size_hint);
         let hasher = FxBuildHasher::default();
 
-        let mut byte_strs: Vec<&'static [u8]> = Vec::with_capacity(size_hint);
+        let strs = SymbolStrs::new();
 
         for v in values {
             match indices.entry(hasher.hash_one(&v), |&(s, _)| s == v, |&(s, _)| hasher.hash_one(s))
             {
                 Entry::Occupied(v) => conflicting_values.push(v.get().0),
                 Entry::Vacant(view) => {
-                    view.insert((v, byte_strs.len() as u32));
-                    byte_strs.push(v);
+                    let index = strs.push(v);
+                    view.insert((v, index));
                 }
             }
         }
@@ -2877,7 +2986,7 @@ impl Interner {
             )
         }
 
-        Interner(Lock::new(InternerInner { arena: Default::default(), indices, byte_strs }))
+        Interner { inner: Lock::new(InternerInner { arena: Default::default(), indices }), strs }
     }
 
     fn intern_str(&self, str: &str) -> Symbol {
@@ -2893,7 +3002,7 @@ impl Interner {
         let hasher = FxBuildHasher::default();
         let hash_of_byte_str = hasher.hash_one(byte_str);
 
-        self.0.with_lock(|inner| {
+        self.inner.with_lock(|inner| {
             match inner.indices.entry(
                 hash_of_byte_str,
                 |&(s, _)| s == byte_str,
@@ -2906,9 +3015,9 @@ impl Interner {
                     // SAFETY: we can extend the arena allocation to `'static` because we
                     // only access these while the arena is still alive.
                     let byte_str: &'static [u8] = unsafe { &*(byte_str as *const [u8]) };
-                    let idx = inner.byte_strs.len() as u32;
+                    // Under the lock: the one writer `SymbolStrs::push` requires.
+                    let idx = self.strs.push(byte_str);
                     view.insert((byte_str, idx));
-                    inner.byte_strs.push(byte_str);
                     idx
                 }
             }
@@ -2931,8 +3040,10 @@ impl Interner {
         self.get_inner(symbol.0.as_usize())
     }
 
+    /// Without the lock: see `SymbolStrs`.
+    #[inline]
     fn get_inner(&self, index: usize) -> &[u8] {
-        self.0.with_lock(|inner| inner.byte_strs[index])
+        self.strs.get(index)
     }
 }
 
