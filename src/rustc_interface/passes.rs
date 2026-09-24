@@ -993,12 +993,13 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     let pre_configured_attrs = crate::rustc_expand::config::pre_configure_attrs(sess, &krate.attrs);
 
     let crate_name = get_crate_name(sess, &pre_configured_attrs);
-    // The two crate shapes this frontend accepts: a library to analyse, and a program to analyse.
-    // Nothing here writes an object or runs a linker, so `cdylib`, `staticlib`, `dylib` and
-    // `proc-macro` have no meaning to give them and are not offered.
+    // The crate shapes this frontend accepts: a library to analyse, a program to analyse, and a
+    // `proc-macro` crate, whose metadata declares its macros to the crates that load it (they
+    // resolve there, and are never run). Nothing here writes an object or runs a linker, so
+    // `cdylib`, `staticlib` and `dylib` have no meaning to give them and are not offered.
     let crate_types = collect_crate_types(
         sess,
-        &[CrateType::Rlib, CrateType::Executable],
+        &[CrateType::Rlib, CrateType::Executable, CrateType::ProcMacro],
         // The `supported_by` label, which appears verbatim in "dropping unsupported crate type"
         // diagnostics. It names whatever is driving this frontend, and the frontend itself is the
         // honest answer here.

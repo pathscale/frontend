@@ -32,6 +32,63 @@ fn record_expand_proc_macro<'a>(
     })
 }
 
+/// A proc macro declared by metadata this frontend wrote from its crate's source, with nothing
+/// to run. Running one means executing its compiled code, and frontend compiles nothing, so the
+/// macro exists for name resolution (a `use` of it, a path to it) and every expansion of it is
+/// an error that says why, of any of the three kinds.
+pub struct UnrunProcMacro {
+    pub name: crate::rustc_span::Symbol,
+}
+
+impl UnrunProcMacro {
+    fn refuse(&self, ecx: &ExtCtxt<'_>, span: Span) -> ErrorGuaranteed {
+        ecx.dcx().span_err(
+            span,
+            alloc::format!(
+                "proc macro `{}` is not expanded: its crate was read from source, and running a proc macro means running compiled code",
+                self.name
+            ),
+        )
+    }
+}
+
+impl base::BangProcMacro for UnrunProcMacro {
+    fn expand(
+        &self,
+        ecx: &mut ExtCtxt<'_>,
+        span: Span,
+        _: TokenStream,
+    ) -> Result<TokenStream, ErrorGuaranteed> {
+        Err(self.refuse(ecx, span))
+    }
+}
+
+impl base::AttrProcMacro for UnrunProcMacro {
+    fn expand(
+        &self,
+        ecx: &mut ExtCtxt<'_>,
+        span: Span,
+        _: TokenStream,
+        _: TokenStream,
+    ) -> Result<TokenStream, ErrorGuaranteed> {
+        Err(self.refuse(ecx, span))
+    }
+}
+
+impl MultiItemModifier for UnrunProcMacro {
+    fn expand(
+        &self,
+        ecx: &mut ExtCtxt<'_>,
+        span: Span,
+        _meta_item: &ast::MetaItem,
+        _item: Annotatable,
+        _is_derive_const: bool,
+    ) -> ExpandResult<Vec<Annotatable>, Annotatable> {
+        self.refuse(ecx, span);
+        ExpandResult::Ready(vec![])
+    }
+}
+
 pub struct BangProcMacro {
     pub client: pm::bridge::client::Client,
 }
