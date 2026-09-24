@@ -16,10 +16,13 @@ mod tests;
 /// Finds all newlines, multi-byte characters, and non-narrow characters in a
 /// SourceFile.
 ///
-/// This function will use an SSE2 enhanced implementation if hardware support
-/// is detected at runtime.
+/// This function uses a NEON implementation on aarch64, and an SSE2 one on x86 when
+/// hardware support is detected at runtime.
 pub(crate) fn analyze_source_file(src: &str) -> (Vec<RelativeBytePos>, Vec<MultiByteChar>) {
-    let mut lines = vec![RelativeBytePos::from_u32(0)];
+    // Rust source averages well over 20 bytes a line, so one entry per 40 bytes covers most
+    // of a file without regrowth; capacity never changes what is pushed.
+    let mut lines = Vec::with_capacity(src.len() / 40 + 1);
+    lines.push(RelativeBytePos::from_u32(0));
     let mut multi_byte_chars = vec![];
 
     // Calls the right implementation, depending on hardware support available.
@@ -142,13 +145,99 @@ cfg_select! {
             }
         }
     }
+    all(target_arch = "aarch64", target_feature = "neon") => {
+        // NEON is part of the aarch64 baseline on every target this arm compiles for (the
+        // `target_feature` test above is static), so there is no runtime detection.
+        fn analyze_source_file_dispatch(
+            src: &str,
+            lines: &mut Vec<RelativeBytePos>,
+            multi_byte_chars: &mut Vec<MultiByteChar>,
+        ) {
+            analyze_source_file_neon(src, lines, multi_byte_chars);
+        }
+
+        /// The SSE2 path above, on NEON: 16 byte chunks, an all-ASCII chunk has its
+        /// newlines found from a comparison mask, and a chunk holding any byte >= 0x80
+        /// falls back to the generic decoder, which also reports how far a multi-byte
+        /// character runs into the next chunk.
+        fn analyze_source_file_neon(
+            src: &str,
+            lines: &mut Vec<RelativeBytePos>,
+            multi_byte_chars: &mut Vec<MultiByteChar>,
+        ) {
+            use core::arch::aarch64::*;
+
+            const CHUNK_SIZE: usize = 16;
+
+            let (chunks, tail) = src.as_bytes().as_chunks::<CHUNK_SIZE>();
+
+            // Where decoding of the current chunk starts: a multi-byte character that
+            // crossed the previous chunk boundary has already been handled.
+            let mut intra_chunk_offset = 0;
+
+            let newline = vdupq_n_u8(b'\n');
+
+            for (chunk_index, chunk) in chunks.iter().enumerate() {
+                // SAFETY: `chunk` is exactly 16 readable bytes; `vld1q_u8` has no
+                // alignment requirement.
+                let chunk = unsafe { vld1q_u8(chunk.as_ptr()) };
+
+                // The largest byte is below 0x80 exactly when the chunk is all ASCII.
+                if vmaxvq_u8(chunk) < 0x80 {
+                    // A character crossing into this chunk would leave a continuation
+                    // byte (>= 0x80) here.
+                    assert!(intra_chunk_offset == 0);
+
+                    // 0xFF per newline byte, narrowed to one nibble per byte: nibble `i`
+                    // of the u64 is byte `i` of the chunk. Keep one bit per nibble so
+                    // `trailing_zeros / 4` is the byte index and `m & (m - 1)` clears it.
+                    let newlines_test = vceqq_u8(chunk, newline);
+                    let narrowed = vshrn_n_u16::<4>(vreinterpretq_u16_u8(newlines_test));
+                    let mut newlines_mask =
+                        vget_lane_u64::<0>(vreinterpret_u64_u8(narrowed)) & 0x8888_8888_8888_8888;
+
+                    let output_offset = RelativeBytePos::from_usize(chunk_index * CHUNK_SIZE + 1);
+
+                    while newlines_mask != 0 {
+                        let index = newlines_mask.trailing_zeros() / 4;
+
+                        lines.push(RelativeBytePos(index) + output_offset);
+
+                        newlines_mask &= newlines_mask - 1;
+                    }
+                } else {
+                    // The slow path, exactly as in the SSE2 arm.
+                    let scan_start = chunk_index * CHUNK_SIZE + intra_chunk_offset;
+                    intra_chunk_offset = analyze_source_file_generic(
+                        &src[scan_start..],
+                        CHUNK_SIZE - intra_chunk_offset,
+                        RelativeBytePos::from_usize(scan_start),
+                        lines,
+                        multi_byte_chars,
+                    );
+                }
+            }
+
+            // There might still be a tail left to analyze.
+            let tail_start = src.len() - tail.len() + intra_chunk_offset;
+            if tail_start < src.len() {
+                analyze_source_file_generic(
+                    &src[tail_start..],
+                    src.len() - tail_start,
+                    RelativeBytePos::from_usize(tail_start),
+                    lines,
+                    multi_byte_chars,
+                );
+            }
+        }
+    }
     // The loongarch64 arm is gone. It was the only place left reaching for `std`:
     // `is_loongarch_feature_detected!` is runtime CPU feature detection, which lives in
     // `std_detect` and has no `core` equivalent - so the LSX path could not be selected without
     // std. This compiler targets aarch64; the scalar fallback below is what it has always run.
     _ => {
         // The target (or compiler version) does not support vector instructions
-        // our specialized implementations need (x86 SSE2, loongarch64 LSX)...
+        // our specialized implementations need (x86 SSE2, aarch64 NEON)...
         fn analyze_source_file_dispatch(
             src: &str,
             lines: &mut Vec<RelativeBytePos>,
