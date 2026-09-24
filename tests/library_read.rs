@@ -1,10 +1,13 @@
 //! A library read (`CrateRead::library`): a crate its own compiler already compiled, of any
 //! version, read for its facts and its metadata without being judged.
 //!
-//! Two tests always run, on `no_core` crates written here. The same crate is refused by a strict
+//! Three tests always run, on `no_core` crates written here. The same crate is refused by a strict
 //! read and read by a library read, once for a type error in a body its metadata carries and once
-//! for two overlapping impls; the library read records what it met, refuses nothing, and writes
-//! metadata a strict check then loads.
+//! for two overlapping impls; the library read records what it met, refuses nothing, writes
+//! metadata a strict check then loads, and reports its facts complete, since only judging was
+//! skipped. The third reads crates that lose input (an import that does not resolve, a macro
+//! that does not expand, a module file that is missing) and one that only meets an unknown
+//! attribute, and checks `CrateFacts::complete` tells the two apart.
 //!
 //! One test is ignored unless `FRONTEND_RUST_SRC_ROOTS` names toolchains' `rust-src` trees,
 //! colon-separated, each the directory that holds `library/` (a toolchain's
@@ -116,7 +119,8 @@ fn a_type_error_is_refused_by_a_strict_read_and_recorded_by_a_library_read() {
     let (library, metadata) = read_fixture(&library_dir, "base", &source, true);
     let facts = library.expect("a library read refuses nothing it can read");
     assert!(facts.diagnostics.iter().any(|d| d.contains("E0308")), "{:?}", facts.diagnostics);
-    assert!(!facts.complete);
+    // A type error only judges the body; reading lost nothing, so the facts are whole.
+    assert!(facts.complete, "a type error loses no fact: {:?}", facts.diagnostics);
     assert!(facts.definitions.iter().any(|d| &*d.def_path == "widen"));
     assert!(Path::new(&metadata).is_file(), "a library read writes its metadata");
 
@@ -149,9 +153,51 @@ fn overlapping_impls_are_refused_by_a_strict_read_and_not_judged_by_a_library_re
     let (library, metadata) = read_fixture(&library_dir, "marks", &source, true);
     let facts = library.expect("a library read does not judge overlap");
     assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    assert!(facts.complete);
     let marks = facts.impls.iter().filter(|i| i.trait_def_path.as_deref() == Some("Mark")).count();
     assert_eq!(marks, 2, "{:?}", facts.impls);
     assert!(Path::new(&metadata).is_file());
+}
+
+/// In a library read `complete` says whether reading lost input, not whether anything was
+/// emitted. Every case records an error and is read, `Kept` among its definitions; only the
+/// cases where parsing, expansion or name resolution gave up on some input are incomplete.
+#[test]
+fn a_library_read_is_incomplete_only_where_reading_lost_input() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let cases: [(&str, &str, bool); 5] = [
+        // Only judged: an attribute nothing defines is kept inert, and its item is read.
+        ("unknown-attribute", "#[nope]\npub struct Kept;\n", true),
+        // Lost: the import brings in nothing.
+        ("unresolved-import", "use crate::nope::Thing;\npub struct Kept;\n", false),
+        // Lost: no rule matches, so what the macro would have made is missing.
+        (
+            "unmatched-macro",
+            "macro_rules! make { () => { pub struct Made; } }\n\
+             make!(unexpected);\npub struct Kept;\n",
+            false,
+        ),
+        // Lost: no macro stands behind the invocation.
+        ("unresolved-macro", "nope!();\npub struct Kept;\n", false),
+        // Lost: the module's file is not there, so none of its items are.
+        ("missing-module", "mod gone;\npub struct Kept;\n", false),
+    ];
+    for (name, items, complete) in cases {
+        let dir = Scratch::new(&format!("loss-{name}"));
+        let source = format!("{LANG}{items}");
+        let (read, metadata) = read_fixture(&dir, "losses", &source, true);
+        let facts = read.unwrap_or_else(|refused| {
+            panic!("{name}: a library read refused: {:?}", refused.diagnostics)
+        });
+        assert!(!facts.diagnostics.is_empty(), "{name}: the error is recorded");
+        assert_eq!(facts.complete, complete, "{name}: {:?}", facts.diagnostics);
+        assert!(
+            facts.definitions.iter().any(|d| &*d.def_path == "Kept"),
+            "{name}: {:?}",
+            facts.definitions
+        );
+        assert!(Path::new(&metadata).is_file(), "{name}: a library read writes its metadata");
+    }
 }
 
 /// `std` and everything it depends on, read from each `rust-src` tree named, as a chain.
@@ -238,10 +284,11 @@ fn read_chain(root: &Path, out: &Path) -> Result<(), String> {
             )
         })?;
         eprintln!(
-            "  {crate_name}: {} definitions, {} impls, {} diagnostics recorded",
+            "  {crate_name}: {} definitions, {} impls, {} diagnostics recorded, complete: {}",
             facts.definitions.len(),
             facts.impls.len(),
-            facts.diagnostics.len()
+            facts.diagnostics.len(),
+            facts.complete
         );
         for diagnostic in facts.diagnostics.iter().take(5) {
             eprintln!("    {}", diagnostic.lines().next().unwrap_or_default());

@@ -66,6 +66,8 @@ use crate::rustc_interface::interface::Compiler;
 use crate::rustc_interface::{diagnostics, limits, util};
 
 pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
+    // A library read records a root that parsed with errors as a loss (`Session::record_loss`).
+    let mark = sess.parse_mark();
     let mut krate = sess
         .time("parse_crate", || {
             let mut parser = unwrap_or_emit_fatal(match &sess.io.input {
@@ -88,6 +90,7 @@ pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
             let guar: ErrorGuaranteed = parse_error.emit();
             guar.raise_fatal();
         });
+    sess.record_parse_errors_since(mark);
 
     crate::rustc_builtin_macros::cmdline_attrs::inject(
         &mut krate,
