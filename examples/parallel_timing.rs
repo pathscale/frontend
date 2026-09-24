@@ -201,11 +201,13 @@ fn record_site(n: u64) {
     SITE_TRACES.lock().unwrap().push(trace);
     IN_SITE.with(|flag| flag.set(false));
 }
-/// `mem-held`: every `HELD_EVERY`th allocation made while `HELD` is set is remembered, with its
-/// size and backtrace, until it is freed; `HELD_SNAPSHOT` then says what the remembered live ones
+/// `mem-held`: every allocation of `HELD_BIG` bytes or more, and every `HELD_EVERY`th smaller
+/// one, made while `HELD` is set is remembered, with its weight in bytes and backtrace, until it
+/// is freed; `HELD_SNAPSHOT` then says what the remembered live ones
 /// were allocated by at one moment.
 static HELD: AtomicBool = AtomicBool::new(false);
 const HELD_EVERY: u64 = 128;
+const HELD_BIG: usize = 4096;
 static HELD_COUNT: AtomicU64 = AtomicU64::new(0);
 static HELD_LIVE: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>> =
     std::sync::Mutex::new(None);
@@ -217,10 +219,15 @@ fn held_alloc(ptr: *mut u8, size: usize) {
     if !HELD.load(Relaxed) || IN_SITE.with(|flag| flag.replace(true)) {
         return;
     }
-    if HELD_COUNT.fetch_add(1, Relaxed) % HELD_EVERY == 0 {
+    // Every allocation of `HELD_BIG` bytes or more is remembered at its own size, so the few
+    // large tables and arenas are counted exactly; a smaller one stands for the `HELD_EVERY`
+    // allocations it was sampled from.
+    let sampled = HELD_COUNT.fetch_add(1, Relaxed) % HELD_EVERY == 0;
+    if size >= HELD_BIG || sampled {
+        let weight = if size >= HELD_BIG { size } else { size * HELD_EVERY as usize };
         let trace = std::backtrace::Backtrace::force_capture();
         if let Some(map) = HELD_LIVE.lock().unwrap().as_mut() {
-            map.insert(ptr as usize, (size, trace));
+            map.insert(ptr as usize, (weight, trace));
         }
     }
     // The snapshot, the first time this file's live bytes reach the armed level: every
@@ -708,7 +715,7 @@ fn main() {
         let mut sorted = peaks.clone();
         sorted.sort();
         println!(
-            "width {run_width}: {} files, peak live per file median {:.1} MB; held at 95% of the peak, by allocating pass and site ({} sampled allocations, 1 in {HELD_EVERY}, {:.1} MB sampled):",
+            "width {run_width}: {} files, peak live per file median {:.1} MB; held at 95% of the peak, by allocating pass and site ({} remembered allocations: all of {HELD_BIG} bytes or more, 1 in {HELD_EVERY} of the rest; {:.1} MB estimated over the files):",
             files.len(),
             sorted[sorted.len() / 2] as f64 / 1e6,
             rows.len(),
@@ -723,6 +730,35 @@ fn main() {
             println!("\n{title}:");
             for (name, bytes) in map.into_iter().take(30) {
                 println!("{:>6.2}%  {name}", bytes as f64 * 100.0 / total.max(1) as f64);
+            }
+        }
+        // `mem-held WIDTH SITE`: the callers behind every held allocation whose site contains
+        // SITE, as the chain of this crate's frames above it, weighted the same way.
+        if let Some(filter) = std::env::args().nth(3) {
+            let mut chains: std::collections::HashMap<String, usize> = Default::default();
+            for (size, text) in &rows {
+                if !site_of(text).contains(&filter) {
+                    continue;
+                }
+                let chain: Vec<String> = text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.starts_with("at "))
+                    .filter_map(|line| line.split_once(": ").map(|(_, name)| name))
+                    .filter(|name| name.contains("frontend::rustc_") && !name.contains("sharded"))
+                    .take(6)
+                    .map(|name| {
+                        let name = name.rsplit_once("::h").map_or(name, |(a, _)| a);
+                        name.rsplit("::").take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("::")
+                    })
+                    .collect();
+                *chains.entry(chain.join(" <- ")).or_default() += size;
+            }
+            let mut chains: Vec<_> = chains.into_iter().collect();
+            chains.sort_by(|a, b| b.1.cmp(&a.1));
+            println!("\ncallers of {filter}:");
+            for (chain, bytes) in chains.into_iter().take(15) {
+                println!("{:>6.2}%  {chain}", bytes as f64 * 100.0 / total.max(1) as f64);
             }
         }
         return;
