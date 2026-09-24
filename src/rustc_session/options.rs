@@ -1129,6 +1129,9 @@ options! {
          (only effective with -Ccode-model=medium, default: 65536)"),
     layout_seed: Option<u64> = (None, parse_opt_number, [TRACKED],
         "seed layout randomization"),
+    library_read: bool = (false, parse_bool, [UNTRACKED],
+        "read the crate as a library already compiled by its own compiler: extract its facts and \
+        write its metadata, and run no pass whose only job is to reject the source (default: no)"),
     link_directives: bool = (true, parse_bool, [TRACKED],
         "honor #[link] directives in the compiled crate (default: yes)"),
     link_native_libraries: bool = (true, parse_bool, [UNTRACKED],

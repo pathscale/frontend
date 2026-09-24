@@ -1193,7 +1193,9 @@ pub fn analyze_shared_source_with_width(
 ///
 /// A crate read to be a dependency ([`CrateRead::write_metadata`]) is also refused for any error
 /// at all: a crate that does not compile is no crate's dependency, and its metadata is not
-/// written. `crate_name` says which crate of a chain it was.
+/// written. A library read ([`CrateRead`]'s `library`) is not: what it records refuses nothing,
+/// and it is refused only when it has no HIR or its metadata could not be written. `crate_name`
+/// says which crate of a chain it was.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Refused {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1274,8 +1276,25 @@ pub struct CrateRead<'a> {
     pub standard_library: bool,
     pub loaded: Loaded<'a>,
     /// Write the crate's metadata here, for later reads to name it as a [`Dependency`]. Written
-    /// only when the crate read with no error; otherwise the read is [`Refused`].
+    /// only when the crate read with no error; otherwise the read is [`Refused`]. A
+    /// `library` read writes it whatever was recorded.
     pub write_metadata: Option<&'a eko::path::Path>,
+    /// A library read: the crate is a library its own compiler already compiled, of any version
+    /// (a toolchain's `rust-src`, a registry crate), and frontend reads it for its facts and its
+    /// metadata without judging it. `false`, the default, is the strict compiler.
+    ///
+    /// A library read runs what extracting facts and writing metadata need (parsing, expansion,
+    /// name resolution, lowering, signatures, impls, predicates, and the bodies the metadata
+    /// carries) and no pass whose only job is to reject a program: feature gates, stability,
+    /// coherence and overlap, well-formedness, const checking, lints, and every body's type and
+    /// borrow check that the metadata does not need (`Session::is_library_read` lists them).
+    ///
+    /// Whatever is still emitted is recorded in [`CrateFacts::diagnostics`], `complete` is then
+    /// false, and none of it makes the read [`Refused`]: that is kept for a crate with no HIR to
+    /// read (one that does not parse), and for metadata that was asked for and could not be
+    /// written. An internal compiler error is not caught: it panics out of the read, as it does
+    /// in any other.
+    pub library: bool,
 }
 
 impl<'a> CrateRead<'a> {
@@ -1292,7 +1311,13 @@ impl<'a> CrateRead<'a> {
             standard_library: false,
             loaded: Loaded::default(),
             write_metadata: None,
+            library: false,
         }
+    }
+
+    /// This read, as a library read or not: sets the `library` field.
+    pub fn library(self, library: bool) -> Self {
+        CrateRead { library, ..self }
     }
 }
 
@@ -1353,12 +1378,14 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
         proc_macro: read.proc_macro,
         standard_library: read.standard_library,
         loaded: read.loaded,
+        library: read.library,
     };
     let input = Input::File(read.root.to_path_buf());
     let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
     let facts =
         analyze_input(&setup, input, read.items_only, read.write_metadata).map_err(refused)?;
-    if read.write_metadata.is_some() && !facts.diagnostics.is_empty() {
+    // A library read is not judged, so what it recorded refuses nothing.
+    if read.write_metadata.is_some() && !read.library && !facts.diagnostics.is_empty() {
         return Err(refused(facts.diagnostics));
     }
     Ok(facts)
@@ -1375,10 +1402,12 @@ struct Setup<'a> {
     proc_macro: bool,
     standard_library: bool,
     loaded: Loaded<'a>,
+    /// A library read: `CrateRead`'s `library`.
+    library: bool,
 }
 
 impl<'a> Setup<'a> {
-    /// One crate, `no_core`, host target, edition 2015, serial.
+    /// One crate, `no_core`, host target, edition 2015, serial, strict.
     fn plain(crate_name: &'a str) -> Self {
         Setup {
             crate_name,
@@ -1389,6 +1418,7 @@ impl<'a> Setup<'a> {
             proc_macro: false,
             standard_library: false,
             loaded: Loaded::default(),
+            library: false,
         }
     }
 
@@ -1405,6 +1435,12 @@ impl<'a> Setup<'a> {
         opts.unstable_features = UnstableFeatures::Allow;
         opts.jobs.frontend = frontend_jobs(self.width);
         opts.unstable_opts.force_unstable_if_unmarked = self.standard_library;
+        // The one switch a library read sets (`Session::is_library_read`), and the lint cap
+        // that goes with it: no lint judges a library, whatever levels its source sets.
+        if self.library {
+            opts.unstable_opts.library_read = true;
+            opts.lint_cap = Some(crate::rustc_lint_defs::Level::Allow);
+        }
         if let Some(target) = self.target {
             opts.target_triple = crate::rustc_target::spec::TargetTuple::from_tuple(target);
         }
@@ -1540,18 +1576,23 @@ fn analyze_input(
     // `abort_if_errors`, which unwinds past the return value. What `extract` finished before
     // that is kept here, and the unwind only tells us the run had errors.
     let mut extracted: Option<CrateFacts> = None;
+    let library = setup.library;
+    // Encoding began, and encoding returned.
     let mut written = false;
+    let mut encoded = false;
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
             create_and_enter_global_ctxt(compiler, krate, |tcx| {
                 extracted = Some(if items_only { extract_items(tcx) } else { extract(tcx) });
                 // A crate with an error is no one's dependency, so its metadata is not written.
+                // A library read is not judged: its metadata is written whatever it recorded.
                 if let Some(path) = write_metadata
-                    && tcx.dcx().has_errors().is_none()
+                    && (library || tcx.dcx().has_errors().is_none())
                 {
                     written = true;
                     crate::rustc_metadata::encode_metadata(tcx, path, None);
+                    encoded = true;
                 }
             })
         })
@@ -1567,10 +1608,12 @@ fn analyze_input(
     });
     drop(captured);
     // Metadata begun and then stopped by an error (encoding checks the bodies it carries) is
-    // not a crate anyone may load.
+    // not a crate anyone may load. In a library read an error does not stop it; only an encoding
+    // that did not return leaves metadata no one may load.
+    let unfinished = if library { !encoded } else { finished.is_err() || !errors.is_empty() };
     if let Some(path) = write_metadata
         && written
-        && (finished.is_err() || !errors.is_empty())
+        && unfinished
     {
         let _ = eko::file::remove_file(path);
     }
@@ -1578,6 +1621,15 @@ fn analyze_input(
     let Some(mut facts) = extracted else {
         return Err(errors);
     };
+    // A library read that was asked for metadata and has none has not done what it was asked:
+    // the crates that depend on it cannot be read.
+    if library && write_metadata.is_some() && !encoded {
+        errors.push(format!(
+            "error: the metadata of `{}` was not written: its encoding stopped on a fatal error",
+            setup.crate_name
+        ));
+        return Err(errors);
+    }
     facts.diagnostics = errors;
     facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
     Ok(facts)

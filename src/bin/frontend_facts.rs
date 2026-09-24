@@ -21,6 +21,9 @@
 //! - `--proc-macro` reads a `proc-macro` crate: its macros are declared, never run.
 //! - `--standard-library` reads one of the standard library's crates, or a crate it depends on,
 //!   as rustc's bootstrap does (`-Zforce-unstable-if-unmarked`).
+//! - `--library` reads the crate as a library its own compiler already compiled, of any version
+//!   (`CrateRead::library`): nothing judges it, every error it still meets is in the facts'
+//!   `diagnostics`, and `--emit-metadata` writes its metadata anyway.
 //!
 //! With `--check`, the flags check stdin against the loaded dependencies.
 //!
@@ -49,6 +52,7 @@ fn main() {
     let mut items_only = false;
     let mut proc_macro = false;
     let mut standard_library = false;
+    let mut library = false;
     let mut emit_metadata: Option<String> = None;
     let mut dependencies: Vec<Dependency> = Vec::new();
     let mut cfg: Vec<String> = Vec::new();
@@ -65,6 +69,7 @@ fn main() {
             "--items" => items_only = true,
             "--proc-macro" => proc_macro = true,
             "--standard-library" => standard_library = true,
+            "--library" => library = true,
             "--emit-metadata" => emit_metadata = Some(value("--emit-metadata")),
             "--cfg" => cfg.push(value("--cfg")),
             "--env" => {
@@ -107,6 +112,7 @@ fn main() {
             standard_library,
             loaded,
             write_metadata: metadata,
+            library,
             ..CrateRead::new(&crate_name, root)
         };
         match frontend::frontend_facts::read_crate(&read) {
@@ -121,8 +127,8 @@ fn main() {
         }
         return;
     }
-    if emit_metadata.is_some() || proc_macro {
-        usage("--emit-metadata and --proc-macro read a crate from --root");
+    if emit_metadata.is_some() || proc_macro || library {
+        usage("--emit-metadata, --proc-macro and --library read a crate from --root");
     }
     let mut source = String::new();
     if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut source) {
