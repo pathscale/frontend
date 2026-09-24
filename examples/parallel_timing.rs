@@ -292,14 +292,31 @@ fn main() {
     // `--pool N` anywhere: run on a nagoya pool of `N` workers this program builds and hands to
     // frontend, instead of the default one, to see how the widths scale with the pool's size.
     let mut raw: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(at) = raw.iter().position(|a| a == "--pool") {
+    // `--tuning locality|park|tokio`: the pool's idle policy (fanout's `Tuning`): the default,
+    // the default with no idle spin rounds before a worker parks, or `almost_tokio`.
+    let tuning = raw.iter().position(|a| a == "--tuning").map(|at| {
+        let name = raw.get(at + 1).cloned().expect("--tuning NAME");
+        raw.drain(at..at + 2);
+        match name.as_str() {
+            "locality" => st3::fanout::Tuning::locality(),
+            "park" => st3::fanout::Tuning::locality().with_rounds_before_park(0),
+            "tokio" => st3::fanout::Tuning::almost_tokio(),
+            other => panic!("unknown tuning {other}"),
+        }
+    });
+    let pool = raw.iter().position(|a| a == "--pool").map(|at| {
         let workers: usize = raw.get(at + 1).and_then(|n| n.parse().ok()).expect("--pool N");
         raw.drain(at..at + 2);
-        let runtime = nagoya::runtime::Runtime::builder()
-            .workers(workers)
-            .label("timing")
-            .stack_size(16 * 1024 * 1024)
-            .build();
+        workers
+    });
+    if pool.is_some() || tuning.is_some() {
+        let workers = pool.unwrap_or(12);
+        let mut builder = nagoya::runtime::Runtime::builder();
+        builder = builder.workers(workers).label("timing").stack_size(16 * 1024 * 1024);
+        if let Some(tuning) = tuning {
+            builder = builder.tuning(tuning);
+        }
+        let runtime = builder.build();
         let executor = runtime.executor().clone_handle();
         // Kept for the life of the program: dropping a `Runtime` does not stop its workers.
         std::mem::forget(runtime);

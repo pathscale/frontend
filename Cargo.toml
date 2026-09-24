@@ -138,6 +138,9 @@ unicode-width = "0.2.2"
 # The timing example sizes its own nagoya pool (`--pool N`) and hands it over with
 # `sync::set_parallel_executor`, to measure scaling at pool sizes other than the default.
 nagoya = { git = "https://github.com/pathscale/nagoya", branch = "feat/stack-size" }
+# The pool's idle policy for `--tuning` (`Builder::tuning` takes fanout's `Tuning`, which nagoya
+# does not re-export).
+ps-st3 = { version = "^0.6", default-features = false, features = ["fanout"] }
 # `rustc_lexer`'s snapshot tests.
 expect-test = "1.4.0"
 # `odht`'s property tests.
