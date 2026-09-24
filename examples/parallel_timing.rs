@@ -147,6 +147,13 @@ type Answers = (Vec<Checked>, Vec<Option<CrateFacts>>);
 /// One pass over `files` at stage width `width`: the answers, and milliseconds per entry point.
 /// At width one, the check's allocations are left in `LAST_CHECK_ALLOCS`.
 fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
+    pass_counting(width, files, true)
+}
+
+/// [`pass`], choosing whether width one also runs the untimed counted check. A single-width
+/// run (`parallel_timing clean 1`) does not, so it does exactly the work a wider one does, for
+/// comparing CPU time and profiles across widths.
+fn pass_counting(width: usize, files: &[String], count: bool) -> (Answers, f64, f64) {
     frontend::unwind_janky::install_catcher(catcher);
     // Shared once, outside the timing: each call below hands its session the same text.
     let files: Vec<Arc<String>> = files.iter().cloned().map(Arc::new).collect();
@@ -159,7 +166,7 @@ fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
     // Counted at width one only: the count barely moves with the width (by about 7%), and a
     // counted pass at a wider width makes every worker's allocations contend on the counters,
     // which is time spent, and profile samples taken, in this program rather than the compiler.
-    if width == 1 {
+    if width == 1 && count {
         let (_, allocs, alloc_bytes) = counted(check_all);
         LAST_CHECK_ALLOCS.store(allocs, Relaxed);
         LAST_CHECK_ALLOC_BYTES.store(alloc_bytes, Relaxed);
@@ -355,7 +362,7 @@ fn main() {
     }
     match (only.as_deref(), width) {
         (Some(name), Some(width)) => {
-            let (_, check_ms, analyze_ms) = pass(width, &corpus(name));
+            let (_, check_ms, analyze_ms) = pass_counting(width, &corpus(name), false);
             println!(
                 "{name} at {width}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms"
             );
