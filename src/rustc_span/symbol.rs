@@ -3411,6 +3411,10 @@ impl Interner {
     fn intern_new(&self, byte_str: &[u8], hash: u64, miss: SymbolMiss) -> u32 {
         self.inner.with_lock(|inner| {
             let store = || {
+                // The arena refuses an empty slice, and an empty string needs no bytes.
+                if byte_str.is_empty() {
+                    return &[][..];
+                }
                 let byte_str: &[u8] = inner.arena.alloc_slice(byte_str);
                 // SAFETY: we can extend the arena allocation to `'static` because we
                 // only access these while the arena is still alive.
