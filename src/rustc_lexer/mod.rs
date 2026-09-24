@@ -537,6 +537,52 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Consumes the next `n` bytes, which must end on a char boundary, keeping `prev` (debug
+    /// builds) as if each char had been bumped.
+    fn advance_bytes(&mut self, n: usize) {
+        let rest = self.as_str();
+        #[cfg(debug_assertions)]
+        if let Some(c) = rest[..n].chars().next_back() {
+            self.prev = c;
+        }
+        self.chars = rest[n..].chars();
+    }
+
+    /// `eat_while(predicate)` for a predicate whose answer on an ASCII char is `ascii` of its
+    /// byte. ASCII bytes are tested without decoding; any other char is decoded and handed to
+    /// `predicate`, so the stopping point is the one `eat_while` reaches.
+    fn eat_while_ascii(&mut self, ascii: impl Fn(u8) -> bool, predicate: impl Fn(char) -> bool) {
+        let rest = self.as_str();
+        let bytes = rest.as_bytes();
+        let mut i = 0;
+        while let Some(&b) = bytes.get(i) {
+            if b < 0x80 {
+                if !ascii(b) {
+                    break;
+                }
+                i += 1;
+            } else {
+                // `i` is on a char boundary: only whole chars are stepped over.
+                let c = rest[i..].chars().next().unwrap();
+                if !predicate(c) {
+                    break;
+                }
+                i += c.len_utf8();
+            }
+        }
+        self.advance_bytes(i);
+    }
+
+    /// `eat_while(is_whitespace)`.
+    fn eat_whitespace(&mut self) {
+        self.eat_while_ascii(|b| matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' '), is_whitespace);
+    }
+
+    /// `eat_while(is_id_continue)`. The ASCII XID_Continue set is `[0-9A-Za-z_]`.
+    fn eat_id_continue(&mut self) {
+        self.eat_while_ascii(|b| b.is_ascii_alphanumeric() || b == b'_', is_id_continue);
+    }
+
     pub(crate) fn eat_until(&mut self, byte: u8) {
         self.chars = match memchr::memchr(byte, self.as_str().as_bytes()) {
             Some(index) => self.as_str()[index..].chars(),
@@ -808,14 +854,22 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
+        // Only `/` and `*` can change the depth, and both are ASCII, so no multi-byte char
+        // holds either byte: jump from one to the next and treat it as the bumped char.
         let mut depth = 1usize;
-        while let Some(c) = self.bump() {
-            match c {
-                '/' if self.first() == '*' => {
+        loop {
+            let rest = self.as_str().as_bytes();
+            let Some(i) = memchr::memchr2(b'/', b'*', rest) else {
+                self.advance_bytes(rest.len());
+                break;
+            };
+            self.advance_bytes(i + 1);
+            match rest[i] {
+                b'/' if self.first() == '*' => {
                     self.bump();
                     depth += 1;
                 }
-                '*' if self.first() == '/' => {
+                b'*' if self.first() == '/' => {
                     self.bump();
                     depth -= 1;
                     if depth == 0 {
@@ -834,7 +888,7 @@ impl<'a> Cursor<'a> {
 
     fn whitespace(&mut self) -> TokenKind {
         debug_assert!(is_whitespace(self.prev()));
-        self.eat_while(is_whitespace);
+        self.eat_whitespace();
         Whitespace
     }
 
@@ -850,7 +904,7 @@ impl<'a> Cursor<'a> {
     fn ident_or_unknown_prefix(&mut self) -> TokenKind {
         debug_assert!(is_id_start(self.prev()));
         // Start is already eaten, eat the rest of identifier.
-        self.eat_while(is_id_continue);
+        self.eat_id_continue();
         // Known prefixes must have been handled earlier. So if
         // we see a prefix here, it is definitely an unknown prefix.
         match self.first() {
@@ -1015,7 +1069,7 @@ impl<'a> Cursor<'a> {
             self.bump();
             self.bump();
             self.bump();
-            self.eat_while(is_id_continue);
+            self.eat_id_continue();
             return RawLifetime;
         }
 
@@ -1027,7 +1081,7 @@ impl<'a> Cursor<'a> {
         // First symbol can be a number (which isn't a valid identifier start),
         // so skip it without any checks.
         self.bump();
-        self.eat_while(is_id_continue);
+        self.eat_id_continue();
 
         match self.first() {
             // Check if after skipping literal contents we've met a closing
@@ -1088,20 +1142,24 @@ impl<'a> Cursor<'a> {
     /// if string is terminated.
     fn double_quoted_string(&mut self) -> bool {
         debug_assert!(self.prev() == '"');
-        while let Some(c) = self.bump() {
-            match c {
-                '"' => {
-                    return true;
-                }
-                '\\' if self.first() == '\\' || self.first() == '"' => {
-                    // Bump again to skip escaped character.
-                    self.bump();
-                }
-                _ => (),
+        // Only `"` and `\` change the outcome, and both are ASCII, so no multi-byte char
+        // holds either byte: jump from one to the next and treat it as the bumped char.
+        loop {
+            let rest = self.as_str().as_bytes();
+            let Some(i) = memchr::memchr2(b'"', b'\\', rest) else {
+                // End of file reached.
+                self.advance_bytes(rest.len());
+                return false;
+            };
+            self.advance_bytes(i + 1);
+            if rest[i] == b'"' {
+                return true;
+            }
+            if self.first() == '\\' || self.first() == '"' {
+                // Bump again to skip escaped character.
+                self.bump();
             }
         }
-        // End of file reached.
-        false
     }
 
     /// Attempt to lex for a guarded string literal.
@@ -1289,6 +1347,6 @@ impl<'a> Cursor<'a> {
         }
         self.bump();
 
-        self.eat_while(is_id_continue);
+        self.eat_id_continue();
     }
 }

@@ -371,3 +371,40 @@ fn main() {}
         "#]],
     )
 }
+
+#[test]
+fn byte_skipping_scans() {
+    // Strings, block comments, whitespace and identifiers jump over bytes; each stop
+    // (escapes, nesting, a multi-byte char, end of file) must land where bumping one char
+    // at a time lands.
+    check_lexing(
+        "\"a\\\"\u{3b2}b\\\\\"x \"ab\\",
+        FrontmatterAllowed::No,
+        expect![[r#"
+            Token { kind: Literal { kind: Str { terminated: true }, suffix_start: 10 }, len: 11 }
+            Token { kind: Whitespace, len: 1 }
+            Token { kind: Literal { kind: Str { terminated: false }, suffix_start: 4 }, len: 4 }
+        "#]],
+    );
+    check_lexing(
+        "/* \u{3b2} /* */ * / */ab /* \u{e9}",
+        FrontmatterAllowed::No,
+        expect![[r#"
+            Token { kind: BlockComment { doc_style: None, terminated: true }, len: 18 }
+            Token { kind: Ident, len: 2 }
+            Token { kind: Whitespace, len: 1 }
+            Token { kind: BlockComment { doc_style: None, terminated: false }, len: 5 }
+        "#]],
+    );
+    check_lexing(
+        " \u{2028}\t\u{85}x a\u{e9}_1\u{431} ",
+        FrontmatterAllowed::No,
+        expect![[r#"
+            Token { kind: Whitespace, len: 7 }
+            Token { kind: Ident, len: 1 }
+            Token { kind: Whitespace, len: 1 }
+            Token { kind: Ident, len: 7 }
+            Token { kind: Whitespace, len: 1 }
+        "#]],
+    );
+}
