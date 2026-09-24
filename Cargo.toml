@@ -78,8 +78,8 @@ parallel = ["dep:nagoya"]
 # nagoya's pool, for `parallel` only. `Runtime::builder().stack_size`, `Executor::{submit, pool}`
 # and `block_on` are what this crate calls. Default features, because `std` is the point: see the
 # `parallel` feature above.
-# Moves to the crates.io release (`^0.1.14`) once nagoya publishes `Runtime::builder`.
-nagoya = { git = "https://github.com/pathscale/nagoya", branch = "feat/stack-size", optional = true }
+# `Runtime::builder` arrived in 0.1.14.
+nagoya = { version = "^0.1.14", optional = true }
 # The two crates that could not be merged. `rustc_macros` is the historical name and the source
 # still says `rustc_macros::`, so it is aliased rather than renamed across ten thousand sites.
 rustc_macros = { package = "frontend_macros", path = "frontend_macros", version = "0.3.0", optional = true }
@@ -137,7 +137,7 @@ unicode-width = "0.2.2"
 [dev-dependencies]
 # The timing example sizes its own nagoya pool (`--pool N`) and hands it over with
 # `sync::set_parallel_executor`, to measure scaling at pool sizes other than the default.
-nagoya = { git = "https://github.com/pathscale/nagoya", branch = "feat/stack-size" }
+nagoya = "^0.1.14"
 # The pool's idle policy for `--tuning` (`Builder::tuning` takes fanout's `Tuning`, which nagoya
 # does not re-export).
 ps-st3 = { version = "^0.6", default-features = false, features = ["fanout"] }
