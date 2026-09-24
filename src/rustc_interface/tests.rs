@@ -51,6 +51,7 @@ where
         add_prelude: true,
         nounused_dep: false,
         force: false,
+        transitive_files: alloc::collections::BTreeSet::new(),
     }
 }
 

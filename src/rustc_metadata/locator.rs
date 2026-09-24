@@ -267,7 +267,8 @@ pub(crate) struct CrateLocator<'a> {
     /// search path finding something else would silently disagree with them. For a *transitive*
     /// dependency it is not, because the SVH recorded by the dependent crate pins the answer and
     /// the `--extern` file may be a different build of the same name. There the `--extern` path is
-    /// one candidate among the search paths rather than the whole search.
+    /// one candidate among the search paths rather than the whole search. For a transitive
+    /// dependency the list also holds the entry's `transitive_files`.
     exact_paths_are_final: bool,
     pub hash: Option<Svh>,
     extra_filename: Option<&'a str>,
@@ -348,14 +349,21 @@ impl<'a> CrateLocator<'a> {
             // no way to name a transitive dependency at all, and every crate with a dependency
             // fails to load while its own `--extern` rule sits unused. So the paths are read in
             // both cases and it is `exact_paths_are_final` that differs - see its doc comment.
-            exact_paths: sess
-                .opts
-                .externs
-                .get(crate_name.as_str())
-                .and_then(|entry| entry.files())
-                .into_iter().flatten()
-                .cloned()
-                .collect(),
+            //
+            // A transitive dependency also sees the files kept for dependencies only
+            // (`ExternEntry::transitive_files`, the per-file `-L dependency=`); a lookup by name
+            // never does, so a crate's own `--extern foo` cannot be answered by another build of
+            // `foo` that some loaded crate was compiled against.
+            exact_paths: {
+                let entry = sess.opts.externs.get(crate_name.as_str());
+                let named = entry.and_then(|entry| entry.files()).into_iter().flatten();
+                let transitive = entry
+                    .filter(|_| hash.is_some())
+                    .map(|entry| entry.transitive_files.iter())
+                    .into_iter()
+                    .flatten();
+                named.chain(transitive).cloned().collect()
+            },
             exact_paths_are_final: hash.is_none(),
             hash,
             extra_filename,
