@@ -62,6 +62,9 @@ pub(crate) fn parse_external_mod(
     mut dir_ownership: DirOwnership,
     attrs: &mut AttrVec,
 ) -> ParsedExternalMod {
+    // A library read records a module file that could not be found, loaded or parsed without
+    // errors as a loss (`Session::record_loss`): its items are missing, or some of them are.
+    let mark = sess.parse_mark();
     // We bail on the first error, but that error does not cause a fatal error... (1)
     // An immediately called closure stands in for a `try {}` block (unstable), so `?` and the
     // early `return Err` stop here rather than leaving `parse_external_mod`.
@@ -93,6 +96,7 @@ pub(crate) fn parse_external_mod(
         Err(err) => (Default::default(), Err(err.report(sess, span))),
         Ok(result) => (result, Ok(())),
     };
+    sess.record_parse_errors_since(mark);
 
     // Extract the directory path for submodules of the module.
     let dir_path = file_path.parent().unwrap_or(&file_path).to_owned();

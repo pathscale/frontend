@@ -760,6 +760,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             if !(is_indeterminate || decls.iter().all(|d| d.get().decl().is_none())) {
                 return; // Has resolution, do not create the dummy binding
             }
+            // The import did not resolve, so the name it brings in stands for nothing: a library
+            // read records the loss (`Session::record_loss`).
+            self.tcx.sess.record_loss();
             let dummy_decl = self.dummy_decl;
             let dummy_decl = self.new_import_decl(dummy_decl, import);
             self.per_ns_mut(|this, ns| {
@@ -781,6 +784,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             });
             self.record_use(target, dummy_decl, Used::Other);
         } else if import.imported_module.get().is_none() {
+            // A glob import whose module did not resolve brings in none of its names.
+            self.tcx.sess.record_loss();
             self.import_use_map.insert(import, Used::Other);
             if let Some(id) = import.id() {
                 self.used_imports.insert(id);

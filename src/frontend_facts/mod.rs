@@ -302,7 +302,8 @@ pub struct Reference {
 /// HIR, which exist for any program that parses and expands; they are reported even when no
 /// body type checks. References need a body's type check, so they are collected per body and
 /// a body that could not be checked contributes none. `complete` says whether anything was
-/// lost that way, and `diagnostics` says why.
+/// lost, and `diagnostics` says why; in a library read it says whether reading lost input,
+/// which a diagnostic alone does not (see `complete`).
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
@@ -320,8 +321,28 @@ pub struct CrateFacts {
     /// references that did resolve are kept.
     #[serde(default)]
     pub unanalyzed_bodies: Vec<Arc<str>>,
-    /// No error was emitted and every body was type checked. When false, `references` is a
-    /// lower bound and the definitions, imports and impls are unaffected.
+    /// The facts are whole: reading lost nothing. What that is measured by depends on the read.
+    ///
+    /// **A strict read** is complete when no error was emitted and every body was type checked.
+    /// When false, `references` is a lower bound and the definitions, imports and impls are
+    /// unaffected.
+    ///
+    /// **A library read** (the `library` field of [`CrateRead`]) judges nothing, and most of
+    /// what it still emits is one compiler version's bookkeeping about another's source: an ABI,
+    /// an attribute, a lang item or a stability mark this build does not know, on an item that
+    /// is read all the same. None of that loses a fact, so none of it makes a library read
+    /// incomplete; it is all in `diagnostics` still.
+    ///
+    /// A library read is complete when every body it checked was type checked, the privacy
+    /// pass's exports were read, and reading lost none of the crate's input where input turns
+    /// into names: no parser run (the crate root, a module's file, a macro's output) emitted an
+    /// error, no module file failed to load, no macro invocation was left without its output
+    /// (a bang or derive macro that could not be found counts; an unknown attribute does not,
+    /// its item is kept), and every import resolved. When true, the modules' names, the
+    /// definitions, the imports and the re-exports are all the crate has, so a name missing
+    /// from them is absent. A path in a signature or a body that did not resolve names nothing
+    /// the crate has, and loses none of its names. Where each loss is recorded is listed at
+    /// `Session::record_loss`.
     ///
     /// Serialized facts from before this field existed came only from runs with no error, so
     /// a missing field reads as true. [`Default`] is false: an empty value nobody filled in is
@@ -433,7 +454,8 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
 /// [`extract`] without the bodies: definitions, imports, impls, module names and macros, and
 /// no references. What indexing a crate's API needs: no body is type checked, which is most of
 /// the cost, and nothing a body's check could stop on is reached. `references` and
-/// `unanalyzed_bodies` stay empty, and `complete` says only that no error was emitted.
+/// `unanalyzed_bodies` stay empty, and `complete` says only that no error was emitted, or in a
+/// library read that reading lost nothing (see [`CrateFacts::complete`]).
 pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
     extract_with(tcx, false)
 }
@@ -466,8 +488,11 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // last type-checks those functions' bodies, as a full compile does). When it stops on a
     // fatal error (a lang item a `no_core` session lacks), the resolver's table is what there
     // is, and associated items read as not exported.
-    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()))
-        .unwrap_or(&tcx.resolutions(()).effective_visibilities);
+    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()));
+    // Whether the privacy pass's table is the one read: a library read that fell back to the
+    // resolver's has lost the associated items' exports.
+    let exports_whole = exported.is_ok();
+    let exported = exported.unwrap_or(&tcx.resolutions(()).effective_visibilities);
 
     // **Definitions and impls, one item per local definition.** Each index is read on its own:
     // its kind, its name, its span and its HIR shape, or for an impl its self type, trait and
@@ -583,7 +608,18 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
             DefFact::Skipped => {}
         }
     }
-    facts.complete = tcx.dcx().has_errors().is_none() && facts.unanalyzed_bodies.is_empty();
+    // What `complete` measures depends on the read; see its doc. A strict read is whole when
+    // nothing was emitted. A library read emits what it no longer judges and loses nothing by it,
+    // so it counts what reading lost where that happened (`Session::record_loss`): input a parser
+    // could not read, a macro invocation left without its output, an import that did not
+    // resolve. Every library read's loss comes before this point: parsing, expansion and name
+    // resolution are over once the HIR the stages above read exists.
+    let whole = if tcx.sess.is_library_read() {
+        tcx.sess.losses() == 0 && exports_whole
+    } else {
+        tcx.dcx().has_errors().is_none()
+    };
+    facts.complete = whole && facts.unanalyzed_bodies.is_empty();
 
     facts
         .definitions
@@ -1298,11 +1334,22 @@ pub struct CrateRead<'a> {
     /// coherence and overlap, well-formedness, const checking, lints, and every body's type and
     /// borrow check that the metadata does not need (`Session::is_library_read` lists them).
     ///
-    /// Whatever is still emitted is recorded in [`CrateFacts::diagnostics`], `complete` is then
-    /// false, and none of it makes the read [`Refused`]: that is kept for a crate with no HIR to
-    /// read (one that does not parse), and for metadata that was asked for and could not be
-    /// written. An internal compiler error is not caught: it panics out of the read, as it does
-    /// in any other.
+    /// Whatever is still emitted is recorded in [`CrateFacts::diagnostics`], and none of it makes
+    /// the read [`Refused`]: that is kept for a crate with no HIR to read (one that does not
+    /// parse), and for metadata that was asked for and could not be written. An internal
+    /// compiler error is not caught: it panics out of the read, as it does in any other.
+    ///
+    /// Nor does what is emitted make the facts incomplete. [`CrateFacts::complete`] says, in a
+    /// library read, whether reading lost any of the crate's input where input turns into names:
+    /// a parser run that emitted an error (the root, a module's file, a macro's output), a
+    /// module file that could not be loaded, a macro invocation left without its output, an
+    /// import that did not resolve; and a body whose type check stopped, or exports read from
+    /// the resolver's table because the privacy pass stopped. A diagnostic from a check that
+    /// only judges (an attribute's or an ABI's validation, a stability mark, a lang item, a type
+    /// error, an overlap) loses nothing, so a library read of a toolchain's `core` that records
+    /// thousands of those is complete when nothing was lost. Each loss is recorded where it
+    /// happens, by the mechanism that gave up, never by matching what was emitted
+    /// (`Session::record_loss` lists them).
     pub library: bool,
     /// What tells this crate apart from another of the same name: cargo's `-C metadata=<hash>`,
     /// hashed into the crate's `StableCrateId` with its name exactly as rustc hashes it. `None`
@@ -1689,7 +1736,11 @@ fn analyze_input(
         return Err(errors);
     }
     facts.diagnostics = errors;
-    facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
+    // A library read's `complete` is `extract`'s, whole: its run ends in an error whenever it
+    // recorded one, and nothing it records is a loss by itself (see `CrateFacts::complete`).
+    if !library {
+        facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
+    }
     Ok(facts)
 }
 
