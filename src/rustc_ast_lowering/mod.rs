@@ -532,9 +532,10 @@ fn index_ast<'tcx>(
     };
     indexer.visit_crate(&mut krate);
     indexer.insert(CRATE_NODE_ID, AstOwner::Crate(Box::new(krate)));
-    resolver.next_node_id = indexer.next_node_id;
+    let Indexer { index, next_node_id, .. } = indexer;
+    resolver.next_node_id = next_node_id;
 
-    return (resolver, indexer.index);
+    return (resolver, index);
 
     struct Indexer<'s, 'hir> {
         owners: &'s NodeMap<PerOwnerResolverData<'hir>>,
