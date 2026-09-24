@@ -12,7 +12,7 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::rustc_data_structures::sync::{ReadGuard, RwLock, WriteGuard};
 
@@ -24,6 +24,9 @@ use crate::rustc_data_structures::sync::{ReadGuard, RwLock, WriteGuard};
 pub struct FreezeLock<T> {
     data: UnsafeCell<T>,
     frozen: AtomicBool,
+    /// Read phases open (`read_phase`): while above zero, reads take no lock, because the
+    /// phase's owner holds `lock` shared and no writer can get it.
+    phase: AtomicUsize,
 
     /// This lock protects writes to the `data` and `frozen` fields.
     lock: RwLock<()>,
@@ -48,6 +51,7 @@ impl<T> FreezeLock<T> {
         Self {
             data: UnsafeCell::new(value),
             frozen: AtomicBool::new(frozen),
+            phase: AtomicUsize::new(0),
             lock: RwLock::new(()),
         }
     }
@@ -84,7 +88,9 @@ impl<T> FreezeLock<T> {
     #[inline]
     pub fn read(&self) -> FreezeReadGuard<'_, T> {
         FreezeReadGuard {
-            _lock_guard: if self.frozen.load(Ordering::Acquire) {
+            _lock_guard: if self.frozen.load(Ordering::Acquire)
+                || self.phase.load(Ordering::Acquire) > 0
+            {
                 None
             } else {
                 Some(self.lock.read())
@@ -106,6 +112,7 @@ impl<T> FreezeLock<T> {
 
     #[inline]
     pub fn try_write(&self) -> Option<FreezeWriteGuard<'_, T>> {
+        self.assert_no_phase();
         let _lock_guard = self.lock.write();
         // Use relaxed ordering since we're in the write lock.
         if self.frozen.load(Ordering::Relaxed) {
@@ -123,6 +130,7 @@ impl<T> FreezeLock<T> {
     #[inline]
     pub fn freeze(&self) -> &T {
         if !self.frozen.load(Ordering::Acquire) {
+            self.assert_no_phase();
             // Get the lock to ensure no concurrent writes and that we release the latest write.
             let _lock = self.lock.write();
             self.frozen.store(true, Ordering::Release);
@@ -130,6 +138,53 @@ impl<T> FreezeLock<T> {
 
         // SAFETY: This is frozen so the data cannot be modified and shared access is sound.
         unsafe { &*self.data.get() }
+    }
+}
+
+impl<T> FreezeLock<T> {
+    /// Run `f` with the value frozen for its duration: every read inside it, on any thread,
+    /// takes no lock, and writing panics. When `f` returns the value is writable again.
+    ///
+    /// For a stage whose items only read the value, where every item reading it at once made
+    /// the shared lock's word the most contended line in the stage: a shared acquire is a
+    /// compare-and-swap on that word, which fails whenever another reader moved it, and the
+    /// losers spin and yield. The phase holds the lock shared for its whole length instead, so
+    /// no writer can take it, and a reader that sees the phase open reads with no lock at all.
+    ///
+    /// A write that starts during the phase panics rather than waiting for a lock the phase
+    /// holds, which on the phase's own thread would never come. A writer already waiting when
+    /// the phase starts waits until it ends.
+    ///
+    /// # Safety
+    ///
+    /// Every read guard handed out during the phase, on every thread, must be dropped before
+    /// `f` returns, since once the phase ends a writer can take the lock under it. A stage run
+    /// inside `f` meets that: it settles every item, and an item's reads end with it.
+    pub unsafe fn read_phase<R>(&self, f: impl FnOnce() -> R) -> R {
+        if self.frozen.load(Ordering::Acquire) {
+            return f();
+        }
+        // Declared first so it is released last, after the phase has closed.
+        let _held = self.lock.read();
+        struct Close<'a>(&'a AtomicUsize);
+        impl Drop for Close<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::Release);
+            }
+        }
+        // Release: a reader that sees the phase open sees every write the lock released.
+        self.phase.fetch_add(1, Ordering::Release);
+        let _close = Close(&self.phase);
+        f()
+    }
+
+    #[inline]
+    #[track_caller]
+    fn assert_no_phase(&self) {
+        assert!(
+            self.phase.load(Ordering::Acquire) == 0,
+            "a `FreezeLock` was written during a read phase"
+        );
     }
 }
 

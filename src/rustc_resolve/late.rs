@@ -6115,7 +6115,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             // A unit weighs its item's source at late resolution's rate (`sync::cost::RESOLVE`).
             // A `mod` unit weighs one: its items are units of their own, and its span would
             // count them again; unit 0, the crate root's attributes, weighs one too.
-            let outputs = run_stage_weighted(
+            // SAFETY: the stage settles every unit before the phase ends, and a unit's reads of
+            // the definitions end with it. Nothing creates a definition while the resolver is
+            // frozen. The typo and import suggestions read a def key for every candidate, and
+            // that read was the stage's most contended lock.
+            let outputs = unsafe { this.tcx.untracked().definitions.read_phase(|| run_stage_weighted(
                 &units[..],
                 units.len(),
                 |units, index| {
@@ -6130,7 +6134,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 |units, index| {
                     this.resolve_late_unit(krate, root_scope, units, index, LateDocLinks::default())
                 },
-            );
+            )) };
             // SAFETY: the stage has settled every unit, and a unit's untracked borrows end with
             // it.
             unsafe { self.frozen_flag.set(false) };

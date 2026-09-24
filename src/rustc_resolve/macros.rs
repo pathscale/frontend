@@ -940,11 +940,19 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             unsafe { self.frozen_flag.set(true) };
             let this: &Resolver<'ra, 'tcx> = self;
             let len = resolutions.len();
-            let sinks = run_stage(resolutions, len, |resolutions, index| {
-                let mut sink = LateSink::default();
-                CmResolver::Late(this, &mut sink).finalize_macro_resolution(resolutions, index, krate);
-                sink
-            });
+            // SAFETY: the stage settles every unit before the phase ends, and a unit's reads of
+            // the definitions end with it. Nothing creates a definition while the resolver is
+            // frozen.
+            let sinks = unsafe {
+                this.tcx.untracked().definitions.read_phase(|| {
+                    run_stage(resolutions, len, |resolutions, index| {
+                        let mut sink = LateSink::default();
+                        CmResolver::Late(this, &mut sink)
+                            .finalize_macro_resolution(resolutions, index, krate);
+                        sink
+                    })
+                })
+            };
             // SAFETY: the stage has settled every unit, and a unit's untracked borrows end with
             // it.
             unsafe { self.frozen_flag.set(false) };
