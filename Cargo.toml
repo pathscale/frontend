@@ -141,6 +141,9 @@ nagoya = { git = "https://github.com/pathscale/nagoya", branch = "feat/stack-siz
 # The pool's idle policy for `--tuning` (`Builder::tuning` takes fanout's `Tuning`, which nagoya
 # does not re-export).
 ps-st3 = { version = "^0.6", default-features = false, features = ["fanout"] }
+# The timing example's allocator when built with `--cfg bench_mimalloc`: what a caller that picks
+# a thread-caching allocator gains. frontend declares no allocator; the caller's choice serves it.
+mimalloc = { version = "^0.1", default-features = false }
 # `rustc_lexer`'s snapshot tests.
 expect-test = "1.4.0"
 # `odht`'s property tests.

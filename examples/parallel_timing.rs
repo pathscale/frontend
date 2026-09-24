@@ -266,14 +266,14 @@ unsafe impl GlobalAlloc for Counting {
             ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
             BY_SIZE[size_class(layout.size())].fetch_add(1, Relaxed);
         }
-        let ptr = unsafe { System.alloc(layout) };
+        let ptr = unsafe { INNER.alloc(layout) };
         held_alloc(ptr, layout.size());
         ptr
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         track_live(-(layout.size() as i64));
         held_free(ptr);
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { INNER.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         track_live(size as i64 - layout.size() as i64);
@@ -284,13 +284,19 @@ unsafe impl GlobalAlloc for Counting {
             REALLOCS.fetch_add(1, Relaxed);
         }
         held_free(ptr);
-        let new = unsafe { System.realloc(ptr, layout, size) };
+        let new = unsafe { INNER.realloc(ptr, layout, size) };
         held_alloc(new, size);
         new
     }
 }
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
+/// The allocator underneath the counting one: the system's, or mimalloc when built with
+/// `RUSTFLAGS="--cfg bench_mimalloc"`, to see what a caller's choice of allocator is worth.
+#[cfg(not(bench_mimalloc))]
+static INNER: System = System;
+#[cfg(bench_mimalloc)]
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Allocations and bytes allocated while `f` runs, counted; not for timing.
 fn counted<R>(f: impl FnOnce() -> R) -> (R, u64, u64) {
