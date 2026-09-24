@@ -291,8 +291,14 @@ pub unsafe trait InternKey: Copy {
     unsafe fn from_raw(raw: NonNull<()>) -> Self;
 }
 
-/// The largest first table of an [`InternSet`] shard: 64 KiB of slots.
-const INTERN_FIRST_MAX_SLOTS: usize = 4096;
+/// The largest first table of an [`InternSet`] shard: 4 KiB of slots, one page.
+///
+/// It was 4,096 slots (64 KiB), which every interner a serial session touches reached at once
+/// (their capacities are sized for a crate), and a file interns a few hundred values of most
+/// kinds: `mem-held` found these first tables a sixth of what a check holds at its peak. A table
+/// that fills grows by doubling, which only copies (each slot keeps its hash), and the tables it
+/// replaced stay smaller than it together.
+const INTERN_FIRST_MAX_SLOTS: usize = 256;
 
 /// One slot of an [`InternTable`]: empty while `key` is null, else the interned key and its
 /// `make_hash`. Written once, under the shard's lock, and never changed again.
