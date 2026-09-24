@@ -1,4 +1,4 @@
-//! Time `check_source` and `analyze_source` over three corpora at several parallelism settings,
+//! Time `check_source` and `analyze_source` over two corpora at several parallelism settings,
 //! and check every setting gives the width-one answer.
 //!
 //! Run: `cargo run --release --features parallel --example parallel_timing`.
@@ -7,11 +7,12 @@
 //! speedup against width one from the same run. Without the `parallel` feature every width is
 //! the serial path and the speedups are noise around 1.0.
 //!
-//! **The three corpora.**
+//! **The two corpora.** Both are valid programs: every file must type check with no error, or
+//! the run stops. Timing invalid source times error recovery and the unwind out of a refused
+//! run, not the compiler. (This crate's own `src/` was a corpus once; each of its files compiled
+//! on its own, without its crate or `core`, is not a valid program, and 1,421 of 1,423 ended
+//! fatal, so it measured nothing but that.)
 //!
-//! - `src`: this crate's own `src/**/*.rs`, sorted by path. Real code, but a session runs as
-//!   `no_core`, so nearly every file stops early on a missing lang item or an unresolved `std`
-//!   name, and the per-body stages that come after type checking barely run.
 //! - `clean`: 200 generated files of 300 to 1,500 lines that type check with no error, so every
 //!   stage runs over every body.
 //! - `large`: 6 generated files of 5,000 to 8,000 lines, hundreds of functions each, because a
@@ -25,9 +26,9 @@
 //! and how long a file is are drawn from a fixed-seed generator, so every run builds the same
 //! corpus. Nothing is written to disk.
 //!
-//! For the generated corpora the width-one pass also prints how many files came back with no
-//! error; if that is not all of them, the first failing file's first errors, which is a defect
-//! in a unit template to fix, not something to time around.
+//! The width-one pass checks every file came back with no error; if one did not, it prints that
+//! file's first errors and stops, because that is a defect in a unit template to fix, not
+//! something to time around.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -42,24 +43,6 @@ fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
 
 /// The settings timed. The first is the reference every other one is held to.
 const SETTINGS: &[usize] = &[1, 2, 4, 8, 12, 16, 24];
-
-fn src_corpus() -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("read_dir").flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                paths.push(path);
-            }
-        }
-    }
-    // Sorted, so "file 17" names the same file in every run.
-    paths.sort();
-    paths.iter().map(|path| std::fs::read_to_string(path).expect("read")).collect()
-}
 
 const PRELUDE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/prelude.rs"));
 
@@ -127,7 +110,7 @@ fn pass(width: usize, files: &[String]) -> (Answers, f64, f64) {
 }
 
 /// Time one corpus at every setting, and hold each setting to the first one's answers.
-fn run(label: &str, files: &[String], report_clean: bool) {
+fn run(label: &str, files: &[String]) {
     let bytes: usize = files.iter().map(String::len).sum();
     let lines: usize = files.iter().map(|f| f.lines().count()).sum();
     println!("\n{label}: {} files, {lines} lines, {bytes} bytes", files.len());
@@ -135,9 +118,7 @@ fn run(label: &str, files: &[String], report_clean: bool) {
     let one = SETTINGS[0];
     let (want, check_one, analyze_one) = pass(one, files);
     println!("{one:>7} {check_one:>12.1} {:>8.2} {analyze_one:>12.1} {:>8.2}", 1.0, 1.0);
-    if report_clean {
-        clean_report(&want.0);
-    }
+    assert_clean(label, &want.0);
     for &width in &SETTINGS[1..] {
         let (answers, check_ms, analyze_ms) = pass(width, files);
         if answers != want {
@@ -160,19 +141,18 @@ fn run(label: &str, files: &[String], report_clean: bool) {
     }
 }
 
-/// How many files type checked with no error, and what the first one that did not said.
-fn clean_report(checked: &[Checked]) {
-    let clean = checked.iter().filter(|c| c.is_clean()).count();
-    println!("clean at width one: {clean} of {}", checked.len());
+/// Every file type checked with no error; if one did not, what it said, and stop.
+fn assert_clean(label: &str, checked: &[Checked]) {
     if let Some((i, first)) = checked.iter().enumerate().find(|(_, c)| !c.is_clean()) {
-        println!("  first unclean file {i}, fatal {}:", first.fatal);
+        eprintln!("{label}: file {i} is not a valid program (fatal {}):", first.fatal);
         for error in first.errors.iter().take(5) {
-            println!("    {error}");
+            eprintln!("    {error}");
         }
+        panic!("{label}: the corpus must be valid source");
     }
 }
 
-/// `parallel_timing [src|clean|large] [width]`: with a corpus named, only that corpus; with a
+/// `parallel_timing [clean|large] [width]`: with a corpus named, only that corpus; with a
 /// width as well, only that setting, once, with no comparison.
 fn main() {
     // `--pool N` anywhere: run on a nagoya pool of `N` workers this program builds and hands to
@@ -197,14 +177,13 @@ fn main() {
     let only = args.next();
     let width: Option<usize> = args.next().and_then(|n| n.parse().ok());
     let corpus = |name: &str| match name {
-        "src" => src_corpus(),
         "clean" => generated('c', 200, 300, 1_500, 0x5eed_0001),
         _ => generated('l', 6, 5_000, 8_000, 0x5eed_0002),
     };
-    // `parallel_timing dump <src|clean|large> <file>`: every answer at width one, written out,
+    // `parallel_timing dump <clean|large> <file>`: every answer at width one, written out,
     // to diff one build's answers against another's.
     if only.as_deref() == Some("dump") {
-        let name = std::env::args().nth(2).unwrap_or_else(|| "src".into());
+        let name = std::env::args().nth(2).unwrap_or_else(|| "clean".into());
         let path = std::env::args().nth(3).expect("dump needs an output file");
         let ((checked, facts), _, _) = pass(1, &corpus(&name));
         std::fs::write(&path, format!("{checked:#?}\n{facts:#?}\n")).expect("write dump");
@@ -215,11 +194,10 @@ fn main() {
             let (_, check_ms, analyze_ms) = pass(width, &corpus(name));
             println!("{name} at {width}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms");
         }
-        (Some(name), None) => run(name, &corpus(name), name != "src"),
+        (Some(name), None) => run(name, &corpus(name)),
         (None, _) => {
-            run("src", &corpus("src"), false);
-            run("clean", &corpus("clean"), true);
-            run("large", &corpus("large"), true);
+            run("clean", &corpus("clean"));
+            run("large", &corpus("large"));
         }
     }
 }
