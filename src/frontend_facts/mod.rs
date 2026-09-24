@@ -1220,6 +1220,15 @@ pub struct Dependency {
     /// In the extern prelude, so the crate being read can name it: a dependency its manifest
     /// lists. `false` is rustc's `--extern noprelude:`, for a dependency's dependency, which is
     /// loaded when a loaded crate needs it and which the crate being read cannot name.
+    ///
+    /// **Two crates of one name** (the registry's `libc` beside the one std was built with) may
+    /// both be loaded, when each was read with its own [`CrateRead::disambiguator`]. A lookup by
+    /// name for the crate being read (`libc::`, `extern crate libc`, an injected `std`) chooses
+    /// only among the prelude files of that name when there is one, and among the `noprelude`
+    /// ones only when there is none, as rustc's `extern crate` of a `noprelude` crate does. A
+    /// loaded crate's own dependency is found among every file of the name, by the hash its
+    /// metadata recorded, so the build it was read against is the one it gets. Two prelude
+    /// files of one name are ambiguous and refused, as rustc refuses two `--extern` files.
     #[serde(default = "true_when_absent", skip_serializing_if = "is_true")]
     pub prelude: bool,
 }
@@ -1295,6 +1304,20 @@ pub struct CrateRead<'a> {
     /// written. An internal compiler error is not caught: it panics out of the read, as it does
     /// in any other.
     pub library: bool,
+    /// What tells this crate apart from another of the same name: cargo's `-C metadata=<hash>`,
+    /// hashed into the crate's `StableCrateId` with its name exactly as rustc hashes it. `None`
+    /// is no `-C metadata`, the id every read had before this existed.
+    ///
+    /// Two crates of one name loaded in one read (the registry's `libc` and the one std was
+    /// built with; `cfg-if` 1.0.4 and 1.0.5) need two ids, and a crate read beside a loaded
+    /// crate of its own name needs one of its own too, or rustc's loader refuses the pair
+    /// ("colliding StableCrateId values" between two loaded crates, E0519 when one of them is
+    /// the crate being read). So a caller that may load two builds of one name gives every
+    /// crate it reads a value that differs whenever the build does: a digest of the crate, its
+    /// version, its features and what it loads, as cargo's is. The metadata this read writes
+    /// carries the id (and a crate hash that covers it), so every later read that loads the
+    /// file gets the same id without being told it.
+    pub disambiguator: Option<&'a str>,
 }
 
 impl<'a> CrateRead<'a> {
@@ -1312,12 +1335,18 @@ impl<'a> CrateRead<'a> {
             loaded: Loaded::default(),
             write_metadata: None,
             library: false,
+            disambiguator: None,
         }
     }
 
     /// This read, as a library read or not: sets the `library` field.
     pub fn library(self, library: bool) -> Self {
         CrateRead { library, ..self }
+    }
+
+    /// The same read under `disambiguator` ([`CrateRead::disambiguator`]).
+    pub fn with_disambiguator(self, disambiguator: &'a str) -> Self {
+        CrateRead { disambiguator: Some(disambiguator), ..self }
     }
 }
 
@@ -1359,6 +1388,10 @@ pub fn analyze_crate(
 /// std and its dependencies. Paths, macros and re-exports into a loaded crate resolve as they
 /// do in rustc, because it is rustc's loader reading rustc's metadata.
 ///
+/// **Two crates of one name** coexist as they do under cargo: each is read with its own
+/// [`CrateRead::disambiguator`] (cargo's `-C metadata`), the crate being read names the one in
+/// its prelude, and a loaded crate gets the one it was read against ([`Dependency::prelude`]).
+///
 /// **Only source.** Every crate in the chain was read from source by this function; no
 /// toolchain's library is opened, and the metadata this build writes is refused by any other
 /// build (it carries this build's version string).
@@ -1379,6 +1412,7 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
         standard_library: read.standard_library,
         loaded: read.loaded,
         library: read.library,
+        disambiguator: read.disambiguator,
     };
     let input = Input::File(read.root.to_path_buf());
     let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
@@ -1404,6 +1438,8 @@ struct Setup<'a> {
     loaded: Loaded<'a>,
     /// A library read: `CrateRead`'s `library`.
     library: bool,
+    /// `-C metadata`; see [`CrateRead::disambiguator`].
+    disambiguator: Option<&'a str>,
 }
 
 impl<'a> Setup<'a> {
@@ -1419,6 +1455,7 @@ impl<'a> Setup<'a> {
             standard_library: false,
             loaded: Loaded::default(),
             library: false,
+            disambiguator: None,
         }
     }
 
@@ -1450,6 +1487,8 @@ impl<'a> Setup<'a> {
                 .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
         }
         opts.externs = externs(self.loaded.dependencies);
+        // rustc's `-C metadata`, which `StableCrateId::new` hashes with the crate's name.
+        opts.cg.metadata = self.disambiguator.map(str::to_string).into_iter().collect();
         opts.logical_env = self.loaded.env.iter().cloned().collect();
         // **The sysroot is an optional parameter, because this is a parser.**
         //
@@ -1517,25 +1556,44 @@ impl<'a> Setup<'a> {
 
 /// `--extern` for each dependency: its file, exactly, and whether the crate being read can name
 /// it.
+///
+/// A name with a prelude file keeps its `noprelude` files apart, in
+/// `ExternEntry::transitive_files`: a lookup by name for the crate being read chooses among the
+/// prelude files only, and the others are found only by the hash a loaded crate recorded for
+/// them (see [`Dependency::prelude`]). A name with no prelude file keeps its files where a
+/// lookup by name finds them, which is how an injected `std` or an `extern crate core` of a
+/// `noprelude` crate is found, as in rustc.
 fn externs(dependencies: &[Dependency]) -> crate::rustc_session::config::Externs {
     use crate::rustc_session::config::{ExternEntry, ExternLocation, Externs};
     use crate::rustc_session::utils::CanonicalizedPath;
-    let mut map = alloc::collections::BTreeMap::new();
+    use alloc::collections::{BTreeMap, BTreeSet};
+    // Per name: its prelude files, then its `noprelude` ones.
+    let mut by_name: BTreeMap<String, (BTreeSet<CanonicalizedPath>, BTreeSet<CanonicalizedPath>)> =
+        BTreeMap::new();
     for dependency in dependencies {
-        let entry = map.entry(dependency.name.clone()).or_insert_with(|| ExternEntry {
-            location: ExternLocation::ExactPaths(alloc::collections::BTreeSet::new()),
-            is_private_dep: false,
-            add_prelude: false,
-            nounused_dep: true,
-            force: false,
-        });
-        entry.add_prelude |= dependency.prelude;
-        if let ExternLocation::ExactPaths(files) = &mut entry.location {
-            files.insert(CanonicalizedPath::new(eko::path::PathBuf::from(
-                dependency.metadata.as_str(),
-            )));
-        }
+        let (prelude, noprelude) = by_name.entry(dependency.name.clone()).or_default();
+        let file =
+            CanonicalizedPath::new(eko::path::PathBuf::from(dependency.metadata.as_str()));
+        let files = if dependency.prelude { prelude } else { noprelude };
+        files.insert(file);
     }
+    let map = by_name
+        .into_iter()
+        .map(|(name, (prelude, noprelude))| {
+            let add_prelude = !prelude.is_empty();
+            let (named, transitive_files) =
+                if add_prelude { (prelude, noprelude) } else { (noprelude, BTreeSet::new()) };
+            let entry = ExternEntry {
+                location: ExternLocation::ExactPaths(named),
+                is_private_dep: false,
+                add_prelude,
+                nounused_dep: true,
+                force: false,
+                transitive_files,
+            };
+            (name, entry)
+        })
+        .collect();
     Externs::new(map)
 }
 

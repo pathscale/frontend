@@ -18,6 +18,8 @@
 //!   configuration its manifest and build script would. Repeatable.
 //! - `--emit-metadata PATH` writes the crate's metadata for the crates that depend on it, as
 //!   `lib<name>.rmeta`; a crate with any error is refused and nothing is written.
+//! - `--disambiguator VALUE` is rustc's `-C metadata=VALUE`: it tells the crate apart from
+//!   another of its name, so two builds of one name can be loaded in one read.
 //! - `--proc-macro` reads a `proc-macro` crate: its macros are declared, never run.
 //! - `--standard-library` reads one of the standard library's crates, or a crate it depends on,
 //!   as rustc's bootstrap does (`-Zforce-unstable-if-unmarked`).
@@ -54,6 +56,7 @@ fn main() {
     let mut standard_library = false;
     let mut library = false;
     let mut emit_metadata: Option<String> = None;
+    let mut disambiguator: Option<String> = None;
     let mut dependencies: Vec<Dependency> = Vec::new();
     let mut cfg: Vec<String> = Vec::new();
     let mut env: Vec<(String, String)> = Vec::new();
@@ -71,6 +74,7 @@ fn main() {
             "--standard-library" => standard_library = true,
             "--library" => library = true,
             "--emit-metadata" => emit_metadata = Some(value("--emit-metadata")),
+            "--disambiguator" => disambiguator = Some(value("--disambiguator")),
             "--cfg" => cfg.push(value("--cfg")),
             "--env" => {
                 let pair = value("--env");
@@ -113,6 +117,7 @@ fn main() {
             loaded,
             write_metadata: metadata,
             library,
+            disambiguator: disambiguator.as_deref(),
             ..CrateRead::new(&crate_name, root)
         };
         match frontend::frontend_facts::read_crate(&read) {
@@ -127,8 +132,10 @@ fn main() {
         }
         return;
     }
-    if emit_metadata.is_some() || proc_macro || library {
-        usage("--emit-metadata, --proc-macro and --library read a crate from --root");
+    if emit_metadata.is_some() || proc_macro || library || disambiguator.is_some() {
+        usage(
+            "--emit-metadata, --proc-macro, --library and --disambiguator read a crate from --root",
+        );
     }
     let mut source = String::new();
     if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut source) {

@@ -828,6 +828,18 @@ pub struct ExternEntry {
     /// without modifying source:
     /// `--extern force:extras=/path/to/lib/libstd.rlib`
     pub force: bool,
+    /// Files of this name that only a loaded crate's own dependency record may pick, by the SVH
+    /// it recorded, and that a lookup by name for the crate being compiled never sees.
+    ///
+    /// This is the place `-L dependency=DIR` has in a cargo build, kept per file: cargo hands
+    /// the crate being compiled its direct dependencies with `--extern` and leaves every other
+    /// crate to the search path, where only a dependency's dependency is looked for. So a
+    /// registry `libc` named by `--extern` and the `libc` std was built with never meet: the
+    /// crate's `libc::` is the first, and std's recorded `libc` is found by its hash among the
+    /// second. frontend has no search directory, only files, so a `noprelude` file whose name
+    /// also has a prelude file is kept here rather than in `location`, and `location` stays the
+    /// files a lookup by name may choose among.
+    pub transitive_files: BTreeSet<CanonicalizedPath>,
 }
 
 #[derive(Clone, Debug)]
