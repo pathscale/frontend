@@ -43,6 +43,7 @@ use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 #[cfg(not(feature = "force_pinned_sysroot"))]
 use crate::rustc_interface::util::rustc_version_of_sysroot;
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
+use crate::rustc_middle::middle::privacy::EffectiveVisibilities;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
@@ -450,6 +451,16 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // The input file's name, printed once and shared by every span in it.
     let input = input_file(tcx);
 
+    // What is reachable from outside the crate: rustc's own table, the `effective_visibilities`
+    // query of `rustc_privacy`. The resolver's table, which it starts from, covers modules,
+    // items and imports but no associated item, so a method read from it was never exported;
+    // the privacy pass extends it through impls, traits, fields and `impl Trait` returns (the
+    // last type-checks those functions' bodies, as a full compile does). When it stops on a
+    // fatal error (a lang item a `no_core` session lacks), the resolver's table is what there
+    // is, and associated items read as not exported.
+    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()))
+        .unwrap_or(&tcx.resolutions(()).effective_visibilities);
+
     // **Definitions and impls, one item per local definition.** Each index is read on its own:
     // its kind, its name, its span and its HIR shape, or for an impl its self type, trait and
     // items. Nothing one index computes is read by another, so the walk is a stage whose input
@@ -458,7 +469,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // keeping their own sequence.
     //
     // No definition's path is printed yet when this stage runs, so each item prints its own.
-    let printing = Names { tcx, local: &[], input: input.clone() };
+    let printing = Names { tcx, exported, local: &[], input: input.clone() };
     let def_facts: Vec<DefFact> = run_stage((), count, |_, i| {
         let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
         def_fact(tcx, &printing, LocalDefId { local_def_index })
@@ -466,7 +477,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
 
     // From here on a local definition's path is the one the stage above printed, handed
     // forward: `def_facts` is frozen, indexed by `DefIndex`, and read in place.
-    let names = Names { tcx, local: &def_facts, input };
+    let names = Names { tcx, exported, local: &def_facts, input };
 
     // An impl's trait and items are local definitions the stage above may have reached after
     // the impl, so their paths are taken now, in impl order.
@@ -601,6 +612,8 @@ fn file_name(sf: &SourceFile) -> Arc<str> {
 /// else (a library item, a closure, a constructor) is printed where it is asked for.
 struct Names<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
+    /// Which local definitions are reachable from outside the crate (`Definition::exported`).
+    exported: &'a EffectiveVisibilities,
     /// One entry per local `DefIndex`, from the definitions stage. Empty while that stage runs.
     local: &'a [DefFact],
     /// The input file, compared by pointer, and its name.
@@ -751,7 +764,7 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         variants: Vec::new(),
         variant_shapes: Vec::new(),
         public: tcx.local_visibility(local).is_public(),
-        exported: tcx.resolutions(()).effective_visibilities.is_exported(local),
+        exported: names.exported.is_exported(local),
     };
     describe_shape(tcx, local, &mut definition);
     DefFact::Definition(definition)
