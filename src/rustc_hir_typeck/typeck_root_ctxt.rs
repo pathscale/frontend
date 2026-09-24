@@ -96,7 +96,16 @@ impl<'tcx> TypeckRootCtxt<'tcx> {
             .ignoring_regions()
             .in_hir_typeck()
             .build(TypingMode::typeck_for_body(tcx, def_id));
-        let typeck_results = RefCell::new(ty::TypeckResults::new(hir_owner));
+        let mut typeck_results = ty::TypeckResults::new(hir_owner);
+        // Every key of `node_types` is one of the owner's HIR nodes, so the owner's node count
+        // bounds it and the table never regrows. Only when this body is the whole owner (an
+        // anon const inside a function is a small part of it). `node_types` is an `UnordMap`,
+        // so capacity changes no answer.
+        if hir_owner.def_id == def_id {
+            let nodes = tcx.hir_owner_nodes(hir_owner).nodes.len();
+            typeck_results.node_types_mut().reserve(nodes);
+        }
+        let typeck_results = RefCell::new(typeck_results);
         let fulfillment_cx = RefCell::new(FulfillmentEngine::new(&infcx));
 
         TypeckRootCtxt {
