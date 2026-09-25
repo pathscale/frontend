@@ -4852,7 +4852,15 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             return;
         }
 
-        let item_def_id = self.tcx.associated_item_def_ids(future_trait)[0];
+        let Some(item_def_id) = self
+            .tcx
+            .associated_item_def_ids(future_trait)
+            .iter()
+            .find(|&&item| self.tcx.item_name(item) == sym::Output)
+            .copied()
+        else {
+            return;
+        };
         // `<T as Future>::Output`
         let projection_ty = trait_pred.map_bound(|trait_pred| {
             Ty::new_projection(

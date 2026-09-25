@@ -462,7 +462,7 @@ language_item_table! {
     CoerceShared,            sym::coerce_shared,       coerce_shared,              Target::Trait,          GenericRequirement::Exact(1);
 
     // Field representing types.
-    FieldRepresentingType,   sym::field_representing_type, field_representing_type,    Target::Struct,         GenericRequirement::Exact(3);
+    FieldRepresentingType,   sym::field_representing_type, field_representing_type,    Target::Struct,         GenericRequirement::Minimum(3);
     Field,                   sym::field,                   field,                      Target::Trait,          GenericRequirement::Exact(0);
     FieldBase,               sym::field_base,              field_base,                 Target::AssocTy(AssocCtxt::Trait),        GenericRequirement::Exact(0);
     FieldType,               sym::field_type,              field_type,                 Target::AssocTy(AssocCtxt::Trait),        GenericRequirement::Exact(0);

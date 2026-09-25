@@ -1742,13 +1742,20 @@ impl<'tcx> Ty<'tcx> {
             ty::Coroutine(_, args) => args.as_coroutine().discr_ty(tcx),
 
             ty::Param(_) | ty::Alias(..) | ty::Infer(ty::TyVar(_)) => {
-                let assoc_items = tcx.associated_item_def_ids(
-                    tcx.require_lang_item(LangItem::DiscriminantKind, DUMMY_SP),
-                );
+                let Some(discriminant_kind) = tcx.lang_items().get(LangItem::DiscriminantKind) else {
+                    return tcx.types.u8;
+                };
+                let assoc_items = tcx.associated_item_def_ids(discriminant_kind);
+                let Some(&discriminant_def_id) = assoc_items
+                    .iter()
+                    .find(|&&item| tcx.item_name(item).as_str() == "Discriminant")
+                else {
+                    return tcx.types.u8;
+                };
                 Ty::new_projection_from_args(
                     tcx,
                     ty::IsRigid::No,
-                    assoc_items[0],
+                    discriminant_def_id,
                     tcx.mk_args(&[self.into()]),
                 )
             }

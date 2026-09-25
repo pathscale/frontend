@@ -224,40 +224,60 @@ impl<'tcx> AdtDef<'tcx> {
         if !self.is_field_representing_type() {
             return None;
         }
-        let base = args.type_at(0);
-        let variant_idx = match args.const_at(1).kind() {
-            ConstKind::Value(v) => VariantIdx::from_u32(v.to_leaf().to_u32()),
+        let params = &tcx.generics_of(self.did()).own_params;
+        let Some(base_param) = params
+            .iter()
+            .find(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
+        else {
+            return None;
+        };
+        let mut const_params = params
+            .iter()
+            .filter(|param| matches!(param.kind, ty::GenericParamDefKind::Const { .. }));
+        let Some(variant_param) = const_params.next() else { return None };
+        let Some(field_param) = const_params.next() else { return None };
+
+        let base = args.get(base_param.index as usize).copied()?.as_type()?;
+        let variant_idx = match args
+            .get(variant_param.index as usize)
+            .copied()?
+            .as_const()?
+            .kind()
+        {
+            ConstKind::Value(v) if v.ty == tcx.types.u32 => {
+                VariantIdx::from_u32(v.try_to_leaf()?.to_u32())
+            }
             _ => return None,
         };
-        let field_idx = match args.const_at(2).kind() {
-            ConstKind::Value(v) => FieldIdx::from_u32(v.to_leaf().to_u32()),
+        let field_idx = match args
+            .get(field_param.index as usize)
+            .copied()?
+            .as_const()?
+            .kind()
+        {
+            ConstKind::Value(v) if v.ty == tcx.types.u32 => {
+                FieldIdx::from_u32(v.try_to_leaf()?.to_u32())
+            }
             _ => return None,
         };
         let (ty, variant, name) = match base.kind() {
             ty::Adt(base_def, base_args) => {
-                let variant = base_def.variant(variant_idx);
-                let field = &variant.fields[field_idx];
+                let variant = base_def.variants().get(variant_idx)?;
+                let field = variant.fields.get(field_idx)?;
                 let ty = field.ty(tcx, base_args).skip_norm_wip();
                 (ty, base_def.is_enum().then_some(variant.name), field.name)
             }
             ty::Tuple(tys) => {
                 if variant_idx != FIRST_VARIANT {
-                    bug!("expected variant of tuple to be FIRST_VARIANT, but found {variant_idx:?}")
+                    return None;
                 }
                 (
-                    if let Some(ty) = tys.get(field_idx.index()) {
-                        *ty
-                    } else {
-                        bug!(
-                            "expected valid tuple index, but got {field_idx:?}, tuple length: {}",
-                            tys.len()
-                        )
-                    },
+                    *tys.get(field_idx.index())?,
                     None,
                     sym::integer(field_idx.index()),
                 )
             }
-            _ => panic!(),
+            _ => return None,
         };
         Some(FieldInfo { base, ty, variant, variant_idx, name, field_idx })
     }

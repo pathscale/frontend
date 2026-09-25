@@ -33,11 +33,16 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
     pub fn eval_simd_intrinsic(
         &mut self,
         intrinsic_name: Symbol,
+        intrinsic_def_id: crate::rustc_hir::def_id::DefId,
         generic_args: ty::GenericArgsRef<'tcx>,
         args: &[OpTy<'tcx, M::Provenance>],
         dest: &PlaceTy<'tcx, M::Provenance>,
         ret: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx, bool> {
+        let tcx = self.tcx.tcx;
+        let const_param_at = |index| {
+            super::intrinsic_const_param(tcx, intrinsic_def_id, generic_args, index)
+        };
         let dest = dest.force_mplace(self)?;
 
         match intrinsic_name {
@@ -568,7 +573,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 let (right, right_len) = self.project_to_simd(&args[1])?;
                 let (dest, dest_len) = self.project_to_simd(&dest)?;
 
-                let index = generic_args[2].expect_const().to_branch();
+                let Some(index) = const_param_at(0) else { return interp_ok(false) };
+                let index = index.to_branch();
                 let index_len = index.len();
 
                 assert_eq!(left_len, right_len);
@@ -677,10 +683,11 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 assert_eq!(dest_len, mask_len);
                 assert_eq!(dest_len, default_len);
 
+                let Some(alignment) = const_param_at(0) else { return interp_ok(false) };
                 self.check_simd_ptr_alignment(
                     ptr,
                     dest_layout,
-                    generic_args[3].expect_const().to_branch()[0].to_leaf().to_simd_alignment(),
+                    alignment.to_branch()[0].to_leaf().to_simd_alignment(),
                 )?;
 
                 for i in 0..dest_len {
@@ -707,10 +714,11 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
 
                 assert_eq!(mask_len, vals_len);
 
+                let Some(alignment) = const_param_at(0) else { return interp_ok(false) };
                 self.check_simd_ptr_alignment(
                     ptr,
                     args[2].layout,
-                    generic_args[3].expect_const().to_branch()[0].to_leaf().to_simd_alignment(),
+                    alignment.to_branch()[0].to_leaf().to_simd_alignment(),
                 )?;
 
                 for i in 0..vals_len {

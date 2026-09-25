@@ -22,10 +22,11 @@ use crate::assert_matches;
 use crate::rustc_abi::{FieldIdx, HasDataLayout, Size, VariantIdx};
 use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use crate::rustc_ast::{IntTy, UintTy};
+use crate::rustc_hir::def_id::DefId;
 use crate::rustc_middle::mir::interpret::{CTFE_ALLOC_SALT, read_target_uint, write_target_uint};
 use crate::rustc_middle::mir::{self, BinOp, ConstValue, NonDivergingIntrinsic};
 use crate::rustc_middle::ty::layout::TyAndLayout;
-use crate::rustc_middle::ty::{FloatTy, Ty, TyCtxt, TypeVisitableExt};
+use crate::rustc_middle::ty::{FloatTy, GenericArgsRef, Ty, TyCtxt, TypeVisitableExt};
 use crate::rustc_middle::{bug, span_bug, ty};
 use crate::rustc_span::{Symbol, sym};
 use tracing::trace;
@@ -93,6 +94,37 @@ pub(crate) fn alloc_type_name<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> (AllocId
     let len = bytes.len().try_into().unwrap();
     (tcx.allocate_bytes_dedup(bytes, CTFE_ALLOC_SALT), len)
 }
+
+pub(crate) fn intrinsic_type_param<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: GenericArgsRef<'tcx>,
+    type_index: usize,
+) -> Option<Ty<'tcx>> {
+    let param = tcx
+        .generics_of(def_id)
+        .own_params
+        .iter()
+        .filter(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
+        .nth(type_index)?;
+    args.get(param.index as usize).copied()?.as_type()
+}
+
+pub(crate) fn intrinsic_const_param<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: GenericArgsRef<'tcx>,
+    const_index: usize,
+) -> Option<ty::Const<'tcx>> {
+    let param = tcx
+        .generics_of(def_id)
+        .own_params
+        .iter()
+        .filter(|param| matches!(param.kind, ty::GenericParamDefKind::Const { .. }))
+        .nth(const_index)?;
+    args.get(param.index as usize).copied()?.as_const()
+}
+
 impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
     /// Generates a value of `TypeId` for `ty` in-place.
     pub(crate) fn write_type_id(
@@ -191,17 +223,34 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         let intrinsic_name = self.tcx.item_name(instance.def_id());
 
         if intrinsic_name.as_str().starts_with("atomic_") {
-            return self.eval_atomic_intrinsic(intrinsic_name, instance_args, args, dest, ret);
+            return self.eval_atomic_intrinsic(
+                intrinsic_name,
+                instance.def_id(),
+                instance_args,
+                args,
+                dest,
+                ret,
+            );
         }
         if intrinsic_name.as_str().starts_with("simd_") {
-            return self.eval_simd_intrinsic(intrinsic_name, instance_args, args, dest, ret);
+            return self.eval_simd_intrinsic(
+                intrinsic_name,
+                instance.def_id(),
+                instance_args,
+                args,
+                dest,
+                ret,
+            );
         }
 
         let tcx = self.tcx.tcx;
+        let type_param_at = |index| {
+            intrinsic_type_param(tcx, instance.def_id(), instance_args, index)
+        };
 
         match intrinsic_name {
             sym::type_name => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
                 ensure_monomorphic_enough(tp_ty)?;
                 let (alloc_id, meta) = alloc_type_name(tcx, tp_ty);
                 let val = ConstValue::Slice { alloc_id, meta };
@@ -209,14 +258,14 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.copy_op(&val, dest)?;
             }
             sym::needs_drop => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
                 ensure_monomorphic_enough(tp_ty)?;
                 let val = ConstValue::from_bool(tp_ty.needs_drop(tcx, self.typing_env));
                 let val = self.const_val_to_op(val, tcx.types.bool, Some(dest.layout))?;
                 self.copy_op(&val, dest)?;
             }
             sym::type_id => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
                 ensure_monomorphic_enough(tp_ty)?;
                 self.write_type_id(tp_ty, dest)?;
             }
@@ -226,7 +275,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_scalar(Scalar::from_bool(a_ty == b_ty), dest)?;
             }
             sym::size_of => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
                 let layout = self.layout_of(tp_ty)?;
                 if !layout.is_sized() {
                     span_bug!(self.cur_span(), "unsized type for `size_of`");
@@ -235,7 +284,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_scalar(Scalar::from_target_usize(val, self), dest)?;
             }
             sym::align_of => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
                 let layout = self.layout_of(tp_ty)?;
                 if !layout.is_sized() {
                     span_bug!(self.cur_span(), "unsized type for `align_of`");
@@ -244,7 +293,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_scalar(Scalar::from_target_usize(val, self), dest)?;
             }
             sym::offset_of => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
 
                 let variant = self.read_scalar(&args[0])?.to_u32()?;
                 let field = self.read_scalar(&args[1])?.to_u32()? as usize;
@@ -258,7 +307,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_scalar(Scalar::from_target_usize(offset, self), dest)?;
             }
             sym::variant_count => {
-                let tp_ty = instance.args.type_at(0);
+                let Some(tp_ty) = type_param_at(0) else { return interp_ok(false) };
                 let ty = match tp_ty.kind() {
                     // Pattern types have the same number of variants as their base type.
                     // Even if we restrict e.g. which variants are valid, the variants are essentially just uninhabited.
@@ -359,7 +408,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
             | sym::ctlz_nonzero
             | sym::bswap
             | sym::bitreverse => {
-                let ty = instance_args.type_at(0);
+                let Some(ty) = type_param_at(0) else { return interp_ok(false) };
                 let layout = self.layout_of(ty)?;
                 let val = self.read_scalar(&args[0])?;
 
@@ -400,7 +449,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
             sym::arith_offset => {
                 let ptr = self.read_pointer(&args[0])?;
                 let offset_count = self.read_target_isize(&args[1])?;
-                let pointee_ty = instance_args.type_at(0);
+                let Some(pointee_ty) = type_param_at(0) else { return interp_ok(false) };
 
                 let pointee_size = i64::try_from(self.layout_of(pointee_ty)?.size.bytes()).unwrap();
                 let offset_bytes = offset_count.wrapping_mul(pointee_size);
@@ -527,7 +576,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                     assert!(self.target_isize_min() <= dist && dist <= self.target_isize_max());
                     isize_layout
                 };
-                let pointee_layout = self.layout_of(instance_args.type_at(0))?;
+                let Some(pointee_ty) = type_param_at(0) else { return interp_ok(false) };
+                let pointee_layout = self.layout_of(pointee_ty)?;
                 // If ret_layout is unsigned, we checked that so is the distance, so we are good.
                 let val = ImmTy::from_int(dist, ret_layout);
                 let size = ImmTy::from_int(pointee_layout.size.bytes(), ret_layout);

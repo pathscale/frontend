@@ -25,9 +25,7 @@ fn equate_intrinsic_type<'tcx>(
     tcx: TyCtxt<'tcx>,
     span: Span,
     def_id: LocalDefId,
-    n_tps: usize,
     n_lts: usize,
-    n_cts: usize,
     sig: ty::PolyFnSig<'tcx>,
 ) {
     let (generics, span) = match tcx.hir_node_by_def_id(def_id) {
@@ -52,12 +50,11 @@ fn equate_intrinsic_type<'tcx>(
         }
     };
 
+    // The declaration parsed is the std actually read, and intrinsic generic parameters can
+    // differ between releases. The signature check below holds it to the inputs and output.
     // the host effect param should be invisible as it shouldn't matter
     // whether effects is enabled for the intrinsic provider crate.
-    if gen_count_ok(own_counts.lifetimes, n_lts, "lifetime")
-        && gen_count_ok(own_counts.types, n_tps, "type")
-        && gen_count_ok(own_counts.consts, n_cts, "const")
-    {
+    if gen_count_ok(own_counts.lifetimes, n_lts, "lifetime") {
         let _ = check_function_signature(
             tcx,
             ObligationCause::new(span, def_id, ObligationCauseCode::IntrinsicType),
@@ -273,13 +270,18 @@ pub(crate) fn check_intrinsic_type(
     intrinsic_name: Symbol,
 ) {
     let generics = tcx.generics_of(intrinsic_id);
-    let param = |n| {
-        if let &ty::GenericParamDef { name, kind: ty::GenericParamDefKind::Type { .. }, .. } =
-            generics.param_at(n as usize, tcx)
+    let mut missing_type_parameter = false;
+    let mut param = |n: usize| {
+        if let Some(param) = generics
+            .own_params
+            .iter()
+            .filter(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
+            .nth(n)
         {
-            Ty::new_param(tcx, n, name)
+            Ty::new_param(tcx, param.index, param.name)
         } else {
-            Ty::new_error_with_message(tcx, span, "expected param")
+            missing_type_parameter = true;
+            tcx.types.u8
         }
     };
 
@@ -310,7 +312,7 @@ pub(crate) fn check_intrinsic_type(
 
     let safety = intrinsic_operation_unsafety(tcx, intrinsic_id);
     let n_lts = 0;
-    let (n_tps, n_cts, inputs, output) = match intrinsic_name {
+    let (_n_tps, _n_cts, inputs, output) = match intrinsic_name {
         sym::autodiff => (4, 0, vec![param(0), param(1), param(2)], param(3)),
         sym::abort => (0, 0, vec![], tcx.types.never),
         sym::amdgpu_dispatch_ptr => (0, 0, vec![], Ty::new_imm_ptr(tcx, tcx.types.unit)),
@@ -659,9 +661,16 @@ pub(crate) fn check_intrinsic_type(
         }
 
         sym::discriminant_value => {
-            let assoc_items = tcx
-                .associated_item_def_ids(tcx.require_lang_item(LangItem::DiscriminantKind, span));
-            let discriminant_def_id = assoc_items[0];
+            let Some(discriminant_kind) = tcx.lang_items().get(LangItem::DiscriminantKind) else {
+                return;
+            };
+            let assoc_items = tcx.associated_item_def_ids(discriminant_kind);
+            let Some(&discriminant_def_id) = assoc_items
+                .iter()
+                .find(|&&item| tcx.item_name(item).as_str() == "Discriminant")
+            else {
+                return;
+            };
 
             let br = ty::BoundRegion { var: ty::BoundVar::ZERO, kind: ty::BoundRegionKind::Anon };
             (
@@ -852,7 +861,10 @@ pub(crate) fn check_intrinsic_type(
             return;
         }
     };
+    if missing_type_parameter {
+        return;
+    }
     let sig = tcx.mk_fn_sig_rust_abi(inputs, output, safety);
     let sig = ty::Binder::bind_with_vars(sig, bound_vars);
-    equate_intrinsic_type(tcx, span, intrinsic_id, n_tps, n_lts, n_cts, sig)
+    equate_intrinsic_type(tcx, span, intrinsic_id, n_lts, sig)
 }

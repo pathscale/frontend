@@ -22,7 +22,7 @@ use crate::rustc_middle::ty::util::{Discr, IntTypeExt};
 use crate::rustc_middle::ty::{self, GenericArgsRef, Ty, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_mir_dataflow::DropFlagState;
-use crate::rustc_span::{DUMMY_SP, dummy_spanned};
+use crate::rustc_span::{DUMMY_SP, dummy_spanned, sym};
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_transform::coroutine::CTX_ARG;
@@ -251,11 +251,24 @@ where
 
         let async_drop_fn_def_id = if call_destructor_only {
             // Resolving obj.<AsyncDrop::drop>()
-            let async_drop_trait = tcx.require_lang_item(LangItem::AsyncDrop, span);
-            tcx.associated_item_def_ids(async_drop_trait)[0]
+            let Some(async_drop_trait) = tcx.lang_items().get(LangItem::AsyncDrop) else {
+                return succ;
+            };
+            let Some(async_drop_fn) = tcx
+                .associated_item_def_ids(async_drop_trait)
+                .iter()
+                .find(|&&item| tcx.item_name(item) == sym::drop)
+                .copied()
+            else {
+                return succ;
+            };
+            async_drop_fn
         } else {
             // Resolving async_drop_in_place<T> function for drop_ty
-            tcx.require_lang_item(LangItem::AsyncDropInPlace, span)
+            let Some(async_drop_in_place) = tcx.lang_items().get(LangItem::AsyncDropInPlace) else {
+                return succ;
+            };
+            async_drop_in_place
         };
 
         let fut_ty = tcx
@@ -1240,8 +1253,15 @@ where
     #[instrument(level = "debug", skip(self), ret)]
     fn destructor_call_block_sync(&mut self, succ: BasicBlock, unwind: Unwind) -> BasicBlock {
         let tcx = self.tcx();
-        let drop_trait = tcx.require_lang_item(LangItem::Drop, DUMMY_SP);
-        let drop_fn = tcx.associated_item_def_ids(drop_trait)[0];
+        let Some(drop_trait) = tcx.lang_items().get(LangItem::Drop) else { return succ };
+        let Some(drop_fn) = tcx
+            .associated_item_def_ids(drop_trait)
+            .iter()
+            .find(|&&item| tcx.item_name(item) == sym::drop)
+            .copied()
+        else {
+            return succ;
+        };
         let ty = self.place_ty(self.place);
 
         let ref_ty = Ty::new_mut_ref(tcx, tcx.lifetimes.re_erased, ty);

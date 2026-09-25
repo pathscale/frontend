@@ -5,16 +5,15 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-
 use crate::rustc_middle::mir::BinOp;
 use crate::rustc_middle::{mir, span_bug, ty};
+use crate::rustc_hir::def_id::DefId;
 use crate::rustc_span::{Symbol, sym};
 use tracing::trace;
 
 use super::{
-    AtomicRmwOp, Immediate, InterpCx, InterpResult, Machine, OpTy, PlaceTy, Scalar, interp_ok,
+    AtomicRmwOp, Immediate, InterpCx, InterpResult, Machine, OpTy, PlaceTy, Scalar,
+    intrinsic_const_param, interp_ok,
 };
 
 impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
@@ -24,20 +23,23 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
     pub fn eval_atomic_intrinsic(
         &mut self,
         intrinsic_name: Symbol,
+        intrinsic_def_id: DefId,
         generic_args: ty::GenericArgsRef<'tcx>,
         args: &[OpTy<'tcx, M::Provenance>],
         dest: &PlaceTy<'tcx, M::Provenance>,
         ret: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx, bool> {
+        let tcx = self.tcx.tcx;
         let get_ord_at = |i: usize| {
-            let ordering = generic_args.const_at(i).to_value();
-            ordering.to_branch()[0].to_value().to_leaf().to_atomic_ordering()
+            let ordering = intrinsic_const_param(tcx, intrinsic_def_id, generic_args, i)?.to_value();
+            Some(ordering.to_branch()[0].to_value().to_leaf().to_atomic_ordering())
         };
 
         match intrinsic_name {
             sym::atomic_load => {
-                let ord = get_ord_at(1);
-                let _volatile = generic_args.const_at(2).to_value(); // makes no difference for us
+                // A `VOLATILE` const after the ordering makes no difference here, and not every
+                // std declares one: it is never read.
+                let Some(ord) = get_ord_at(0) else { return interp_ok(false) };
                 let [ptr] = args else { span_bug!(self.cur_span(), "invalid `atomic_load` call") };
 
                 let place = self.deref_pointer(ptr)?;
@@ -45,8 +47,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_scalar(val, dest)?;
             }
             sym::atomic_store => {
-                let ord = get_ord_at(1);
-                let _volatile = generic_args.const_at(2).to_value(); // makes no difference for us
+                let Some(ord) = get_ord_at(0) else { return interp_ok(false) };
                 let [ptr, val] = args else {
                     span_bug!(self.cur_span(), "invalid `atomic_store` call")
                 };
@@ -66,15 +67,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
             | sym::atomic_max
             | sym::atomic_umax
             | sym::atomic_xchg => {
-                let num_ty_generics = match intrinsic_name {
-                    sym::atomic_min
-                    | sym::atomic_umin
-                    | sym::atomic_max
-                    | sym::atomic_umax
-                    | sym::atomic_xchg => 1,
-                    _ => 2,
-                };
-                let ord = get_ord_at(num_ty_generics);
+                let Some(ord) = get_ord_at(0) else { return interp_ok(false) };
                 let [ptr, operand] = args else {
                     span_bug!(self.cur_span(), "invalid `{intrinsic_name}` call")
                 };
@@ -101,8 +94,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_scalar(res, dest)?;
             }
             sym::atomic_cxchg | sym::atomic_cxchgweak => {
-                let success_ord = get_ord_at(1);
-                let failure_ord = get_ord_at(2);
+                let Some(success_ord) = get_ord_at(0) else { return interp_ok(false) };
+                let Some(failure_ord) = get_ord_at(1) else { return interp_ok(false) };
                 let [ptr, expected_old, new] = args else {
                     span_bug!(self.cur_span(), "invalid `{intrinsic_name}` call")
                 };
@@ -124,7 +117,7 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
                 self.write_immediate(res, dest)?;
             }
             sym::atomic_fence | sym::atomic_singlethreadfence => {
-                let ord = get_ord_at(0);
+                let Some(ord) = get_ord_at(0) else { return interp_ok(false) };
                 let [] = args else {
                     span_bug!(self.cur_span(), "invalid `{intrinsic_name}` call")
                 };

@@ -460,7 +460,16 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         // Current type: `MaybeDangling<T>`. Field #0 is `T`.
                         let place = place.project_to_field(FieldIdx::ZERO, decls, tcx);
                         // Sanity check.
-                        assert_eq!(place.ty(decls, tcx).ty, generic_args.type_at(0));
+                        if let Some(ty) =
+                            crate::rustc_const_eval::interpret::intrinsic_type_param(
+                                tcx,
+                                def_id,
+                                generic_args,
+                                0,
+                            )
+                        {
+                            assert_eq!(place.ty(decls, tcx).ty, ty);
+                        }
 
                         // Store `val` into place.
                         unpack!(block = this.expr_into_dest(place, block, val));
@@ -529,34 +538,53 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     block.unit()
                 } else if this.infcx.type_is_use_cloned_modulo_regions(this.param_env, ty) {
                     // Convert `expr.use` to a call like `Clone::clone(&expr)`
-                    let success = this.cfg.start_new_block();
-                    let clone_trait = this.tcx.require_lang_item(LangItem::Clone, span);
-                    let clone_fn = this.tcx.associated_item_def_ids(clone_trait)[0];
-                    let func =
-                        Operand::function_handle(this.tcx, clone_fn, &[ty.into()], expr_span);
-                    let ref_ty = Ty::new_imm_ref(this.tcx, this.tcx.lifetimes.re_erased, ty);
-                    let ref_place = this.temp(ref_ty, span);
-                    this.cfg.push_assign(
-                        block,
-                        source_info,
-                        ref_place,
-                        Rvalue::Ref(this.tcx.lifetimes.re_erased, BorrowKind::Shared, place),
-                    );
-                    this.cfg.terminate(
-                        block,
-                        source_info,
-                        TerminatorKind::Call {
-                            func,
-                            args: [Spanned { node: Operand::Move(ref_place), span: DUMMY_SP }]
-                                .into(),
+                    let clone_fn = this
+                        .tcx
+                        .lang_items()
+                        .get(LangItem::Clone)
+                        .and_then(|clone_trait| {
+                            this.tcx
+                                .associated_item_def_ids(clone_trait)
+                                .iter()
+                                .find(|&&item| this.tcx.item_name(item) == sym::clone)
+                                .copied()
+                        });
+                    if let Some(clone_fn) = clone_fn {
+                        let success = this.cfg.start_new_block();
+                        let func =
+                            Operand::function_handle(this.tcx, clone_fn, &[ty.into()], expr_span);
+                        let ref_ty = Ty::new_imm_ref(this.tcx, this.tcx.lifetimes.re_erased, ty);
+                        let ref_place = this.temp(ref_ty, span);
+                        this.cfg.push_assign(
+                            block,
+                            source_info,
+                            ref_place,
+                            Rvalue::Ref(this.tcx.lifetimes.re_erased, BorrowKind::Shared, place),
+                        );
+                        this.cfg.terminate(
+                            block,
+                            source_info,
+                            TerminatorKind::Call {
+                                func,
+                                args: [Spanned { node: Operand::Move(ref_place), span: DUMMY_SP }]
+                                    .into(),
+                                destination,
+                                target: Some(success),
+                                unwind: UnwindAction::Unreachable,
+                                call_source: CallSource::Use,
+                                fn_span: expr_span,
+                            },
+                        );
+                        success.unit()
+                    } else {
+                        this.cfg.push_assign(
+                            block,
+                            source_info,
                             destination,
-                            target: Some(success),
-                            unwind: UnwindAction::Unreachable,
-                            call_source: CallSource::Use,
-                            fn_span: expr_span,
-                        },
-                    );
-                    success.unit()
+                            Rvalue::Use(Operand::Move(place), WithRetag::Yes),
+                        );
+                        block.unit()
+                    }
                 } else {
                     this.cfg.push_assign(
                         block,

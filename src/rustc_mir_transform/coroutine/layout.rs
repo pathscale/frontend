@@ -590,18 +590,20 @@ fn check_must_not_suspend_ty<'tcx>(
     match *ty.kind() {
         ty::Adt(_, args) if ty.is_box() => {
             let boxed_ty = args.type_at(0);
-            let allocator_ty = args.type_at(1);
-            check_must_not_suspend_ty(
+            let boxed_ty_has_suspend = check_must_not_suspend_ty(
                 tcx,
                 boxed_ty,
                 hir_id,
                 SuspendCheckData { descr_pre: &format!("{}boxed ", data.descr_pre), ..data },
-            ) || check_must_not_suspend_ty(
-                tcx,
-                allocator_ty,
-                hir_id,
-                SuspendCheckData { descr_pre: &format!("{}allocator ", data.descr_pre), ..data },
-            )
+            );
+            boxed_ty_has_suspend || args.types().nth(1).is_some_and(|allocator_ty| {
+                check_must_not_suspend_ty(
+                    tcx,
+                    allocator_ty,
+                    hir_id,
+                    SuspendCheckData { descr_pre: &format!("{}allocator ", data.descr_pre), ..data },
+                )
+            })
         }
         // FIXME(sized_hierarchy): This should be replaced with a requirement that types in
         // coroutines implement `const Sized`. Scalable vectors are temporarily `Sized` while
