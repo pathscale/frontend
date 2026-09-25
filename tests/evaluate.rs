@@ -16,7 +16,7 @@
 //!
 //! A `std` program, because the catcher needs `std`.
 
-use frontend::frontend_facts::{Evaluation, Loaded, evaluate};
+use frontend::frontend_facts::{Evaluation, Loaded, evaluate, evaluate_all};
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
@@ -159,4 +159,58 @@ fn an_evaluation_serializes_tagged_with_its_outcome() {
     assert_eq!(json, r#"{"outcome":"value","rendered":"3","ty":"usize","steps":7}"#);
     let back: Evaluation = serde_json::from_str(&json).unwrap();
     assert_eq!(back, value);
+}
+
+/// Several calls over one source share a session, and each answer is the one `evaluate` gives
+/// that call alone: a value, a panic, and a call that does not compile, whose error is its own
+/// and refuses no other call. The calls that build are answered in a second session without it.
+#[test]
+fn calls_sharing_a_session_are_each_answered_as_alone() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = format!("{LANG}pub fn add(a: u8, b: u8) -> u8 {{ a + b }}\n");
+    let calls = ["add(2, 3)", "add(200, 100)", "missing(1)", "add(1, 1)"];
+    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls, None);
+    assert_eq!(all.evaluations.len(), calls.len());
+    for (call, shared) in calls.iter().zip(&all.evaluations) {
+        let alone = evaluate(&source, Some("2021"), Loaded::default(), call, None);
+        match (shared, &alone) {
+            (Evaluation::Refused { why }, Evaluation::Refused { why: alone_why }) => {
+                assert!(why.contains("E0425") && alone_why.contains("E0425"), "{why}")
+            }
+            _ => assert_eq!(shared, &alone, "{call}"),
+        }
+    }
+    assert!(matches!(&all.evaluations[0], Evaluation::Value { rendered, .. } if rendered == "5"));
+    assert!(matches!(&all.evaluations[1], Evaluation::Panicked { .. }));
+    assert!(matches!(&all.evaluations[3], Evaluation::Value { rendered, .. } if rendered == "2"));
+    assert_eq!(all.sessions, 2, "one to find the call that does not build, one for the rest");
+}
+
+/// A source that does not compile refuses every call with its error, in one session.
+#[test]
+fn a_source_that_does_not_compile_refuses_every_call_sharing_it() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = format!("{LANG}pub fn broken() -> u8 {{ nothing }}\n");
+    let calls = ["broken()", "1u8"];
+    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls, None);
+    for evaluation in &all.evaluations {
+        match evaluation {
+            Evaluation::Refused { why } => assert!(why.contains("E0425"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(all.sessions, 1);
+}
+
+/// Every call that builds is answered in one session, and a budget is each call's own.
+#[test]
+fn calls_that_build_share_one_session_and_each_has_its_budget() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = format!("{LANG}pub fn spin() -> u8 {{ loop {{}} }}\npub fn one() -> u8 {{ 1 }}\n");
+    let calls = ["spin()", "one()", "spin()"];
+    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls, Some(1000));
+    assert!(matches!(all.evaluations[0], Evaluation::Exhausted { steps: 1000 }));
+    assert!(matches!(&all.evaluations[1], Evaluation::Value { rendered, .. } if rendered == "1"));
+    assert!(matches!(all.evaluations[2], Evaluation::Exhausted { steps: 1000 }));
+    assert_eq!(all.sessions, 1);
 }
