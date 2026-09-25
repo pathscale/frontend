@@ -531,6 +531,92 @@ pub fn filter_by_substring(strings: Vec<String>, substring: String) -> Vec<Strin
         Evaluation::Unsupported { why } => assert!(why.contains("foreign function"), "{why}"),
         other => panic!("{other:?}"),
     }
+
+    // A whole program on the input it is given (Multi-LCB's first family: read `A B`, print
+    // `(A+B)^2`), its four sample inputs as four calls of `main()` compiled once, each reading
+    // its own input, and what each printed coming back.
+    use frontend::frontend_facts::{Call, Ran, run_call, run_calls};
+    let program = "\
+use std::io::{self, Read};
+pub fn main() {
+    let mut line = String::new();
+    io::stdin().read_line(&mut line).unwrap();
+    let v: Vec<u64> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
+    println!(\"{}\", (v[0] + v[1]).pow(2));
+}
+pub fn read_all() -> (usize, usize) {
+    let mut text = String::new();
+    let first = io::stdin().read_to_string(&mut text).unwrap();
+    let after = io::stdin().read_to_string(&mut text).unwrap();
+    (first, after)
+}
+pub fn absent_stdin_is_eof() -> bool {
+    let mut byte = [0];
+    match io::stdin().read(&mut byte) {
+        Ok(0) => true,
+        _ => false,
+    }
+}
+pub fn no_newline() {
+    print!(\"no newline\");
+}
+pub fn print_then_panic() {
+    print!(\"partial\");
+    panic!(\"boom\");
+}
+pub fn exit_three() {
+    println!(\"bye\");
+    std::process::exit(3);
+}
+";
+    let samples: [(&[u8], &[u8]); 4] = [
+        (b"20 25\n", b"2025\n"),
+        (b"30 25\n", b"3025\n"),
+        (b"45 11\n", b"3136\n"),
+        (b"2025 1111\n", b"9834496\n"),
+    ];
+    let calls: Vec<Call<'_>> = samples
+        .iter()
+        .map(|&(input, _)| Call { call: "main()", budget: None, stdin: Some(input) })
+        .collect();
+    let all = run_calls(program, Some("2021"), loaded, &calls);
+    assert_eq!(all.sessions, 1, "compiled once for every input");
+    for ((input, printed), ran) in samples.iter().zip(&all.runs) {
+        eprintln!("main() on {:?} => {ran:?}", String::from_utf8_lossy(input));
+        assert!(
+            matches!(&ran.evaluation, Evaluation::Value { rendered, .. } if rendered == "()"),
+            "{ran:?}"
+        );
+        assert_eq!(ran.output.stdout, *printed);
+        assert_eq!(ran.output.unflushed, None);
+    }
+    let one = |call: &str, stdin: Option<&[u8]>| {
+        let ran = run_call(program, Some("2021"), loaded, Call { call, budget: None, stdin });
+        eprintln!("{call} => {ran:?}");
+        ran
+    };
+    // Read to the end, then past it: nothing more, as a closed pipe.
+    let Ran { evaluation, .. } = one("read_all()", Some(b"a\nbb\n"));
+    assert!(matches!(&evaluation, Evaluation::Value { rendered, .. } if rendered == "(5, 0)"));
+    // std maps EBADF from a closed standard stream to a successful zero-byte read.
+    let Ran { evaluation, .. } = one("absent_stdin_is_eof()", None);
+    assert!(
+        matches!(&evaluation, Evaluation::Value { rendered, .. } if rendered == "true"),
+        "{evaluation:?}"
+    );
+    // Text with no newline sits in std's line buffer until the end-of-program flush writes it.
+    let Ran { output, .. } = one("no_newline()", None);
+    assert_eq!(output.stdout, b"no newline");
+    assert_eq!(output.unflushed, None);
+    // A panic after printing: the panic is the answer, and what was printed is flushed, as a
+    // process flushes after a panic in `main`.
+    let Ran { evaluation, output } = one("print_then_panic()", None);
+    assert!(matches!(&evaluation, Evaluation::Panicked { message, .. } if message == "boom"));
+    assert_eq!(output.stdout, b"partial");
+    // `process::exit`: its code, and std's own flush ran first.
+    let Ran { evaluation, output } = one("exit_three()", None);
+    assert!(matches!(evaluation, Evaluation::Exited { code: 3, .. }), "{evaluation:?}");
+    assert_eq!(output.stdout, b"bye\n");
 }
 
 /// Every diagnostic the library reads of `std`'s chain record with every function's MIR
