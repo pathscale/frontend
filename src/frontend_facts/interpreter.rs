@@ -172,8 +172,13 @@ enum Halt {
     /// The program panicked. `Some` when the message is already known; `None` when it is the
     /// `fmt::Arguments` in [`Evaluator::panic_arguments`], formatted after the run.
     Panicked(Option<String>),
-    /// The program asked for something this machine does not serve.
+    /// The program did something that ends it with no value: undefined behavior, a deadlock,
+    /// a stack deeper than any run has. What the program does, and so its answer.
     Refused(String),
+    /// This machine could not run it: a function whose MIR no metadata carries, an intrinsic or
+    /// a foreign function it does not serve, an operation the interpreter does not support. Says
+    /// nothing about the program; a run on a machine that serves it may well finish.
+    Unsupported(String),
 }
 
 impl fmt::Display for Halt {
@@ -181,7 +186,7 @@ impl fmt::Display for Halt {
         match self {
             Halt::Panicked(Some(message)) => write!(f, "panicked: {message}"),
             Halt::Panicked(None) => f.write_str("panicked"),
-            Halt::Refused(why) => f.write_str(why),
+            Halt::Refused(why) | Halt::Unsupported(why) => f.write_str(why),
         }
     }
 }
@@ -194,6 +199,11 @@ fn halt<'tcx, T>(halt: Halt) -> InterpResult<'tcx, T> {
 
 fn refuse<'tcx, T>(why: String) -> InterpResult<'tcx, T> {
     halt(Halt::Refused(why))
+}
+
+/// Stop because this machine cannot do what the program asks, which says nothing of the program.
+fn unsupported<'tcx, T>(why: String) -> InterpResult<'tcx, T> {
+    halt(Halt::Unsupported(why))
 }
 
 /// The machine: the call stack, the addresses handed out, a panic's message, and the state of
@@ -381,10 +391,20 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
     ) -> InterpResult<'tcx, Option<(&'tcx mir::Body<'tcx>, ty::Instance<'tcx>)>> {
         let tcx = *ecx.tcx;
         if let ty::InstanceKind::Item(def_id) = instance.def {
+            // A tuple struct's or a variant's constructor called as a function: `.map(Some)`,
+            // `ControlFlow::Break` in `Iterator::eq`'s `try_fold`. It has no function body a
+            // crate's metadata carries; rustc's MIR for it is the shim `build_adt_ctor` writes,
+            // the variant's aggregate of the arguments, and that is written here, so every
+            // constructor runs alike, a library's or the source's own.
+            if tcx.is_constructor(def_id) {
+                construct(ecx, def_id, args, destination)?;
+                ecx.return_to_block(target)?;
+                return interp_ok(None);
+            }
             // `RENDER`'s sink: the value's `Debug` output, kept.
             if ecx.machine.sink == Some(def_id) {
                 let Some(text) = args.first() else {
-                    return refuse("the rendering sink was called with no text".to_string());
+                    return unsupported("the rendering sink was called with no text".to_string());
                 };
                 let text = ecx.deref_pointer(&text.copy_fn_arg())?;
                 let text = ecx.read_str(&text)?.to_string();
@@ -473,7 +493,9 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
                 let must_be_overridden =
                     ecx.tcx.intrinsic(instance.def_id()).is_none_or(|i| i.must_be_overridden);
                 if must_be_overridden {
-                    return refuse(format!("calls the intrinsic `{name}`, which is not served"));
+                    return unsupported(format!(
+                        "calls the intrinsic `{name}`, which is not served"
+                    ));
                 }
                 return interp_ok(Some(ty::Instance {
                     def: ty::InstanceKind::Item(instance.def_id()),
@@ -493,7 +515,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         _target: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         let name = shown_path(*ecx.tcx, instance.def_id());
-        refuse(format!("calls the LLVM intrinsic `{name}`, which is not served"))
+        unsupported(format!("calls the LLVM intrinsic `{name}`, which is not served"))
     }
 
     fn check_fn_target_features(
@@ -599,7 +621,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
                     _ => l >= r,
                 }
             }
-            _ => return refuse(format!("pointer arithmetic `{bin_op:?}` is not served")),
+            _ => return unsupported(format!("pointer arithmetic `{bin_op:?}` is not served")),
         };
         interp_ok(ImmTy::from_bool(result, *ecx.tcx))
     }
@@ -686,7 +708,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         }
         if ecx.tcx.is_foreign_item(def_id) {
             let name = shown_path(*ecx.tcx, def_id);
-            return refuse(format!(
+            return unsupported(format!(
                 "reads the foreign thread-local static `{name}`, which is not served"
             ));
         }
@@ -716,7 +738,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
             return interp_ok(absent);
         }
         let name = shown_path(*ecx.tcx, def_id);
-        refuse(format!("reads the foreign static `{name}`, which is not served"))
+        unsupported(format!("reads the foreign static `{name}`, which is not served"))
     }
 
     fn ptr_from_addr_cast(
@@ -822,7 +844,7 @@ fn body_of<'tcx>(
         && !ecx.tcx.is_mir_available(def_id)
     {
         let name = shown_path(*ecx.tcx, def_id);
-        return refuse(format!(
+        return unsupported(format!(
             "calls `{name}`, whose MIR its crate's metadata does not carry (read the crate with \
              every function's MIR)"
         ));
@@ -837,12 +859,37 @@ fn body_of<'tcx>(
             _ => instance.to_string(),
         };
         let krate = ecx.tcx.crate_name(instance.def_id().krate);
-        return refuse(format!(
+        return unsupported(format!(
             "calls `{name}`, whose MIR rustc built from a body with an error in it: the error is \
              among the diagnostics recorded when `{krate}` was read"
         ));
     }
     ecx.load_mir(instance.def, None)
+}
+
+/// A constructor call, `ctor(args..)`: the aggregate of its variant written into `destination`,
+/// as the interpreter writes an aggregate (`write_aggregate`) and as the shim rustc builds for a
+/// constructor (`build_adt_ctor`) does: each argument into its field of the variant, in order,
+/// then the discriminant.
+fn construct<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    ctor: DefId,
+    args: &[FnArg<'tcx, Prov>],
+    destination: &PlaceTy<'tcx, Prov>,
+) -> InterpResult<'tcx> {
+    let ty::Adt(adt, _) = destination.layout.ty.kind() else {
+        let name = shown_path(*ecx.tcx, ctor);
+        return unsupported(format!(
+            "calls the constructor `{name}`, whose result is not a struct or an enum"
+        ));
+    };
+    let variant = if adt.is_enum() { adt.variant_index_with_ctor_id(ctor) } else { FIRST_VARIANT };
+    let variant_place = ecx.project_downcast(destination, variant)?;
+    for (index, arg) in args.iter().enumerate() {
+        let field = ecx.project_field(&variant_place, FieldIdx::from_usize(index))?;
+        ecx.copy_op(&arg.copy_fn_arg(), &field)?;
+    }
+    ecx.write_discriminant(variant, destination)
 }
 
 /// A call to a foreign function. The allocator's entry points are served from the
@@ -935,7 +982,7 @@ fn system_call<'tcx>(
                 1 => &mut ecx.machine.stdout,
                 2 => &mut ecx.machine.stderr,
                 _ => {
-                    return refuse(format!(
+                    return unsupported(format!(
                         "writes to file descriptor {fd}, which is not served: only standard \
                          output and standard error are"
                     ));
@@ -984,7 +1031,9 @@ fn system_call<'tcx>(
         "syscall" if !args.is_empty() => {
             let number = ecx.read_scalar(&args[0])?.to_bits(args[0].layout.size)?;
             if number != libc_constant(ecx, "SYS_getrandom")? || args.len() < 3 {
-                return refuse(format!("makes the system call {number}, which is not served"));
+                return unsupported(format!(
+                    "makes the system call {number}, which is not served"
+                ));
             }
             let buffer = ecx.read_pointer(&args[1])?;
             let count = ecx.read_target_usize(&args[2])?;
@@ -994,7 +1043,9 @@ fn system_call<'tcx>(
         "_tlv_atexit" => {}
         _ => {
             let path = shown_path(tcx, def_id);
-            return refuse(format!("calls the foreign function `{path}`, which is not served"));
+            return unsupported(format!(
+                "calls the foreign function `{path}`, which is not served"
+            ));
         }
     }
     interp_ok(())
@@ -1034,11 +1085,13 @@ fn libc_constant<'tcx>(ecx: &Ecx<'tcx>, name: &str) -> InterpResult<'tcx, u128> 
             })
         });
     let Some(constant) = constant else {
-        return refuse(format!("needs `libc::{name}`, and no loaded `libc` crate defines it"));
+        return unsupported(format!(
+            "needs `libc::{name}`, and no loaded `libc` crate defines it"
+        ));
     };
     match tcx.const_eval_poly(constant).ok().and_then(|value| value.try_to_scalar_int()) {
         Some(value) => interp_ok(value.to_bits_unchecked()),
-        None => refuse(format!("needs `libc::{name}`, which did not evaluate to an integer")),
+        None => unsupported(format!("needs `libc::{name}`, which did not evaluate to an integer")),
     }
 }
 
@@ -1192,6 +1245,7 @@ fn prepare<'tcx>(ecx: &mut Ecx<'tcx>) -> InterpResult<'tcx> {
 fn ended<'tcx>(ecx: &mut Ecx<'tcx>, err: InterpErrorInfo<'tcx>, steps: u64) -> Evaluation {
     match stopped(ecx, err) {
         Halt::Refused(why) => Evaluation::Refused { why },
+        Halt::Unsupported(why) => Evaluation::Unsupported { why },
         Halt::Panicked(Some(message)) => Evaluation::Panicked { message, steps },
         Halt::Panicked(None) => Evaluation::Panicked { message: panic_message(ecx, None), steps },
     }
@@ -1337,9 +1391,10 @@ fn stopped<'tcx>(ecx: &Ecx<'tcx>, err: InterpErrorInfo<'tcx>) -> Halt {
             let stop: Box<dyn Any> = stop;
             match stop.downcast::<Halt>() {
                 Ok(halt) => *halt,
-                Err(_) => Halt::Refused(shown),
+                Err(_) => Halt::Unsupported(shown),
             }
         }
+        // What the program does: its answer, and the candidate's to be wrong about.
         InterpErrorKind::UndefinedBehavior(ub) => {
             Halt::Refused(format!("undefined behavior{within}: {ub}"))
         }
@@ -1352,7 +1407,13 @@ fn stopped<'tcx>(ecx: &Ecx<'tcx>, err: InterpErrorInfo<'tcx>) -> Halt {
         InterpErrorKind::InvalidProgram(InvalidProgramInfo::AlreadyReported(_)) => {
             Halt::Refused(format!("rustc reported an error{within}, which stops the run"))
         }
-        other => Halt::Refused(format!("{other}{within}")),
+        // What this interpreter could not do: an operation it does not support, a program it
+        // cannot lay out generically, memory it ran out of. None says anything of the program.
+        other @ (InterpErrorKind::Unsupported(_)
+        | InterpErrorKind::InvalidProgram(_)
+        | InterpErrorKind::ResourceExhaustion(_)) => {
+            Halt::Unsupported(format!("{other}{within}"))
+        }
     }
 }
 
