@@ -2223,7 +2223,7 @@ pub fn evaluate(
                     if tcx.dcx().has_errors().is_some() {
                         return;
                     }
-                    outcome = Some(evaluate_in(tcx, entry, library, budget, &captured));
+                    outcome = Some(evaluate_in(tcx, entry, library, budget, &captured, 0).0);
                 })
             })
         })
@@ -2262,21 +2262,28 @@ pub fn evaluate(
 /// The part of [`evaluate`] inside the compiled session: find the appended functions and run the
 /// call. A panic out of the interpreter is caught here, nearest to it, where its payload is still
 /// its own; any error rustc reported while the call ran (a constant that failed, a compiler bug)
-/// is added to a refusal, since that is what the refusal is about.
+/// is added to a refusal, since that is what the refusal is about. Only what was reported from
+/// byte `since` of `captured` on is the call's: a session shared by several calls
+/// ([`evaluate_all`]) holds the others' too. The flag is whether the interpreter unwound, after
+/// which the session is not trusted for another call.
 fn evaluate_in(
     tcx: TyCtxt<'_>,
     entry: &str,
     library: bool,
     budget: Option<u64>,
     captured: &alloc::sync::Arc<eko::thread::Mutex<String>>,
-) -> Evaluation {
+    since: usize,
+) -> (Evaluation, bool) {
     let function = |name: &str| {
         tcx.hir_crate_items(()).free_items().map(|item| item.owner_id.def_id).find(|&id| {
             tcx.def_kind(id) == DefKind::Fn && tcx.item_name(id.to_def_id()).as_str() == name
         })
     };
     let Some(id) = function(entry) else {
-        return Evaluation::Refused { why: "the call's function was not found".to_string() };
+        return (
+            Evaluation::Refused { why: "the call's function was not found".to_string() },
+            false,
+        );
     };
     let render = if library {
         match (function(interpreter::DEBUG), function(interpreter::SINK)) {
@@ -2284,29 +2291,249 @@ fn evaluate_in(
                 Some(interpreter::Render { debug: debug.to_def_id(), sink: sink.to_def_id() })
             }
             _ => {
-                return Evaluation::Refused {
-                    why: "the functions that render a value were not found".to_string(),
-                };
+                return (
+                    Evaluation::Refused {
+                        why: "the functions that render a value were not found".to_string(),
+                    },
+                    false,
+                );
             }
         }
     } else {
         None
     };
-    let evaluation = match crate::unwind_janky::catch(|| {
+    let (evaluation, unwound) = match crate::unwind_janky::catch(|| {
         interpreter::run_entry(tcx, id, render, budget)
     }) {
-        Ok(evaluation) => evaluation,
-        Err(payload) => Evaluation::Refused {
-            why: format!("the interpreter panicked: {}", panic_text(&payload)),
-        },
+        Ok(evaluation) => (evaluation, false),
+        Err(payload) => (
+            Evaluation::Refused {
+                why: format!("the interpreter panicked: {}", panic_text(&payload)),
+            },
+            true,
+        ),
     };
-    match evaluation {
+    let evaluation = match evaluation {
         Evaluation::Refused { why } => {
-            let (errors, _) = split_diagnostics(&captured.lock());
+            let said = captured.lock();
+            let (errors, _) = split_diagnostics(said.get(since..).unwrap_or(""));
             Evaluation::Refused { why: with_errors(why, &errors) }
         }
         other => other,
+    };
+    (evaluation, unwound)
+}
+
+/// What [`evaluate_all`] answered, and how many compiler sessions it took to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvaluatedAll {
+    /// One per call, in the order given, each what [`evaluate`] answers for that call alone.
+    pub evaluations: Vec<Evaluation>,
+    /// The sessions run: one when every call built, one more for each round of calls whose
+    /// errors were taken out, and one for each call asked alone.
+    pub sessions: usize,
+}
+
+/// [`evaluate`] for every call of `calls` over the one `source`, sharing a compiler session: the
+/// source is compiled once with one function per call appended, and each call is run by the
+/// interpreter in that session, each on a machine of its own (its own memory, its own
+/// statics' copies, its own budget), so no call sees another's values.
+///
+/// **Each answer is what the call's own session would give.** That is the contract, and every
+/// way a shared session could blur it is taken out rather than approximated:
+///
+/// - An error is read by where rustc placed it. An error on a call's own lines is that call's:
+///   it is refused with it, and the rest are compiled again without it, since `analysis` stops
+///   at the first body with an error and the lints a clean call's own session would run have
+///   not run yet. Rounds repeat until the calls left build, so a call refused by a lint is
+///   refused by that lint, as alone.
+/// - An error on the source's own lines refuses every call, with the source's errors and its
+///   own, as each call's own session would.
+/// - An error placed anywhere else (a library's file, `RENDER`'s lines, nowhere), a session
+///   that stops before it has a context, a panic out of the interpreter, or a session that
+///   panics as it ends: whatever that session had not settled is asked alone, with
+///   [`evaluate`]. A shared session that cannot say whose a failure is, never guesses.
+///
+/// Nothing outlives the call: each session is dropped before the next.
+pub fn evaluate_all(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    calls: &[&str],
+    budget: Option<u64>,
+) -> EvaluatedAll {
+    let mut answers: Vec<Option<Evaluation>> = calls.iter().map(|_| None).collect();
+    let mut sessions = 0;
+    // The calls still to answer, by their place in `calls`.
+    let mut open: Vec<usize> = (0..calls.len()).collect();
+    while open.len() > 1 {
+        let asked: Vec<&str> = open.iter().map(|&at| calls[at]).collect();
+        sessions += 1;
+        let Some(settled) = shared_session(source, edition, loaded, &asked, budget) else {
+            break;
+        };
+        let mut left = Vec::new();
+        for (&at, outcome) in open.iter().zip(settled) {
+            match outcome {
+                Some(outcome) => answers[at] = Some(outcome),
+                None => left.push(at),
+            }
+        }
+        if left.len() == open.len() {
+            break;
+        }
+        open = left;
     }
+    let evaluations = answers
+        .into_iter()
+        .zip(calls)
+        .map(|(answer, call)| {
+            answer.unwrap_or_else(|| {
+                sessions += 1;
+                evaluate(source, edition, loaded, call, budget)
+            })
+        })
+        .collect();
+    EvaluatedAll { evaluations, sessions }
+}
+
+/// One session over `source` with one function per call of `calls`: each call's answer when
+/// the session could say it, `None` for a call to ask again, and `None` for the whole when the
+/// session settled nothing it could vouch for. See [`evaluate_all`] for which is which.
+fn shared_session(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    calls: &[&str],
+    budget: Option<u64>,
+) -> Option<Vec<Option<Evaluation>>> {
+    let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
+    let probe =
+        Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
+    // Options that do not build refuse every call alike, as each call alone says.
+    let mut opts = setup.options(&probe).ok()?;
+    opts.cg.overflow_checks = Some(true);
+    opts.debug_assertions = true;
+    let library = !opts.unstable_opts.crate_attr.iter().any(|attr| attr == "no_core");
+    let newlines = |text: &str| text.bytes().filter(|&byte| byte == b'\n').count();
+    // The source, then each call's function on lines of its own, so a diagnostic is a call's
+    // exactly when rustc places it on the call's lines. The source's spans are where
+    // `evaluate` puts them.
+    let mut text = format!("{source}\n");
+    let source_lines = newlines(&text);
+    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>)> =
+        Vec::with_capacity(calls.len());
+    for (at, call) in calls.iter().enumerate() {
+        let name = format!("{}_{at}", interpreter::ENTRY);
+        let first = newlines(&text) + 1;
+        text.push_str(&format!("#[allow(warnings)]\nfn {name}() -> impl Sized {{\n{call}\n}}\n"));
+        entries.push((name, first..=newlines(&text)));
+    }
+    if library {
+        text.push_str(interpreter::RENDER);
+    }
+    let source_text = Arc::new(text);
+    let input = Input::Str { name: FileName::anon_source_code(&source_text), input: source_text };
+    let said = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let captured = said.clone();
+    let config = Config {
+        opts,
+        input,
+        psess_created: Some(capture_diagnostics(&said)),
+        using_internal_features: &USING_INTERNAL_FEATURES,
+        rustc_version: None,
+        crate_cfg: setup.loaded.cfg.to_vec(),
+    };
+    let mut settled: Option<Vec<Option<Evaluation>>> = None;
+    let session = crate::unwind_janky::catch(|| {
+        catch_fatal_errors(|| {
+            run_compiler(config, |compiler| {
+                let krate = parse(&compiler.sess);
+                create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                    // `analysis` raises a fatal error once a body has one, after every body
+                    // was type and borrow checked: caught here, so the errors can be read by
+                    // where they are. Any other panic goes on out, and nothing is settled.
+                    let analysed = catch_fatal_errors(|| tcx.analysis(())).is_ok();
+                    if tcx.dcx().has_errors().is_none() {
+                        // Stopped with nothing said: each call alone says what that was.
+                        if !analysed {
+                            return;
+                        }
+                        let mut each: Vec<Option<Evaluation>> =
+                            entries.iter().map(|_| None).collect();
+                        for ((name, _), slot) in entries.iter().zip(each.iter_mut()) {
+                            let since = captured.lock().len();
+                            let (evaluation, unwound) =
+                                evaluate_in(tcx, name, library, budget, &captured, since);
+                            // An interpreter that unwound leaves this session untrusted: that
+                            // call and every one after it are asked again elsewhere.
+                            if unwound {
+                                break;
+                            }
+                            *slot = Some(evaluation);
+                        }
+                        settled = Some(each);
+                        return;
+                    }
+                    let (errors, _) = split_diagnostics(&captured.lock());
+                    let errors: Vec<String> = errors
+                        .into_iter()
+                        .filter(|error| !error.starts_with("error: aborting due to"))
+                        .collect();
+                    let mut own: Vec<Vec<usize>> = entries.iter().map(|_| Vec::new()).collect();
+                    let mut in_source: Vec<usize> = Vec::new();
+                    for (index, error) in errors.iter().enumerate() {
+                        let Some(line) = placed_line(error) else {
+                            return;
+                        };
+                        if line <= source_lines {
+                            in_source.push(index);
+                            continue;
+                        }
+                        let Some(at) = entries.iter().position(|(_, lines)| lines.contains(&line))
+                        else {
+                            return;
+                        };
+                        own[at].push(index);
+                    }
+                    if errors.is_empty() {
+                        return;
+                    }
+                    let refused = |mine: &[usize]| Evaluation::Refused {
+                        why: errors
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| in_source.contains(index) || mine.contains(index))
+                            .map(|(_, error)| error.as_str())
+                            .collect::<Vec<&str>>()
+                            .join("\n"),
+                    };
+                    settled = Some(if in_source.is_empty() {
+                        own.iter()
+                            .map(|mine| (!mine.is_empty()).then(|| refused(mine.as_slice())))
+                            .collect()
+                    } else {
+                        own.iter().map(|mine| Some(refused(mine.as_slice()))).collect()
+                    });
+                })
+            })
+        })
+    });
+    // A session that panicked as it ended would have refused each call alone, saying so; ask
+    // them alone rather than say it for them.
+    let _ended = session.ok()?;
+    settled
+}
+
+/// The line of the text as compiled that rustc placed `error` on, from its first `-->` location,
+/// when that is in the text (`<anon>`) and not in another file.
+fn placed_line(error: &str) -> Option<usize> {
+    let location = error.lines().map(str::trim).find_map(|line| line.strip_prefix("--> "))?;
+    let (from, _) = location.rsplit_once(": ")?;
+    let mut parts = from.rsplitn(3, ':');
+    let _column = parts.next()?;
+    let line = parts.next()?.parse().ok()?;
+    (parts.next()? == "<anon>").then_some(line)
 }
 
 /// `why`, then what rustc reported, one diagnostic a line, when it reported anything.
