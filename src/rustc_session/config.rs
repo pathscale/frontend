@@ -1308,6 +1308,7 @@ impl Default for Options {
             error_format: ErrorOutputType::default(),
             diagnostic_width: None,
             externs: Externs(BTreeMap::new()),
+            proc_macro_dylibs: Vec::new(),
             crate_name: None,
             libs: Vec::new(),
             unstable_features: UnstableFeatures::Disallow,

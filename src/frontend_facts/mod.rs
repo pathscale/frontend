@@ -1267,18 +1267,53 @@ pub struct Dependency {
     /// files of one name are ambiguous and refused, as rustc refuses two `--extern` files.
     #[serde(default = "true_when_absent", skip_serializing_if = "is_true")]
     pub prelude: bool,
+    /// For a proc-macro crate ([`CrateRead::proc_macro`]): the shared object a compiler built
+    /// from the same source for the host, as cargo leaves it
+    /// (`target/<profile>/deps/lib<name>-<hash>.dylib`, `.so` on Linux). With it the crate's
+    /// macros run when the crate being read uses them; without it they are declared and every
+    /// expansion is an error that says so.
+    ///
+    /// **This runs the dylib's code in this process**, as rustc does with every proc macro it
+    /// expands. What is checked before anything runs, from the file itself: the compiler that
+    /// wrote it is one whose proc-macro bridge frontend's server speaks (stable 1.97), it
+    /// exports one proc-macro table, and that table has every macro the crate's source declares,
+    /// under the same kind and name. A dylib that fails any of the three makes the crate fail to
+    /// load, with a message naming the file and the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_macro_dylib: Option<String>,
 }
 
 impl Dependency {
     /// A dependency the crate being read names.
     pub fn new(name: impl Into<String>, metadata: impl Into<String>) -> Self {
-        Dependency { name: name.into(), metadata: metadata.into(), prelude: true }
+        Dependency {
+            name: name.into(),
+            metadata: metadata.into(),
+            prelude: true,
+            proc_macro_dylib: None,
+        }
     }
 
     /// A dependency only other dependencies name.
     pub fn transitive(name: impl Into<String>, metadata: impl Into<String>) -> Self {
         Dependency { prelude: false, ..Dependency::new(name, metadata) }
     }
+
+    /// This proc-macro dependency, with its macros run from `dylib`
+    /// ([`Dependency::proc_macro_dylib`]).
+    pub fn with_proc_macro_dylib(self, dylib: impl Into<String>) -> Self {
+        Dependency { proc_macro_dylib: Some(dylib.into()), ..self }
+    }
+}
+
+/// The macros a proc-macro dylib exports, as `(kind, name)` with kind `derive`, `attr` or
+/// `bang`, read with exactly the checks a [`Dependency::proc_macro_dylib`] gets before its
+/// macros run: which compiler wrote it, and its one proc-macro table. For a caller to confirm a
+/// dylib before handing it over, and to say which file it was when one is refused.
+///
+/// This opens the dylib, which runs its initializers in this process.
+pub fn proc_macro_dylib_macros(dylib: &str) -> Result<Vec<(&'static str, String)>, String> {
+    crate::rustc_metadata::dylib::proc_macro_dylib_macros(eko::path::Path::new(dylib))
 }
 
 /// What a session reads besides its source: the crates it depends on and the configuration its
@@ -1313,7 +1348,8 @@ pub struct CrateRead<'a> {
     pub width: usize,
     /// A `proc-macro` crate. Its macros are declared to the crates that load its metadata, and
     /// they are not run: running one means compiling it, and frontend compiles nothing. An
-    /// expansion of one is an error that says so.
+    /// expansion of one is an error that says so, unless the crate that loads it is handed the
+    /// dylib a compiler built from this source ([`Dependency::proc_macro_dylib`]).
     pub proc_macro: bool,
     /// One of the standard library's crates or a crate it depends on (hashbrown, libc), read as
     /// rustc's bootstrap reads them: `-Zforce-unstable-if-unmarked`, so an item not marked stable
@@ -1541,6 +1577,19 @@ impl<'a> Setup<'a> {
                 .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
         }
         opts.externs = externs(self.loaded.dependencies);
+        // Keyed by the metadata file, not the name: two crates of one name have two builds.
+        opts.proc_macro_dylibs = self
+            .loaded
+            .dependencies
+            .iter()
+            .filter_map(|dependency| {
+                let dylib = dependency.proc_macro_dylib.as_deref()?;
+                Some((
+                    eko::path::PathBuf::from(dependency.metadata.as_str()),
+                    eko::path::PathBuf::from(dylib),
+                ))
+            })
+            .collect();
         // rustc's `-C metadata`, which `StableCrateId::new` hashes with the crate's name.
         opts.cg.metadata = self.disambiguator.map(str::to_string).into_iter().collect();
         opts.logical_env = self.loaded.env.iter().cloned().collect();

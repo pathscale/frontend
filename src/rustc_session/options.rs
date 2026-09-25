@@ -376,6 +376,11 @@ top_level_options!(
         unstable_opts: UnstableOptions [SUBSTRUCT] { TARGET_MODIFIER: UnstableOptions(UnstableOptionsTargetModifiers) },
         cg: CodegenOptions [SUBSTRUCT] { TARGET_MODIFIER: CodegenOptions(CodegenOptionsTargetModifiers) },
         externs: Externs [UNTRACKED],
+        /// Per loaded proc-macro crate that was read from source, the host dylib a compiler built
+        /// from that source: `(metadata file the crate is loaded from, dylib)`. Such a crate's
+        /// macros run through that dylib; a proc-macro crate with none declares its macros and
+        /// refuses every expansion. frontend's own, with no rustc flag behind it.
+        proc_macro_dylibs: Vec<(PathBuf, PathBuf)> [UNTRACKED],
         crate_name: Option<String> [TRACKED],
         /// Indicates how the compiler should treat unstable features.
         unstable_features: UnstableFeatures [TRACKED],
