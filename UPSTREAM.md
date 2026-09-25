@@ -50,7 +50,14 @@ Worth stating explicitly, because it is the interesting part:
 - the MIR pass pipeline. No pass added, removed, reordered or re-levelled; no inlining threshold or
   cost weight touched.
 - `layout_of`, and the four surviving target specifications.
-- the trait solver, the type system, and borrow checking, apart from the dumpers.
+- the trait solver, the type system, and borrow checking, apart from the dumpers and one thing
+  put back: `#[rustc_reservation_impl]` (`TyCtxt::impl_is_reservation`). Upstream removed it
+  with the impl that used it when `!` was stabilized, but a library read of an older `rust-src`
+  (stable 1.97's core, `impl<T> From<!> for T`) still meets it. It is read as every rustc that
+  had it read it: no impl outside coherence (both solvers' impl candidates, projection, `const`
+  impls), ambiguity inside it, and no overlap with anything. Without it `!: From<!>` is ambiguous,
+  so every body converting out of `!` (`Result::into_ok`, alloc's in-place collect) was built with
+  an error.
 - the MIR interpreter, `rustc_const_eval::interpret`. `frontend_facts::evaluate` runs calls on it
   through a `Machine` of its own (`src/frontend_facts/interpreter.rs`, additive), as Miri does;
   every rule of what a program does stays the interpreter's.

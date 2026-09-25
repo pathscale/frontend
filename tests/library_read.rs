@@ -169,6 +169,30 @@ fn overlapping_impls_are_refused_by_a_strict_read_and_not_judged_by_a_library_re
     assert!(Path::new(&metadata).is_file());
 }
 
+/// `#[rustc_reservation_impl]`, as a `rust-src` from before `!` was stabilized has it on core's
+/// `impl<T> From<!> for T`: no impl outside coherence, as the rustc that compiled that core read
+/// it. So `!: From<!>` is proved by `impl<T> From<T> for T` alone, not ambiguous between the two,
+/// and the body that asks it builds with no error. The attribute itself is not one this build
+/// knows, and that is recorded; nothing else is.
+#[test]
+fn a_reservation_impl_is_no_impl() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = format!(
+        "{LANG}pub trait From<T> {{ fn from(t: T) -> Self; }}\n\
+         impl<T> From<T> for T {{ fn from(t: T) -> T {{ t }} }}\n\
+         #[rustc_reservation_impl = \"reserved\"]\n\
+         impl<T> From<!> for T {{ fn from(t: !) -> T {{ t }} }}\n\
+         pub const fn from_never(x: !) -> ! {{ <! as From<!>>::from(x) }}\n"
+    );
+    let dir = Scratch::new("reservation-impl");
+    let (read, _) = read_fixture(&dir, "reserved", &source, true);
+    let facts = read.expect("a library read refuses nothing it can read");
+    // What resolving the attribute records: it is not found, and its name is one of rustc's.
+    let about_the_attribute =
+        |d: &String| d.contains("rustc_reservation_impl") || d.contains("starting with `rustc`");
+    assert!(facts.diagnostics.iter().all(about_the_attribute), "{:?}", facts.diagnostics);
+}
+
 /// In a library read `complete` says whether reading lost input, not whether anything was
 /// emitted. Every case records an error and is read, `Kept` among its definitions; only the
 /// cases where parsing, expansion or name resolution gave up on some input are incomplete.
@@ -305,6 +329,10 @@ mod t {
 /// r, and the near misses give other numbers. A `u8` sum past 255 and `unwrap` of `None` are
 /// panics with the runtime's own messages, a bounds check's message is formatted by the
 /// library's `fmt` on the same interpreter, and a call that reaches a syscall is refused by name.
+/// Past those, what the math verifier's acceptance hit: `println!` and `eprintln!` in a `main`,
+/// a `HashSet` (thread-local keys from the OS's random source), a `BTreeMap` and a `Cow`
+/// rendered by their own `Debug`, `k_largest` over a `BinaryHeap`, a value with no `Debug`, and
+/// a file open, refused by name.
 #[test]
 #[ignore = "reads std's chain with every function's MIR from the first tree FRONTEND_RUST_SRC_ROOTS names"]
 fn an_evaluation_runs_std_on_rustcs_interpreter() {
@@ -387,6 +415,154 @@ pub fn count_skipping(text: &str, target: char) -> usize {
         Evaluation::Refused { why } => assert!(why.contains("foreign function"), "{why}"),
         other => panic!("{other:?}"),
     }
+
+    // What the math verifier's acceptance reaches past the above. Printing is served (its
+    // bytes are the program's output); a `HashSet` gets its thread-local keys, from the fixed
+    // random stream; a value is rendered by its type's own `Debug`, a `BTreeMap` and a `Cow`
+    // among them; and a file is still refused by name.
+    let programs = "\
+use std::borrow::Cow;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashSet};
+pub fn main() {
+    println!(\"x\");
+    eprintln!(\"y {}\", 3);
+}
+pub fn first_repeat(xs: &[i32]) -> Option<i32> {
+    let mut seen = HashSet::new();
+    for &x in xs {
+        if !seen.insert(x) {
+            return Some(x);
+        }
+    }
+    None
+}
+pub fn word_count(text: &str) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word.to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+pub fn escape(text: &str) -> Cow<'_, str> {
+    if text.contains('<') { Cow::Owned(text.replace('<', \"&lt;\")) } else { Cow::Borrowed(text) }
+}
+pub fn k_largest(xs: &[u64], k: usize) -> Vec<u64> {
+    let mut smallest_kept = BinaryHeap::with_capacity(k + 1);
+    for &x in xs {
+        smallest_kept.push(Reverse(x));
+        if smallest_kept.len() > k {
+            smallest_kept.pop();
+        }
+    }
+    let mut kept: Vec<u64> = smallest_kept.into_iter().map(|Reverse(x)| x).collect();
+    kept.sort_unstable();
+    kept.reverse();
+    kept
+}
+pub fn filter_by_substring(strings: Vec<String>, substring: String) -> Vec<String> {
+    strings.into_iter().filter(|s| s.contains(&substring)).collect()
+}
+";
+    let run = |call: &str| {
+        let evaluation = evaluate(programs, Some("2021"), loaded, call, None);
+        eprintln!("{call} => {evaluation:?}");
+        evaluation
+    };
+    let value = |call: &str| match run(call) {
+        Evaluation::Value { rendered, ty, .. } => (rendered, ty),
+        other => panic!("{call}: {other:?}"),
+    };
+    assert_eq!(value("main()"), ("()".to_string(), "()".to_string()));
+    assert_eq!(value("first_repeat(&[1, 2, 3, 2, 1])").0, "Some(2)");
+    assert_eq!(value("first_repeat(&[1, 2, 3])").0, "None");
+    let (rendered, ty) = value("word_count(\"lamp oil lamp rope lamp oil\")");
+    assert_eq!(rendered, r#"{"lamp": 3, "oil": 2, "rope": 1}"#);
+    assert!(ty.contains("BTreeMap"), "{ty}");
+    let (rendered, ty) = value("escape(\"a<b\")");
+    assert_eq!(rendered, r#""a&lt;b""#);
+    assert!(ty.contains("Cow"), "{ty}");
+    assert_eq!(value("escape(\"ab\")").0, r#""ab""#);
+    assert_eq!(value("k_largest(&[], 0)").0, "[]");
+    assert_eq!(value("k_largest(&[5, 1, 4, 2], 2)").0, "[5, 4]");
+    // `into_iter().filter(..).collect()` into a `Vec` of the same element collects in place
+    // (alloc's `SpecInPlaceCollect`), whose loop ends in `Result<_, !>::into_ok`: it runs only
+    // when `!: From<!>` is proved by `impl<T> From<T> for T` alone, with core's reservation impl
+    // `impl<T> From<!> for T` read as no impl (`TyCtxt::impl_is_reservation`).
+    let (rendered, ty) = value("filter_by_substring(vec![], String::from(\"a\"))");
+    assert_eq!(rendered, "[]");
+    assert!(ty.contains("Vec<") && ty.contains("String"), "{ty}");
+    assert_eq!(
+        value(
+            "filter_by_substring(vec![String::from(\"abc\"), String::from(\"cde\")], String::from(\"a\"))"
+        )
+        .0,
+        r#"["abc"]"#
+    );
+    // A type with no `Debug` is refused, named.
+    match run("|x: u8| x") {
+        Evaluation::Refused { why } => assert!(why.contains("Debug"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    // A file is not served: refused by name, not a panic.
+    match run("std::fs::File::open(\"/etc/hosts\").is_ok()") {
+        Evaluation::Refused { why } => assert!(why.contains("foreign function"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Every diagnostic the library reads of `std`'s chain record with every function's MIR
+/// written, from the first `rust-src` tree named, printed whole and counted by the file each is
+/// located in. A body built with an error in it is one `evaluate` refuses, so none may be in
+/// alloc's `vec/in_place_collect.rs`: its default `collect_in_place` converts out of `!`
+/// (`into_ok`), which only builds when core's reservation impl `impl<T> From<!> for T` is read
+/// as no impl, as the rustc that compiled that core read it.
+#[test]
+#[ignore = "reads std's chain with every function's MIR from the first tree FRONTEND_RUST_SRC_ROOTS names"]
+fn the_bodies_evaluate_runs_build_without_errors() {
+    let roots = std::env::var("FRONTEND_RUST_SRC_ROOTS").expect(
+        "FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated, each holding `library/`",
+    );
+    frontend::unwind_janky::install_catcher(catcher);
+    let root = roots
+        .split(':')
+        .find(|r| !r.is_empty())
+        .map(PathBuf::from)
+        .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
+    let scratch = Scratch::new("all-mir-diagnostics");
+    let mut recorded = BTreeMap::new();
+    read_chain_recording(&root, &scratch.0, false, true, &mut recorded)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
+
+    let mut in_place_collect = Vec::new();
+    for (crate_name, diagnostics) in &recorded {
+        // By the file of each diagnostic's first location line; `(no location)` otherwise.
+        let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
+        for diagnostic in diagnostics {
+            let file = diagnostic
+                .lines()
+                .find_map(|line| line.trim_start().strip_prefix("--> "))
+                .map(|location| location.split(':').next().unwrap_or(location).to_string())
+                .unwrap_or_else(|| "(no location)".to_string());
+            if file.ends_with("vec/in_place_collect.rs") {
+                in_place_collect.push(format!("{crate_name}: {diagnostic}"));
+            }
+            *by_file.entry(file).or_default() += 1;
+        }
+        eprintln!("== {crate_name}: {} diagnostics", diagnostics.len());
+        for (file, count) in &by_file {
+            eprintln!("  {count:5}  {file}");
+        }
+        for diagnostic in diagnostics {
+            eprintln!("{diagnostic}\n");
+        }
+    }
+    assert!(
+        in_place_collect.is_empty(),
+        "{} diagnostics in vec/in_place_collect.rs:\n{}",
+        in_place_collect.len(),
+        in_place_collect.join("\n\n")
+    );
 }
 
 /// Read one tree's `std` chain into `out`, with `test` (libtest) and its dependencies when
@@ -398,6 +574,17 @@ fn read_chain(
     out: &Path,
     with_test: bool,
     all_mir: bool,
+) -> Result<Vec<(String, String)>, String> {
+    read_chain_recording(root, out, with_test, all_mir, &mut BTreeMap::new())
+}
+
+/// [`read_chain`], keeping every diagnostic each read recorded in `recorded`, by crate name.
+fn read_chain_recording(
+    root: &Path,
+    out: &Path,
+    with_test: bool,
+    all_mir: bool,
+    recorded: &mut BTreeMap<String, Vec<String>>,
 ) -> Result<Vec<(String, String)>, String> {
     let library = root.join("library");
     let mut graph = plan::Graph::for_std(&library)?;
@@ -473,6 +660,7 @@ fn read_chain(
         for diagnostic in facts.diagnostics.iter().take(5) {
             eprintln!("    {}", diagnostic.lines().next().unwrap_or_default());
         }
+        recorded.insert(crate_name.clone(), facts.diagnostics.clone());
         if !Path::new(&metadata).is_file() {
             return Err(format!("`{crate_name}` read, but its metadata was not written"));
         }
