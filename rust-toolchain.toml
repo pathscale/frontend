@@ -1,5 +1,0 @@
-# The toolchain that builds this library: the house compiler, stable. No nightly, no
-# RUSTC_BOOTSTRAP, no unstable feature. This is just a library.
-[toolchain]
-channel = "1.97.1"
-profile = "minimal"
