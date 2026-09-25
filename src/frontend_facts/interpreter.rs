@@ -10,10 +10,15 @@
 //!
 //! **What of the operating system is served, and why only that.** A program's printing is its
 //! output, not an effect on the world, so writes to standard output and standard error are
-//! served and their bytes kept in the machine; every other descriptor, file and socket stays
-//! refused. The one thread a run has gets its thread-local statics, as Miri gives them. The
-//! random bytes std asks the OS for (the keys of a `HashMap`) are a fixed stream, so a run
-//! reproduces: a verifier's answer must not change between two runs of the same call. Each of
+//! served and their bytes kept in the machine, and returned. Its input is what the caller hands
+//! it: reads of standard input are served from the buffer the run was given, and fail with
+//! `EBADF` when the run was given none. `exit` ends the run with its code, as a process ends.
+//! Every other descriptor behaves as closed; file and socket access stays refused. The one
+//! thread a run has gets its thread-local statics, as Miri gives them. The random bytes std asks
+//! the OS for (the keys of a `HashMap`) are a fixed stream, so a run reproduces: a verifier's
+//! answer must not change between two runs of the
+//! same call. When a call that reached std's standard output ends (it returns or panics), std's
+//! own end-of-program flush runs after it, as a process runs it after `main`. Each of
 //! these is the few foreign functions std reaches for it on the hosts frontend runs on (macOS
 //! and Linux, read from std's own source), served the way Miri serves them.
 //!
@@ -44,7 +49,7 @@ use crate::rustc_const_eval::interpret::{
     CtfeProvenance, FnArg, Frame, ImmTy, Immediate, InterpCx, InterpErrorInfo, InterpErrorKind,
     InterpResult, InvalidProgramInfo, MPlaceTy, Machine, MachineStopType, MayLeak, MemoryKind,
     OpTy, PlaceTy, Pointer, Projectable, Provenance, ResourceExhaustionInfo, ReturnContinuation,
-    Scalar, interp_ok,
+    Scalar, intrinsic_type_param, interp_ok,
 };
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use crate::rustc_hir::attrs::Linkage;
@@ -57,8 +62,9 @@ use crate::rustc_middle::ty::print::with_no_trimmed_paths;
 use crate::rustc_middle::ty::{self, AtomicOrdering, Ty, TyCtxt};
 use crate::rustc_span::sym;
 use crate::rustc_target::callconv::FnAbi;
+use crate::rustc_target::spec::Os;
 
-use super::Evaluation;
+use super::{Evaluation, Output};
 
 /// The name of the function [`super::evaluate`] appends to the source around the call.
 pub(super) const ENTRY: &str = "__frontend_evaluate";
@@ -175,6 +181,9 @@ enum Halt {
     /// The program did something that ends it with no value: undefined behavior, a deadlock,
     /// a stack deeper than any run has. What the program does, and so its answer.
     Refused(String),
+    /// The program ended the process with this code (`std::process::exit`, which has already
+    /// run std's own flush of standard output).
+    Exited(i32),
     /// This machine could not run it: a function whose MIR no metadata carries, an intrinsic or
     /// a foreign function it does not serve, an operation the interpreter does not support. Says
     /// nothing about the program; a run on a machine that serves it may well finish.
@@ -187,6 +196,7 @@ impl fmt::Display for Halt {
             Halt::Panicked(Some(message)) => write!(f, "panicked: {message}"),
             Halt::Panicked(None) => f.write_str("panicked"),
             Halt::Refused(why) | Halt::Unsupported(why) => f.write_str(why),
+            Halt::Exited(code) => write!(f, "exited with code {code}"),
         }
     }
 }
@@ -216,16 +226,25 @@ pub(crate) struct Evaluator<'tcx> {
     panic_arguments: Option<MPlaceTy<'tcx, Prov>>,
     /// Each thread-local static the run has reached, by the static: the one thread's copy.
     thread_locals: FxHashMap<DefId, Pointer<Prov>>,
+    /// The one thread's `errno`, allocated on its first read or write.
+    errno_cell: Option<Pointer<Prov>>,
     /// A pointer-sized null, made when the run starts, which every `extern_weak` static reads
     /// as: the symbol is absent, which a weak symbol may be, so std takes its fallback.
     absent_symbol: Option<Pointer<Prov>>,
     /// The pthread mutexes held, by address. One thread holds them, so locking one it already
     /// holds can never return: a deadlock, refused rather than run forever.
     held: FxHashSet<u64>,
-    /// What the program wrote to standard output and to standard error, in order. Its output,
-    /// kept here: the wire shape of an evaluation does not carry it.
+    /// What the program wrote to standard output and to standard error, in order: its output,
+    /// returned beside the evaluation ([`Output`]).
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    /// Standard input: the bytes the run was given and how many have been read, or `None` when
+    /// it was given none and a read of it fails with `EBADF`.
+    stdin: Option<Given>,
+    /// `std::io::stdout`, when `std` is loaded, and whether the run has called it: only then
+    /// can std's buffer of standard output hold bytes that the end-of-program flush writes.
+    stdout_fn: Option<DefId>,
+    stdout_reached: bool,
     /// The state of the stream served as the OS's random bytes: splitmix64 from a fixed seed,
     /// so a run reproduces, as Miri's seeded generator does.
     random: u64,
@@ -241,17 +260,28 @@ struct Addresses {
     base: FxHashMap<AllocId, u64>,
 }
 
+/// The standard input a run was given, and how far it has been read. Past the end a read reads
+/// nothing, as a closed pipe does: end of file.
+struct Given {
+    bytes: Vec<u8>,
+    read: usize,
+}
+
 impl<'tcx> Evaluator<'tcx> {
-    fn new(sink: Option<DefId>) -> Self {
+    fn new(sink: Option<DefId>, stdin: Option<&[u8]>, stdout_fn: Option<DefId>) -> Self {
         Evaluator {
             stack: Vec::new(),
             addresses: RefCell::new(Addresses { next: FIRST_ADDRESS, base: FxHashMap::default() }),
             panic_arguments: None,
             thread_locals: FxHashMap::default(),
+            errno_cell: None,
             absent_symbol: None,
             held: FxHashSet::default(),
             stdout: Vec::new(),
             stderr: Vec::new(),
+            stdin: stdin.map(|bytes| Given { bytes: bytes.to_vec(), read: 0 }),
+            stdout_fn,
+            stdout_reached: false,
             random: 0,
             sink,
             rendered: String::new(),
@@ -390,6 +420,11 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         _unwind: mir::UnwindAction,
     ) -> InterpResult<'tcx, Option<(&'tcx mir::Body<'tcx>, ty::Instance<'tcx>)>> {
         let tcx = *ecx.tcx;
+        // Reached through a function pointer too (`print!` hands `stdout` to `print_to`), so
+        // whatever the instance's kind.
+        if ecx.machine.stdout_fn == Some(instance.def_id()) {
+            ecx.machine.stdout_reached = true;
+        }
         if let ty::InstanceKind::Item(def_id) = instance.def {
             // A tuple struct's or a variant's constructor called as a function: `.map(Some)`,
             // `ControlFlow::Break` in `Iterator::eq`'s `try_fold`. It has no function body a
@@ -459,6 +494,10 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
             return interp_ok(None);
         }
         let name = ecx.tcx.item_name(instance.def_id());
+        let tcx = ecx.tcx.tcx;
+        let type_param_at = |index| {
+            intrinsic_type_param(tcx, instance.def_id(), instance.args, index)
+        };
         match name {
             // At run time a pointer comparison is known: the addresses are real.
             sym::ptr_guaranteed_cmp => {
@@ -466,6 +505,18 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
                 let a = ecx.read_scalar(&args[0])?.to_bits(size)?;
                 let b = ecx.read_scalar(&args[1])?.to_bits(size)?;
                 ecx.write_scalar(Scalar::from_u8(u8::from(a == b)), destination)?;
+            }
+            // The address masked, the provenance kept: `ptr.mask(m)` points into what `ptr` did.
+            // Addresses are real here, so this is the hardware's `and`, as Miri serves it
+            // (`src/tools/miri/src/intrinsics/mod.rs`, "ptr_mask"); rustc's shared interpreter
+            // has no arm for it, and core declares it with no body. std's `Once` and `RwLock`
+            // on macOS keep their state in a pointer's low bits (`sys/sync/once/queue.rs`), so
+            // the first `println!` reaches it.
+            sym::ptr_mask => {
+                let (provenance, address) = ecx.read_pointer(&args[0])?.into_raw_parts();
+                let mask = ecx.read_target_usize(&args[1])?;
+                let masked = Pointer::new(provenance, Size::from_bytes(address.bytes() & mask));
+                ecx.write_pointer(masked, destination)?;
             }
             // Nothing is known to an optimizer here, as in the compile-time machine.
             sym::is_val_statically_known => {
@@ -475,7 +526,9 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
             sym::assert_inhabited
             | sym::assert_zero_valid
             | sym::assert_mem_uninitialized_valid => {
-                let ty = instance.args.type_at(0);
+                let Some(ty) = type_param_at(0) else {
+                    return unsupported(format!("intrinsic `{name}` has no type parameter"));
+                };
                 let requirement = ValidityRequirement::from_intrinsic(name)
                     .expect("one of the three validity intrinsics");
                 let valid = ecx
@@ -892,8 +945,8 @@ fn construct<'tcx>(
     ecx.write_discriminant(variant, destination)
 }
 
-/// A call to a foreign function. The allocator's entry points are served from the
-/// interpreter's own memory, and the operating system's as far as [`system_call`] serves it;
+/// A call to a foreign function. The allocator's entry points and errno cell are served from
+/// the interpreter's own memory, and the operating system's as far as [`system_call`] serves it;
 /// every other foreign function (a syscall, a C library, file and network) is refused by name.
 fn foreign_call<'tcx>(
     ecx: &mut Ecx<'tcx>,
@@ -953,8 +1006,15 @@ fn foreign_call<'tcx>(
 /// `sys::pal::unix::sync::mutex`, `sys::random`), each served as Miri serves it. A foreign
 /// function is matched by the symbol it links to (`#[link_name]`), which is what the OS sees.
 ///
+/// - `__error` (macOS) and `__errno_location` (Linux): the one thread's four-byte errno cell.
 /// - `write` to descriptor 1 or 2: the bytes are kept in the machine and all are written. Any
-///   other descriptor is refused by name.
+///   other descriptor fails with `EBADF`.
+/// - `read` from descriptor 0: the next bytes of the input the run was given, as many as asked
+///   and as are left, none once it is all read (end of file). A run given no input and any other
+///   descriptor fail with `EBADF`. std reads standard input only this way (`sys::fd::unix`
+///   `read` and `read_buf`); `readv` stays unserved.
+/// - `exit` (`process::exit`, after std's own flush): the run ends with the code.
+/// - `abort` (`process::abort`): as the `abort` intrinsic, the run ends as a panic.
 /// - `pthread_mutex*` (macOS's `Mutex`; Linux's is atomics until two threads contend): one
 ///   thread's bookkeeping, by address. Relocking a held mutex is a deadlock and is refused.
 /// - `CCRandomGenerateBytes` (macOS) and `syscall(SYS_getrandom)` (Linux, once the weak
@@ -972,25 +1032,46 @@ fn system_call<'tcx>(
     let size = destination.layout.size;
     let int = |value: u128| -> Scalar<Prov> { Scalar::from_uint(value, size) };
     match link.as_str() {
+        "__error" | "__errno_location" => {
+            let errno = errno_cell(ecx)?;
+            ecx.write_pointer(errno, destination)?;
+        }
         "write" if args.len() == 3 => {
             let fd = ecx.read_scalar(&args[0])?.to_i32()?;
+            if fd != 1 && fd != 2 {
+                return io_bad_file_descriptor(ecx, destination);
+            }
             let buffer = ecx.read_pointer(&args[1])?;
             let count = ecx.read_target_usize(&args[2])?;
             let bytes = ecx.read_bytes_ptr_strip_provenance(buffer, Size::from_bytes(count))?;
             let bytes = bytes.to_vec();
-            let stream = match fd {
-                1 => &mut ecx.machine.stdout,
-                2 => &mut ecx.machine.stderr,
-                _ => {
-                    return unsupported(format!(
-                        "writes to file descriptor {fd}, which is not served: only standard \
-                         output and standard error are"
-                    ));
-                }
-            };
+            let stream =
+                if fd == 1 { &mut ecx.machine.stdout } else { &mut ecx.machine.stderr };
             stream.extend_from_slice(&bytes);
             ecx.write_scalar(int(u128::from(count)), destination)?;
         }
+        "read" if args.len() == 3 => {
+            let fd = ecx.read_scalar(&args[0])?.to_i32()?;
+            if fd != 0 {
+                return io_bad_file_descriptor(ecx, destination);
+            }
+            let buffer = ecx.read_pointer(&args[1])?;
+            let count = ecx.read_target_usize(&args[2])?;
+            let Some(given) = ecx.machine.stdin.as_mut() else {
+                return io_bad_file_descriptor(ecx, destination);
+            };
+            let left = given.bytes.len() - given.read;
+            let taken = usize::try_from(count).map_or(left, |count| count.min(left));
+            let bytes = given.bytes[given.read..given.read + taken].to_vec();
+            given.read += taken;
+            ecx.write_bytes_ptr(buffer, bytes)?;
+            ecx.write_scalar(int(taken as u128), destination)?;
+        }
+        "exit" if !args.is_empty() => {
+            let code = ecx.read_scalar(&args[0])?.to_i32()?;
+            return halt(Halt::Exited(code));
+        }
+        "abort" => return halt(Halt::Panicked(Some("the program aborted".to_string()))),
         "pthread_mutexattr_init" | "pthread_mutexattr_settype" | "pthread_mutexattr_destroy" => {
             ecx.write_scalar(int(0), destination)?;
         }
@@ -1049,6 +1130,55 @@ fn system_call<'tcx>(
         }
     }
     interp_ok(())
+}
+
+/// The interpreter has no descriptor beyond the streams it serves; libc reports a closed one
+/// with `EBADF`, writes it to this thread's errno cell, and returns `-1` from `read` or `write`.
+fn io_bad_file_descriptor<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    destination: &PlaceTy<'tcx, Prov>,
+) -> InterpResult<'tcx> {
+    let errno = match ecx.tcx.sess.target.os {
+        Os::MacOs => 9,
+        Os::Linux => 9,
+        _ => return unsupported("standard streams are served only on macOS and Linux".to_string()),
+    };
+    set_errno(ecx, errno)?;
+    ecx.write_scalar(Scalar::from_int(-1, destination.layout.size), destination)?;
+    interp_ok(())
+}
+
+/// The one thread's four-byte `errno` cell, initially zero and kept for the run.
+fn errno_cell<'tcx>(ecx: &mut Ecx<'tcx>) -> InterpResult<'tcx, Pointer<Prov>> {
+    if let Some(pointer) = ecx.machine.errno_cell {
+        return interp_ok(pointer);
+    }
+    let align = match Align::from_bytes(4) {
+        Ok(align) => align,
+        Err(_) => return unsupported("errno cell requires four-byte alignment".to_string()),
+    };
+    let pointer = ecx.allocate_ptr(
+        Size::from_bytes(4),
+        align,
+        MemoryKind::Machine(Kind::Machine),
+        AllocInit::Zero,
+    )?;
+    ecx.machine.errno_cell = Some(pointer);
+    interp_ok(pointer)
+}
+
+/// Set `errno` without clearing or changing it on successful calls.
+fn set_errno<'tcx>(ecx: &mut Ecx<'tcx>, value: u128) -> InterpResult<'tcx> {
+    if value > u32::MAX as u128 {
+        return unsupported(format!("errno value {value} does not fit in a four-byte integer"));
+    }
+    let value = value as u32;
+    let bytes = match ecx.tcx.data_layout.endian {
+        crate::rustc_abi::Endian::Little => value.to_le_bytes(),
+        crate::rustc_abi::Endian::Big => value.to_be_bytes(),
+    };
+    let (provenance, address) = errno_cell(ecx)?.into_raw_parts();
+    ecx.write_bytes_ptr(Pointer::new(Some(provenance), address), bytes.to_vec())
 }
 
 /// `count` bytes of the machine's random stream, written at `buffer`.
@@ -1186,13 +1316,17 @@ fn field_index(place: &MPlaceTy<'_, Prov>, name: &str) -> Option<FieldIdx> {
 /// path is computed from the whole crate's imports and is only for diagnostics: a session that
 /// trims one and then emits no diagnostic panics when it ends, and a run that succeeds emits
 /// none.
+///
+/// `stdin` is the standard input the run reads, `None` for none served. The [`Output`] is what
+/// the run wrote, whatever it came to.
 pub(super) fn run_entry(
     tcx: TyCtxt<'_>,
     entry: LocalDefId,
     render: Option<Render>,
     budget: Option<u64>,
-) -> Evaluation {
-    with_no_trimmed_paths!(run(tcx, entry, render, budget))
+    stdin: Option<&[u8]>,
+) -> (Evaluation, Output) {
+    with_no_trimmed_paths!(run(tcx, entry, render, budget, stdin))
 }
 
 fn run<'tcx>(
@@ -1200,18 +1334,22 @@ fn run<'tcx>(
     entry: LocalDefId,
     render: Option<Render>,
     budget: Option<u64>,
-) -> Evaluation {
+    stdin: Option<&[u8]>,
+) -> (Evaluation, Output) {
     let instance = ty::Instance::mono(tcx, entry.to_def_id());
     let typing_env = ty::TypingEnv::fully_monomorphized();
-    let machine = Evaluator::new(render.as_ref().map(|render| render.sink));
+    let machine = Evaluator::new(render.as_ref().map(|render| render.sink), stdin, std_stdout(tcx));
     let mut ecx = InterpCx::new(tcx, tcx.def_span(entry.to_def_id()), typing_env, machine);
     let mut steps = 0;
     let started = prepare(&mut ecx).and_then(|()| start(&mut ecx, instance));
     let finished =
         started.and_then(|place| drive(&mut ecx, &mut steps, budget).map(|done| (place, done)));
-    match finished {
+    let mut unflushed = None;
+    let evaluation = match finished {
+        // A process stopped here prints nothing more: no flush.
         Ok((_, false)) => Evaluation::Exhausted { steps },
         Ok((place, true)) => {
+            unflushed = flush_stdout(&mut ecx);
             let ty = place.layout.ty.to_string();
             match render {
                 Some(render) => render_by_debug(&mut ecx, &render, &place, ty, steps),
@@ -1223,7 +1361,65 @@ fn run<'tcx>(
                 },
             }
         }
-        Err(err) => ended(&mut ecx, err, steps),
+        Err(err) => {
+            let outcome = ended(&mut ecx, err, steps);
+            // A process flushes after a panic in `main` too (`lang_start` catches it, then
+            // cleans up); `exit` flushed before it exited, and nothing else ran to an end.
+            if matches!(outcome, Evaluation::Panicked { .. }) {
+                unflushed = flush_stdout(&mut ecx);
+            }
+            outcome
+        }
+    };
+    let output = Output {
+        stdout: core::mem::take(&mut ecx.machine.stdout),
+        stderr: core::mem::take(&mut ecx.machine.stderr),
+        unflushed,
+    };
+    (evaluation, output)
+}
+
+/// `std::io::stdout`, when the `std` crate is loaded: found by path, `std::io::stdout`, as
+/// [`alloc_format`] finds `alloc::fmt::format`.
+fn std_stdout(tcx: TyCtxt<'_>) -> Option<DefId> {
+    tcx.crates(()).iter().filter(|&&krate| tcx.crate_name(krate) == sym::std).find_map(|&krate| {
+        let io = module_child(tcx, krate.as_def_id(), "io", DefKind::Mod)?;
+        module_child(tcx, io, "stdout", DefKind::Fn)
+    })
+}
+
+/// std's end-of-program flush of standard output, when the call reached `std::io::stdout`:
+/// `io::cleanup`, the function beside `stdout` in the module that defines it, which a process
+/// runs after `main` returns or panics (`rt::cleanup`) and `process::exit` runs before it exits.
+/// It writes what std's line buffer still holds (`print!` with no newline) and makes standard
+/// output unbuffered. Run as a root frame of its own on the same interpreter, outside the budget
+/// as a value's rendering is: it prints what the call already built, no more.
+///
+/// `None` when it ran to its end or had nothing to do; else why it did not, since bytes the
+/// program wrote may then still sit in std's buffer, missing from the output.
+fn flush_stdout<'tcx>(ecx: &mut Ecx<'tcx>) -> Option<String> {
+    let stdout = ecx.machine.stdout_fn?;
+    if !ecx.machine.stdout_reached {
+        return None;
+    }
+    let tcx = *ecx.tcx;
+    let Some(cleanup) = module_child(tcx, tcx.parent(stdout), "cleanup", DefKind::Fn) else {
+        return Some(
+            "std's `io::cleanup`, which flushes standard output at the end of a program, was not \
+             found beside `std::io::stdout`"
+                .to_string(),
+        );
+    };
+    // A panic's frames are still on the stack; their memory stays, as for its message.
+    ecx.machine.stack.clear();
+    let mut steps = 0;
+    let instance = ty::Instance::mono(tcx, cleanup);
+    match start_call(ecx, instance, &[]).and_then(|_| drive(ecx, &mut steps, None)) {
+        Ok(_) => None,
+        Err(err) => Some(format!(
+            "std's flush of standard output at the end of the program did not finish: {}",
+            stopped(ecx, err)
+        )),
     }
 }
 
@@ -1246,6 +1442,7 @@ fn ended<'tcx>(ecx: &mut Ecx<'tcx>, err: InterpErrorInfo<'tcx>, steps: u64) -> E
     match stopped(ecx, err) {
         Halt::Refused(why) => Evaluation::Refused { why },
         Halt::Unsupported(why) => Evaluation::Unsupported { why },
+        Halt::Exited(code) => Evaluation::Exited { code, steps },
         Halt::Panicked(Some(message)) => Evaluation::Panicked { message, steps },
         Halt::Panicked(None) => Evaluation::Panicked { message: panic_message(ecx, None), steps },
     }
@@ -1300,6 +1497,9 @@ fn render_by_debug<'tcx>(
             },
             Evaluation::Refused { why } => Evaluation::Refused {
                 why: format!("the call returned a `{ty}`, not rendered: {why}"),
+            },
+            Evaluation::Exited { code, .. } => Evaluation::Refused {
+                why: format!("the call returned a `{ty}`, whose `Debug` exited with code {code}"),
             },
             other => other,
         },
@@ -1473,15 +1673,18 @@ fn start_call<'tcx>(
 
 /// `alloc::fmt::format`, found by path in the loaded `alloc` crate.
 fn alloc_format(tcx: TyCtxt<'_>) -> Option<DefId> {
-    let child = |module: DefId, name: &str, kind: DefKind| {
-        tcx.module_children(module).iter().find_map(|child| match child.res {
-            Res::Def(found, id) if found == kind && child.ident.name.as_str() == name => Some(id),
-            _ => None,
-        })
-    };
     tcx.crates(()).iter().filter(|&&krate| tcx.crate_name(krate) == sym::alloc).find_map(|&krate| {
-        let fmt = child(krate.as_def_id(), "fmt", DefKind::Mod)?;
-        child(fmt, "format", DefKind::Fn)
+        let fmt = module_child(tcx, krate.as_def_id(), "fmt", DefKind::Mod)?;
+        module_child(tcx, fmt, "format", DefKind::Fn)
+    })
+}
+
+/// The item of `module` named `name` of kind `kind`, defined there or re-exported, whatever its
+/// visibility: the item it names.
+fn module_child(tcx: TyCtxt<'_>, module: DefId, name: &str, kind: DefKind) -> Option<DefId> {
+    tcx.module_children(module).iter().find_map(|child| match child.res {
+        Res::Def(found, id) if found == kind && child.ident.name.as_str() == name => Some(id),
+        _ => None,
     })
 }
 
