@@ -1,0 +1,1174 @@
+//! Running a call through rustc's MIR interpreter: the machine [`super::evaluate`] runs on.
+//!
+//! **One semantics, rustc's.** Every rule of what a program does is `rustc_const_eval::interpret`
+//! (`InterpCx`), the engine CTFE and Miri are built on, stepping the optimized MIR rustc built for
+//! the source and for every library function it calls. What lives here is only the policy an
+//! interpreter's `Machine` is for: which calls are served (heap allocation, from the
+//! interpreter's own memory), which are refused by name (every foreign function, every syscall,
+//! file and network), how a panic ends the run (its message, read and returned), and how the
+//! finished value is read back out of memory by its type's layout.
+//!
+//! **Why not the compile-time machine.** CTFE refuses non-`const` functions and keeps pointers
+//! relative to their allocation, so a pointer never becomes an integer. Ordinary library code
+//! needs both: `fmt::Arguments::as_str` reads a pointer's low bit, a slice iterator compares two
+//! pointers, `align_offset` reads an address. So this machine gives every allocation an absolute
+//! address, as Miri does (`Prov` below: `OFFSET_IS_ADDR`), and calls any function whose MIR the
+//! metadata carries. That is why the library read has a switch to write every function's MIR
+//! (`CrateRead::all_mir`): rustc writes only generic and inline functions' MIR by default.
+
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::any::Any;
+use core::borrow::Borrow;
+use core::cell::RefCell;
+use core::fmt;
+use core::hash::Hash;
+use hashbrown::hash_map::Entry;
+
+use crate::rustc_abi::{Align, FieldIdx, Size};
+use crate::rustc_const_eval::interpret::{
+    AllocBytes, AllocId, AllocInit, AllocMap, Allocation, AtomicRmwOp, CTFE_ALLOC_SALT,
+    CtfeProvenance, FnArg, Frame, ImmTy, Immediate, InterpCx, InterpErrorInfo, InterpErrorKind,
+    InterpResult, MPlaceTy, Machine, MachineStopType, MayLeak, MemoryKind, OpTy, PlaceTy, Pointer,
+    Projectable, Provenance, ResourceExhaustionInfo, ReturnContinuation, Scalar, interp_ok,
+};
+use crate::rustc_data_structures::fx::FxHashMap;
+use crate::rustc_hir::attrs::lang_items::LangItem;
+use crate::rustc_hir::def::{CtorKind, DefKind, Res};
+use crate::rustc_hir::def_id::{DefId, LocalDefId};
+use crate::rustc_middle::mir;
+use crate::rustc_middle::ty::layout::{HasTypingEnv, TyAndLayout, ValidityRequirement};
+use crate::rustc_middle::ty::print::with_no_trimmed_paths;
+use crate::rustc_middle::ty::{self, AtomicOrdering, Ty, TyCtxt};
+use crate::rustc_span::sym;
+use crate::rustc_target::callconv::FnAbi;
+
+use super::Evaluation;
+
+/// The name of the function [`super::evaluate`] appends to the source around the call.
+pub(super) const ENTRY: &str = "__frontend_evaluate";
+
+/// The deepest call stack a run may build. A real thread's stack overflows somewhere near here
+/// for small frames; past it the run is refused rather than growing the interpreter's own memory
+/// without end.
+const MAX_FRAMES: usize = 100_000;
+
+/// Where the first allocation's address starts, and the gap left after each allocation, so that
+/// no allocation sits at null or starts where another one ends.
+const FIRST_ADDRESS: u64 = 0x1_0000;
+const ADDRESS_GAP: u64 = 16;
+
+type Ecx<'tcx> = InterpCx<'tcx, Evaluator<'tcx>>;
+
+/// A pointer's provenance: the allocation it points into. The pointer's offset is the absolute
+/// address (`OFFSET_IS_ADDR`), so a pointer turns into an integer the way it does on hardware.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Prov(AllocId);
+
+impl fmt::Debug for Prov {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+impl Provenance for Prov {
+    const OFFSET_IS_ADDR: bool = true;
+    // An integer cast to a pointer gets no provenance and reads nothing.
+    const WILDCARD: Option<Self> = None;
+
+    fn fmt(ptr: &Pointer<Self>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (prov, addr) = ptr.into_raw_parts();
+        write!(f, "{:#x}[{:?}]", addr.bytes(), prov.0)
+    }
+
+    fn get_alloc_id(self) -> Option<AllocId> {
+        Some(self.0)
+    }
+}
+
+/// The machine's own memory kinds: the heap `__rust_alloc` serves, and a global copied out of
+/// `tcx` because the run reads or writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Heap,
+    Global,
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Kind::Heap => "heap allocation",
+            Kind::Global => "global allocation",
+        })
+    }
+}
+
+impl MayLeak for Kind {
+    // A run ends when its value is read; nothing checks for leaks.
+    fn may_leak(self) -> bool {
+        true
+    }
+}
+
+/// Why a run stopped before its call returned. Raised as a machine stop, so it unwinds through
+/// the interpreter like any error, and read back where the run is driven.
+#[derive(Debug)]
+enum Halt {
+    /// The program panicked. `Some` when the message is already known; `None` when it is the
+    /// `fmt::Arguments` in [`Evaluator::panic_arguments`], formatted after the run.
+    Panicked(Option<String>),
+    /// The program asked for something this machine does not serve.
+    Refused(String),
+}
+
+impl fmt::Display for Halt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Halt::Panicked(Some(message)) => write!(f, "panicked: {message}"),
+            Halt::Panicked(None) => f.write_str("panicked"),
+            Halt::Refused(why) => f.write_str(why),
+        }
+    }
+}
+
+impl MachineStopType for Halt {}
+
+fn halt<'tcx, T>(halt: Halt) -> InterpResult<'tcx, T> {
+    Err(InterpErrorKind::MachineStop(Box::new(halt)).into())
+}
+
+fn refuse<'tcx, T>(why: String) -> InterpResult<'tcx, T> {
+    halt(Halt::Refused(why))
+}
+
+/// The machine: the call stack, the addresses handed out, and a panic's message.
+pub(crate) struct Evaluator<'tcx> {
+    stack: Vec<Frame<'tcx, Prov>>,
+    /// Behind a `RefCell` because addresses are handed out from hooks that see `&InterpCx`.
+    addresses: RefCell<Addresses>,
+    /// The `fmt::Arguments` a panic carried, set when the panic runtime is entered.
+    panic_arguments: Option<MPlaceTy<'tcx, Prov>>,
+}
+
+/// Absolute addresses, one per allocation, handed out in order and never reused, so two live
+/// allocations never overlap and a dangling pointer never aliases a new allocation.
+struct Addresses {
+    next: u64,
+    base: FxHashMap<AllocId, u64>,
+}
+
+impl<'tcx> Evaluator<'tcx> {
+    fn new() -> Self {
+        Evaluator {
+            stack: Vec::new(),
+            addresses: RefCell::new(Addresses { next: FIRST_ADDRESS, base: FxHashMap::default() }),
+            panic_arguments: None,
+        }
+    }
+
+    /// `id`'s absolute address, handed out the first time it is asked for, aligned to the
+    /// allocation's own alignment.
+    fn base_address(ecx: &Ecx<'tcx>, id: AllocId) -> u64 {
+        if let Some(&base) = ecx.machine.addresses.borrow().base.get(&id) {
+            return base;
+        }
+        // Read before borrowing: the size and alignment come from memory or from `tcx`.
+        let info = ecx.get_alloc_info(id);
+        let mut addresses = ecx.machine.addresses.borrow_mut();
+        let base = addresses.next.next_multiple_of(info.align.bytes().max(1));
+        addresses.next = base + info.size.bytes().max(1) + ADDRESS_GAP;
+        addresses.base.insert(id, base);
+        base
+    }
+}
+
+/// The allocation map: a map a shared reference can insert into, which `Memory` needs when a
+/// global is read for the first time and has to be copied in, its pointers given addresses.
+/// Each value is boxed, so a reference to it stays valid while the map grows.
+#[derive(Clone)]
+pub(crate) struct MonoMap<K: Hash + Eq, V>(RefCell<FxHashMap<K, Box<V>>>);
+
+impl<K: Hash + Eq, V> Default for MonoMap<K, V> {
+    fn default() -> Self {
+        MonoMap(RefCell::new(FxHashMap::default()))
+    }
+}
+
+impl<K: Hash + Eq, V> AllocMap<K, V> for MonoMap<K, V> {
+    fn contains_key<Q: ?Sized + Hash + Eq>(&mut self, k: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.0.get_mut().contains_key(k)
+    }
+
+    fn contains_key_ref<Q: ?Sized + Hash + Eq>(&self, k: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.0.borrow().contains_key(k)
+    }
+
+    fn insert(&mut self, k: K, v: V) -> Option<V> {
+        self.0.get_mut().insert(k, Box::new(v)).map(|old| *old)
+    }
+
+    fn remove<Q: ?Sized + Hash + Eq>(&mut self, k: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        self.0.get_mut().remove(k).map(|old| *old)
+    }
+
+    fn filter_map_collect<T>(&self, mut f: impl FnMut(&K, &V) -> Option<T>) -> Vec<T> {
+        self.0.borrow().iter().filter_map(move |(k, v)| f(k, &**v)).collect()
+    }
+
+    fn get_or<E>(&self, k: K, vacant: impl FnOnce() -> Result<V, E>) -> Result<&V, E> {
+        // The borrow is not held across `vacant`, which may look into this very map.
+        if let Some(v) = self.0.borrow().get(&k) {
+            let v: *const V = &**v;
+            // SAFETY: `v` points into a `Box` the map owns. A box does not move when the map
+            // grows, and nothing removes it while `&self` is borrowed: removal takes `&mut self`.
+            return Ok(unsafe { &*v });
+        }
+        let new = Box::new(vacant()?);
+        let v: *const V = &**self.0.borrow_mut().entry(k).or_insert(new);
+        // SAFETY: as above.
+        Ok(unsafe { &*v })
+    }
+
+    fn get_mut_or<E>(&mut self, k: K, vacant: impl FnOnce() -> Result<V, E>) -> Result<&mut V, E> {
+        match self.0.get_mut().entry(k) {
+            Entry::Occupied(entry) => Ok(&mut **entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let v = vacant()?;
+                Ok(&mut **entry.insert(Box::new(v)))
+            }
+        }
+    }
+}
+
+impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
+    type MemoryKind = Kind;
+    type Provenance = Prov;
+    type ProvenanceExtra = ();
+    type ExtraFnVal = crate::Never;
+    type FrameExtra = ();
+    type AllocExtra = ();
+    type Bytes = Box<[u8]>;
+    type MemoryMap =
+        MonoMap<AllocId, (MemoryKind<Kind>, Allocation<Prov, (), Box<[u8]>>)>;
+
+    const GLOBAL_KIND: Option<Kind> = Some(Kind::Global);
+    const PANIC_ON_ALLOC_FAIL: bool = false;
+    // A library constant this run evaluates may fail; that is an error of the run, not a bug.
+    const ALL_CONSTS_ARE_PRECHECKED: bool = false;
+
+    fn enforce_alignment(_ecx: &Ecx<'tcx>) -> bool {
+        true
+    }
+
+    // As the compile-time machine: a value of an uninhabited type is always undefined behavior.
+    fn enforce_validity(_ecx: &Ecx<'tcx>, layout: TyAndLayout<'tcx>) -> bool {
+        layout.is_uninhabited()
+    }
+
+    // A debug build: overflow is checked, including in library functions that inherit the check.
+    fn ignore_optional_overflow_checks(_ecx: &Ecx<'tcx>) -> bool {
+        false
+    }
+
+    fn find_mir_or_eval_fn(
+        ecx: &mut Ecx<'tcx>,
+        instance: ty::Instance<'tcx>,
+        _abi: &FnAbi<'tcx, Ty<'tcx>>,
+        args: &[FnArg<'tcx, Prov>],
+        destination: &PlaceTy<'tcx, Prov>,
+        target: Option<mir::BasicBlock>,
+        _unwind: mir::UnwindAction,
+    ) -> InterpResult<'tcx, Option<(&'tcx mir::Body<'tcx>, ty::Instance<'tcx>)>> {
+        let tcx = *ecx.tcx;
+        if let ty::InstanceKind::Item(def_id) = instance.def {
+            // Every panic reaches the panic runtime with its message: core declares it as the
+            // foreign `panic_impl`, and std defines it as the `#[panic_handler]`.
+            let foreign = tcx.is_foreign_item(def_id);
+            if tcx.is_lang_item(def_id, LangItem::PanicImpl)
+                || (foreign && tcx.item_name(def_id).as_str() == "panic_impl")
+            {
+                return panic_from_info(ecx, args);
+            }
+            // `panic!("text")` in editions before 2021 goes to std's `begin_panic` with the
+            // payload itself, not a `fmt::Arguments`.
+            if tcx.is_lang_item(def_id, LangItem::BeginPanic) {
+                return begin_panic(&*ecx, args);
+            }
+            if foreign {
+                foreign_call(ecx, def_id, args, destination)?;
+                ecx.return_to_block(target)?;
+                return interp_ok(None);
+            }
+        }
+        interp_ok(Some((body_of(ecx, instance)?, instance)))
+    }
+
+    fn call_extra_fn(
+        _ecx: &mut Ecx<'tcx>,
+        fn_val: crate::Never,
+        _abi: &FnAbi<'tcx, Ty<'tcx>>,
+        _args: &[FnArg<'tcx, Prov>],
+        _destination: &PlaceTy<'tcx, Prov>,
+        _target: Option<mir::BasicBlock>,
+        _unwind: mir::UnwindAction,
+    ) -> InterpResult<'tcx> {
+        match fn_val {}
+    }
+
+    fn call_intrinsic(
+        ecx: &mut Ecx<'tcx>,
+        instance: ty::Instance<'tcx>,
+        args: &[OpTy<'tcx, Prov>],
+        destination: &PlaceTy<'tcx, Prov>,
+        target: Option<mir::BasicBlock>,
+        _unwind: mir::UnwindAction,
+    ) -> InterpResult<'tcx, Option<ty::Instance<'tcx>>> {
+        // The intrinsics every machine shares.
+        if ecx.eval_intrinsic(instance, args, destination, target)? {
+            return interp_ok(None);
+        }
+        let name = ecx.tcx.item_name(instance.def_id());
+        match name {
+            // At run time a pointer comparison is known: the addresses are real.
+            sym::ptr_guaranteed_cmp => {
+                let size = ecx.tcx.data_layout.pointer_size();
+                let a = ecx.read_scalar(&args[0])?.to_bits(size)?;
+                let b = ecx.read_scalar(&args[1])?.to_bits(size)?;
+                ecx.write_scalar(Scalar::from_u8(u8::from(a == b)), destination)?;
+            }
+            // Nothing is known to an optimizer here, as in the compile-time machine.
+            sym::is_val_statically_known => {
+                ecx.write_scalar(Scalar::from_bool(false), destination)?;
+            }
+            sym::abort => return halt(Halt::Panicked(Some("the program aborted".to_string()))),
+            sym::assert_inhabited
+            | sym::assert_zero_valid
+            | sym::assert_mem_uninitialized_valid => {
+                let ty = instance.args.type_at(0);
+                let requirement = ValidityRequirement::from_intrinsic(name)
+                    .expect("one of the three validity intrinsics");
+                let valid = ecx
+                    .tcx
+                    .check_validity_requirement((requirement, ecx.typing_env().as_query_input(ty)))
+                    .unwrap_or(true);
+                if !valid {
+                    return halt(Halt::Panicked(Some(format!(
+                        "aborted execution: attempted to create an invalid value of type `{ty}`"
+                    ))));
+                }
+            }
+            _ => {
+                // An intrinsic with a body of its own runs that body.
+                let must_be_overridden =
+                    ecx.tcx.intrinsic(instance.def_id()).is_none_or(|i| i.must_be_overridden);
+                if must_be_overridden {
+                    return refuse(format!("calls the intrinsic `{name}`, which is not served"));
+                }
+                return interp_ok(Some(ty::Instance {
+                    def: ty::InstanceKind::Item(instance.def_id()),
+                    args: instance.args,
+                }));
+            }
+        }
+        ecx.return_to_block(target)?;
+        interp_ok(None)
+    }
+
+    fn call_llvm_intrinsic(
+        ecx: &mut Ecx<'tcx>,
+        instance: ty::Instance<'tcx>,
+        _args: &[OpTy<'tcx, Prov>],
+        _destination: &PlaceTy<'tcx, Prov>,
+        _target: Option<mir::BasicBlock>,
+    ) -> InterpResult<'tcx> {
+        let name = shown_path(*ecx.tcx, instance.def_id());
+        refuse(format!("calls the LLVM intrinsic `{name}`, which is not served"))
+    }
+
+    fn check_fn_target_features(
+        _ecx: &Ecx<'tcx>,
+        _instance: ty::Instance<'tcx>,
+    ) -> InterpResult<'tcx> {
+        interp_ok(())
+    }
+
+    /// A failed `Assert` (overflow, a bounds check, division by zero) calls the runtime's own
+    /// panic function for it, as compiled code does, so the message is the one a run prints.
+    /// Without that function (a `no_core` crate) the message is the compiler's description.
+    fn assert_panic(
+        ecx: &mut Ecx<'tcx>,
+        msg: &mir::AssertMessage<'tcx>,
+        unwind: mir::UnwindAction,
+    ) -> InterpResult<'tcx> {
+        use crate::rustc_middle::mir::AssertKind;
+        let tcx = *ecx.tcx;
+        let operand = |ecx: &Ecx<'tcx>, op: &mir::Operand<'tcx>| {
+            ecx.read_immediate(&ecx.eval_operand(op, None)?)
+        };
+        // The runtime's functions for these two take the operands, in this order.
+        let (item, args) = match msg {
+            AssertKind::BoundsCheck { len, index } => {
+                let args = [operand(&*ecx, index)?, operand(&*ecx, len)?];
+                (tcx.lang_items().get(LangItem::PanicBoundsCheck), Vec::from(args))
+            }
+            AssertKind::MisalignedPointerDereference { required, found } => {
+                let args = [operand(&*ecx, required)?, operand(&*ecx, found)?];
+                (tcx.lang_items().get(LangItem::PanicMisalignedPointerDereference), Vec::from(args))
+            }
+            _ => (tcx.lang_items().get(msg.panic_function()), Vec::new()),
+        };
+        let runtime = item.map(|item| ty::Instance::mono(tcx, item)).filter(|instance| {
+            let def_id = instance.def_id();
+            def_id.is_local() || tcx.is_mir_available(def_id)
+        });
+        let Some(instance) = runtime else {
+            let message = describe_assert(&*ecx, msg)?;
+            return halt(Halt::Panicked(Some(message)));
+        };
+        let body = body_of(&*ecx, instance)?;
+        let fn_abi = ecx.fn_abi_of_instance_no_deduced_attrs(instance, ty::List::empty())?;
+        // The function returns `!`, so nothing is ever written here.
+        let unit = ecx.layout_of(tcx.types.unit)?;
+        let destination = MPlaceTy::fake_alloc_zst(unit);
+        let args: Vec<FnArg<'tcx, Prov>> =
+            args.into_iter().map(|arg| FnArg::Copy(arg.into())).collect();
+        ecx.init_stack_frame(
+            instance,
+            body,
+            fn_abi,
+            &args,
+            instance.def.requires_caller_location(tcx),
+            &destination.into(),
+            ReturnContinuation::Goto { ret: None, unwind },
+        )
+    }
+
+    fn panic_nounwind(_ecx: &mut Ecx<'tcx>, msg: &str) -> InterpResult<'tcx> {
+        halt(Halt::Panicked(Some(msg.to_string())))
+    }
+
+    // Nothing unwinds here: a panic ends the run where it starts.
+    fn unwind_terminate(
+        _ecx: &mut Ecx<'tcx>,
+        _reason: mir::UnwindTerminateReason,
+    ) -> InterpResult<'tcx> {
+        halt(Halt::Panicked(Some("panic in a function that cannot unwind".to_string())))
+    }
+
+    /// Pointers compare by address, as they do on hardware; a wide pointer compares its address
+    /// and then its metadata.
+    fn binary_ptr_op(
+        ecx: &Ecx<'tcx>,
+        bin_op: mir::BinOp,
+        left: &ImmTy<'tcx, Prov>,
+        right: &ImmTy<'tcx, Prov>,
+    ) -> InterpResult<'tcx, ImmTy<'tcx, Prov>> {
+        use crate::rustc_middle::mir::BinOp::*;
+        let size = ecx.tcx.data_layout.pointer_size();
+        let bits = |imm: &ImmTy<'tcx, Prov>| -> InterpResult<'tcx, (u128, u128)> {
+            interp_ok(match **imm {
+                Immediate::Scalar(a) => (a.to_bits(size)?, 0),
+                Immediate::ScalarPair(a, b) => (a.to_bits(size)?, b.to_bits(size)?),
+                Immediate::Uninit => {
+                    use crate::rustc_middle::mir::interpret::UndefinedBehaviorInfo;
+                    let ub = UndefinedBehaviorInfo::InvalidUninitBytes(None);
+                    return Err(InterpErrorKind::UndefinedBehavior(ub).into());
+                }
+            })
+        };
+        let result = match bin_op {
+            Eq | Ne | Lt | Le | Gt | Ge => {
+                let (l, r) = (bits(left)?, bits(right)?);
+                match bin_op {
+                    Eq => l == r,
+                    Ne => l != r,
+                    Lt => l < r,
+                    Le => l <= r,
+                    Gt => l > r,
+                    _ => l >= r,
+                }
+            }
+            _ => return refuse(format!("pointer arithmetic `{bin_op:?}` is not served")),
+        };
+        interp_ok(ImmTy::from_bool(result, *ecx.tcx))
+    }
+
+    // As the compile-time machine.
+    fn float_fuse_mul_add(_ecx: &Ecx<'tcx>) -> bool {
+        true
+    }
+
+    // One thread: atomics are plain loads and stores.
+    fn atomic_load(
+        ecx: &Ecx<'tcx>,
+        place: &MPlaceTy<'tcx, Prov>,
+        _ordering: AtomicOrdering,
+    ) -> InterpResult<'tcx, Scalar<Prov>> {
+        ecx.read_scalar(place)
+    }
+
+    fn atomic_store(
+        ecx: &mut Ecx<'tcx>,
+        place: &MPlaceTy<'tcx, Prov>,
+        val: &ImmTy<'tcx, Prov>,
+        _ordering: AtomicOrdering,
+    ) -> InterpResult<'tcx> {
+        ecx.write_scalar(val.to_scalar(), place)
+    }
+
+    fn atomic_rmw(
+        ecx: &mut Ecx<'tcx>,
+        place: &MPlaceTy<'tcx, Prov>,
+        op: AtomicRmwOp,
+        operand: &ImmTy<'tcx, Prov>,
+        _ordering: AtomicOrdering,
+    ) -> InterpResult<'tcx, Scalar<Prov>> {
+        let old = ecx.read_immediate(place)?;
+        let new = ecx.atomic_rmw_op(op, &old, operand)?;
+        ecx.write_immediate(*new, place)?;
+        interp_ok(old.to_scalar())
+    }
+
+    fn atomic_compare_exchange(
+        ecx: &mut Ecx<'tcx>,
+        place: &MPlaceTy<'tcx, Prov>,
+        expected_old: &ImmTy<'tcx, Prov>,
+        new: &ImmTy<'tcx, Prov>,
+        _can_fail_spuriously: bool,
+        _success_ordering: AtomicOrdering,
+        _failure_ordering: AtomicOrdering,
+    ) -> InterpResult<'tcx, (Scalar<Prov>, bool)> {
+        let actual = ecx.read_immediate(place)?;
+        let equal =
+            ecx.binary_op(mir::BinOp::Eq, &actual, expected_old)?.to_scalar().to_bool()?;
+        if equal {
+            ecx.write_immediate(**new, place)?;
+        }
+        interp_ok((actual.to_scalar(), equal))
+    }
+
+    fn atomic_fence(
+        _ecx: &Ecx<'tcx>,
+        _ordering: AtomicOrdering,
+        _singlethread: bool,
+    ) -> InterpResult<'tcx> {
+        interp_ok(())
+    }
+
+    /// `UbChecks` is off: the interpreter checks every access for undefined behavior itself, at
+    /// the access, which is stricter than the library's debug precondition checks and costs no
+    /// steps. Overflow checks are on, as in a debug build. Contracts are off, as in rustc.
+    fn runtime_checks(_ecx: &Ecx<'tcx>, r: mir::RuntimeChecks) -> InterpResult<'tcx, bool> {
+        interp_ok(matches!(r, mir::RuntimeChecks::OverflowChecks))
+    }
+
+    fn extern_static_pointer(
+        ecx: &Ecx<'tcx>,
+        def_id: DefId,
+    ) -> InterpResult<'tcx, Pointer<Prov>> {
+        let name = shown_path(*ecx.tcx, def_id);
+        refuse(format!("reads the foreign static `{name}`, which is not served"))
+    }
+
+    fn ptr_from_addr_cast(
+        _ecx: &Ecx<'tcx>,
+        addr: u64,
+    ) -> InterpResult<'tcx, Pointer<Option<Prov>>> {
+        interp_ok(Pointer::without_provenance(addr))
+    }
+
+    fn expose_provenance(_ecx: &Ecx<'tcx>, _provenance: Prov) -> InterpResult<'tcx> {
+        interp_ok(())
+    }
+
+    fn ptr_get_alloc(
+        ecx: &Ecx<'tcx>,
+        ptr: Pointer<Prov>,
+        _size: i64,
+    ) -> Option<(AllocId, Size, ())> {
+        let (prov, addr) = ptr.into_raw_parts();
+        let base = Evaluator::base_address(ecx, prov.0);
+        Some((prov.0, Size::from_bytes(addr.bytes().wrapping_sub(base)), ()))
+    }
+
+    fn adjust_alloc_root_pointer(
+        ecx: &Ecx<'tcx>,
+        ptr: Pointer<CtfeProvenance>,
+        _kind: Option<MemoryKind<Kind>>,
+    ) -> InterpResult<'tcx, Pointer<Prov>> {
+        let (prov, offset) = ptr.prov_and_relative_offset();
+        let id = prov.alloc_id();
+        let base = Evaluator::base_address(ecx, id);
+        interp_ok(Pointer::new(Prov(id), Size::from_bytes(base.wrapping_add(offset.bytes()))))
+    }
+
+    /// A global's bytes, copied, with every pointer in it given its target's address.
+    fn adjust_global_allocation<'b>(
+        ecx: &Ecx<'tcx>,
+        _id: AllocId,
+        alloc: &'b Allocation,
+    ) -> InterpResult<'tcx, Cow<'b, Allocation<Prov, (), Box<[u8]>>>> {
+        let adjusted = alloc.adjust_from_tcx(
+            ecx,
+            |bytes, align| interp_ok(<Box<[u8]> as AllocBytes>::from_bytes(bytes, align, ())),
+            |ptr| ecx.global_root_pointer(ptr),
+        )?;
+        interp_ok(Cow::Owned(adjusted))
+    }
+
+    fn init_local_allocation(
+        _ecx: &Ecx<'tcx>,
+        _id: AllocId,
+        _kind: MemoryKind<Kind>,
+        _size: Size,
+        _align: Align,
+    ) -> InterpResult<'tcx> {
+        interp_ok(())
+    }
+
+    fn init_frame(
+        ecx: &mut Ecx<'tcx>,
+        frame: Frame<'tcx, Prov>,
+    ) -> InterpResult<'tcx, Frame<'tcx, Prov>> {
+        if ecx.machine.stack.len() >= MAX_FRAMES {
+            return Err(
+                InterpErrorKind::ResourceExhaustion(ResourceExhaustionInfo::StackFrameLimitReached)
+                    .into(),
+            );
+        }
+        interp_ok(frame)
+    }
+
+    fn stack<'a>(ecx: &'a Ecx<'tcx>) -> &'a [Frame<'tcx, Prov>] {
+        &ecx.machine.stack
+    }
+
+    fn stack_mut<'a>(ecx: &'a mut Ecx<'tcx>) -> &'a mut Vec<Frame<'tcx, Prov>> {
+        &mut ecx.machine.stack
+    }
+
+    fn get_global_alloc_salt(
+        _ecx: &Ecx<'tcx>,
+        _instance: Option<ty::Instance<'tcx>>,
+    ) -> usize {
+        CTFE_ALLOC_SALT
+    }
+
+    fn get_default_alloc_params(&self) -> <Self::Bytes as AllocBytes>::AllocParams {}
+}
+
+/// `def_id` printed in full, for a refusal or a panic message.
+fn shown_path(tcx: TyCtxt<'_>, def_id: DefId) -> String {
+    with_no_trimmed_paths!(tcx.def_path_str(def_id))
+}
+
+/// The MIR a call runs. A function of another crate has MIR only when that crate's metadata
+/// carries it; one that does not is refused by name rather than guessed at.
+fn body_of<'tcx>(
+    ecx: &Ecx<'tcx>,
+    instance: ty::Instance<'tcx>,
+) -> InterpResult<'tcx, &'tcx mir::Body<'tcx>> {
+    if let ty::InstanceKind::Item(def_id) = instance.def
+        && !def_id.is_local()
+        && !ecx.tcx.is_mir_available(def_id)
+    {
+        let name = shown_path(*ecx.tcx, def_id);
+        return refuse(format!(
+            "calls `{name}`, whose MIR its crate's metadata does not carry (read the crate with \
+             every function's MIR)"
+        ));
+    }
+    ecx.load_mir(instance.def, None)
+}
+
+/// A call to a foreign function. The allocator's entry points are served from the
+/// interpreter's own memory; every other foreign function (a syscall, a C library, file and
+/// network) is refused by name.
+fn foreign_call<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    def_id: DefId,
+    args: &[FnArg<'tcx, Prov>],
+    destination: &PlaceTy<'tcx, Prov>,
+) -> InterpResult<'tcx> {
+    let name = ecx.tcx.item_name(def_id);
+    let args: Vec<OpTy<'tcx, Prov>> = args.iter().map(FnArg::copy_fn_arg).collect();
+    let heap = MemoryKind::Machine(Kind::Heap);
+    let align = |ecx: &Ecx<'tcx>, op: &OpTy<'tcx, Prov>| -> InterpResult<'tcx, Align> {
+        let bytes = ecx.read_target_usize(op)?;
+        match Align::from_bytes(bytes) {
+            Ok(align) => interp_ok(align),
+            Err(_) => refuse(format!("asks the allocator for an alignment of {bytes}")),
+        }
+    };
+    match name.as_str() {
+        "__rust_alloc" | "__rust_alloc_zeroed" if args.len() == 2 => {
+            let size = Size::from_bytes(ecx.read_target_usize(&args[0])?);
+            let align = align(&*ecx, &args[1])?;
+            let init =
+                if name.as_str() == "__rust_alloc" { AllocInit::Uninit } else { AllocInit::Zero };
+            let ptr = ecx.allocate_ptr(size, align, heap, init)?;
+            ecx.write_pointer(ptr, destination)?;
+        }
+        "__rust_dealloc" if args.len() == 3 => {
+            let ptr = ecx.read_pointer(&args[0])?;
+            let size = Size::from_bytes(ecx.read_target_usize(&args[1])?);
+            let align = align(&*ecx, &args[2])?;
+            ecx.deallocate_ptr(ptr, Some((size, align)), heap)?;
+        }
+        "__rust_realloc" if args.len() == 4 => {
+            let ptr = ecx.read_pointer(&args[0])?;
+            let old_size = Size::from_bytes(ecx.read_target_usize(&args[1])?);
+            let align = align(&*ecx, &args[2])?;
+            let new_size = Size::from_bytes(ecx.read_target_usize(&args[3])?);
+            let ptr = ecx.reallocate_ptr(
+                ptr,
+                Some((old_size, align)),
+                new_size,
+                align,
+                heap,
+                AllocInit::Uninit,
+            )?;
+            ecx.write_pointer(ptr, destination)?;
+        }
+        // Only a link-time marker that the allocator shim exists; it does nothing.
+        "__rust_no_alloc_shim_is_unstable_v2" => {}
+        _ => {
+            let path = shown_path(*ecx.tcx, def_id);
+            return refuse(format!("calls the foreign function `{path}`, which is not served"));
+        }
+    }
+    interp_ok(())
+}
+
+/// The panic runtime entered with a `&PanicInfo`: keep its `fmt::Arguments` for the message,
+/// which is formatted once the run has stopped (see [`panic_message`]), and stop.
+fn panic_from_info<'tcx, T>(
+    ecx: &mut Ecx<'tcx>,
+    args: &[FnArg<'tcx, Prov>],
+) -> InterpResult<'tcx, T> {
+    if let Some(info) = args.first() {
+        let info = ecx.deref_pointer(&info.copy_fn_arg())?;
+        if let Some(message) = field_index(&info, "message") {
+            let message = ecx.project_field(&info, message)?;
+            if message.layout.ty.is_ref() {
+                ecx.machine.panic_arguments = Some(ecx.deref_pointer(&message)?);
+            }
+        }
+    }
+    halt(Halt::Panicked(None))
+}
+
+/// std's `begin_panic` with its payload: a string is the message, and anything else is what std
+/// prints for it.
+fn begin_panic<'tcx, T>(ecx: &Ecx<'tcx>, args: &[FnArg<'tcx, Prov>]) -> InterpResult<'tcx, T> {
+    let message = match args.first().map(FnArg::copy_fn_arg) {
+        Some(payload) => match payload.layout.ty.kind() {
+            ty::Ref(_, inner, _) if inner.is_str() => {
+                let text = ecx.deref_pointer(&payload)?;
+                Some(ecx.read_str(&text)?.to_string())
+            }
+            ty::Adt(def, _) if is_string(*ecx.tcx, def.did()) => {
+                // A `String` is never an immediate: it is always in memory.
+                payload.as_mplace_or_imm().left().map(|place| {
+                    string_of(ecx, &place)
+                        .unwrap_or_else(|why| format!("a `String` not read: {why}"))
+                })
+            }
+            _ => Some("Box<dyn Any>".to_string()),
+        },
+        None => None,
+    };
+    halt(Halt::Panicked(message))
+}
+
+/// The compiler's own description of a failed `Assert`, with its operands' values: what is
+/// reported when no panic runtime is loaded to print the runtime's message.
+fn describe_assert<'tcx>(
+    ecx: &Ecx<'tcx>,
+    msg: &mir::AssertMessage<'tcx>,
+) -> InterpResult<'tcx, String> {
+    use crate::rustc_middle::mir::AssertKind::*;
+    let int = |op: &mir::Operand<'tcx>| {
+        ecx.read_immediate(&ecx.eval_operand(op, None)?).map(|x| x.to_const_int())
+    };
+    let described = match msg {
+        BoundsCheck { len, index } => BoundsCheck { len: int(len)?, index: int(index)? },
+        Overflow(op, l, r) => Overflow(*op, int(l)?, int(r)?),
+        OverflowNeg(op) => OverflowNeg(int(op)?),
+        DivisionByZero(op) => DivisionByZero(int(op)?),
+        RemainderByZero(op) => RemainderByZero(int(op)?),
+        ResumedAfterReturn(kind) => ResumedAfterReturn(*kind),
+        ResumedAfterPanic(kind) => ResumedAfterPanic(*kind),
+        ResumedAfterDrop(kind) => ResumedAfterDrop(*kind),
+        MisalignedPointerDereference { required, found } => {
+            MisalignedPointerDereference { required: int(required)?, found: int(found)? }
+        }
+        NullPointerDereference => NullPointerDereference,
+        NullReferenceConstructed => NullReferenceConstructed,
+        InvalidEnumConstruction(source) => InvalidEnumConstruction(int(source)?),
+    };
+    interp_ok(described.to_string())
+}
+
+/// The index of the field named `name` in a struct place, if it has one.
+fn field_index(place: &MPlaceTy<'_, Prov>, name: &str) -> Option<FieldIdx> {
+    let ty::Adt(def, _) = place.layout.ty.kind() else { return None };
+    if !def.is_struct() {
+        return None;
+    }
+    def.non_enum_variant()
+        .fields
+        .iter_enumerated()
+        .find(|(_, field)| field.name.as_str() == name)
+        .map(|(index, _)| index)
+}
+
+/// Run `entry`, a function of no arguments in the local crate, to its value, and read it.
+///
+/// Every path printed on the way (a type, a refusal, an error) is printed in full. A trimmed
+/// path is computed from the whole crate's imports and is only for diagnostics: a session that
+/// trims one and then emits no diagnostic panics when it ends, and a run that succeeds emits
+/// none.
+pub(super) fn run_entry(tcx: TyCtxt<'_>, entry: LocalDefId, budget: Option<u64>) -> Evaluation {
+    with_no_trimmed_paths!(run(tcx, entry, budget))
+}
+
+fn run<'tcx>(tcx: TyCtxt<'tcx>, entry: LocalDefId, budget: Option<u64>) -> Evaluation {
+    let instance = ty::Instance::mono(tcx, entry.to_def_id());
+    let typing_env = ty::TypingEnv::fully_monomorphized();
+    let mut ecx =
+        InterpCx::new(tcx, tcx.def_span(entry.to_def_id()), typing_env, Evaluator::new());
+    let mut steps = 0;
+    let started = start(&mut ecx, instance);
+    let finished =
+        started.and_then(|place| drive(&mut ecx, &mut steps, budget).map(|done| (place, done)));
+    match finished {
+        Ok((_, false)) => Evaluation::Exhausted { steps },
+        Ok((place, true)) => {
+            let ty = with_no_trimmed_paths!(place.layout.ty.to_string());
+            match render(&ecx, &place, 0) {
+                Ok(rendered) => Evaluation::Value { rendered, ty, steps },
+                Err(why) => Evaluation::Refused {
+                    why: format!("the call returned a `{ty}`, which is not rendered: {why}"),
+                },
+            }
+        }
+        Err(err) => match stopped(err) {
+            Halt::Refused(why) => Evaluation::Refused { why },
+            Halt::Panicked(Some(message)) => Evaluation::Panicked { message },
+            Halt::Panicked(None) => {
+                let left = budget.map(|budget| budget.saturating_sub(steps));
+                Evaluation::Panicked { message: panic_message(&mut ecx, left) }
+            }
+        },
+    }
+}
+
+/// The root frame: `instance`'s body, returning into a fresh place of its return type, as the
+/// compile-time interpreter starts a constant's body.
+fn start<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    instance: ty::Instance<'tcx>,
+) -> InterpResult<'tcx, MPlaceTy<'tcx, Prov>> {
+    let body = body_of(ecx, instance)?;
+    let tcx = *ecx.tcx;
+    // The entry returns `impl Sized`; revealing it gives the call's own type.
+    let ty = tcx.normalize_erasing_regions(
+        ecx.typing_env(),
+        ty::Unnormalized::new_wip(body.local_decls[mir::RETURN_PLACE].ty),
+    );
+    let layout = ecx.layout_of(ty)?;
+    let place = ecx.allocate(layout, MemoryKind::Stack)?;
+    ecx.push_stack_frame_raw(
+        instance,
+        body,
+        &place.clone().into(),
+        ReturnContinuation::Stop { cleanup: false },
+    )?;
+    ecx.push_stack_frame_done()?;
+    interp_ok(place)
+}
+
+/// Step until the stack is empty (`true`) or `budget` steps have run (`false`). A step is one
+/// MIR statement or terminator.
+fn drive<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    steps: &mut u64,
+    budget: Option<u64>,
+) -> InterpResult<'tcx, bool> {
+    loop {
+        if ecx.machine.stack.is_empty() {
+            return interp_ok(true);
+        }
+        if budget.is_some_and(|budget| *steps >= budget) {
+            return interp_ok(false);
+        }
+        if !ecx.step()? {
+            return interp_ok(true);
+        }
+        *steps += 1;
+    }
+}
+
+/// What stopped a run, as the outcome it is.
+fn stopped(err: InterpErrorInfo<'_>) -> Halt {
+    match err.into_kind() {
+        InterpErrorKind::MachineStop(stop) => {
+            let shown = stop.to_string();
+            let stop: Box<dyn Any> = stop;
+            match stop.downcast::<Halt>() {
+                Ok(halt) => *halt,
+                Err(_) => Halt::Refused(shown),
+            }
+        }
+        InterpErrorKind::UndefinedBehavior(ub) => {
+            Halt::Refused(format!("undefined behavior: {ub}"))
+        }
+        InterpErrorKind::ResourceExhaustion(ResourceExhaustionInfo::StackFrameLimitReached) => {
+            Halt::Refused(format!("the call stack grew past {MAX_FRAMES} frames"))
+        }
+        other => Halt::Refused(other.to_string()),
+    }
+}
+
+/// The message of a panic whose `fmt::Arguments` the run kept, formatted by the library's own
+/// `alloc::fmt::format` on the same interpreter, so a `{}` in it prints as the program would.
+fn panic_message(ecx: &mut Ecx<'_>, budget: Option<u64>) -> String {
+    let Some(arguments) = ecx.machine.panic_arguments.take() else {
+        return "explicit panic".to_string();
+    };
+    format_arguments(ecx, &arguments, budget)
+        .unwrap_or_else(|why| format!("a panic whose message was not formatted: {why}"))
+}
+
+fn format_arguments<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    arguments: &MPlaceTy<'tcx, Prov>,
+    budget: Option<u64>,
+) -> Result<String, String> {
+    let tcx = *ecx.tcx;
+    let format = alloc_format(tcx).ok_or("the `alloc` crate is not loaded")?;
+    // The panicking frames stay unpopped: their locals, which the arguments point into, are
+    // still in memory. Only the stack is dropped, so a new root frame can start.
+    ecx.machine.stack.clear();
+    let mut steps = 0;
+    let place = start_call(ecx, format, arguments).map_err(|err| stopped(err).to_string())?;
+    match drive(ecx, &mut steps, budget) {
+        Ok(true) => string_of(ecx, &place),
+        Ok(false) => Err("the step budget ran out while formatting it".to_string()),
+        Err(err) => Err(stopped(err).to_string()),
+    }
+}
+
+/// A root frame calling `function(argument)`.
+fn start_call<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    function: DefId,
+    argument: &MPlaceTy<'tcx, Prov>,
+) -> InterpResult<'tcx, MPlaceTy<'tcx, Prov>> {
+    let instance = ty::Instance::mono(*ecx.tcx, function);
+    let body = body_of(ecx, instance)?;
+    let fn_abi = ecx.fn_abi_of_instance_no_deduced_attrs(instance, ty::List::empty())?;
+    let place = ecx.allocate(fn_abi.ret.layout, MemoryKind::Stack)?;
+    ecx.init_stack_frame(
+        instance,
+        body,
+        fn_abi,
+        &[FnArg::Copy(argument.clone().into())],
+        false,
+        &place.clone().into(),
+        ReturnContinuation::Stop { cleanup: false },
+    )?;
+    interp_ok(place)
+}
+
+/// `alloc::fmt::format`, found by path in the loaded `alloc` crate.
+fn alloc_format(tcx: TyCtxt<'_>) -> Option<DefId> {
+    let child = |module: DefId, name: &str, kind: DefKind| {
+        tcx.module_children(module).iter().find_map(|child| match child.res {
+            Res::Def(found, id) if found == kind && child.ident.name.as_str() == name => Some(id),
+            _ => None,
+        })
+    };
+    tcx.crates(()).iter().filter(|&&krate| tcx.crate_name(krate) == sym::alloc).find_map(|&krate| {
+        let fmt = child(krate.as_def_id(), "fmt", DefKind::Mod)?;
+        child(fmt, "format", DefKind::Fn)
+    })
+}
+
+type Rendered = Result<String, String>;
+
+fn read<'tcx, T>(result: InterpResult<'tcx, T>) -> Result<T, String> {
+    result.map_err(|err| err.to_string())
+}
+
+/// The value at `place`, as `{:?}` prints it, read from the interpreter's memory by its type's
+/// layout. The types served: integers, `bool`, `char`, `f32` and `f64`, `str` and `String`,
+/// references, `Box`, arrays, slices and `Vec`, tuples, and any struct or enum whose `Debug` is
+/// derived (`Option`, `Result`, `Ordering` among them), nested. Any other type is refused
+/// rather than printed some other way.
+fn render<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>, depth: u32) -> Rendered {
+    if depth > 256 {
+        return Err("the value is nested too deeply".to_string());
+    }
+    let tcx = *ecx.tcx;
+    let ty = place.layout.ty;
+    let scalar = || read(ecx.read_scalar(place));
+    match ty.kind() {
+        ty::Bool => Ok(read(scalar()?.to_bool())?.to_string()),
+        ty::Char => Ok(format!("{:?}", read(scalar()?.to_char())?)),
+        ty::Int(_) => Ok(read(scalar()?.to_int(place.layout.size))?.to_string()),
+        ty::Uint(_) => Ok(read(scalar()?.to_uint(place.layout.size))?.to_string()),
+        ty::Float(ty::FloatTy::F32) => {
+            Ok(format!("{:?}", f32::from_bits(read(scalar()?.to_u32())?)))
+        }
+        ty::Float(ty::FloatTy::F64) => {
+            Ok(format!("{:?}", f64::from_bits(read(scalar()?.to_u64())?)))
+        }
+        ty::Str => Ok(format!("{:?}", read(ecx.read_str(place))?)),
+        ty::Ref(..) => render(ecx, &read(ecx.deref_pointer(place))?, depth + 1),
+        ty::Array(..) | ty::Slice(_) => {
+            let len = read(place.len(ecx))?;
+            list(ecx, place, len, depth)
+        }
+        ty::Tuple(fields) => {
+            let mut parts = Vec::with_capacity(fields.len());
+            for index in 0..fields.len() {
+                let field = read(ecx.project_field(place, FieldIdx::from_usize(index)))?;
+                parts.push(render(ecx, &field, depth + 1)?);
+            }
+            Ok(match parts.len() {
+                1 => format!("({},)", parts[0]),
+                _ => format!("({})", parts.join(", ")),
+            })
+        }
+        ty::Adt(def, args) => {
+            if ty.is_box_global(tcx) {
+                return render(ecx, &read(ecx.deref_pointer(place))?, depth + 1);
+            }
+            if is_string(tcx, def.did()) {
+                return Ok(format!("{:?}", string_of(ecx, place)?));
+            }
+            if tcx.is_diagnostic_item(sym::Vec, def.did()) {
+                let (pointer, len) = vec_parts(ecx, place)?;
+                let array = Ty::new_array(tcx, args.type_at(0), len);
+                let layout = ecx.layout_of(array).map_err(|err| err.to_string())?;
+                let elements = ecx.ptr_to_mplace(pointer, layout);
+                return list(ecx, &elements, len, depth);
+            }
+            if !debug_is_derived(tcx, ty) {
+                return Err(format!("`{ty}` has no derived `Debug`"));
+            }
+            let variant_index = if def.is_enum() {
+                read(ecx.read_discriminant(place))?
+            } else {
+                crate::rustc_abi::FIRST_VARIANT
+            };
+            let variant = def.variant(variant_index);
+            let place = if def.is_enum() {
+                read(ecx.project_downcast(place, variant_index))?
+            } else {
+                place.clone()
+            };
+            let mut fields = Vec::with_capacity(variant.fields.len());
+            for (index, field) in variant.fields.iter_enumerated() {
+                let value = read(ecx.project_field(&place, index))?;
+                fields.push((field.name, render(ecx, &value, depth + 1)?));
+            }
+            let name = variant.name;
+            Ok(if fields.is_empty() {
+                name.to_string()
+            } else if variant.ctor_kind() == Some(CtorKind::Fn) {
+                let values: Vec<String> = fields.into_iter().map(|(_, value)| value).collect();
+                format!("{name}({})", values.join(", "))
+            } else {
+                let values: Vec<String> =
+                    fields.into_iter().map(|(field, value)| format!("{field}: {value}")).collect();
+                format!("{name} {{ {} }}", values.join(", "))
+            })
+        }
+        _ => Err(format!("`{ty}` is not a type whose value is rendered")),
+    }
+}
+
+/// `[a, b, c]`: the first `len` elements of an array or slice place.
+fn list<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>, len: u64, depth: u32) -> Rendered {
+    let mut parts = Vec::new();
+    for index in 0..len {
+        let element = read(ecx.project_index(place, index))?;
+        parts.push(render(ecx, &element, depth + 1)?);
+    }
+    Ok(format!("[{}]", parts.join(", ")))
+}
+
+/// Whether `ty`'s `Debug` impl is the derived one, which prints the value's shape and so is
+/// what [`render`] reproduces.
+fn debug_is_derived<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
+    let Some(debug) = tcx.get_diagnostic_item(sym::Debug) else { return false };
+    tcx.non_blanket_impls_for_ty(debug, ty).any(|imp| tcx.is_automatically_derived(imp))
+}
+
+/// Whether `did` is `alloc::string::String`, which the library marks as a lang item (`Vec` is a
+/// diagnostic item instead); the diagnostic item is accepted too, for libraries that mark it so.
+fn is_string(tcx: TyCtxt<'_>, did: DefId) -> bool {
+    tcx.is_lang_item(did, LangItem::String) || tcx.is_diagnostic_item(sym::String, did)
+}
+
+/// A `String`'s text: its `vec` field's bytes.
+fn string_of<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>) -> Result<String, String> {
+    let vec = field_index(place, "vec").ok_or("a `String` with no `vec` field")?;
+    let vec = read(ecx.project_field(place, vec))?;
+    let (pointer, len) = vec_parts(ecx, &vec)?;
+    let bytes = read(ecx.read_bytes_ptr_strip_provenance(pointer, Size::from_bytes(len)))?;
+    String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
+}
+
+/// A `Vec`'s buffer and length: its `len` field, and the one raw pointer its `buf` holds. The
+/// buffer's own shape (`RawVec`, `RawVecInner`, `Unique`, `NonNull`) differs between library
+/// versions; the first raw pointer inside it is the buffer in every one of them.
+fn vec_parts<'tcx>(
+    ecx: &Ecx<'tcx>,
+    place: &MPlaceTy<'tcx, Prov>,
+) -> Result<(Pointer<Option<Prov>>, u64), String> {
+    let len = field_index(place, "len").ok_or("a `Vec` with no `len` field")?;
+    let len = read(ecx.read_target_usize(&read(ecx.project_field(place, len))?))?;
+    let buf = field_index(place, "buf").ok_or("a `Vec` with no `buf` field")?;
+    let buf = read(ecx.project_field(place, buf))?;
+    let pointer = first_pointer(ecx, &buf, 0)?.ok_or("a `Vec` whose buffer holds no pointer")?;
+    Ok((pointer, len))
+}
+
+fn first_pointer<'tcx>(
+    ecx: &Ecx<'tcx>,
+    place: &MPlaceTy<'tcx, Prov>,
+    depth: u32,
+) -> Result<Option<Pointer<Option<Prov>>>, String> {
+    match place.layout.ty.kind() {
+        ty::RawPtr(..) => Ok(Some(read(ecx.read_pointer(place))?)),
+        // `NonNull`'s field is a pattern type now, `pattern_type!(*const T is !null)`: a raw
+        // pointer with a restricted range, laid out as the pointer itself.
+        ty::Pat(base, _) if base.is_raw_ptr() => Ok(Some(read(ecx.read_pointer(place))?)),
+        ty::Adt(def, _) if def.is_struct() && depth < 8 => {
+            for index in 0..def.non_enum_variant().fields.len() {
+                let field = read(ecx.project_field(place, FieldIdx::from_usize(index)))?;
+                if let Some(pointer) = first_pointer(ecx, &field, depth + 1)? {
+                    return Ok(Some(pointer));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
