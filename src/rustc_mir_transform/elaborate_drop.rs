@@ -10,7 +10,6 @@ use alloc::vec::Vec;
 
 use core::{fmt, iter, mem};
 
-use itertools::Itertools;
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_hir::attrs::lang_items::LangItem;
@@ -23,6 +22,7 @@ use crate::rustc_middle::ty::{self, GenericArgsRef, Ty, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_mir_dataflow::DropFlagState;
 use crate::rustc_span::{DUMMY_SP, dummy_spanned, sym};
+use itertools::Itertools;
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_transform::coroutine::CTX_ARG;

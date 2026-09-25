@@ -10,12 +10,11 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use alloc::borrow::Cow;
-use eko::path::PathBuf;
-use core::iter;
 use crate::debug_assert_matches;
+use alloc::borrow::Cow;
+use core::iter;
+use eko::path::PathBuf;
 
-use itertools::{EitherOrBoth, Itertools};
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::codes::*;
@@ -52,6 +51,7 @@ use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{
     BytePos, DUMMY_SP, DesugaringKind, ExpnKind, Ident, MacroKind, Span, Symbol, kw, sym,
 };
+use itertools::{EitherOrBoth, Itertools};
 use tracing::{debug, instrument};
 
 use super::{
@@ -62,7 +62,9 @@ use crate::rustc_trait_selection::diagnostics;
 use crate::rustc_trait_selection::error_reporting::TypeErrCtxt;
 use crate::rustc_trait_selection::infer::InferCtxtExt as _;
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
-use crate::rustc_trait_selection::traits::{ImplDerivedCause, NormalizeExt, ObligationCtxt, SelectionContext};
+use crate::rustc_trait_selection::traits::{
+    ImplDerivedCause, NormalizeExt, ObligationCtxt, SelectionContext,
+};
 
 #[derive(Debug)]
 pub enum CoroutineInteriorOrUpvar {
@@ -1962,7 +1964,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     };
                     err.note(msg);
                 } else {
-                    err.messages = vec![(crate::rustc_errors::DiagMessage::from(msg), Style::NoStyle)];
+                    err.messages =
+                        vec![(crate::rustc_errors::DiagMessage::from(msg), Style::NoStyle)];
                 }
                 if is_sized {
                     err.span_label(
@@ -6852,7 +6855,9 @@ pub(super) fn get_explanation_based_on_obligation<'tcx>(
             // not explicitly marked stable is considered unstable, so the extra text is
             // unhelpful noise. See <https://github.com/rust-lang/rust/issues/152692>.
             let mention_unstable = !tcx.sess.opts.unstable_opts.force_unstable_if_unmarked
-                && tcx.lookup_stability(trait_predicate.def_id()).map(|stab| stab.level.is_stable())
+                && tcx
+                    .lookup_stability(trait_predicate.def_id())
+                    .map(|stab| stab.level.is_stable())
                     == Some(false);
             let unstable = if mention_unstable { "nightly-only, unstable " } else { "" };
 
@@ -6930,7 +6935,10 @@ pub fn suggest_desugaring_async_fn_to_impl_future_in_trait<'tcx>(
         ]
     } else {
         vec![
-            (future_output_ty.span.shrink_to_lo(), "impl core::future::Future<Output = ".to_owned()),
+            (
+                future_output_ty.span.shrink_to_lo(),
+                "impl core::future::Future<Output = ".to_owned(),
+            ),
             (future_output_ty.span.shrink_to_hi(), format!(">{add_bounds}")),
             (async_span, String::new()),
         ]

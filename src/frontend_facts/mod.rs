@@ -597,7 +597,8 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // the one they printed. Serial: one pass over the definition table, and what each module
     // makes visible is the resolver's own answer, already computed, only read here.
     for i in 0..count {
-        let local = LocalDefId { local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i) };
+        let local =
+            LocalDefId { local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i) };
         match tcx.def_kind(local) {
             DefKind::Mod => facts.modules.push(module_names(tcx, &names, local)),
             DefKind::Macro(_) => facts.macros.extend(macro_facts(tcx, &names, local)),
@@ -710,8 +711,11 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
         let (lo_sf, lo) = sm.lookup_byte_offset_in(span.lo());
         let (_, hi) = sm.lookup_byte_offset_in(span.hi());
         let (input, name) = &self.input;
-        let file =
-            if core::ptr::eq(Arc::as_ptr(input), lo_sf) { Arc::clone(name) } else { file_name(lo_sf) };
+        let file = if core::ptr::eq(Arc::as_ptr(input), lo_sf) {
+            Arc::clone(name)
+        } else {
+            file_name(lo_sf)
+        };
         ByteSpan { file, start: lo.0, end: hi.0 }
     }
 }
@@ -719,7 +723,11 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
 /// The names a module makes visible, from the resolver: its items, its imports and re-exports,
 /// and what its globs bring in, each with what it resolves to. A name that resolves to no
 /// definition (a primitive type, a built-in attribute) is left out.
-fn module_names<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> ModuleNames {
+fn module_names<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    names: &Names<'_, 'tcx>,
+    local: LocalDefId,
+) -> ModuleNames {
     use crate::rustc_hir::def::{Namespace as Ns, Res};
     let visible = tcx
         .module_children_local(local)
@@ -746,8 +754,13 @@ fn module_names<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDe
 
 /// A declarative macro's definition, its rules printed from its tokens. `None` for a macro
 /// that is not an item (one a proc macro crate declares).
-fn macro_facts<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> Option<MacroFacts> {
-    let Node::Item(hir::Item { kind: ItemKind::Macro(ident, def, _), .. }) = tcx.hir_node_by_def_id(local)
+fn macro_facts<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    names: &Names<'_, 'tcx>,
+    local: LocalDefId,
+) -> Option<MacroFacts> {
+    let Node::Item(hir::Item { kind: ItemKind::Macro(ident, def, _), .. }) =
+        tcx.hir_node_by_def_id(local)
     else {
         return None;
     };
@@ -1060,8 +1073,12 @@ fn describe_shape(tcx: TyCtxt<'_>, local: LocalDefId, definition: &mut Definitio
                     .iter()
                     .map(|variant| {
                         let (kind, fields) = match &variant.data {
-                            hir::VariantData::Struct { fields, .. } => (VariantKind::Struct, fields.len()),
-                            hir::VariantData::Tuple(fields, ..) => (VariantKind::Tuple, fields.len()),
+                            hir::VariantData::Struct { fields, .. } => {
+                                (VariantKind::Struct, fields.len())
+                            }
+                            hir::VariantData::Tuple(fields, ..) => {
+                                (VariantKind::Tuple, fields.len())
+                            }
                             hir::VariantData::Unit(..) => (VariantKind::Unit, 0),
                         };
                         VariantShape {
@@ -1720,8 +1737,7 @@ fn externs(dependencies: &[Dependency]) -> crate::rustc_session::config::Externs
         BTreeMap::new();
     for dependency in dependencies {
         let (prelude, noprelude) = by_name.entry(dependency.name.clone()).or_default();
-        let file =
-            CanonicalizedPath::new(eko::path::PathBuf::from(dependency.metadata.as_str()));
+        let file = CanonicalizedPath::new(eko::path::PathBuf::from(dependency.metadata.as_str()));
         let files = if dependency.prelude { prelude } else { noprelude };
         files.insert(file);
     }
@@ -1962,8 +1978,7 @@ impl Entry<'_> {
 fn for_each_diagnostic<'a>(captured: &'a str, mut f: impl FnMut(Severity, Entry<'a>)) {
     let mut emit = |start: usize, end: usize, crlf: bool| {
         let text = &captured[start..end];
-        let severity = if text.starts_with("error") || text.starts_with("internal compiler error")
-        {
+        let severity = if text.starts_with("error") || text.starts_with("internal compiler error") {
             Severity::Error
         } else if text.starts_with("warning") {
             Severity::Warning
@@ -2266,8 +2281,7 @@ pub fn run_call(source: &str, edition: Option<&str>, loaded: Loaded<'_>, asked: 
     // A string input's text does not enter the options (only a file root is looked at, for a
     // `no_core` it declares), so they are taken first: whether a library is loaded decides what
     // is appended to the source.
-    let probe =
-        Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
+    let probe = Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
     let mut opts = match setup.options(&probe) {
         Ok(opts) => opts,
         Err(errors) => return Ran::silent(Evaluation::Refused { why: errors.join("\n") }),
@@ -2540,8 +2554,7 @@ fn shared_session(
     calls: &[Call<'_>],
 ) -> Option<Vec<Option<Ran>>> {
     let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
-    let probe =
-        Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
+    let probe = Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
     // Options that do not build refuse every call alike, as each call alone says.
     let mut opts = setup.options(&probe).ok()?;
     opts.cg.overflow_checks = Some(true);
@@ -2835,8 +2848,7 @@ mod tests {
     // a break and stays, and a location line before any entry is dropped.
     #[test]
     fn crlf_breaks_inside_an_entry_read_as_newlines() {
-        let captured =
-            "  --> orphan.rs:1:1\r\nerror: a\r\n  --> a.rs:1:1\r\n  --> a.rs:2:2\nwarning: w\r\nerror: b\r";
+        let captured = "  --> orphan.rs:1:1\r\nerror: a\r\n  --> a.rs:1:1\r\n  --> a.rs:2:2\nwarning: w\r\nerror: b\r";
         let (errors, warnings) = split_diagnostics(captured);
         assert_eq!(
             errors,

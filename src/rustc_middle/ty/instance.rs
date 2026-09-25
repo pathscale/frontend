@@ -8,8 +8,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::fmt;
 use crate::assert_matches;
+use core::fmt;
 
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::ErrorGuaranteed;
@@ -17,9 +17,9 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, DefKind, Namespace};
 use crate::rustc_hir::def_id::{CrateNum, DefId};
-use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable};
 use crate::rustc_span::def_id::LOCAL_CRATE;
 use crate::rustc_span::{DUMMY_SP, Span, sym};
+use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable};
 use tracing::{debug, instrument};
 
 use crate::rustc_middle::diagnostics;

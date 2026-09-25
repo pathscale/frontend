@@ -1,5 +1,5 @@
-use crate::rustc_hir::attrs::RustcMirKind;
 use crate::find_attr;
+use crate::rustc_hir::attrs::RustcMirKind;
 use crate::rustc_middle::mir::{self, Body, Local, Location};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::{Span, sym};
@@ -10,7 +10,9 @@ use crate::rustc_mir_dataflow::diagnostics::{
     PeekMustBePlaceOrRefPlace, StopAfterDataFlowEndedCompilation,
 };
 use crate::rustc_mir_dataflow::framework::BitSetExt;
-use crate::rustc_mir_dataflow::impls::{MaybeInitializedPlaces, MaybeLiveLocals, MaybeUninitializedPlaces};
+use crate::rustc_mir_dataflow::impls::{
+    MaybeInitializedPlaces, MaybeLiveLocals, MaybeUninitializedPlaces,
+};
 use crate::rustc_mir_dataflow::move_paths::{HasMoveData, LookupResult, MoveData, MovePathIndex};
 use crate::rustc_mir_dataflow::{Analysis, JoinSemiLattice, ResultsCursor};
 
@@ -169,7 +171,8 @@ impl PeekCall {
                 return None;
             }
 
-            let ty = crate::rustc_const_eval::interpret::intrinsic_type_param(tcx, def_id, fn_args, 0)?;
+            let ty =
+                crate::rustc_const_eval::interpret::intrinsic_type_param(tcx, def_id, fn_args, 0)?;
             let kind = PeekCallKind::from_arg_ty(ty);
             let arg = match &args[0].node {
                 Operand::Copy(place) | Operand::Move(place) => {

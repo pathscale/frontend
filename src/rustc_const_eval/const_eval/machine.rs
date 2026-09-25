@@ -35,10 +35,9 @@ use crate::rustc_const_eval::diagnostics::{LongRunning, LongRunningWarn};
 use crate::rustc_const_eval::interpret::{
     self, AllocId, AllocInit, AllocRange, ConstAllocation, CtfeProvenance, FnArg, Frame,
     GlobalAlloc, ImmTy, Immediate, InterpCx, InterpResult, OpTy, PlaceTy, Pointer, RangeSet,
-    RetagMode, Scalar, compile_time_machine, ensure_monomorphic_enough, err_inval,
-    intrinsic_type_param, interp_ok,
-    throw_exhaust, throw_inval, throw_ub, throw_ub_format, throw_unsup, throw_unsup_format,
-    type_implements_dyn_trait,
+    RetagMode, Scalar, compile_time_machine, ensure_monomorphic_enough, err_inval, interp_ok,
+    intrinsic_type_param, throw_exhaust, throw_inval, throw_ub, throw_ub_format, throw_unsup,
+    throw_unsup_format, type_implements_dyn_trait,
 };
 
 /// When hitting this many interpreted terminators we emit a deny by default lint
@@ -493,9 +492,8 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
         }
         let intrinsic_name = ecx.tcx.item_name(instance.def_id());
         let tcx = ecx.tcx.tcx;
-        let type_param_at = |index| {
-            intrinsic_type_param(tcx, instance.def_id(), instance.args, index)
-        };
+        let type_param_at =
+            |index| intrinsic_type_param(tcx, instance.def_id(), instance.args, index);
 
         // CTFE-specific intrinsics.
         match intrinsic_name {

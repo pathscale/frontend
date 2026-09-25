@@ -138,7 +138,9 @@ fn a_type_error_is_refused_by_a_strict_read_and_recorded_by_a_library_read() {
     let loaded = Loaded { dependencies: &dependencies, ..Loaded::default() };
     let checked = check_source_against(
         "user",
-        Arc::new("#![feature(no_core)]\n#![no_core]\npub fn f() -> u32 { base::widen(1) }\n".into()),
+        Arc::new(
+            "#![feature(no_core)]\n#![no_core]\npub fn f() -> u32 { base::widen(1) }\n".into(),
+        ),
         Some("2021"),
         loaded,
         1,
@@ -152,7 +154,8 @@ fn a_type_error_is_refused_by_a_strict_read_and_recorded_by_a_library_read() {
 #[test]
 fn overlapping_impls_are_refused_by_a_strict_read_and_not_judged_by_a_library_read() {
     frontend::unwind_janky::install_catcher(catcher);
-    let source = format!("{LANG}pub trait Mark {{}}\nimpl<T> Mark for T {{}}\nimpl Mark for u32 {{}}\n");
+    let source =
+        format!("{LANG}pub trait Mark {{}}\nimpl<T> Mark for T {{}}\nimpl Mark for u32 {{}}\n");
 
     let strict_dir = Scratch::new("strict-overlap");
     let (strict, _) = read_fixture(&strict_dir, "marks", &source, false);
@@ -242,7 +245,8 @@ fn every_rust_src_reads_core_alloc_and_std_as_a_chain() {
         "FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated, each holding `library/`",
     );
     frontend::unwind_janky::install_catcher(catcher);
-    let roots: Vec<PathBuf> = roots.split(':').filter(|r| !r.is_empty()).map(PathBuf::from).collect();
+    let roots: Vec<PathBuf> =
+        roots.split(':').filter(|r| !r.is_empty()).map(PathBuf::from).collect();
     assert!(!roots.is_empty(), "FRONTEND_RUST_SRC_ROOTS names no tree");
 
     let mut failures = Vec::new();
@@ -391,7 +395,10 @@ pub fn count_skipping(text: &str, target: char) -> usize {
     assert_eq!(value("count_skipping(\"r\", 'r')").0, "0");
 
     // Heap values, read back by layout.
-    assert_eq!(value("vec![1, 2, 3, 4].iter().sum::<i32>()"), ("10".to_string(), "i32".to_string()));
+    assert_eq!(
+        value("vec![1, 2, 3, 4].iter().sum::<i32>()"),
+        ("10".to_string(), "i32".to_string())
+    );
     let (rendered, ty) = value("vec![1u8, 2, 3]");
     assert_eq!(rendered, "[1, 2, 3]");
     assert!(ty.contains("Vec<u8"), "{ty}");
@@ -403,12 +410,11 @@ pub fn count_skipping(text: &str, target: char) -> usize {
     // the negative one takes at least as many to render, apart; and a budget of exactly the
     // call's steps lets it finish, however long its value takes to print.
     let add = "pub fn add(x: i64, y: i64) -> i64 { x + y }\n";
-    let steps_of = |call: &str, budget: Option<u64>| {
-        match evaluate(add, Some("2021"), loaded, call, budget) {
+    let steps_of =
+        |call: &str, budget: Option<u64>| match evaluate(add, Some("2021"), loaded, call, budget) {
             Evaluation::Value { steps, render_steps, .. } => (steps, render_steps),
             other => panic!("{call}: {other:?}"),
-        }
-    };
+        };
     let (positive, positive_render) = steps_of("add(2, 3)", None);
     let (negative, negative_render) = steps_of("add(2, -3)", None);
     assert_eq!(positive, negative, "the same addition, whatever the signs");
@@ -423,10 +429,7 @@ pub fn count_skipping(text: &str, target: char) -> usize {
 
     // Panics, with the messages a run prints.
     assert_eq!(panicked("[200u8, 100].iter().sum::<u8>()"), "attempt to add with overflow");
-    assert_eq!(
-        panicked("None::<u8>.unwrap()"),
-        "called `Option::unwrap()` on a `None` value"
-    );
+    assert_eq!(panicked("None::<u8>.unwrap()"), "called `Option::unwrap()` on a `None` value");
     assert_eq!(
         panicked("vec![1, 2, 3][5]"),
         "index out of bounds: the len is 3 but the index is 5"
@@ -711,7 +714,8 @@ fn read_chain_recording(
         if !read_names.insert(crate_name.clone()) {
             return Err(format!("two crates of the chain are named `{crate_name}`"));
         }
-        let metadata = out.join(format!("lib{crate_name}.rmeta")).to_str().expect("UTF-8").to_string();
+        let metadata =
+            out.join(format!("lib{crate_name}.rmeta")).to_str().expect("UTF-8").to_string();
 
         // What cargo hands rustc: each dependency under the name the manifest gives it, and
         // every crate those depend on, which a crate's metadata names and the reader loads.
@@ -727,7 +731,10 @@ fn read_chain_recording(
         let direct_targets: BTreeSet<&String> = direct.values().collect();
         let mut reach = graph.closure(id);
         for implicit in [graph.core(), graph.compiler_builtins()].into_iter().flatten() {
-            if implicit != *id && written.contains_key(&implicit) && !graph.closure(&implicit).contains(id) {
+            if implicit != *id
+                && written.contains_key(&implicit)
+                && !graph.closure(&implicit).contains(id)
+            {
                 reach.insert(implicit);
             }
         }
@@ -875,24 +882,29 @@ mod plan {
                         let Some((platform, kind, rest)) = dependency_table(&table) else {
                             continue;
                         };
-                        let (name, fields): (&str, Vec<(String, Value)>) = match (rest, key.as_slice()) {
-                            ([], [name]) => match &entry.value {
-                                Value::Table(fields) => (*name, fields.clone()),
-                                value => (*name, vec![("version".to_string(), value.clone())]),
-                            },
-                            ([], [name, field]) | ([name], [field]) => {
-                                (*name, vec![(field.to_string(), entry.value.clone())])
-                            }
-                            _ => continue,
-                        };
+                        let (name, fields): (&str, Vec<(String, Value)>) =
+                            match (rest, key.as_slice()) {
+                                ([], [name]) => match &entry.value {
+                                    Value::Table(fields) => (*name, fields.clone()),
+                                    value => (*name, vec![("version".to_string(), value.clone())]),
+                                },
+                                ([], [name, field]) | ([name], [field]) => {
+                                    (*name, vec![(field.to_string(), entry.value.clone())])
+                                }
+                                _ => continue,
+                            };
                         deps.entry((platform, kind, name.to_string())).or_default().extend(fields);
                     }
                 }
             }
             for ((platform, kind, key), fields) in deps {
-                let field = |name: &str| fields.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v);
+                let field =
+                    |name: &str| fields.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v);
                 let flag = |names: &[&str], default: bool| {
-                    names.iter().find_map(|name| field(*name).and_then(Value::as_bool)).unwrap_or(default)
+                    names
+                        .iter()
+                        .find_map(|name| field(*name).and_then(Value::as_bool))
+                        .unwrap_or(default)
                 };
                 manifest.deps.push(DepDecl {
                     package: field("package").and_then(Value::as_str).unwrap_or(&key).to_string(),
@@ -958,7 +970,9 @@ mod plan {
                     dependencies: Vec::new(),
                 });
                 match entry.key.first().map(String::as_str) {
-                    Some("name") => package.name = entry.value.as_str().unwrap_or_default().to_string(),
+                    Some("name") => {
+                        package.name = entry.value.as_str().unwrap_or_default().to_string()
+                    }
                     Some("version") => {
                         package.version = entry.value.as_str().unwrap_or_default().to_string()
                     }
@@ -989,7 +1003,8 @@ mod plan {
 
         /// `--cfg` for each enabled feature, and what a build script prints that the source reads.
         pub fn cfg(&self, features: &BTreeSet<String>) -> Vec<String> {
-            let mut cfg: Vec<String> = features.iter().map(|f| format!("feature=\"{f}\"")).collect();
+            let mut cfg: Vec<String> =
+                features.iter().map(|f| format!("feature=\"{f}\"")).collect();
             // `std`'s build script prints this on every host.
             if self.manifest.name == "std" {
                 cfg.push("backtrace_in_libstd".to_string());
@@ -1013,7 +1028,10 @@ mod plan {
                     version.split_once('-').map(|(_, pre)| pre.to_string()).unwrap_or_default(),
                 ),
                 ("CARGO_CRATE_NAME".to_string(), crate_name.to_string()),
-                ("CARGO_MANIFEST_DIR".to_string(), self.dir.to_str().unwrap_or_default().to_string()),
+                (
+                    "CARGO_MANIFEST_DIR".to_string(),
+                    self.dir.to_str().unwrap_or_default().to_string(),
+                ),
             ];
             if self.manifest.name == "std" {
                 env.push(("STD_ENV_ARCH".to_string(), std::env::consts::ARCH.to_string()));
@@ -1143,11 +1161,17 @@ mod plan {
         /// Where a dependency of the package `parent` (at `parent_dir`) is, as the lock file
         /// resolved it: its package id and its directory. `None` when the lock has no such
         /// dependency of `parent`, which is a dependency no feature of the workspace enables.
-        fn locate(&self, parent: &str, parent_dir: &Path, decl: &DepDecl) -> Option<(String, PathBuf)> {
+        fn locate(
+            &self,
+            parent: &str,
+            parent_dir: &Path,
+            decl: &DepDecl,
+        ) -> Option<(String, PathBuf)> {
             let locked_parent = self.lock.iter().find(|locked| locked.id() == parent)?;
             let version: Option<String> = locked_parent.dependencies.iter().find_map(|entry| {
                 let mut words = entry.split(' ');
-                (words.next() == Some(decl.package.as_str())).then(|| words.next().map(str::to_string))
+                (words.next() == Some(decl.package.as_str()))
+                    .then(|| words.next().map(str::to_string))
             })?;
             let locked = self.lock.iter().find(|locked| {
                 locked.name == decl.package && version.as_ref().is_none_or(|v| &locked.version == v)
@@ -1225,12 +1249,16 @@ mod plan {
                     .iter()
                     .find(|decl| decl.key == real && decl.kind == Kind::Normal)
                     .ok_or_else(|| format!("{} does not depend on `{real}`", dir.display()))?;
-                (target, dir) = self
-                    .locate(&target, &dir, decl)
-                    .ok_or_else(|| format!("{}: `{real}` is not in the lock file", dir.display()))?;
+                (target, dir) = self.locate(&target, &dir, decl).ok_or_else(|| {
+                    format!("{}: `{real}` is not in the lock file", dir.display())
+                })?;
             }
-            self.edges.get_mut(id).expect("an activated package").insert(key.to_string(), target.clone());
-            let features: Vec<String> = decls.iter().flat_map(|decl| decl.features.clone()).collect();
+            self.edges
+                .get_mut(id)
+                .expect("an activated package")
+                .insert(key.to_string(), target.clone());
+            let features: Vec<String> =
+                decls.iter().flat_map(|decl| decl.features.clone()).collect();
             let default = decls.iter().any(|decl| decl.default_features);
             self.activate(&target, &dir, &features, default)?;
             if let Some(pending) = self.weak.remove(&(id.clone(), key.to_string())) {
@@ -1245,7 +1273,8 @@ mod plan {
         /// (`dep:x`, or an optional dependency's own name), and features of dependencies
         /// (`x/f`, and `x?/f` once `x` is enabled by something else).
         fn feature(&mut self, id: &String, feature: &str) -> Result<(), String> {
-            if !self.features.get_mut(id).expect("an activated package").insert(feature.to_string()) {
+            if !self.features.get_mut(id).expect("an activated package").insert(feature.to_string())
+            {
                 return Ok(());
             }
             let manifest = &self.packages[id].manifest;
@@ -1730,7 +1759,10 @@ mod toml {
                 }
                 _ => {
                     let start = self.i;
-                    while !matches!(self.peek(), None | Some(b',' | b']' | b'}' | b'\n' | b'\r' | b'#')) {
+                    while !matches!(
+                        self.peek(),
+                        None | Some(b',' | b']' | b'}' | b'\n' | b'\r' | b'#')
+                    ) {
                         self.i += 1;
                     }
                     match self.text(start, self.i).trim() {

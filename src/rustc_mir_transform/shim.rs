@@ -8,8 +8,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::{fmt, iter};
 use crate::assert_matches;
+use core::{fmt, iter};
 
 use crate::rustc_abi::{ExternAbi, FIRST_VARIANT, FieldIdx, VariantIdx};
 use crate::rustc_data_structures::thin_vec::ThinVec;
@@ -28,7 +28,9 @@ use crate::rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned, sym};
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_transform::deref_separator::deref_finder;
-use crate::rustc_mir_transform::elaborate_drop::{DropElaborator, DropFlagMode, DropStyle, Unwind, elaborate_drop};
+use crate::rustc_mir_transform::elaborate_drop::{
+    DropElaborator, DropFlagMode, DropStyle, Unwind, elaborate_drop,
+};
 use crate::rustc_mir_transform::patch::MirPatch;
 use crate::rustc_mir_transform::{
     abort_unwinding_calls, add_call_guards, add_moves_for_packed_drops, inline, instsimplify,

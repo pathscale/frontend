@@ -20,7 +20,6 @@ mod simd;
 use crate::assert_matches;
 
 use crate::rustc_abi::{FieldIdx, HasDataLayout, Size, VariantIdx};
-use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use crate::rustc_ast::{IntTy, UintTy};
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_middle::mir::interpret::{CTFE_ALLOC_SALT, read_target_uint, write_target_uint};
@@ -29,6 +28,7 @@ use crate::rustc_middle::ty::layout::TyAndLayout;
 use crate::rustc_middle::ty::{FloatTy, GenericArgsRef, Ty, TyCtxt, TypeVisitableExt};
 use crate::rustc_middle::{bug, span_bug, ty};
 use crate::rustc_span::{Symbol, sym};
+use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use tracing::trace;
 
 use super::memory::MemoryKind;
@@ -244,9 +244,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         }
 
         let tcx = self.tcx.tcx;
-        let type_param_at = |index| {
-            intrinsic_type_param(tcx, instance.def_id(), instance_args, index)
-        };
+        let type_param_at =
+            |index| intrinsic_type_param(tcx, instance.def_id(), instance_args, index);
 
         match intrinsic_name {
             sym::type_name => {

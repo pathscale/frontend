@@ -10,17 +10,15 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use alloc::borrow::Cow;
 use crate::debug_assert_matches;
+use alloc::borrow::Cow;
 use core::ops::{ControlFlow, Range};
 
-use hir::def::{CtorKind, DefKind};
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, NumScalableVectors, ScalableElt, VariantIdx};
 use crate::rustc_errors::{ErrorGuaranteed, MultiSpan};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, extension};
 use crate::rustc_span::{DUMMY_SP, Span, Symbol, kw, sym};
 use crate::rustc_type_ir::TyKind::*;
 use crate::rustc_type_ir::solve::SizedTraitKind;
@@ -28,6 +26,8 @@ use crate::rustc_type_ir::walk::TypeWalker;
 use crate::rustc_type_ir::{
     self as ir, BoundVar, CollectAndApply, MayBeErased, TypeVisitableExt, elaborate,
 };
+use hir::def::{CtorKind, DefKind};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, extension};
 use tracing::instrument;
 use ty::util::IntTypeExt;
 
@@ -134,9 +134,9 @@ impl<'tcx> ty::CoroutineArgs<TyCtxt<'tcx>> {
         tcx: TyCtxt<'tcx>,
     ) -> impl Iterator<Item = (VariantIdx, Discr<'tcx>)> {
         let range = self.variant_range(def_id, tcx);
-        (range.start.as_usize()..range.end.as_usize()).map(VariantIdx::from_usize).map(move |index| {
-            (index, Discr { val: index.as_usize() as u128, ty: self.discr_ty(tcx) })
-        })
+        (range.start.as_usize()..range.end.as_usize()).map(VariantIdx::from_usize).map(
+            move |index| (index, Discr { val: index.as_usize() as u128, ty: self.discr_ty(tcx) }),
+        )
     }
 
     /// Calls `f` with a reference to the name of the enumerator for the given
@@ -1742,7 +1742,8 @@ impl<'tcx> Ty<'tcx> {
             ty::Coroutine(_, args) => args.as_coroutine().discr_ty(tcx),
 
             ty::Param(_) | ty::Alias(..) | ty::Infer(ty::TyVar(_)) => {
-                let Some(discriminant_kind) = tcx.lang_items().get(LangItem::DiscriminantKind) else {
+                let Some(discriminant_kind) = tcx.lang_items().get(LangItem::DiscriminantKind)
+                else {
                     return tcx.types.u8;
                 };
                 let assoc_items = tcx.associated_item_def_ids(discriminant_kind);

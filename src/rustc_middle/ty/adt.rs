@@ -22,10 +22,10 @@ use crate::rustc_hir::def::{CtorKind, DefKind, Res};
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::{self as hir, find_attr};
 use crate::rustc_index::{IndexSlice, IndexVec};
-use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use crate::rustc_span::sym;
 use crate::rustc_type_ir::FieldInfo;
 use crate::rustc_type_ir::solve::AdtDestructorKind;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use tracing::{debug, info, trace};
 
 use super::{
@@ -225,9 +225,8 @@ impl<'tcx> AdtDef<'tcx> {
             return None;
         }
         let params = &tcx.generics_of(self.did()).own_params;
-        let Some(base_param) = params
-            .iter()
-            .find(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
+        let Some(base_param) =
+            params.iter().find(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
         else {
             return None;
         };
@@ -238,23 +237,14 @@ impl<'tcx> AdtDef<'tcx> {
         let Some(field_param) = const_params.next() else { return None };
 
         let base = args.get(base_param.index as usize).copied()?.as_type()?;
-        let variant_idx = match args
-            .get(variant_param.index as usize)
-            .copied()?
-            .as_const()?
-            .kind()
+        let variant_idx = match args.get(variant_param.index as usize).copied()?.as_const()?.kind()
         {
             ConstKind::Value(v) if v.ty == tcx.types.u32 => {
                 VariantIdx::from_u32(v.try_to_leaf()?.to_u32())
             }
             _ => return None,
         };
-        let field_idx = match args
-            .get(field_param.index as usize)
-            .copied()?
-            .as_const()?
-            .kind()
-        {
+        let field_idx = match args.get(field_param.index as usize).copied()?.as_const()?.kind() {
             ConstKind::Value(v) if v.ty == tcx.types.u32 => {
                 FieldIdx::from_u32(v.try_to_leaf()?.to_u32())
             }
@@ -271,11 +261,7 @@ impl<'tcx> AdtDef<'tcx> {
                 if variant_idx != FIRST_VARIANT {
                     return None;
                 }
-                (
-                    *tys.get(field_idx.index())?,
-                    None,
-                    sym::integer(field_idx.index()),
-                )
+                (*tys.get(field_idx.index())?, None, sym::integer(field_idx.index()))
             }
             _ => return None,
         };
@@ -676,9 +662,11 @@ impl<'tcx> AdtDef<'tcx> {
                     Ok(Discr { val: b, ty })
                 } else {
                     info!("invalid enum discriminant: {:#?}", val);
-                    let guar = tcx.dcx().emit_err(crate::rustc_middle::diagnostics::ConstEvalNonIntError {
-                        span: tcx.def_span(expr_did),
-                    });
+                    let guar = tcx.dcx().emit_err(
+                        crate::rustc_middle::diagnostics::ConstEvalNonIntError {
+                            span: tcx.def_span(expr_did),
+                        },
+                    );
                     Err(guar)
                 }
             }

@@ -7,13 +7,13 @@
 //! * Traits that represent operators; e.g., `Add`, `Sub`, `Index`.
 //! * Functions called by the compiler itself.
 
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
-use rustc_macros::{BlobDecodable, Encodable, PrintAttribute, StableHash};
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::{Symbol, kw, sym};
+use alloc::string::String;
+use alloc::vec::Vec;
+use rustc_macros::{BlobDecodable, Encodable, PrintAttribute, StableHash};
 
 use crate::rustc_attr_ir::PrintAttribute;
 use crate::rustc_attr_ir::target::{AssocCtxt, MethodKind, Target};
