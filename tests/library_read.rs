@@ -376,7 +376,7 @@ pub fn count_skipping(text: &str, target: char) -> usize {
         other => panic!("{call}: {other:?}"),
     };
     let panicked = |call: &str| match eval(call) {
-        Evaluation::Panicked { message } => message,
+        Evaluation::Panicked { message, .. } => message,
         other => panic!("{call}: {other:?}"),
     };
 

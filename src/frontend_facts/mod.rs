@@ -2120,17 +2120,27 @@ pub fn check_source_against(
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Evaluation {
     /// The call returned. `rendered` is the value as `{:?}` prints it, `ty` its type, and
-    /// `steps` how many MIR statements and terminators the interpreter stepped to get it.
+    /// `steps` how many MIR statements and terminators the interpreter stepped to get it and
+    /// render it (a `no_core` value is read by layout, in no steps): what a budget is spent on.
     Value { rendered: String, ty: String, steps: u64 },
     /// The call panicked: an overflow (overflow checks are on, as in a debug build), an index out
-    /// of bounds, an `unwrap` of `None`, a `panic!`. `message` is what the panic says.
-    Panicked { message: String },
+    /// of bounds, an `unwrap` of `None`, a `panic!`. `message` is what the panic says, and
+    /// `steps` how many MIR statements and terminators ran before it (absent reads as zero, from
+    /// a writer that predates it).
+    Panicked {
+        message: String,
+        #[serde(default)]
+        steps: u64,
+    },
     /// The call was not run to its end, and why: the source does not compile (its errors), it
     /// calls something this interpreter does not serve (a foreign function, named), it has
     /// undefined behavior, its value has no `Debug` (or its `Debug` failed), or the compiler
     /// hit a bug on the way (what it said).
     Refused { why: String },
-    /// The caller's step budget ran out after `steps` steps.
+    /// The call did not finish within the caller's step budget: `steps` ran, the budget, and
+    /// nothing more. Its own outcome, never a value or a panic: what the call would have come to
+    /// is not known. A step is one MIR statement or terminator, the rendering of a value by its
+    /// `Debug` included, as in a `Value`'s `steps`.
     Exhausted { steps: u64 },
 }
 
@@ -2337,7 +2347,9 @@ pub struct EvaluatedAll {
 /// [`evaluate`] for every call of `calls` over the one `source`, sharing a compiler session: the
 /// source is compiled once with one function per call appended, and each call is run by the
 /// interpreter in that session, each on a machine of its own (its own memory, its own
-/// statics' copies, its own budget), so no call sees another's values.
+/// statics' copies), so no call sees another's values. Each call is `(call, budget)`: the most
+/// steps it may take, rendering included, as [`evaluate`]'s `budget`; one past it is
+/// [`Evaluation::Exhausted`] and cost no more than that.
 ///
 /// **Each answer is what the call's own session would give.** That is the contract, and every
 /// way a shared session could blur it is taken out rather than approximated:
@@ -2359,17 +2371,16 @@ pub fn evaluate_all(
     source: &str,
     edition: Option<&str>,
     loaded: Loaded<'_>,
-    calls: &[&str],
-    budget: Option<u64>,
+    calls: &[(&str, Option<u64>)],
 ) -> EvaluatedAll {
     let mut answers: Vec<Option<Evaluation>> = calls.iter().map(|_| None).collect();
     let mut sessions = 0;
     // The calls still to answer, by their place in `calls`.
     let mut open: Vec<usize> = (0..calls.len()).collect();
     while open.len() > 1 {
-        let asked: Vec<&str> = open.iter().map(|&at| calls[at]).collect();
+        let asked: Vec<(&str, Option<u64>)> = open.iter().map(|&at| calls[at]).collect();
         sessions += 1;
-        let Some(settled) = shared_session(source, edition, loaded, &asked, budget) else {
+        let Some(settled) = shared_session(source, edition, loaded, &asked) else {
             break;
         };
         let mut left = Vec::new();
@@ -2387,7 +2398,7 @@ pub fn evaluate_all(
     let evaluations = answers
         .into_iter()
         .zip(calls)
-        .map(|(answer, call)| {
+        .map(|(answer, &(call, budget))| {
             answer.unwrap_or_else(|| {
                 sessions += 1;
                 evaluate(source, edition, loaded, call, budget)
@@ -2404,8 +2415,7 @@ fn shared_session(
     source: &str,
     edition: Option<&str>,
     loaded: Loaded<'_>,
-    calls: &[&str],
-    budget: Option<u64>,
+    calls: &[(&str, Option<u64>)],
 ) -> Option<Vec<Option<Evaluation>>> {
     let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
     let probe =
@@ -2421,13 +2431,13 @@ fn shared_session(
     // `evaluate` puts them.
     let mut text = format!("{source}\n");
     let source_lines = newlines(&text);
-    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>)> =
+    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>, Option<u64>)> =
         Vec::with_capacity(calls.len());
-    for (at, call) in calls.iter().enumerate() {
+    for (at, &(call, budget)) in calls.iter().enumerate() {
         let name = format!("{}_{at}", interpreter::ENTRY);
         let first = newlines(&text) + 1;
         text.push_str(&format!("#[allow(warnings)]\nfn {name}() -> impl Sized {{\n{call}\n}}\n"));
-        entries.push((name, first..=newlines(&text)));
+        entries.push((name, first..=newlines(&text), budget));
     }
     if library {
         text.push_str(interpreter::RENDER);
@@ -2461,10 +2471,10 @@ fn shared_session(
                         }
                         let mut each: Vec<Option<Evaluation>> =
                             entries.iter().map(|_| None).collect();
-                        for ((name, _), slot) in entries.iter().zip(each.iter_mut()) {
+                        for ((name, _, budget), slot) in entries.iter().zip(each.iter_mut()) {
                             let since = captured.lock().len();
                             let (evaluation, unwound) =
-                                evaluate_in(tcx, name, library, budget, &captured, since);
+                                evaluate_in(tcx, name, library, *budget, &captured, since);
                             // An interpreter that unwound leaves this session untrusted: that
                             // call and every one after it are asked again elsewhere.
                             if unwound {
@@ -2490,7 +2500,8 @@ fn shared_session(
                             in_source.push(index);
                             continue;
                         }
-                        let Some(at) = entries.iter().position(|(_, lines)| lines.contains(&line))
+                        let Some(at) =
+                            entries.iter().position(|(_, lines, _)| lines.contains(&line))
                         else {
                             return;
                         };
