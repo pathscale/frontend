@@ -442,6 +442,16 @@ pub(super) fn specialization_graph_provider(
         if let Some(impl_def_id) = impl_def_id.as_local() {
             // This is where impl overlap checking happens:
             let insert_result = sg.insert(tcx, impl_def_id.to_def_id(), overlap_mode);
+            // A library read does not judge overlap: an impl this build finds overlapping another
+            // is still in the graph, a child of the trait beside the rest, and no error is
+            // reported. Trait selection then finds both where both apply, as it would find any
+            // two impls neither of which specializes the other.
+            if tcx.sess.is_library_read() {
+                if insert_result.is_err() {
+                    sg.insert_unchecked(tcx, impl_def_id.to_def_id());
+                }
+                continue;
+            }
             // Report error if there was one.
             let (overlap, used_to_be_allowed) = match insert_result {
                 Err(overlap) => (Some(overlap), None),

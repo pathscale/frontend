@@ -18,11 +18,26 @@
 //!   configuration its manifest and build script would. Repeatable.
 //! - `--emit-metadata PATH` writes the crate's metadata for the crates that depend on it, as
 //!   `lib<name>.rmeta`; a crate with any error is refused and nothing is written.
+//! - `--disambiguator VALUE` is rustc's `-C metadata=VALUE`: it tells the crate apart from
+//!   another of its name, so two builds of one name can be loaded in one read.
 //! - `--proc-macro` reads a `proc-macro` crate: its macros are declared, never run.
 //! - `--standard-library` reads one of the standard library's crates, or a crate it depends on,
 //!   as rustc's bootstrap does (`-Zforce-unstable-if-unmarked`).
+//! - `--library` reads the crate as a library its own compiler already compiled, of any version
+//!   (`CrateRead::library`): nothing judges it, every error it still meets is in the facts'
+//!   `diagnostics`, and `--emit-metadata` writes its metadata anyway.
 //!
-//! With `--check`, the flags check stdin against the loaded dependencies.
+//! - `--all-mir` writes every function's MIR into `--emit-metadata`'s file (`CrateRead::all_mir`),
+//!   which `--eval` needs of every crate a call reaches.
+//!
+//! `frontend-facts --eval CALL [--budget STEPS] CRATE` emits
+//! [`frontend::frontend_facts::Evaluation`]: stdin's source compiled, and the expression `CALL`
+//! over its items run through rustc's MIR interpreter, against the loaded dependencies.
+//!
+//! With `--check`, the flags check stdin against the loaded dependencies. `--test` (only with
+//! `--check`) checks it as rustc's `--test` does, as `cargo check --all-targets` checks a lib's
+//! test target: `cfg(test)` is set and the test harness is added, which loads the crate `test`,
+//! so libtest's metadata is passed as `--extern noprelude:test=PATH` like std's.
 //!
 //! This is a `std` program, so it is the party that can catch a panic: it installs
 //! `std::panic::catch_unwind` as frontend's catcher before anything else, which is what lets a
@@ -43,13 +58,19 @@ fn main() {
     frontend::unwind_janky::install_catcher(catcher);
     let mut args = std::env::args().skip(1).peekable();
     let mut check = false;
+    let mut test = false;
     let mut root: Option<String> = None;
     let mut target: Option<String> = None;
     let mut edition: Option<String> = None;
     let mut items_only = false;
     let mut proc_macro = false;
     let mut standard_library = false;
+    let mut library = false;
+    let mut all_mir = false;
+    let mut eval: Option<String> = None;
+    let mut budget: Option<u64> = None;
     let mut emit_metadata: Option<String> = None;
+    let mut disambiguator: Option<String> = None;
     let mut dependencies: Vec<Dependency> = Vec::new();
     let mut cfg: Vec<String> = Vec::new();
     let mut env: Vec<(String, String)> = Vec::new();
@@ -59,13 +80,22 @@ fn main() {
             |name: &str| args.next().unwrap_or_else(|| usage(&format!("{name} needs a value")));
         match flag.as_str() {
             "--check" => check = true,
+            "--test" => test = true,
             "--root" => root = Some(value("--root")),
             "--target" => target = Some(value("--target")),
             "--edition" => edition = Some(value("--edition")),
             "--items" => items_only = true,
             "--proc-macro" => proc_macro = true,
             "--standard-library" => standard_library = true,
+            "--library" => library = true,
+            "--all-mir" => all_mir = true,
+            "--eval" => eval = Some(value("--eval")),
+            "--budget" => {
+                let steps = value("--budget");
+                budget = Some(steps.parse().unwrap_or_else(|_| usage("--budget needs a count")));
+            }
             "--emit-metadata" => emit_metadata = Some(value("--emit-metadata")),
+            "--disambiguator" => disambiguator = Some(value("--disambiguator")),
             "--cfg" => cfg.push(value("--cfg")),
             "--env" => {
                 let pair = value("--env");
@@ -91,6 +121,9 @@ fn main() {
             other => usage(&format!("unknown flag {other}")),
         }
     }
+    if test && !check {
+        usage("--test is for --check");
+    }
     let crate_name = args.next().unwrap_or_else(|| "crate".to_string());
     let loaded = Loaded { dependencies: &dependencies, cfg: &cfg, env: &env };
     if let Some(root) = root {
@@ -107,6 +140,9 @@ fn main() {
             standard_library,
             loaded,
             write_metadata: metadata,
+            library,
+            disambiguator: disambiguator.as_deref(),
+            all_mir,
             ..CrateRead::new(&crate_name, root)
         };
         match frontend::frontend_facts::read_crate(&read) {
@@ -121,20 +157,39 @@ fn main() {
         }
         return;
     }
-    if emit_metadata.is_some() || proc_macro {
-        usage("--emit-metadata and --proc-macro read a crate from --root");
+    if emit_metadata.is_some() || proc_macro || library || disambiguator.is_some() || all_mir {
+        usage(
+            "--emit-metadata, --proc-macro, --library, --disambiguator and --all-mir read a crate \
+             from --root",
+        );
+    }
+    if budget.is_some() && eval.is_none() {
+        usage("--budget is for --eval");
     }
     let mut source = String::new();
     if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut source) {
         usage(&format!("read stdin: {error}"));
     }
-    let json = if check {
+    let json = if let Some(call) = eval {
+        if check {
+            usage("--eval and --check are two different questions");
+        }
+        let evaluation = frontend::frontend_facts::evaluate(
+            &source,
+            edition.as_deref(),
+            loaded,
+            &call,
+            budget,
+        );
+        serde_json::to_string(&evaluation)
+    } else if check {
         let checked = frontend::frontend_facts::check_source_against(
             &crate_name,
             std::sync::Arc::new(source),
             edition.as_deref(),
             loaded,
             1,
+            test,
         );
         let clean = checked.is_clean();
         let json = serde_json::to_string(&checked);

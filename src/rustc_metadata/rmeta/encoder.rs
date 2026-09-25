@@ -121,6 +121,14 @@ impl<'a, 'tcx> Encoder for EncodeContext<'a, 'tcx> {
         // Byte slices go to the opaque encoder in one call, as the removed `[u8]` impl did.
         emit_u8_slice(&[u8]);
     }
+
+    /// A library read writes its metadata whatever it recorded, so an erroneous item is written
+    /// as erroneous: an error type, an error constant, a body tainted by an error. The strict
+    /// compiler never encodes one (`analysis` stopped first), and still panics if it does.
+    #[inline]
+    fn emit_error_guaranteed(&mut self) -> bool {
+        self.tcx.sess.is_library_read()
+    }
 }
 
 impl<'a, 'tcx, T> Encodable<EncodeContext<'a, 'tcx>> for LazyValue<T> {
@@ -1444,6 +1452,56 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
         let tcx = self.tcx;
 
         for local_id in tcx.iter_local_def_id() {
+            self.isolated(local_id.to_def_id(), |this| this.encode_local_def(local_id));
+        }
+
+        for (def_id, impls) in &tcx.crate_inherent_impls(()).0.inherent_impls {
+            record_defaulted_array!(self.tables.inherent_impls[def_id.to_def_id()] <- impls.iter().map(|def_id| {
+                assert!(def_id.is_local());
+                def_id.index
+            }));
+        }
+
+        for (def_id, res_map) in &tcx.resolutions(()).doc_link_resolutions {
+            record!(self.tables.doc_link_resolutions[def_id.to_def_id()] <- res_map);
+        }
+
+        for (def_id, traits) in &tcx.resolutions(()).doc_link_traits_in_scope {
+            record_array!(self.tables.doc_link_traits_in_scope[def_id.to_def_id()] <- traits);
+        }
+    }
+
+    /// Run one part of the encoding that reads one definition's queries.
+    ///
+    /// In a library read (`Session::is_library_read`) a fatal error inside it costs that part and
+    /// nothing else: the strict compiler never gets here with an error, because `analysis`
+    /// stopped first, and a library read does not stop there. Whatever the part recorded before
+    /// the error stays; what it had not recorded is absent from the metadata, as it is for any
+    /// definition the encoder skips, and an error at `def_id` says so, so the read records it
+    /// even when the fatal error was raised without a diagnostic of its own. A panic that is not
+    /// a fatal error is re-raised. Outside a library read this is `f(self)`.
+    fn isolated(&mut self, def_id: DefId, f: impl FnOnce(&mut Self)) {
+        if !self.tcx.sess.is_library_read() {
+            return f(self);
+        }
+        if crate::rustc_span::fatal_error::catch_fatal_errors(|| f(&mut *self)).is_err() {
+            // Stopped inside `lazy` or `lazy_array`: what it wrote is unreferenced, and the next
+            // one starts a node of its own.
+            self.lazy_state = LazyState::NoNode;
+            let tcx = self.tcx;
+            tcx.dcx().span_err(
+                tcx.def_span(def_id),
+                "this item's metadata is incomplete: encoding it stopped on a fatal error",
+            );
+        }
+    }
+
+    /// One local definition's tables, as `encode_def_ids` reaches it. (Not `encode_def_id`, which
+    /// is `SpanEncoder`'s, for a `DefId` written into the stream.)
+    fn encode_local_def(&mut self, local_id: LocalDefId) {
+        let tcx = self.tcx;
+        // The loop body `encode_def_ids` had, unchanged but for its `continue`, now a `return`.
+        {
             let def_id = local_id.to_def_id();
             let def_kind = tcx.def_kind(local_id);
             self.tables.def_kind.set_some(def_id.index, def_kind);
@@ -1460,7 +1518,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                         | hir::Node::Infer(hir::InferArg { kind: hir::InferArgKind::Const, .. })
                 )
             {
-                continue;
+                return;
             }
 
             if def_kind == DefKind::Field
@@ -1599,8 +1657,12 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 }
             }
             if let DefKind::Static { .. } = def_kind {
-                if !self.tcx.is_foreign_item(def_id) {
-                    let data = self.tcx.eval_static_initializer(def_id).unwrap();
+                // A static whose value did not evaluate has none to record. The strict compiler
+                // never gets here with one (`analysis` stopped on its error first); a library
+                // read does, and records the error instead.
+                if !self.tcx.is_foreign_item(def_id)
+                    && let Ok(data) = self.tcx.eval_static_initializer(def_id)
+                {
                     record!(self.tables.eval_static_initializer[def_id] <- data);
                 }
             }
@@ -1659,21 +1721,6 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 let table = tcx.associated_types_for_impl_traits_in_trait_or_impl(def_id);
                 record!(self.tables.associated_types_for_impl_traits_in_trait_or_impl[def_id] <- table);
             }
-        }
-
-        for (def_id, impls) in &tcx.crate_inherent_impls(()).0.inherent_impls {
-            record_defaulted_array!(self.tables.inherent_impls[def_id.to_def_id()] <- impls.iter().map(|def_id| {
-                assert!(def_id.is_local());
-                def_id.index
-            }));
-        }
-
-        for (def_id, res_map) in &tcx.resolutions(()).doc_link_resolutions {
-            record!(self.tables.doc_link_resolutions[def_id.to_def_id()] <- res_map);
-        }
-
-        for (def_id, traits) in &tcx.resolutions(()).doc_link_traits_in_scope {
-            record_array!(self.tables.doc_link_traits_in_scope[def_id.to_def_id()] <- traits);
         }
     }
 
@@ -1848,6 +1895,33 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             if encode_const || encode_opt { Some((def_id, encode_const, encode_opt)) } else { None }
         });
         for (def_id, encode_const, encode_opt) in keys_and_jobs {
+            self.isolated(def_id.to_def_id(), |this| {
+                this.encode_mir_of(def_id, encode_const, encode_opt)
+            });
+        }
+
+        // Encode all the deduced parameter attributes for everything that has MIR, even for items
+        // that can't be inlined. But don't if we aren't optimizing in non-incremental mode, to
+        // save the query traffic.
+        if tcx.sess.opts.output_types.should_codegen()
+            && tcx.sess.opts.optimize != OptLevel::No
+            && tcx.sess.opts.incremental.is_none()
+        {
+            for &local_def_id in tcx.mir_keys(()) {
+                if let DefKind::AssocFn | DefKind::Fn = tcx.def_kind(local_def_id) {
+                    record_array!(self.tables.deduced_param_attrs[local_def_id.to_def_id()] <-
+                        self.tcx.deduced_param_attrs(local_def_id.to_def_id()));
+                }
+            }
+        }
+    }
+
+    /// One MIR key's bodies, as `encode_mir` reaches it. Building them type checks and borrow
+    /// checks the body, which can stop on a fatal error; see [`Self::isolated`].
+    fn encode_mir_of(&mut self, def_id: LocalDefId, encode_const: bool, encode_opt: bool) {
+        let tcx = self.tcx;
+        // The loop body `encode_mir` had, unchanged.
+        {
             debug_assert!(encode_const || encode_opt);
 
             debug!("EntryBuilder::encode_mir({:?})", def_id);
@@ -1899,21 +1973,6 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 && let Some(witnesses) = tcx.mir_coroutine_witnesses(def_id)
             {
                 record!(self.tables.mir_coroutine_witnesses[def_id.to_def_id()] <- witnesses);
-            }
-        }
-
-        // Encode all the deduced parameter attributes for everything that has MIR, even for items
-        // that can't be inlined. But don't if we aren't optimizing in non-incremental mode, to
-        // save the query traffic.
-        if tcx.sess.opts.output_types.should_codegen()
-            && tcx.sess.opts.optimize != OptLevel::No
-            && tcx.sess.opts.incremental.is_none()
-        {
-            for &local_def_id in tcx.mir_keys(()) {
-                if let DefKind::AssocFn | DefKind::Fn = tcx.def_kind(local_def_id) {
-                    record_array!(self.tables.deduced_param_attrs[local_def_id.to_def_id()] <-
-                        self.tcx.deduced_param_attrs(local_def_id.to_def_id()));
-                }
             }
         }
     }
@@ -2227,41 +2286,9 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             let def_id = id.owner_id.to_def_id();
 
             if of_trait {
-                let header = tcx.impl_trait_header(def_id);
-                record!(self.tables.impl_trait_header[def_id] <- header);
-
-                let impl_is_fully_generic_for_reflection =
-                    tcx.impl_is_fully_generic_for_reflection(def_id);
-                self.tables
-                    .impl_is_fully_generic_for_reflection
-                    .set(def_id.index, impl_is_fully_generic_for_reflection);
-
-                self.tables.defaultness.set(def_id.index, tcx.defaultness(def_id));
-
-                let trait_ref = header.trait_ref.instantiate_identity().skip_norm_wip();
-                let simplified_self_ty = fast_reject::simplify_type(
-                    self.tcx,
-                    trait_ref.self_ty(),
-                    TreatParams::InstantiateWithInfer,
-                );
-                trait_impls
-                    .entry(trait_ref.def_id)
-                    .or_default()
-                    .push((id.owner_id.def_id.local_def_index, simplified_self_ty));
-
-                let trait_def = tcx.trait_def(trait_ref.def_id);
-                if let Ok(mut an) = trait_def.ancestors(tcx, def_id)
-                    && let Some(specialization_graph::Node::Impl(parent)) = an.nth(1)
-                {
-                    self.tables.impl_parent.set_some(def_id.index, parent.into());
-                }
-
-                // if this is an impl of `CoerceUnsized`, create its
-                // "unsized info", else just store None
-                if tcx.is_lang_item(trait_ref.def_id, LangItem::CoerceUnsized) {
-                    let coerce_unsized_info = tcx.coerce_unsized_info(def_id).unwrap();
-                    record!(self.tables.coerce_unsized_info[def_id] <- coerce_unsized_info);
-                }
+                // Lowering the header and building the trait's specialization graph can stop on a
+                // fatal error; in a library read that costs this impl (see `isolated`).
+                self.isolated(def_id, |this| this.encode_trait_impl(def_id, &mut trait_impls));
             }
         }
 
@@ -2274,6 +2301,52 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             .collect();
 
         self.lazy_array(&trait_impls)
+    }
+
+    /// One trait impl's tables, and its entry in `trait_impls`: the body of `encode_impls`'s loop
+    /// for a trait impl, unchanged.
+    fn encode_trait_impl(
+        &mut self,
+        def_id: DefId,
+        trait_impls: &mut FxIndexMap<DefId, Vec<(DefIndex, Option<SimplifiedType>)>>,
+    ) {
+        let tcx = self.tcx;
+        let header = tcx.impl_trait_header(def_id);
+        record!(self.tables.impl_trait_header[def_id] <- header);
+
+        let impl_is_fully_generic_for_reflection =
+            tcx.impl_is_fully_generic_for_reflection(def_id);
+        self.tables
+            .impl_is_fully_generic_for_reflection
+            .set(def_id.index, impl_is_fully_generic_for_reflection);
+
+        self.tables.defaultness.set(def_id.index, tcx.defaultness(def_id));
+
+        let trait_ref = header.trait_ref.instantiate_identity().skip_norm_wip();
+        let simplified_self_ty = fast_reject::simplify_type(
+            self.tcx,
+            trait_ref.self_ty(),
+            TreatParams::InstantiateWithInfer,
+        );
+        trait_impls.entry(trait_ref.def_id).or_default().push((def_id.index, simplified_self_ty));
+
+        let trait_def = tcx.trait_def(trait_ref.def_id);
+        if let Ok(mut an) = trait_def.ancestors(tcx, def_id)
+            && let Some(specialization_graph::Node::Impl(parent)) = an.nth(1)
+        {
+            self.tables.impl_parent.set_some(def_id.index, parent.into());
+        }
+
+        // if this is an impl of `CoerceUnsized`, create its
+        // "unsized info", else just store None
+        //
+        // An impl `coerce_unsized_info` refuses has none to record; as for a static's value, only
+        // a library read gets here with one.
+        if tcx.is_lang_item(trait_ref.def_id, LangItem::CoerceUnsized)
+            && let Ok(coerce_unsized_info) = tcx.coerce_unsized_info(def_id)
+        {
+            record!(self.tables.coerce_unsized_info[def_id] <- coerce_unsized_info);
+        }
     }
 
     #[instrument(level = "debug", skip(self))]

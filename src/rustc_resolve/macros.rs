@@ -353,6 +353,20 @@ impl<'ra, 'tcx> ResolverExpand for Resolver<'ra, 'tcx> {
             sugg_span,
         )?;
 
+        // No working macro stands behind this invocation, and its output is missing, which a
+        // library read records as a loss (`Session::record_loss`). Either the macro was not found
+        // (or is not of this kind) and `smart_resolve_macro_path` put a dummy in its place, which
+        // for a bang or a derive expands to nothing; or it is a `#[rustc_builtin_macro]` this
+        // build has no expander for, which `compile_macro` left with its placeholder body. An
+        // attribute's dummy is the inert attribute: the item it sits on is kept and read, and
+        // nothing is lost.
+        let dummy = kind != MacroKind::Attr && Arc::ptr_eq(ext, self.dummy_ext(kind));
+        let missing_builtin =
+            ext.builtin_name.is_some_and(|name| !self.builtin_macros.contains_key(&name));
+        if dummy || missing_builtin {
+            self.tcx.sess.record_loss();
+        }
+
         let span = invoc.span();
         let def_id = if deleg_impl.is_some() { None } else { res.opt_def_id() };
         self.tcx.with_stable_hashing_context(|hcx| {

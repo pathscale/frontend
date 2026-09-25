@@ -696,6 +696,13 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         guar
     }
 
+    /// What an invocation that did not expand leaves in its place: a dummy fragment. Its output
+    /// is missing, which a library read records as a loss (`Session::record_loss`).
+    fn lost(&self, kind: AstFragmentKind, span: Span, guar: ErrorGuaranteed) -> AstFragment {
+        self.cx.sess.record_loss();
+        kind.dummy(span, guar)
+    }
+
     /// A macro's expansion does not fit in this fragment kind.
     /// For example, a non-type macro in a type position.
     fn error_wrong_fragment_kind(
@@ -729,7 +736,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             // Reduce the recursion limit by half each time it triggers.
             self.cx.reduced_recursion_limit = Some((recursion_limit / 2, guar));
 
-            return ExpandResult::Ready(invoc.fragment_kind.dummy(invoc.span(), guar));
+            return ExpandResult::Ready(self.lost(invoc.fragment_kind, invoc.span(), guar));
         }
 
         let macro_stats = self.cx.sess.opts.unstable_opts.macro_stats;
@@ -753,9 +760,13 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             }
                             fragment
                         }
-                        Err(guar) => return ExpandResult::Ready(fragment_kind.dummy(span, guar)),
+                        Err(guar) => {
+                            return ExpandResult::Ready(self.lost(fragment_kind, span, guar));
+                        }
                     }
                 } else if let Some(expander) = ext.as_legacy_bang() {
+                    // The session, read out before the result below borrows `self.cx`.
+                    let sess = self.cx.sess;
                     let tok_result = match expander.expand(self.cx, span, mac.args.tokens.clone()) {
                         ExpandResult::Ready(tok_result) => tok_result,
                         ExpandResult::Retry(_) => {
@@ -766,14 +777,23 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             });
                         }
                     };
-                    if let Some(fragment) = fragment_kind.make_from(tok_result) {
+                    // An expander that gave up returned a dummy, and whatever it makes stands in
+                    // for a missing output. Otherwise the fragment is made here, and for a
+                    // `macro_rules!` macro or an `include!` that is where its output is parsed.
+                    if tok_result.gave_up() {
+                        sess.record_loss();
+                    }
+                    let mark = sess.parse_mark();
+                    let made = fragment_kind.make_from(tok_result);
+                    sess.record_parse_errors_since(mark);
+                    if let Some(fragment) = made {
                         if macro_stats {
                             update_bang_macro_stats(self.cx, fragment_kind, span, mac, &fragment);
                         }
                         fragment
                     } else {
                         let guar = self.error_wrong_fragment_kind(fragment_kind, &mac, span);
-                        fragment_kind.dummy(span, guar)
+                        self.lost(fragment_kind, span, guar)
                     }
                 } else {
                     unreachable!();
@@ -867,7 +887,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             }
                             fragment
                         }
-                        Err(guar) => return ExpandResult::Ready(fragment_kind.dummy(span, guar)),
+                        Err(guar) => {
+                            return ExpandResult::Ready(self.lost(fragment_kind, span, guar));
+                        }
                     }
                 } else if let SyntaxExtensionKind::LegacyAttr(expander) = ext {
                     self.gate_proc_macro_attr_item(span, &item);
@@ -893,7 +915,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             ) && items.is_empty()
                             {
                                 let guar = self.cx.dcx().emit_err(RemoveExprNotSupported { span });
-                                fragment_kind.dummy(span, guar)
+                                self.lost(fragment_kind, span, guar)
                             } else {
                                 let fragment = fragment_kind.expect_from_annotatables(items);
                                 if macro_stats {
@@ -912,6 +934,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                         }
                         Err(err) => {
                             let _guar = err.emit();
+                            // The attribute's input did not parse, so the macro it names never
+                            // ran: the item is kept, without whatever it would have made.
+                            self.cx.sess.record_loss();
                             fragment_kind.expect_from_annotatables(iter::once(item))
                         }
                     }
@@ -965,7 +990,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             .cx
                             .dcx()
                             .span_err(span, "macro `derive` does not support const derives");
-                        return ExpandResult::Ready(fragment_kind.dummy(span, guar));
+                        return ExpandResult::Ready(self.lost(fragment_kind, span, guar));
                     }
                     let body = item.to_tokens();
                     match expander.expand_derive(self.cx, span, &body) {
@@ -983,7 +1008,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             }
                             fragment
                         }
-                        Err(guar) => return ExpandResult::Ready(fragment_kind.dummy(span, guar)),
+                        Err(guar) => {
+                            return ExpandResult::Ready(self.lost(fragment_kind, span, guar));
+                        }
                     }
                 }
                 _ => unreachable!(),
@@ -1005,7 +1032,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     SyntaxExtensionKind::Bang(..) => {
                         let msg = "expanded a dummy glob delegation";
                         let guar = self.cx.dcx().span_delayed_bug(span, msg);
-                        return ExpandResult::Ready(fragment_kind.dummy(span, guar));
+                        return ExpandResult::Ready(self.lost(fragment_kind, span, guar));
                     }
                     _ => unreachable!(),
                 };
@@ -1070,10 +1097,14 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         path: &ast::Path,
         span: Span,
     ) -> AstFragment {
+        // A library read records an output that parsed with errors, or with tokens left over, as
+        // a loss (`Session::record_loss`), and one that did not parse is a dummy (`lost`).
+        let mark = self.cx.sess.parse_mark();
         let mut parser = self.cx.new_parser_from_tts(toks);
         match parse_ast_fragment(&mut parser, kind) {
             Ok(fragment) => {
                 ensure_complete_parse(&parser, path, kind.name(), span);
+                self.cx.sess.record_parse_errors_since(mark);
                 fragment
             }
             Err(mut err) => {
@@ -1083,7 +1114,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                 annotate_err_with_kind(&mut err, kind, span);
                 let guar = err.emit();
                 self.cx.macro_error_and_trace_macros_diag();
-                kind.dummy(span, guar)
+                self.lost(kind, span, guar)
             }
         }
     }

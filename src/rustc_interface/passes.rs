@@ -35,7 +35,10 @@ use crate::rustc_feature::Features;
 use crate::rustc_fs_util::try_canonicalize;
 use crate::rustc_hir::Attribute;
 use crate::rustc_hir::attrs::AttributeKind;
-use crate::rustc_hir::def_id::{LOCAL_CRATE, LocalModId, StableCrateId, StableCrateIdMap};
+use crate::rustc_hir::def::DefKind;
+use crate::rustc_hir::def_id::{
+    CRATE_DEF_ID, LOCAL_CRATE, LocalDefId, LocalModId, StableCrateId, StableCrateIdMap,
+};
 use crate::rustc_hir::definitions::Definitions;
 use crate::rustc_lint::{BufferedEarlyLint, EarlyCheckNode, LintStore, unerased_lint_store};
 use crate::rustc_metadata::creader::CStore;
@@ -63,6 +66,8 @@ use crate::rustc_interface::interface::Compiler;
 use crate::rustc_interface::{diagnostics, limits, util};
 
 pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
+    // A library read records a root that parsed with errors as a loss (`Session::record_loss`).
+    let mark = sess.parse_mark();
     let mut krate = sess
         .time("parse_crate", || {
             let mut parser = unwrap_or_emit_fatal(match &sess.io.input {
@@ -85,6 +90,7 @@ pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
             let guar: ErrorGuaranteed = parse_error.emit();
             guar.raise_fatal();
         });
+    sess.record_parse_errors_since(mark);
 
     crate::rustc_builtin_macros::cmdline_attrs::inject(
         &mut krate,
@@ -233,7 +239,9 @@ fn configure_and_expand(
         // Expand macros now!
         let krate = sess.time("expand_crate", || ecx.monotonic_expander().expand_crate(krate));
 
-        if ecx.nb_macro_errors > 0 {
+        // A library read does not stop here: a macro that did not expand costs what it would have
+        // written, the error is recorded, and the rest of the crate is still read.
+        if ecx.nb_macro_errors > 0 && !sess.is_library_read() {
             sess.dcx().abort_if_errors();
         }
 
@@ -431,9 +439,14 @@ fn early_lint_checks(tcx: TyCtxt<'_>, (): ()) {
     }
 
     // Needs to go *after* expansion to be able to check the results of macro expansion.
-    sess.time("complete_gated_feature_checking", || {
-        crate::rustc_ast_passes::feature_gate::check_crate(krate, sess, tcx.features());
-    });
+    //
+    // Only judges, so a library read does not run it: the library's own compiler checked its
+    // feature gates, under that compiler's names for them.
+    if !sess.is_library_read() {
+        sess.time("complete_gated_feature_checking", || {
+            crate::rustc_ast_passes::feature_gate::check_crate(krate, sess, tcx.features());
+        });
+    }
 
     // Add all buffered lints from the `ParseSess` to the `Session`.
     sess.psess.buffered_lints.with_lock(|buffered_lints| {
@@ -1312,7 +1325,13 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
 /// Runs the type-checking, region checking and other miscellaneous analysis
 /// passes on the crate.
+///
+/// In a library read ([`Session::is_library_read`]) it is [`library_analysis`] instead: none of
+/// the passes below runs, and what the definitions table needs from them does.
 fn analysis(tcx: TyCtxt<'_>, (): ()) {
+    if tcx.sess.is_library_read() {
+        return library_analysis(tcx);
+    }
     run_required_analyses(tcx);
 
     let sess = tcx.sess;
@@ -1450,6 +1469,161 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
             });
         });
     }
+}
+
+/// [`analysis`] in a library read: the part of it that is not judging the source.
+///
+/// A library read extracts facts and writes metadata, and the metadata encoder asks for what it
+/// needs query by query. What it cannot ask for lazily is a definition: the definitions table is
+/// frozen when the encoder first reads it (`TyCtxt::definitions`), and some definitions exist
+/// only once a query has made them. The strict compiler makes them all while `analysis` checks
+/// the crate; this makes them with the same queries, in the same order, and checks nothing:
+///
+/// - every item's signature is lowered, as collection lowers them before any body is checked.
+///   That resolves each item's bound variables, which creates the lifetime parameters its
+///   opaque types capture; creates the associated types of `impl Trait` in a trait and its
+///   impls; and feeds the type of each anon const written in a signature.
+/// - a body that contains an anon const of the type system is type checked, which is what feeds
+///   that const's type; the encoder evaluates the const, and the strict compiler has always type
+///   checked the body around it by then. No other body is type checked here.
+/// - a `static`'s value is evaluated, which makes each allocation it points to a definition.
+/// - the MIR keys are listed, which creates the by-move body of each async closure.
+///
+/// Each item runs in its own `catch_fatal_errors`: a fatal error in one (a trait solver overflow
+/// in a signature written for another compiler version) costs that item and is recorded, and a
+/// panic that is not a fatal error is re-raised, so an internal compiler error is still reported.
+fn library_analysis(tcx: TyCtxt<'_>) {
+    use crate::rustc_span::fatal_error::catch_fatal_errors;
+
+    // One item's step, in its own catch. A fatal error there costs that step, and an error at the
+    // item says so, so the read records it even when the fatal error came with no diagnostic of
+    // its own (a path that named no trait, a poisoned query).
+    let step = |item: LocalDefId, what: &str, f: &dyn Fn()| {
+        if catch_fatal_errors(|| f()).is_err() {
+            tcx.dcx().span_err(tcx.def_span(item), format!("{what} stopped on a fatal error"));
+        }
+    };
+
+    for owner in tcx.hir_crate_items(()).owners() {
+        step(owner.def_id, "lowering this item's signature", &|| lower_signature(tcx, owner.def_id));
+    }
+
+    for &owner in tcx.hir_body_owner_ids() {
+        if is_type_system_anon_const(tcx, owner)
+            && let Some(body) = enclosing_body(tcx, owner)
+        {
+            let root = tcx.typeck_root_def_id_local(body);
+            step(root, "type checking the body around a constant", &|| {
+                let _ = tcx.ensure_ok().typeck(root);
+            });
+        }
+    }
+
+    for &owner in tcx.hir_body_owner_ids() {
+        if let DefKind::Static { nested: false, .. } = tcx.def_kind(owner) {
+            step(owner, "evaluating this static", &|| {
+                let _ = tcx.ensure_ok().eval_static_initializer(owner);
+            });
+        }
+    }
+
+    step(CRATE_DEF_ID, "listing the crate's bodies", &|| {
+        let _ = tcx.mir_keys(());
+    });
+}
+
+/// Lower one item's signature, as collection does for every item before any body is checked:
+/// its generic parameters' types and defaults, its where clauses, and its type, function
+/// signature, fields, impl header or supertraits, and for a trait or an impl the associated
+/// types of its `impl Trait`s. Each of these is a query the strict compiler runs for the item.
+fn lower_signature(tcx: TyCtxt<'_>, item: LocalDefId) {
+    let def_id = item.to_def_id();
+    let kind = tcx.def_kind(item);
+    if kind.has_generics() {
+        for param in &tcx.generics_of(def_id).own_params {
+            match param.kind {
+                ty::GenericParamDefKind::Lifetime { .. } => {}
+                ty::GenericParamDefKind::Type { has_default, .. } => {
+                    if has_default {
+                        tcx.ensure_ok().type_of(param.def_id);
+                    }
+                }
+                ty::GenericParamDefKind::Const { has_default, .. } => {
+                    tcx.ensure_ok().type_of(param.def_id);
+                    if has_default {
+                        tcx.ensure_ok().const_param_default(param.def_id);
+                    }
+                }
+            }
+        }
+        tcx.ensure_ok().explicit_clauses_of(def_id);
+    }
+    match kind {
+        DefKind::Fn | DefKind::AssocFn => {
+            tcx.ensure_ok().type_of(def_id);
+            tcx.ensure_ok().fn_sig(def_id);
+        }
+        DefKind::Struct | DefKind::Union | DefKind::Enum => {
+            tcx.ensure_ok().type_of(def_id);
+            for field in tcx.adt_def(def_id).all_fields() {
+                tcx.ensure_ok().type_of(field.did);
+            }
+        }
+        DefKind::TyAlias
+        | DefKind::Const { .. }
+        | DefKind::Static { .. }
+        | DefKind::AssocConst { .. } => tcx.ensure_ok().type_of(def_id),
+        // A trait's associated type has a type only when it has a default.
+        DefKind::AssocTy => {
+            if tcx.defaultness(def_id).has_value() {
+                tcx.ensure_ok().type_of(def_id);
+            }
+        }
+        DefKind::Impl { of_trait } => {
+            tcx.ensure_ok().type_of(def_id);
+            if of_trait {
+                tcx.ensure_ok().impl_trait_header(def_id);
+            }
+            tcx.ensure_ok().associated_types_for_impl_traits_in_trait_or_impl(def_id);
+        }
+        DefKind::Trait => {
+            tcx.ensure_ok().explicit_super_clauses_of(def_id);
+            tcx.ensure_ok().associated_types_for_impl_traits_in_trait_or_impl(def_id);
+        }
+        _ => {}
+    }
+}
+
+/// An anon const of the type system: one whose type is fed while what contains it is lowered,
+/// rather than computed from the const itself.
+fn is_type_system_anon_const(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
+    tcx.def_kind(def_id) == DefKind::AnonConst
+        && tcx.anon_const_kind(def_id.to_def_id()) != ty::AnonConstKind::NonTypeSystemInline
+}
+
+/// The body an anon const is written in, or `None` when it is written in a signature: walking
+/// out from the const, the first expression, statement or pattern says it is inside a body, and
+/// the first item says it is not.
+fn enclosing_body(tcx: TyCtxt<'_>, anon_const: LocalDefId) -> Option<LocalDefId> {
+    use crate::rustc_hir::Node;
+    let hir_id = tcx.local_def_id_to_hir_id(anon_const);
+    for (parent, node) in tcx.hir_parent_iter(hir_id) {
+        match node {
+            Node::Expr(_)
+            | Node::Stmt(_)
+            | Node::Block(_)
+            | Node::LetStmt(_)
+            | Node::Arm(_)
+            | Node::Pat(_) => return Some(tcx.hir_enclosing_body_owner(parent)),
+            Node::Item(_)
+            | Node::TraitItem(_)
+            | Node::ImplItem(_)
+            | Node::ForeignItem(_)
+            | Node::Crate(_) => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Compute and validate the crate name.

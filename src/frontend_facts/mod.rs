@@ -25,6 +25,8 @@
 
 pub mod syntax;
 
+mod interpreter;
+
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
 use alloc::format;
@@ -123,6 +125,14 @@ pub struct Definition {
     /// which is what a path written in another crate can name.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub exported: bool,
+    /// The library feature a use of it needs, when rustc's stability says it is unstable:
+    /// what a stable compiler refuses a path or a call to it for (E0658). Read by rustc's own
+    /// `lookup_stability`, so an item inherits its unstable parent's mark as rustc says it
+    /// does; for an item of a trait impl it is the trait item's, which is what a call resolves
+    /// to and what rustc checks. `None` for a stable item and in a crate that marks no
+    /// stability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unstable: Option<String>,
 }
 
 /// One enum variant's shape: how it is constructed, and with how many fields.
@@ -302,7 +312,8 @@ pub struct Reference {
 /// HIR, which exist for any program that parses and expands; they are reported even when no
 /// body type checks. References need a body's type check, so they are collected per body and
 /// a body that could not be checked contributes none. `complete` says whether anything was
-/// lost that way, and `diagnostics` says why.
+/// lost, and `diagnostics` says why; in a library read it says whether reading lost input,
+/// which a diagnostic alone does not (see `complete`).
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
@@ -320,8 +331,28 @@ pub struct CrateFacts {
     /// references that did resolve are kept.
     #[serde(default)]
     pub unanalyzed_bodies: Vec<Arc<str>>,
-    /// No error was emitted and every body was type checked. When false, `references` is a
-    /// lower bound and the definitions, imports and impls are unaffected.
+    /// The facts are whole: reading lost nothing. What that is measured by depends on the read.
+    ///
+    /// **A strict read** is complete when no error was emitted and every body was type checked.
+    /// When false, `references` is a lower bound and the definitions, imports and impls are
+    /// unaffected.
+    ///
+    /// **A library read** (the `library` field of [`CrateRead`]) judges nothing, and most of
+    /// what it still emits is one compiler version's bookkeeping about another's source: an ABI,
+    /// an attribute, a lang item or a stability mark this build does not know, on an item that
+    /// is read all the same. None of that loses a fact, so none of it makes a library read
+    /// incomplete; it is all in `diagnostics` still.
+    ///
+    /// A library read is complete when every body it checked was type checked, the privacy
+    /// pass's exports were read, and reading lost none of the crate's input where input turns
+    /// into names: no parser run (the crate root, a module's file, a macro's output) emitted an
+    /// error, no module file failed to load, no macro invocation was left without its output
+    /// (a bang or derive macro that could not be found counts; an unknown attribute does not,
+    /// its item is kept), and every import resolved. When true, the modules' names, the
+    /// definitions, the imports and the re-exports are all the crate has, so a name missing
+    /// from them is absent. A path in a signature or a body that did not resolve names nothing
+    /// the crate has, and loses none of its names. Where each loss is recorded is listed at
+    /// `Session::record_loss`.
     ///
     /// Serialized facts from before this field existed came only from runs with no error, so
     /// a missing field reads as true. [`Default`] is false: an empty value nobody filled in is
@@ -433,7 +464,8 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
 /// [`extract`] without the bodies: definitions, imports, impls, module names and macros, and
 /// no references. What indexing a crate's API needs: no body is type checked, which is most of
 /// the cost, and nothing a body's check could stop on is reached. `references` and
-/// `unanalyzed_bodies` stay empty, and `complete` says only that no error was emitted.
+/// `unanalyzed_bodies` stay empty, and `complete` says only that no error was emitted, or in a
+/// library read that reading lost nothing (see [`CrateFacts::complete`]).
 pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
     extract_with(tcx, false)
 }
@@ -466,8 +498,11 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // last type-checks those functions' bodies, as a full compile does). When it stops on a
     // fatal error (a lang item a `no_core` session lacks), the resolver's table is what there
     // is, and associated items read as not exported.
-    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()))
-        .unwrap_or(&tcx.resolutions(()).effective_visibilities);
+    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()));
+    // Whether the privacy pass's table is the one read: a library read that fell back to the
+    // resolver's has lost the associated items' exports.
+    let exports_whole = exported.is_ok();
+    let exported = exported.unwrap_or(&tcx.resolutions(()).effective_visibilities);
 
     // **Definitions and impls, one item per local definition.** Each index is read on its own:
     // its kind, its name, its span and its HIR shape, or for an impl its self type, trait and
@@ -583,7 +618,18 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
             DefFact::Skipped => {}
         }
     }
-    facts.complete = tcx.dcx().has_errors().is_none() && facts.unanalyzed_bodies.is_empty();
+    // What `complete` measures depends on the read; see its doc. A strict read is whole when
+    // nothing was emitted. A library read emits what it no longer judges and loses nothing by it,
+    // so it counts what reading lost where that happened (`Session::record_loss`): input a parser
+    // could not read, a macro invocation left without its output, an import that did not
+    // resolve. Every library read's loss comes before this point: parsing, expansion and name
+    // resolution are over once the HIR the stages above read exists.
+    let whole = if tcx.sess.is_library_read() {
+        tcx.sess.losses() == 0 && exports_whole
+    } else {
+        tcx.dcx().has_errors().is_none()
+    };
+    facts.complete = whole && facts.unanalyzed_bodies.is_empty();
 
     facts
         .definitions
@@ -787,9 +833,25 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         variant_shapes: Vec::new(),
         public: tcx.local_visibility(local).is_public(),
         exported: names.exported.is_exported(local),
+        unstable: unstable_feature(tcx, def_id),
     };
     describe_shape(tcx, local, &mut definition);
     DefFact::Definition(definition)
+}
+
+/// The feature rustc's stability check asks of a use of `def_id`, when it is unstable. An item
+/// of a trait impl is checked as the trait item it implements (a method call resolves to it,
+/// and an impl's own mark is not what rustc enforces), which may be another crate's, read from
+/// its metadata.
+fn unstable_feature(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
+    catch_fatal_errors(|| {
+        let checked = tcx.trait_item_of(def_id).unwrap_or(def_id);
+        tcx.lookup_stability(checked)
+            .filter(|stability| stability.is_unstable())
+            .map(|stability| stability.feature.to_string())
+    })
+    .ok()
+    .flatten()
 }
 
 /// One free item's import, or `None` when it is not a `use` that binds anything. The body of
@@ -1193,7 +1255,9 @@ pub fn analyze_shared_source_with_width(
 ///
 /// A crate read to be a dependency ([`CrateRead::write_metadata`]) is also refused for any error
 /// at all: a crate that does not compile is no crate's dependency, and its metadata is not
-/// written. `crate_name` says which crate of a chain it was.
+/// written. A library read ([`CrateRead`]'s `library`) is not: what it records refuses nothing,
+/// and it is refused only when it has no HIR or its metadata could not be written. `crate_name`
+/// says which crate of a chain it was.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Refused {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1218,20 +1282,64 @@ pub struct Dependency {
     /// In the extern prelude, so the crate being read can name it: a dependency its manifest
     /// lists. `false` is rustc's `--extern noprelude:`, for a dependency's dependency, which is
     /// loaded when a loaded crate needs it and which the crate being read cannot name.
+    ///
+    /// **Two crates of one name** (the registry's `libc` beside the one std was built with) may
+    /// both be loaded, when each was read with its own [`CrateRead::disambiguator`]. A lookup by
+    /// name for the crate being read (`libc::`, `extern crate libc`, an injected `std`) chooses
+    /// only among the prelude files of that name when there is one, and among the `noprelude`
+    /// ones only when there is none, as rustc's `extern crate` of a `noprelude` crate does. A
+    /// loaded crate's own dependency is found among every file of the name, by the hash its
+    /// metadata recorded, so the build it was read against is the one it gets. Two prelude
+    /// files of one name are ambiguous and refused, as rustc refuses two `--extern` files.
     #[serde(default = "true_when_absent", skip_serializing_if = "is_true")]
     pub prelude: bool,
+    /// For a proc-macro crate ([`CrateRead::proc_macro`]): the shared object a compiler built
+    /// from the same source for the host, as cargo leaves it
+    /// (`target/<profile>/deps/lib<name>-<hash>.dylib`, `.so` on Linux). With it the crate's
+    /// macros run when the crate being read uses them; without it they are declared and every
+    /// expansion is an error that says so.
+    ///
+    /// **This runs the dylib's code in this process**, as rustc does with every proc macro it
+    /// expands. What is checked before anything runs, from the file itself: the compiler that
+    /// wrote it is one whose proc-macro bridge frontend's server speaks (stable 1.97), it
+    /// exports one proc-macro table, and that table has every macro the crate's source declares,
+    /// under the same kind and name. A dylib that fails any of the three makes the crate fail to
+    /// load, with a message naming the file and the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc_macro_dylib: Option<String>,
 }
 
 impl Dependency {
     /// A dependency the crate being read names.
     pub fn new(name: impl Into<String>, metadata: impl Into<String>) -> Self {
-        Dependency { name: name.into(), metadata: metadata.into(), prelude: true }
+        Dependency {
+            name: name.into(),
+            metadata: metadata.into(),
+            prelude: true,
+            proc_macro_dylib: None,
+        }
     }
 
     /// A dependency only other dependencies name.
     pub fn transitive(name: impl Into<String>, metadata: impl Into<String>) -> Self {
         Dependency { prelude: false, ..Dependency::new(name, metadata) }
     }
+
+    /// This proc-macro dependency, with its macros run from `dylib`
+    /// ([`Dependency::proc_macro_dylib`]).
+    pub fn with_proc_macro_dylib(self, dylib: impl Into<String>) -> Self {
+        Dependency { proc_macro_dylib: Some(dylib.into()), ..self }
+    }
+}
+
+/// The macros a proc-macro dylib exports, as `(kind, name)` with kind `derive`, `attr` or
+/// `bang`, read with exactly the checks a [`Dependency::proc_macro_dylib`] gets before its
+/// macros run: which compiler wrote it, and its one proc-macro table. For a caller to confirm a
+/// dylib before handing it over, and to say which file it was when one is refused.
+///
+/// This opens the dylib, which runs its initializers in this process.
+pub fn proc_macro_dylib_macros(dylib: &str) -> Result<Vec<(&'static str, String)>, String> {
+    crate::rustc_metadata::dylib::proc_macro_dylib_macros(eko::path::Path::new(dylib))
 }
 
 /// What a session reads besides its source: the crates it depends on and the configuration its
@@ -1266,7 +1374,8 @@ pub struct CrateRead<'a> {
     pub width: usize,
     /// A `proc-macro` crate. Its macros are declared to the crates that load its metadata, and
     /// they are not run: running one means compiling it, and frontend compiles nothing. An
-    /// expansion of one is an error that says so.
+    /// expansion of one is an error that says so, unless the crate that loads it is handed the
+    /// dylib a compiler built from this source ([`Dependency::proc_macro_dylib`]).
     pub proc_macro: bool,
     /// One of the standard library's crates or a crate it depends on (hashbrown, libc), read as
     /// rustc's bootstrap reads them: `-Zforce-unstable-if-unmarked`, so an item not marked stable
@@ -1274,8 +1383,58 @@ pub struct CrateRead<'a> {
     pub standard_library: bool,
     pub loaded: Loaded<'a>,
     /// Write the crate's metadata here, for later reads to name it as a [`Dependency`]. Written
-    /// only when the crate read with no error; otherwise the read is [`Refused`].
+    /// only when the crate read with no error; otherwise the read is [`Refused`]. A
+    /// `library` read writes it whatever was recorded.
     pub write_metadata: Option<&'a eko::path::Path>,
+    /// A library read: the crate is a library its own compiler already compiled, of any version
+    /// (a toolchain's `rust-src`, a registry crate), and frontend reads it for its facts and its
+    /// metadata without judging it. `false`, the default, is the strict compiler.
+    ///
+    /// A library read runs what extracting facts and writing metadata need (parsing, expansion,
+    /// name resolution, lowering, signatures, impls, predicates, and the bodies the metadata
+    /// carries) and no pass whose only job is to reject a program: feature gates, stability,
+    /// coherence and overlap, well-formedness, const checking, lints, and every body's type and
+    /// borrow check that the metadata does not need (`Session::is_library_read` lists them).
+    ///
+    /// Whatever is still emitted is recorded in [`CrateFacts::diagnostics`], and none of it makes
+    /// the read [`Refused`]: that is kept for a crate with no HIR to read (one that does not
+    /// parse), and for metadata that was asked for and could not be written. An internal
+    /// compiler error is not caught: it panics out of the read, as it does in any other.
+    ///
+    /// Nor does what is emitted make the facts incomplete. [`CrateFacts::complete`] says, in a
+    /// library read, whether reading lost any of the crate's input where input turns into names:
+    /// a parser run that emitted an error (the root, a module's file, a macro's output), a
+    /// module file that could not be loaded, a macro invocation left without its output, an
+    /// import that did not resolve; and a body whose type check stopped, or exports read from
+    /// the resolver's table because the privacy pass stopped. A diagnostic from a check that
+    /// only judges (an attribute's or an ABI's validation, a stability mark, a lang item, a type
+    /// error, an overlap) loses nothing, so a library read of a toolchain's `core` that records
+    /// thousands of those is complete when nothing was lost. Each loss is recorded where it
+    /// happens, by the mechanism that gave up, never by matching what was emitted
+    /// (`Session::record_loss` lists them).
+    pub library: bool,
+    /// What tells this crate apart from another of the same name: cargo's `-C metadata=<hash>`,
+    /// hashed into the crate's `StableCrateId` with its name exactly as rustc hashes it. `None`
+    /// is no `-C metadata`, the id every read had before this existed.
+    ///
+    /// Two crates of one name loaded in one read (the registry's `libc` and the one std was
+    /// built with; `cfg-if` 1.0.4 and 1.0.5) need two ids, and a crate read beside a loaded
+    /// crate of its own name needs one of its own too, or rustc's loader refuses the pair
+    /// ("colliding StableCrateId values" between two loaded crates, E0519 when one of them is
+    /// the crate being read). So a caller that may load two builds of one name gives every
+    /// crate it reads a value that differs whenever the build does: a digest of the crate, its
+    /// version, its features and what it loads, as cargo's is. The metadata this read writes
+    /// carries the id (and a crate hash that covers it), so every later read that loads the
+    /// file gets the same id without being told it.
+    pub disambiguator: Option<&'a str>,
+    /// Write every function's MIR into the metadata, not only what other crates' compiles need
+    /// (generic and inline functions). [`evaluate`] steps into any library function a call
+    /// reaches, and it can only run a function whose MIR the metadata carries; rustc's own
+    /// switch for this is `-Zalways-encode-mir`, which is how Miri's standard library is built.
+    ///
+    /// It costs the read an optimized MIR body for every function, so it is off by default and a
+    /// caller that keeps metadata keeps the two kinds apart. Only [`evaluate`] needs it.
+    pub all_mir: bool,
 }
 
 impl<'a> CrateRead<'a> {
@@ -1292,7 +1451,25 @@ impl<'a> CrateRead<'a> {
             standard_library: false,
             loaded: Loaded::default(),
             write_metadata: None,
+            library: false,
+            disambiguator: None,
+            all_mir: false,
         }
+    }
+
+    /// This read, as a library read or not: sets the `library` field.
+    pub fn library(self, library: bool) -> Self {
+        CrateRead { library, ..self }
+    }
+
+    /// This read, writing every function's MIR or not: sets the `all_mir` field.
+    pub fn with_all_mir(self, all_mir: bool) -> Self {
+        CrateRead { all_mir, ..self }
+    }
+
+    /// The same read under `disambiguator` ([`CrateRead::disambiguator`]).
+    pub fn with_disambiguator(self, disambiguator: &'a str) -> Self {
+        CrateRead { disambiguator: Some(disambiguator), ..self }
     }
 }
 
@@ -1334,6 +1511,10 @@ pub fn analyze_crate(
 /// std and its dependencies. Paths, macros and re-exports into a loaded crate resolve as they
 /// do in rustc, because it is rustc's loader reading rustc's metadata.
 ///
+/// **Two crates of one name** coexist as they do under cargo: each is read with its own
+/// [`CrateRead::disambiguator`] (cargo's `-C metadata`), the crate being read names the one in
+/// its prelude, and a loaded crate gets the one it was read against ([`Dependency::prelude`]).
+///
 /// **Only source.** Every crate in the chain was read from source by this function; no
 /// toolchain's library is opened, and the metadata this build writes is refused by any other
 /// build (it carries this build's version string).
@@ -1353,12 +1534,17 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
         proc_macro: read.proc_macro,
         standard_library: read.standard_library,
         loaded: read.loaded,
+        library: read.library,
+        disambiguator: read.disambiguator,
+        test: false,
+        all_mir: read.all_mir,
     };
     let input = Input::File(read.root.to_path_buf());
     let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
     let facts =
         analyze_input(&setup, input, read.items_only, read.write_metadata).map_err(refused)?;
-    if read.write_metadata.is_some() && !facts.diagnostics.is_empty() {
+    // A library read is not judged, so what it recorded refuses nothing.
+    if read.write_metadata.is_some() && !read.library && !facts.diagnostics.is_empty() {
         return Err(refused(facts.diagnostics));
     }
     Ok(facts)
@@ -1375,10 +1561,18 @@ struct Setup<'a> {
     proc_macro: bool,
     standard_library: bool,
     loaded: Loaded<'a>,
+    /// A library read: `CrateRead`'s `library`.
+    library: bool,
+    /// `-C metadata`; see [`CrateRead::disambiguator`].
+    disambiguator: Option<&'a str>,
+    /// rustc's `--test`; see [`check_source_against`].
+    test: bool,
+    /// `-Zalways-encode-mir`; see [`CrateRead::all_mir`].
+    all_mir: bool,
 }
 
 impl<'a> Setup<'a> {
-    /// One crate, `no_core`, host target, edition 2015, serial.
+    /// One crate, `no_core`, host target, edition 2015, serial, strict.
     fn plain(crate_name: &'a str) -> Self {
         Setup {
             crate_name,
@@ -1389,6 +1583,10 @@ impl<'a> Setup<'a> {
             proc_macro: false,
             standard_library: false,
             loaded: Loaded::default(),
+            library: false,
+            disambiguator: None,
+            test: false,
+            all_mir: false,
         }
     }
 
@@ -1399,12 +1597,22 @@ impl<'a> Setup<'a> {
         opts.crate_name = Some(self.crate_name.to_string());
         opts.crate_types =
             alloc::vec![if self.proc_macro { CrateType::ProcMacro } else { CrateType::Rlib }];
+        // rustc's `--test`, which `collect_crate_types` reads as the one crate type `bin`,
+        // whatever `crate_types` says, as rustc does.
+        opts.test = self.test;
         // Options::default() disallows `#![feature]` the way a stable CLI would.
         // This crate is a nightly frontend; within-crate no_core analysis needs the
         // same gates nightly rustc has.
         opts.unstable_features = UnstableFeatures::Allow;
         opts.jobs.frontend = frontend_jobs(self.width);
         opts.unstable_opts.force_unstable_if_unmarked = self.standard_library;
+        opts.unstable_opts.always_encode_mir = self.all_mir;
+        // The one switch a library read sets (`Session::is_library_read`), and the lint cap
+        // that goes with it: no lint judges a library, whatever levels its source sets.
+        if self.library {
+            opts.unstable_opts.library_read = true;
+            opts.lint_cap = Some(crate::rustc_lint_defs::Level::Allow);
+        }
         if let Some(target) = self.target {
             opts.target_triple = crate::rustc_target::spec::TargetTuple::from_tuple(target);
         }
@@ -1414,6 +1622,21 @@ impl<'a> Setup<'a> {
                 .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
         }
         opts.externs = externs(self.loaded.dependencies);
+        // Keyed by the metadata file, not the name: two crates of one name have two builds.
+        opts.proc_macro_dylibs = self
+            .loaded
+            .dependencies
+            .iter()
+            .filter_map(|dependency| {
+                let dylib = dependency.proc_macro_dylib.as_deref()?;
+                Some((
+                    eko::path::PathBuf::from(dependency.metadata.as_str()),
+                    eko::path::PathBuf::from(dylib),
+                ))
+            })
+            .collect();
+        // rustc's `-C metadata`, which `StableCrateId::new` hashes with the crate's name.
+        opts.cg.metadata = self.disambiguator.map(str::to_string).into_iter().collect();
         opts.logical_env = self.loaded.env.iter().cloned().collect();
         // **The sysroot is an optional parameter, because this is a parser.**
         //
@@ -1481,25 +1704,44 @@ impl<'a> Setup<'a> {
 
 /// `--extern` for each dependency: its file, exactly, and whether the crate being read can name
 /// it.
+///
+/// A name with a prelude file keeps its `noprelude` files apart, in
+/// `ExternEntry::transitive_files`: a lookup by name for the crate being read chooses among the
+/// prelude files only, and the others are found only by the hash a loaded crate recorded for
+/// them (see [`Dependency::prelude`]). A name with no prelude file keeps its files where a
+/// lookup by name finds them, which is how an injected `std` or an `extern crate core` of a
+/// `noprelude` crate is found, as in rustc.
 fn externs(dependencies: &[Dependency]) -> crate::rustc_session::config::Externs {
     use crate::rustc_session::config::{ExternEntry, ExternLocation, Externs};
     use crate::rustc_session::utils::CanonicalizedPath;
-    let mut map = alloc::collections::BTreeMap::new();
+    use alloc::collections::{BTreeMap, BTreeSet};
+    // Per name: its prelude files, then its `noprelude` ones.
+    let mut by_name: BTreeMap<String, (BTreeSet<CanonicalizedPath>, BTreeSet<CanonicalizedPath>)> =
+        BTreeMap::new();
     for dependency in dependencies {
-        let entry = map.entry(dependency.name.clone()).or_insert_with(|| ExternEntry {
-            location: ExternLocation::ExactPaths(alloc::collections::BTreeSet::new()),
-            is_private_dep: false,
-            add_prelude: false,
-            nounused_dep: true,
-            force: false,
-        });
-        entry.add_prelude |= dependency.prelude;
-        if let ExternLocation::ExactPaths(files) = &mut entry.location {
-            files.insert(CanonicalizedPath::new(eko::path::PathBuf::from(
-                dependency.metadata.as_str(),
-            )));
-        }
+        let (prelude, noprelude) = by_name.entry(dependency.name.clone()).or_default();
+        let file =
+            CanonicalizedPath::new(eko::path::PathBuf::from(dependency.metadata.as_str()));
+        let files = if dependency.prelude { prelude } else { noprelude };
+        files.insert(file);
     }
+    let map = by_name
+        .into_iter()
+        .map(|(name, (prelude, noprelude))| {
+            let add_prelude = !prelude.is_empty();
+            let (named, transitive_files) =
+                if add_prelude { (prelude, noprelude) } else { (noprelude, BTreeSet::new()) };
+            let entry = ExternEntry {
+                location: ExternLocation::ExactPaths(named),
+                is_private_dep: false,
+                add_prelude,
+                nounused_dep: true,
+                force: false,
+                transitive_files,
+            };
+            (name, entry)
+        })
+        .collect();
     Externs::new(map)
 }
 
@@ -1540,18 +1782,23 @@ fn analyze_input(
     // `abort_if_errors`, which unwinds past the return value. What `extract` finished before
     // that is kept here, and the unwind only tells us the run had errors.
     let mut extracted: Option<CrateFacts> = None;
+    let library = setup.library;
+    // Encoding began, and encoding returned.
     let mut written = false;
+    let mut encoded = false;
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
             create_and_enter_global_ctxt(compiler, krate, |tcx| {
                 extracted = Some(if items_only { extract_items(tcx) } else { extract(tcx) });
                 // A crate with an error is no one's dependency, so its metadata is not written.
+                // A library read is not judged: its metadata is written whatever it recorded.
                 if let Some(path) = write_metadata
-                    && tcx.dcx().has_errors().is_none()
+                    && (library || tcx.dcx().has_errors().is_none())
                 {
                     written = true;
                     crate::rustc_metadata::encode_metadata(tcx, path, None);
+                    encoded = true;
                 }
             })
         })
@@ -1567,10 +1814,12 @@ fn analyze_input(
     });
     drop(captured);
     // Metadata begun and then stopped by an error (encoding checks the bodies it carries) is
-    // not a crate anyone may load.
+    // not a crate anyone may load. In a library read an error does not stop it; only an encoding
+    // that did not return leaves metadata no one may load.
+    let unfinished = if library { !encoded } else { finished.is_err() || !errors.is_empty() };
     if let Some(path) = write_metadata
         && written
-        && (finished.is_err() || !errors.is_empty())
+        && unfinished
     {
         let _ = eko::file::remove_file(path);
     }
@@ -1578,8 +1827,21 @@ fn analyze_input(
     let Some(mut facts) = extracted else {
         return Err(errors);
     };
+    // A library read that was asked for metadata and has none has not done what it was asked:
+    // the crates that depend on it cannot be read.
+    if library && write_metadata.is_some() && !encoded {
+        errors.push(format!(
+            "error: the metadata of `{}` was not written: its encoding stopped on a fatal error",
+            setup.crate_name
+        ));
+        return Err(errors);
+    }
     facts.diagnostics = errors;
-    facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
+    // A library read's `complete` is `extract`'s, whole: its run ends in an error whenever it
+    // recorded one, and nothing it records is a loss by itself (see `CrateFacts::complete`).
+    if !library {
+        facts.complete = facts.complete && finished.is_ok() && facts.diagnostics.is_empty();
+    }
     Ok(facts)
 }
 
@@ -1773,6 +2035,17 @@ pub fn check_shared_source_with_width(
     source: Arc<String>,
     width: usize,
 ) -> Checked {
+    check_no_core_source(crate_name, source, width, false)
+}
+
+/// [`check_shared_source_with_width`], built with rustc's `--test` when `test` is set (see
+/// [`check_source_against`]).
+fn check_no_core_source(
+    crate_name: &str,
+    source: Arc<String>,
+    width: usize,
+    test: bool,
+) -> Checked {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -1780,6 +2053,7 @@ pub fn check_shared_source_with_width(
     let mut opts = Options::default();
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
+    opts.test = test;
     opts.unstable_features = UnstableFeatures::Allow;
     opts.jobs.frontend = frontend_jobs(width);
     opts.unstable_opts.crate_attr.push("no_core".to_string());
@@ -1803,27 +2077,513 @@ pub fn check_shared_source_with_width(
 /// method no type in reach has, E0061 for a wrong argument count, E0425 for a missing item).
 ///
 /// `edition` is its crate's; `None` is 2015. With no dependency this is [`check_source`].
+///
+/// **`test` is rustc's `--test`**, which `cargo check --all-targets` passes for a lib's test
+/// target, so a file whose code sits in `#[cfg(test)]` modules and `#[test]` functions gets the
+/// diagnostics cargo gives that target. As in rustc: `cfg(test)` is set, each `#[test]` function
+/// is kept with the descriptor const its expansion writes beside it, the crate is a `bin`
+/// whatever its crate type, and the harness adds a `main` that calls `test::test_main_static`.
+/// Those descriptors and that `main` name the crate `test` (libtest) through `extern crate
+/// test`, so **the caller supplies libtest**: the crate `test`, read from rust-src's
+/// `library/test` like std (a library read, after std and libtest's other dependencies, with its
+/// metadata written), in `loaded.dependencies` like any other dependency. Pass it as
+/// [`Dependency::transitive`]: rustc finds libtest in the sysroot, not in the extern prelude, so
+/// the file names `test::` only after its own `extern crate test`. Not supplied, the check says
+/// what rustc says: E0463, can't find crate for `test`. It is a check still: nothing is emitted.
+/// `false` is the check without `--test`.
 pub fn check_source_against(
     crate_name: &str,
     source: Arc<String>,
     edition: Option<&str>,
     loaded: Loaded<'_>,
     width: usize,
+    test: bool,
 ) -> Checked {
     if loaded.dependencies.is_empty() && edition.is_none() && loaded.cfg.is_empty() {
-        return check_shared_source_with_width(crate_name, source, width);
+        return check_no_core_source(crate_name, source, width, test);
     }
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
-    let setup = Setup { edition, width, loaded, ..Setup::plain(crate_name) };
+    let setup = Setup { edition, width, loaded, test, ..Setup::plain(crate_name) };
     let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
     let opts = match setup.options(&input) {
         Ok(opts) => opts,
         Err(errors) => return Checked { errors, warnings: Vec::new(), fatal: true },
     };
     check_input(opts, input, setup.loaded.cfg.to_vec())
+}
+
+/// What [`evaluate`] found when it ran a call.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Evaluation {
+    /// The call returned. `rendered` is the value as `{:?}` prints it, `ty` its type, `steps`
+    /// how many MIR statements and terminators the call took (what a budget bounds), and
+    /// `render_steps` how many its rendering took, apart and outside the budget (none for a
+    /// `no_core` value, read by layout; absent reads as zero, from a writer that predates it).
+    Value {
+        rendered: String,
+        ty: String,
+        steps: u64,
+        #[serde(default)]
+        render_steps: u64,
+    },
+    /// The call panicked: an overflow (overflow checks are on, as in a debug build), an index out
+    /// of bounds, an `unwrap` of `None`, a `panic!`. `message` is what the panic says, and
+    /// `steps` how many MIR statements and terminators ran before it (absent reads as zero, from
+    /// a writer that predates it).
+    Panicked {
+        message: String,
+        #[serde(default)]
+        steps: u64,
+    },
+    /// The call was not run to its end, for a reason the program gives, and why: the source
+    /// does not compile (its errors), it has undefined behavior, it deadlocks or recurses past
+    /// any stack, or its value has no `Debug` (or its `Debug` failed or panicked).
+    Refused { why: String },
+    /// This interpreter could not produce an answer, and why: the call reaches a function whose
+    /// MIR no loaded metadata carries, an intrinsic or foreign function it does not serve, an
+    /// operation it does not support, or it hit a bug of its own. Unlike `Refused`, it says
+    /// nothing about the program: a machine that serves what was missing may well give a value.
+    Unsupported { why: String },
+    /// The call did not finish within the caller's step budget: `steps` ran, the budget, and
+    /// nothing more. Its own outcome, never a value or a panic: what the call would have come to
+    /// is not known. A step is one MIR statement or terminator of the call, as in a `Value`'s
+    /// `steps`; rendering a value and formatting a panic's message are not counted against it.
+    Exhausted { steps: u64 },
+}
+
+/// Run `call`, a Rust expression over the items `source` defines (`count("strawberry", 'r')`),
+/// through rustc's MIR interpreter, and return its value.
+///
+/// **One semantics.** The source is compiled as rustc compiles it (type check, borrow check,
+/// MIR building and optimization), with `call` as the body of a function appended to it, and
+/// that function is run by `rustc_const_eval::interpret`, the interpreter under CTFE and Miri.
+/// Every rule of what the program does is that interpreter's; the machine it runs on
+/// (`interpreter.rs`) only decides what is served. Heap allocation is served from the
+/// interpreter's own memory; so are writes to standard output and standard error (a program's
+/// printing is its output), the one thread's thread-local statics, and the OS's random bytes, as
+/// a fixed stream so a run reproduces. Any other foreign function (a syscall, a C library, file
+/// or network I/O) is refused by name. Overflow checks are on, as in a debug build, and a panic
+/// is returned as [`Evaluation::Panicked`] with its message, never a crash. Nothing unwinds out
+/// of this function: a compiler bug on the way is a [`Evaluation::Refused`] that says what it
+/// was.
+///
+/// **The value is rendered by its type's own `Debug`**, run on the same interpreter after the
+/// call returns (`{:?}` of it, through `core::fmt`), so the rendering is the library's and not a
+/// second implementation of it. A `no_core` source has no `Debug`; its primitive values
+/// (integers, `bool`, `char`, floats, `str`, references, arrays, slices, tuples) are read by
+/// layout instead.
+///
+/// **Library functions run from their MIR**, so every crate the call reaches has to have been
+/// read with its MIR written ([`CrateRead::all_mir`]); a function whose MIR is missing is refused
+/// by name. `loaded`, `edition` and the rest are what [`check_source_against`] takes: with no
+/// dependency the source is read `no_core`.
+///
+/// `budget` bounds the call's steps; `None` runs until the call returns, however long that is.
+/// Rendering the value and formatting a panic's message run to their ends outside it: the
+/// budget stops a call that runs away, and they only print what the call already built.
+pub fn evaluate(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    call: &str,
+    budget: Option<u64>,
+) -> Evaluation {
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "evaluate needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
+    // A string input's text does not enter the options (only a file root is looked at, for a
+    // `no_core` it declares), so they are taken first: whether a library is loaded decides what
+    // is appended to the source.
+    let probe =
+        Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
+    let mut opts = match setup.options(&probe) {
+        Ok(opts) => opts,
+        Err(errors) => return Evaluation::Refused { why: errors.join("\n") },
+    };
+    opts.cg.overflow_checks = Some(true);
+    opts.debug_assertions = true;
+    let library = !opts.unstable_opts.crate_attr.iter().any(|attr| attr == "no_core");
+    // Appended, so every span of the source is where it was. `impl Sized` lets the call's type
+    // be whatever it is; the interpreter sees it revealed. With a library, the value is rendered
+    // by its own `Debug`, which `interpreter::RENDER` runs.
+    let entry = interpreter::ENTRY;
+    let mut text =
+        format!("{source}\n#[allow(warnings)]\nfn {entry}() -> impl Sized {{\n{call}\n}}\n");
+    if library {
+        text.push_str(interpreter::RENDER);
+    }
+    let source = Arc::new(text);
+    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
+    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let captured = text.clone();
+    let config = Config {
+        opts,
+        input,
+        psess_created: Some(capture_diagnostics(&text)),
+        using_internal_features: &USING_INTERNAL_FEATURES,
+        rustc_version: None,
+        crate_cfg: setup.loaded.cfg.to_vec(),
+    };
+    // Handed out rather than returned, as in `analyze_input`: a run with an error ends in an
+    // unwind, not a return.
+    let mut outcome: Option<Evaluation> = None;
+    // Nothing unwinds out of `evaluate`: a fatal error is caught by `catch_fatal_errors`, and
+    // any other panic (a compiler bug, a delayed bug flushed when the session ends) by this
+    // outer catch, and each becomes a refusal that says what it was.
+    let session = crate::unwind_janky::catch(|| {
+        catch_fatal_errors(|| {
+            run_compiler(config, |compiler| {
+                let krate = parse(&compiler.sess);
+                create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                    // Only a program rustc accepts is run.
+                    tcx.analysis(());
+                    if tcx.dcx().has_errors().is_some() {
+                        return;
+                    }
+                    outcome = Some(evaluate_in(tcx, entry, library, budget, &captured, 0).0);
+                })
+            })
+        })
+    });
+    let errors = || {
+        let (mut errors, _) = split_diagnostics(&text.lock());
+        errors.retain(|error| !error.starts_with("error: aborting due to"));
+        errors
+    };
+    match (outcome, session) {
+        (Some(outcome), Ok(_)) => outcome,
+        // A compiler bug says nothing of the program: this interpreter could not answer.
+        (Some(outcome), Err(payload)) => Evaluation::Unsupported {
+            why: with_errors(
+                format!(
+                    "the session panicked as it ended, after the call gave {outcome:?}: {}",
+                    panic_text(&payload)
+                ),
+                &errors(),
+            ),
+        },
+        (None, Ok(_)) => {
+            let errors = errors();
+            let why = if errors.is_empty() {
+                "the source did not compile".to_string()
+            } else {
+                errors.join("\n")
+            };
+            Evaluation::Refused { why }
+        }
+        (None, Err(payload)) => Evaluation::Unsupported {
+            why: with_errors(format!("the analyser panicked: {}", panic_text(&payload)), &errors()),
+        },
+    }
+}
+
+/// The part of [`evaluate`] inside the compiled session: find the appended functions and run the
+/// call. A panic out of the interpreter is caught here, nearest to it, where its payload is still
+/// its own; any error rustc reported while the call ran (a constant that failed, a compiler bug)
+/// is added to a refusal, since that is what the refusal is about. Only what was reported from
+/// byte `since` of `captured` on is the call's: a session shared by several calls
+/// ([`evaluate_all`]) holds the others' too. The flag is whether the interpreter unwound, after
+/// which the session is not trusted for another call.
+fn evaluate_in(
+    tcx: TyCtxt<'_>,
+    entry: &str,
+    library: bool,
+    budget: Option<u64>,
+    captured: &alloc::sync::Arc<eko::thread::Mutex<String>>,
+    since: usize,
+) -> (Evaluation, bool) {
+    let function = |name: &str| {
+        tcx.hir_crate_items(()).free_items().map(|item| item.owner_id.def_id).find(|&id| {
+            tcx.def_kind(id) == DefKind::Fn && tcx.item_name(id.to_def_id()).as_str() == name
+        })
+    };
+    let Some(id) = function(entry) else {
+        return (
+            Evaluation::Unsupported { why: "the call's function was not found".to_string() },
+            false,
+        );
+    };
+    let render = if library {
+        match (function(interpreter::DEBUG), function(interpreter::SINK)) {
+            (Some(debug), Some(sink)) => {
+                Some(interpreter::Render { debug: debug.to_def_id(), sink: sink.to_def_id() })
+            }
+            _ => {
+                return (
+                    Evaluation::Unsupported {
+                        why: "the functions that render a value were not found".to_string(),
+                    },
+                    false,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let (evaluation, unwound) = match crate::unwind_janky::catch(|| {
+        interpreter::run_entry(tcx, id, render, budget)
+    }) {
+        Ok(evaluation) => (evaluation, false),
+        Err(payload) => (
+            Evaluation::Unsupported {
+                why: format!("the interpreter panicked: {}", panic_text(&payload)),
+            },
+            true,
+        ),
+    };
+    let reported = || {
+        let said = captured.lock();
+        split_diagnostics(said.get(since..).unwrap_or("")).0
+    };
+    let evaluation = match evaluation {
+        Evaluation::Refused { why } => Evaluation::Refused { why: with_errors(why, &reported()) },
+        Evaluation::Unsupported { why } => {
+            Evaluation::Unsupported { why: with_errors(why, &reported()) }
+        }
+        other => other,
+    };
+    (evaluation, unwound)
+}
+
+/// What [`evaluate_all`] answered, and how many compiler sessions it took to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvaluatedAll {
+    /// One per call, in the order given, each what [`evaluate`] answers for that call alone.
+    pub evaluations: Vec<Evaluation>,
+    /// The sessions run: one when every call built, one more for each round of calls whose
+    /// errors were taken out, and one for each call asked alone.
+    pub sessions: usize,
+}
+
+/// [`evaluate`] for every call of `calls` over the one `source`, sharing a compiler session: the
+/// source is compiled once with one function per call appended, and each call is run by the
+/// interpreter in that session, each on a machine of its own (its own memory, its own
+/// statics' copies), so no call sees another's values. Each call is `(call, budget)`: the most
+/// steps the call may take, its value's rendering not counted, as [`evaluate`]'s `budget`; one past it is
+/// [`Evaluation::Exhausted`] and cost no more than that.
+///
+/// **Each answer is what the call's own session would give.** That is the contract, and every
+/// way a shared session could blur it is taken out rather than approximated:
+///
+/// - An error is read by where rustc placed it. An error on a call's own lines is that call's:
+///   it is refused with it, and the rest are compiled again without it, since `analysis` stops
+///   at the first body with an error and the lints a clean call's own session would run have
+///   not run yet. Rounds repeat until the calls left build, so a call refused by a lint is
+///   refused by that lint, as alone.
+/// - An error on the source's own lines refuses every call, with the source's errors and its
+///   own, as each call's own session would.
+/// - An error placed anywhere else (a library's file, `RENDER`'s lines, nowhere), a session
+///   that stops before it has a context, a panic out of the interpreter, or a session that
+///   panics as it ends: whatever that session had not settled is asked alone, with
+///   [`evaluate`]. A shared session that cannot say whose a failure is, never guesses.
+///
+/// Nothing outlives the call: each session is dropped before the next.
+pub fn evaluate_all(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    calls: &[(&str, Option<u64>)],
+) -> EvaluatedAll {
+    let mut answers: Vec<Option<Evaluation>> = calls.iter().map(|_| None).collect();
+    let mut sessions = 0;
+    // The calls still to answer, by their place in `calls`.
+    let mut open: Vec<usize> = (0..calls.len()).collect();
+    while open.len() > 1 {
+        let asked: Vec<(&str, Option<u64>)> = open.iter().map(|&at| calls[at]).collect();
+        sessions += 1;
+        let Some(settled) = shared_session(source, edition, loaded, &asked) else {
+            break;
+        };
+        let mut left = Vec::new();
+        for (&at, outcome) in open.iter().zip(settled) {
+            match outcome {
+                Some(outcome) => answers[at] = Some(outcome),
+                None => left.push(at),
+            }
+        }
+        if left.len() == open.len() {
+            break;
+        }
+        open = left;
+    }
+    let evaluations = answers
+        .into_iter()
+        .zip(calls)
+        .map(|(answer, &(call, budget))| {
+            answer.unwrap_or_else(|| {
+                sessions += 1;
+                evaluate(source, edition, loaded, call, budget)
+            })
+        })
+        .collect();
+    EvaluatedAll { evaluations, sessions }
+}
+
+/// One session over `source` with one function per call of `calls`: each call's answer when
+/// the session could say it, `None` for a call to ask again, and `None` for the whole when the
+/// session settled nothing it could vouch for. See [`evaluate_all`] for which is which.
+fn shared_session(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    calls: &[(&str, Option<u64>)],
+) -> Option<Vec<Option<Evaluation>>> {
+    let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
+    let probe =
+        Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
+    // Options that do not build refuse every call alike, as each call alone says.
+    let mut opts = setup.options(&probe).ok()?;
+    opts.cg.overflow_checks = Some(true);
+    opts.debug_assertions = true;
+    let library = !opts.unstable_opts.crate_attr.iter().any(|attr| attr == "no_core");
+    let newlines = |text: &str| text.bytes().filter(|&byte| byte == b'\n').count();
+    // The source, then each call's function on lines of its own, so a diagnostic is a call's
+    // exactly when rustc places it on the call's lines. The source's spans are where
+    // `evaluate` puts them.
+    let mut text = format!("{source}\n");
+    let source_lines = newlines(&text);
+    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>, Option<u64>)> =
+        Vec::with_capacity(calls.len());
+    for (at, &(call, budget)) in calls.iter().enumerate() {
+        let name = format!("{}_{at}", interpreter::ENTRY);
+        let first = newlines(&text) + 1;
+        text.push_str(&format!("#[allow(warnings)]\nfn {name}() -> impl Sized {{\n{call}\n}}\n"));
+        entries.push((name, first..=newlines(&text), budget));
+    }
+    if library {
+        text.push_str(interpreter::RENDER);
+    }
+    let source_text = Arc::new(text);
+    let input = Input::Str { name: FileName::anon_source_code(&source_text), input: source_text };
+    let said = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let captured = said.clone();
+    let config = Config {
+        opts,
+        input,
+        psess_created: Some(capture_diagnostics(&said)),
+        using_internal_features: &USING_INTERNAL_FEATURES,
+        rustc_version: None,
+        crate_cfg: setup.loaded.cfg.to_vec(),
+    };
+    let mut settled: Option<Vec<Option<Evaluation>>> = None;
+    let session = crate::unwind_janky::catch(|| {
+        catch_fatal_errors(|| {
+            run_compiler(config, |compiler| {
+                let krate = parse(&compiler.sess);
+                create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                    // `analysis` raises a fatal error once a body has one, after every body
+                    // was type and borrow checked: caught here, so the errors can be read by
+                    // where they are. Any other panic goes on out, and nothing is settled.
+                    let analysed = catch_fatal_errors(|| tcx.analysis(())).is_ok();
+                    if tcx.dcx().has_errors().is_none() {
+                        // Stopped with nothing said: each call alone says what that was.
+                        if !analysed {
+                            return;
+                        }
+                        let mut each: Vec<Option<Evaluation>> =
+                            entries.iter().map(|_| None).collect();
+                        for ((name, _, budget), slot) in entries.iter().zip(each.iter_mut()) {
+                            let since = captured.lock().len();
+                            let (evaluation, unwound) =
+                                evaluate_in(tcx, name, library, *budget, &captured, since);
+                            // An interpreter that unwound leaves this session untrusted: that
+                            // call and every one after it are asked again elsewhere.
+                            if unwound {
+                                break;
+                            }
+                            *slot = Some(evaluation);
+                        }
+                        settled = Some(each);
+                        return;
+                    }
+                    let (errors, _) = split_diagnostics(&captured.lock());
+                    let errors: Vec<String> = errors
+                        .into_iter()
+                        .filter(|error| !error.starts_with("error: aborting due to"))
+                        .collect();
+                    let mut own: Vec<Vec<usize>> = entries.iter().map(|_| Vec::new()).collect();
+                    let mut in_source: Vec<usize> = Vec::new();
+                    for (index, error) in errors.iter().enumerate() {
+                        let Some(line) = placed_line(error) else {
+                            return;
+                        };
+                        if line <= source_lines {
+                            in_source.push(index);
+                            continue;
+                        }
+                        let Some(at) =
+                            entries.iter().position(|(_, lines, _)| lines.contains(&line))
+                        else {
+                            return;
+                        };
+                        own[at].push(index);
+                    }
+                    if errors.is_empty() {
+                        return;
+                    }
+                    let refused = |mine: &[usize]| Evaluation::Refused {
+                        why: errors
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| in_source.contains(index) || mine.contains(index))
+                            .map(|(_, error)| error.as_str())
+                            .collect::<Vec<&str>>()
+                            .join("\n"),
+                    };
+                    settled = Some(if in_source.is_empty() {
+                        own.iter()
+                            .map(|mine| (!mine.is_empty()).then(|| refused(mine.as_slice())))
+                            .collect()
+                    } else {
+                        own.iter().map(|mine| Some(refused(mine.as_slice()))).collect()
+                    });
+                })
+            })
+        })
+    });
+    // A session that panicked as it ended would have refused each call alone, saying so; ask
+    // them alone rather than say it for them.
+    let _ended = session.ok()?;
+    settled
+}
+
+/// The line of the text as compiled that rustc placed `error` on, from its first `-->` location,
+/// when that is in the text (`<anon>`) and not in another file.
+fn placed_line(error: &str) -> Option<usize> {
+    let location = error.lines().map(str::trim).find_map(|line| line.strip_prefix("--> "))?;
+    let (from, _) = location.rsplit_once(": ")?;
+    let mut parts = from.rsplitn(3, ':');
+    let _column = parts.next()?;
+    let line = parts.next()?.parse().ok()?;
+    (parts.next()? == "<anon>").then_some(line)
+}
+
+/// `why`, then what rustc reported, one diagnostic a line, when it reported anything.
+fn with_errors(why: String, errors: &[String]) -> String {
+    if errors.is_empty() { why } else { format!("{why}\n{}", errors.join("\n")) }
+}
+
+/// What a caught panic said: its payload when that is text, or else what the panic handler
+/// recorded (`unwind_janky::record_panic`), which is also what survives `resume`'s re-raise. A
+/// compiler bug's payload is not text; its message is among the session's diagnostics.
+fn panic_text(payload: &crate::unwind_janky::Payload) -> String {
+    let said = payload
+        .downcast_ref::<&'static str>()
+        .map(|text| text.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned());
+    let recorded = crate::unwind_janky::take_last_panic();
+    match said {
+        Some(said) if said != "resuming a caught panic" => said,
+        said => recorded.or(said).unwrap_or_else(|| {
+            "a panic whose payload is not text (a compiler bug; see the diagnostics)".to_string()
+        }),
+    }
 }
 
 /// `tcx.analysis(())` over one session, and what it said.

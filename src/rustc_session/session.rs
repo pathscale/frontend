@@ -439,6 +439,10 @@ pub struct Session {
 
     /// Config specifying targets' pointer authentication preference.
     pub pointer_auth_config: Option<PointerAuthConfig>,
+
+    /// How many times a library read lost part of its input: counted by [`Session::record_loss`]
+    /// and read by [`Session::losses`]. Always zero outside a library read.
+    lost: AtomicUsize,
 }
 
 #[derive(Clone, Copy)]
@@ -524,6 +528,92 @@ impl Session {
     /// Returns true if the crate is a testing one.
     pub fn is_test_crate(&self) -> bool {
         self.opts.test
+    }
+
+    /// A library read (`-Z library-read`): the source is a library that its own compiler already
+    /// compiled, of whatever version, and this session only reads it, for its facts and for the
+    /// metadata the crates that depend on it load. It is not judged.
+    ///
+    /// **The one switch.** Every pass whose only job is to reject a program asks this and does
+    /// not run, or runs and cannot refuse, in a library read; every other session is exactly the
+    /// strict compiler. The passes it turns off, each at the place it would otherwise run:
+    ///
+    /// - the whole-crate `analysis` (well-formedness, coherence, every body's type check, borrow
+    ///   check, unsafety, liveness, attribute and stability checks, lints): a library read runs
+    ///   only the part of it that creates definitions (`rustc_interface::passes::analysis`);
+    /// - the feature list and the post-expansion feature gates (`rustc_expand::config::features`,
+    ///   `rustc_interface::passes::early_lint_checks`);
+    /// - the stop after a macro expansion error (`rustc_interface::passes::configure_and_expand`);
+    /// - use of an unstable item (`rustc_middle::middle::stability::report_unstable`);
+    /// - coherence (`rustc_hir_analysis::coherence::coherent_trait`) and overlap errors while the
+    ///   specialization graph is built (`rustc_trait_selection::traits::specialize`);
+    /// - const checking, and the borrow check, transmute and well-formedness results tainting a
+    ///   body evaluated at compile time (`rustc_mir_transform`).
+    ///
+    /// And one barrier is lifted where it is met: the metadata encoder runs each definition's part
+    /// in its own catch for fatal errors (`rustc_metadata::rmeta::encoder`, `isolated`), because
+    /// the strict compiler only ever encodes a crate that `analysis` passed. Whatever is still
+    /// emitted is recorded by the caller and refuses nothing; the caller also caps lints at
+    /// `allow` (`frontend_facts`, `Setup::options`). Whether reading lost any input is counted
+    /// apart from what was emitted, where the loss happens ([`Session::record_loss`]).
+    #[inline]
+    pub fn is_library_read(&self) -> bool {
+        self.opts.unstable_opts.library_read
+    }
+
+    /// Records, in a library read, that reading lost part of the crate's input; does nothing in
+    /// any other session.
+    ///
+    /// A library read judges nothing, so what it still emits does not tell whether its facts are
+    /// whole: most of it is one compiler version's bookkeeping about another's source (an ABI, an
+    /// attribute or a lang item this build does not know), and the item it sits on is read all
+    /// the same. Loss is recorded instead where it happens, by the parts of the frontend that
+    /// turn source into names, each at the one place it gives up on some input:
+    ///
+    /// - a parser run that emitted an error: over the crate root
+    ///   (`rustc_interface::passes::parse`), over a module's file, including one that could not
+    ///   be found or loaded (`rustc_expand::module::parse_external_mod`), or over a macro's
+    ///   output (`rustc_expand::expand`);
+    /// - a macro invocation left without its output: one whose expansion gave up and left a dummy
+    ///   in its place, or whose attribute input did not parse (`rustc_expand::expand`), and an
+    ///   invocation no working macro stands behind: a bang or derive macro that was not found,
+    ///   or a built-in macro this build has no expander for (`rustc_resolve::macros`). An
+    ///   attribute that was not found is not a loss: it is kept as an inert attribute and its
+    ///   item is read;
+    /// - an import that did not resolve and stands as a dummy binding
+    ///   (`rustc_resolve::imports`).
+    ///
+    /// `frontend_facts` reads the count as `CrateFacts::complete`.
+    #[inline]
+    pub fn record_loss(&self) {
+        if self.is_library_read() {
+            self.lost.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// How many losses [`Session::record_loss`] recorded. Always zero outside a library read.
+    pub fn losses(&self) -> usize {
+        self.lost.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The start of a parser run a library read watches: the session's error count then, or
+    /// `None` outside a library read, where the count is not taken. Hand it to
+    /// [`Session::record_parse_errors_since`] when the run is over.
+    #[inline]
+    pub fn parse_mark(&self) -> Option<usize> {
+        self.is_library_read().then(|| self.dcx().err_count())
+    }
+
+    /// Records a loss when an error was emitted since `mark`, a [`Session::parse_mark`] taken
+    /// before a parser run: the parser emits no feature gate and no lint, only what it could not
+    /// read, so any error in between cost the run some of its input.
+    #[inline]
+    pub fn record_parse_errors_since(&self, mark: Option<usize>) {
+        if let Some(mark) = mark
+            && self.dcx().err_count() > mark
+        {
+            self.record_loss();
+        }
     }
 
     /// `feature` must be a language feature.
@@ -1408,6 +1498,7 @@ pub fn build_session(
         mir_opt_bisect_eval_count: AtomicUsize::new(0),
         removed_rustc_main_attr: AtomicBool::new(false),
         pointer_auth_config,
+        lost: AtomicUsize::new(0),
     };
 
     validate_commandline_args_with_session_available(&sess);

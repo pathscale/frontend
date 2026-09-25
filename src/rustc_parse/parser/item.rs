@@ -707,6 +707,20 @@ impl<'a> Parser<'a> {
             generics
         };
 
+        // The older spelling, `impl<T> const Trait for T`, which libraries written for an earlier
+        // compiler use (stable 1.97's `core`): read as `const impl<T> Trait for T`. frontend reads
+        // the source it is handed, whichever compiler version it was written for.
+        let constness = match constness {
+            Const::No
+                if self.token.is_keyword(kw::Const)
+                    && self.look_ahead(1, |t| t.can_begin_type() || *t == token::Bang) =>
+            {
+                self.bump();
+                Const::Yes(self.prev_token.span)
+            }
+            constness => constness,
+        };
+
         if let Const::Yes(span) = constness {
             self.psess.gated_spans.gate(sym::const_trait_impl, span);
         }

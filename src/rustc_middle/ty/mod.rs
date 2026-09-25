@@ -1975,6 +1975,11 @@ impl<'tcx> TyCtxt<'tcx> {
             return Some(ImplOverlapKind::Permitted { marker: false });
         }
 
+        // A reservation impl is no impl, so it overlaps nothing (see `impl_is_reservation`).
+        if self.impl_is_reservation(def_id1) || self.impl_is_reservation(def_id2) {
+            return Some(ImplOverlapKind::Permitted { marker: false });
+        }
+
         match (impl1.polarity, impl2.polarity) {
             (ImplPolarity::Positive, ImplPolarity::Negative)
             | (ImplPolarity::Negative, ImplPolarity::Positive) => {
@@ -2284,6 +2289,26 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn impl_polarity(self, def_id: impl IntoQueryKey<DefId>) -> ty::ImplPolarity {
         let def_id = def_id.into_query_key();
         self.impl_trait_header(def_id).polarity
+    }
+
+    /// Whether the impl carries `#[rustc_reservation_impl]`: an impl a library declares only to
+    /// reserve the space for adding it later (core's `impl<T> From<!> for T` up to the release
+    /// that stabilized `!`). Every rustc that compiled such a library treated it as no impl at
+    /// all outside coherence, and as ambiguity inside it, so it never overlaps another impl and
+    /// never proves a goal. This tree's upstream removed the attribute along with the impl, but
+    /// a library read of a `rust-src` from before that (stable 1.97's core) still has it, and
+    /// reading it as an ordinary impl makes `!: From<!>` ambiguous against `impl<T> From<T> for
+    /// T`: every body that converts out of `!` (`Result::into_ok`, alloc's in-place collect)
+    /// would then be built with an error in it.
+    ///
+    /// The attribute is not one this tree parses, so it is read by name as the inert attribute
+    /// the item keeps (and its metadata carries), for a local impl and a loaded one alike.
+    pub fn impl_is_reservation(self, def_id: impl IntoQueryKey<DefId>) -> bool {
+        let def_id = def_id.into_query_key();
+        #[expect(deprecated)]
+        self.get_all_attrs(def_id)
+            .iter()
+            .any(|attr| attr.name().is_some_and(|name| name.as_str() == "rustc_reservation_impl"))
     }
 
     /// Given an `impl_id`, return the trait it implements.

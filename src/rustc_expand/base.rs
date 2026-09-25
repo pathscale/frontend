@@ -502,6 +502,14 @@ pub trait MacResult {
         // Fn-like macros cannot produce a crate.
         unreachable!()
     }
+
+    /// The expander gave up after an error, so whatever fragment this makes stands in for an
+    /// output that is missing: true only for [`DummyResult::any`], the result an expander
+    /// returns once it has hit an error. Read by a library read's loss count
+    /// (`Session::record_loss`); nothing else asks.
+    fn gave_up(&self) -> bool {
+        false
+    }
 }
 
 /// `MacResult` implementation for the common case where you've already
@@ -593,6 +601,10 @@ impl DummyResult {
 }
 
 impl MacResult for DummyResult {
+    fn gave_up(&self) -> bool {
+        self.guar.is_some()
+    }
+
     fn make_expr(self: Box<DummyResult>) -> Option<Box<ast::Expr>> {
         Some(DummyResult::raw_expr(self.span, self.guar))
     }

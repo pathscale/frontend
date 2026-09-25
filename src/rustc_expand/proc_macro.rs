@@ -36,6 +36,11 @@ fn record_expand_proc_macro<'a>(
 /// to run. Running one means executing its compiled code, and frontend compiles nothing, so the
 /// macro exists for name resolution (a `use` of it, a path to it) and every expansion of it is
 /// an error that says why, of any of the three kinds.
+///
+/// A caller that has the dylib a compiler built from that source hands it over
+/// (`frontend_facts::Dependency::proc_macro_dylib`), and then the crate's macros are the
+/// `BangProcMacro`, `AttrProcMacro` and `DeriveProcMacro` below, run through it
+/// (`CrateLoader::dlsym_release_proc_macros`). This stays for a crate with none.
 pub struct UnrunProcMacro {
     pub name: crate::rustc_span::Symbol,
 }
