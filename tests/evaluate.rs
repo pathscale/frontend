@@ -4,12 +4,15 @@
 //! they hold: a value comes back rendered with its type and a step count, a recursive call runs,
 //! an overflow and an index out of bounds are panics with a message (the compiler's description,
 //! since no panic runtime is loaded), a foreign function is refused by name, a budget ends a
-//! loop that never would, and a source that does not compile is refused with its error.
+//! loop that never would, a source that does not compile is refused with its error, and a
+//! compiler bug on the way is refused rather than unwinding out of `evaluate`. A `no_core` value
+//! has no `Debug` to run, so these values are read by layout.
 //!
 //! The same questions against `std` (the strawberry count, a `Vec` sum, a `u8` sum past 255,
-//! `unwrap` on `None`, a formatted panic message) need `std`'s chain read with every function's
-//! MIR, so they are in `tests/library_read.rs`, ignored unless `FRONTEND_RUST_SRC_ROOTS` names a
-//! `rust-src` tree.
+//! `unwrap` on `None`, a formatted panic message), and what only `std` has (printing, a
+//! `HashSet`'s thread-local keys, rendering by the type's own `Debug`, a file refused), need
+//! `std`'s chain read with every function's MIR. That reader is `tests/library_read.rs`'s, so
+//! they are there, ignored unless `FRONTEND_RUST_SRC_ROOTS` names a `rust-src` tree.
 //!
 //! A `std` program, because the catcher needs `std`.
 
@@ -99,6 +102,22 @@ fn an_index_out_of_bounds_is_a_panic() {
     }
     match run(items, "at(2)", None) {
         Evaluation::Value { rendered, .. } => assert_eq!(rendered, "3"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Nothing unwinds out of `evaluate`. The `Index` fixture above trips a delayed bug in type
+/// checking, which rustc raises as a panic when the session ends; `evaluate` returns it as a
+/// refusal that says what it was, rather than letting the panic reach the caller.
+#[test]
+fn a_compiler_bug_is_refused_not_a_panic() {
+    let items = "#[lang = \"legacy_receiver\"] pub trait LegacyReceiver {}\n\
+                 impl<T: ?Sized> LegacyReceiver for &T {}\n\
+                 #[lang = \"index\"] pub trait Index<Idx> { type Output: ?Sized; fn index(&self, index: Idx) -> &Self::Output; }\n\
+                 impl<T> Index<usize> for [T] { type Output = T; fn index(&self, index: usize) -> &T { &self[index] } }\n\
+                 pub fn at(i: usize) -> u8 { let a: [u8; 3] = [1, 2, 3]; a[i] }\n";
+    match run(items, "at(5)", None) {
+        Evaluation::Refused { why } => assert!(!why.is_empty()),
         other => panic!("{other:?}"),
     }
 }

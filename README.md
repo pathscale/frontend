@@ -193,7 +193,7 @@ it needs a panic catcher installed through `unwind_janky::install_catcher`. Prov
 `frontend_facts::evaluate(source, edition, loaded, call, budget)` compiles `source` as rustc
 does, then runs the Rust expression `call` over its items through rustc's own MIR interpreter
 (`rustc_const_eval::interpret`, the engine under CTFE and Miri) and returns an `Evaluation`: the
-value as `{:?}` prints it with its type and step count, a panic with its message, a refusal
+value as its `{:?}` prints it with its type and step count, a panic with its message, a refusal
 with its reason, or an exhausted budget. It exists so that a number a caller reports is what a
 function returned when it ran, and there is one implementation of Rust's semantics to get it
 from: rustc's. Nothing here re-implements any of it.
@@ -203,8 +203,25 @@ What is decided here is only the machine's policy (`src/frontend_facts/interpret
 - **Addresses are real**, as in Miri: every allocation has an absolute address, so library code
   that reads a pointer's bits (`fmt::Arguments::as_str`, `align_offset`) runs. CTFE's machine
   keeps pointers relative and refuses those reads.
-- **Heap allocation is served** from the interpreter's memory (`__rust_alloc` and friends). Every
-  other foreign function, every syscall, file and network access is refused by name.
+- **Heap allocation is served** from the interpreter's memory (`__rust_alloc` and friends).
+- **Printing is served, as output.** `write` to descriptors 1 and 2 keeps the bytes in the machine
+  (a program's printing is its output, not an effect on the world), with what std's stdout path
+  reaches on the way: macOS's `pthread_mutex*`, one thread's bookkeeping. Every other descriptor,
+  file and socket stays refused by name.
+- **One thread, with its thread-locals**, as Miri gives them: a `#[thread_local]` static is a
+  copy of its initializer made when the run first reaches it. A destructor registered for one
+  never runs (the thread does not exit during a run).
+- **Random bytes are a fixed stream** (splitmix64 from seed 0): `CCRandomGenerateBytes` on macOS,
+  `syscall(SYS_getrandom)` on Linux, where the weak `getrandom` symbol reads as absent. A
+  `HashMap`'s keys come from here, and determinism is the point: a verifier run must reproduce.
+- Every other foreign function, every syscall, file and network access is refused by name.
+- **A value is rendered by its type's own `Debug`**, run on the same interpreter after the call
+  returns (`{:?}` through `core::fmt`, written into a sink the machine keeps), so there is no
+  second implementation of `Debug`. Only a `no_core` source, which has no `Debug`, is read by
+  layout, for its primitive shapes.
+- **Nothing unwinds out of `evaluate`.** A compiler bug, or an error rustc reports while the call
+  runs (a constant that fails, a library body read with an error), comes back as a refusal that
+  names it and carries what rustc said.
 - **A debug build**: overflow checks on, so `200u8 + 100` is a panic. A panic stops the run and its
   message is formatted by the library's own `alloc::fmt::format` on the same interpreter.
 - **Library functions run from their MIR**, so the crates a call reaches must be read with
