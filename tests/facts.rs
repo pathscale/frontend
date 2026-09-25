@@ -70,3 +70,38 @@ fn diagnostics_refuse_only_what_the_file_decides() {
     let picked = diagnose_with(broken, &by_number).expect("parses");
     assert!(picked.iter().all(|d| d.code == "unresolved-ident") && !picked.is_empty(), "{picked:?}");
 }
+
+/// A staged-api crate's stability marks, as rustc's `lookup_stability` reads them: a stable
+/// item carries none, an unstable one its feature, a trait's function inherits the trait's, and
+/// a trait impl's function is the trait item's (what a call resolves to and what rustc checks),
+/// whatever the impl itself says.
+#[test]
+fn a_definition_carries_the_feature_rustc_says_a_use_of_it_needs() {
+    ready();
+    let source = "\
+#![feature(staged_api)]
+#![stable(feature = \"t\", since = \"1.0.0\")]
+#[unstable(feature = \"pat\", issue = \"none\")]
+pub trait Pat { fn is_in(&self, at: u32) -> bool; }
+#[stable(feature = \"t\", since = \"1.0.0\")]
+pub struct S;
+impl S {
+    #[stable(feature = \"t\", since = \"1.0.0\")]
+    pub fn plain(&self) {}
+    #[unstable(feature = \"later\", issue = \"none\")]
+    pub fn later(&self) {}
+}
+#[stable(feature = \"t\", since = \"1.0.0\")]
+impl Pat for S { fn is_in(&self, at: u32) -> bool { true } }
+";
+    let facts = match analyze_source("staged", source) { Ok(f) => f, Err(e) => panic!("analyze_source refused: {e:?}") };
+    let unstable = |name: &str| -> Vec<Option<&str>> {
+        facts.definitions.iter().filter(|d| d.name == name).map(|d| d.unstable.as_deref()).collect()
+    };
+    assert_eq!(unstable("S"), [None]);
+    assert_eq!(unstable("plain"), [None]);
+    assert_eq!(unstable("later"), [Some("later")]);
+    assert_eq!(unstable("Pat"), [Some("pat")]);
+    // The trait's own `is_in` and the impl's: both need `pat`.
+    assert_eq!(unstable("is_in"), [Some("pat"), Some("pat")]);
+}

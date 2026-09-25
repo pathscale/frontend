@@ -125,6 +125,14 @@ pub struct Definition {
     /// which is what a path written in another crate can name.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub exported: bool,
+    /// The library feature a use of it needs, when rustc's stability says it is unstable:
+    /// what a stable compiler refuses a path or a call to it for (E0658). Read by rustc's own
+    /// `lookup_stability`, so an item inherits its unstable parent's mark as rustc says it
+    /// does; for an item of a trait impl it is the trait item's, which is what a call resolves
+    /// to and what rustc checks. `None` for a stable item and in a crate that marks no
+    /// stability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unstable: Option<String>,
 }
 
 /// One enum variant's shape: how it is constructed, and with how many fields.
@@ -825,9 +833,25 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         variant_shapes: Vec::new(),
         public: tcx.local_visibility(local).is_public(),
         exported: names.exported.is_exported(local),
+        unstable: unstable_feature(tcx, def_id),
     };
     describe_shape(tcx, local, &mut definition);
     DefFact::Definition(definition)
+}
+
+/// The feature rustc's stability check asks of a use of `def_id`, when it is unstable. An item
+/// of a trait impl is checked as the trait item it implements (a method call resolves to it,
+/// and an impl's own mark is not what rustc enforces), which may be another crate's, read from
+/// its metadata.
+fn unstable_feature(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
+    catch_fatal_errors(|| {
+        let checked = tcx.trait_item_of(def_id).unwrap_or(def_id);
+        tcx.lookup_stability(checked)
+            .filter(|stability| stability.is_unstable())
+            .map(|stability| stability.feature.to_string())
+    })
+    .ok()
+    .flatten()
 }
 
 /// One free item's import, or `None` when it is not a `use` that binds anything. The body of
