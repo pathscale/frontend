@@ -35,7 +35,8 @@ use crate::rustc_const_eval::diagnostics::{LongRunning, LongRunningWarn};
 use crate::rustc_const_eval::interpret::{
     self, AllocId, AllocInit, AllocRange, ConstAllocation, CtfeProvenance, FnArg, Frame,
     GlobalAlloc, ImmTy, Immediate, InterpCx, InterpResult, OpTy, PlaceTy, Pointer, RangeSet,
-    RetagMode, Scalar, compile_time_machine, ensure_monomorphic_enough, err_inval, interp_ok,
+    RetagMode, Scalar, compile_time_machine, ensure_monomorphic_enough, err_inval,
+    intrinsic_type_param, interp_ok,
     throw_exhaust, throw_inval, throw_ub, throw_ub_format, throw_unsup, throw_unsup_format,
     type_implements_dyn_trait,
 };
@@ -491,6 +492,10 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
             return interp_ok(None);
         }
         let intrinsic_name = ecx.tcx.item_name(instance.def_id());
+        let tcx = ecx.tcx.tcx;
+        let type_param_at = |index| {
+            intrinsic_type_param(tcx, instance.def_id(), instance.args, index)
+        };
 
         // CTFE-specific intrinsics.
         match intrinsic_name {
@@ -565,7 +570,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
             sym::assert_inhabited
             | sym::assert_zero_valid
             | sym::assert_mem_uninitialized_valid => {
-                let ty = instance.args.type_at(0);
+                let Some(ty) = type_param_at(0) else { throw_inval!(TooGeneric) };
                 let requirement = ValidityRequirement::from_intrinsic(intrinsic_name).unwrap();
 
                 let should_panic = !ecx
@@ -756,7 +761,9 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
             }
 
             sym::field_offset => {
-                let frt_ty = instance.args.type_at(0);
+                let Some(frt_ty) = type_param_at(0) else {
+                    throw_unsup_format!("intrinsic `{intrinsic_name}` has no field type")
+                };
                 ensure_monomorphic_enough(frt_ty)?;
 
                 let (ty, variant, field) = if let ty::Adt(def, args) = frt_ty.kind()
@@ -765,7 +772,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
                 {
                     (base, variant_idx, field_idx)
                 } else {
-                    span_bug!(ecx.cur_span(), "expected field representing type, got {frt_ty}")
+                    throw_unsup_format!("`{frt_ty}` is not a field representing type")
                 };
                 let layout = ecx.layout_of(ty)?;
                 let cx = ty::layout::LayoutCx::new(ecx.tcx.tcx, ecx.typing_env());
@@ -785,7 +792,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
                 {
                     name
                 } else {
-                    span_bug!(ecx.cur_span(), "expected field representing type, got {frt_ty}")
+                    throw_unsup_format!("`{frt_ty}` is not a field representing type")
                 };
                 let ptr = ecx.allocate_bytes_dedup(field_name.as_str().as_bytes())?;
                 ecx.write_immediate(
@@ -806,7 +813,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
                 {
                     (base, variant_idx, field_idx)
                 } else {
-                    span_bug!(ecx.cur_span(), "expected field representing type, got {frt_ty}")
+                    throw_unsup_format!("`{frt_ty}` is not a field representing type")
                 };
                 let layout = ecx.layout_of(ty)?;
                 let cx = ty::layout::LayoutCx::new(ecx.tcx.tcx, ecx.typing_env());
@@ -826,7 +833,7 @@ impl<'tcx> interpret::Machine<'tcx> for CompileTimeMachine<'tcx> {
                 {
                     ecx.tcx.erase_and_anonymize_regions(ty)
                 } else {
-                    span_bug!(ecx.cur_span(), "expected field representing type, got {frt_ty}")
+                    throw_unsup_format!("`{frt_ty}` is not a field representing type")
                 };
                 ecx.write_type_id(field_ty, dest)?;
             }

@@ -24,7 +24,7 @@ use crate::rustc_middle::ty::{
     self, CoroutineArgs, CoroutineArgsExt, EarlyBinder, GenericArgs, Ty, TyCtxt, Unnormalized,
 };
 use crate::rustc_middle::{bug, span_bug};
-use crate::rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned};
+use crate::rustc_span::{DUMMY_SP, Span, Spanned, dummy_spanned, sym};
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_transform::deref_separator::deref_finder;
@@ -78,7 +78,7 @@ fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, shim: ty::ShimKind<'tcx>) -> Body<'tcx> {
             let call_mut = tcx
                 .associated_items(fn_mut)
                 .in_definition_order()
-                .find(|it| it.is_fn())
+                .find(|item| item.name() == sym::call_mut)
                 .unwrap()
                 .def_id;
 

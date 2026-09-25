@@ -403,7 +403,11 @@ impl<'tcx> TyCtxt<'tcx> {
                 continue;
             }
 
-            let Some(&item_id) = self.associated_item_def_ids(impl_did).first() else {
+            let Some(&item_id) = self
+                .associated_item_def_ids(impl_did)
+                .iter()
+                .find(|&&item| self.item_name(item) == sym::drop)
+            else {
                 self.dcx()
                     .span_delayed_bug(self.def_span(impl_did), "Drop impl without drop function");
                 continue;

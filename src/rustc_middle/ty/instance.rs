@@ -19,7 +19,7 @@ use crate::rustc_hir::def::{CtorKind, DefKind, Namespace};
 use crate::rustc_hir::def_id::{CrateNum, DefId};
 use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable};
 use crate::rustc_span::def_id::LOCAL_CRATE;
-use crate::rustc_span::{DUMMY_SP, Span};
+use crate::rustc_span::{DUMMY_SP, Span, sym};
 use tracing::{debug, instrument};
 
 use crate::rustc_middle::diagnostics;
@@ -852,7 +852,7 @@ impl<'tcx> Instance<'tcx> {
         let call_once = tcx
             .associated_items(fn_once)
             .in_definition_order()
-            .find(|it| it.is_fn())
+            .find(|item| item.name() == sym::call_once)
             .unwrap()
             .def_id;
         let track_caller =

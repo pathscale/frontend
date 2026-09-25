@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 
 use crate::rustc_abi::{ExternAbi, Integer};
 use crate::rustc_hir::attrs::lang_items::LangItem;
+use crate::rustc_hir::def_id::DefId;
 use crate::find_attr;
 use crate::rustc_index::IndexVec;
 use crate::bug;
@@ -305,7 +306,14 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
             } else {
                 return;
             };
-            let generic_ty = generics.type_at(0);
+            let Some(generic_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                self.tcx,
+                fn_def_id,
+                generics,
+                0,
+            ) else {
+                return;
+            };
             let ty = if generic_ty.is_sized(self.tcx, self.typing_env) {
                 generic_ty
             } else if let LangItem::AlignOf = lang_item
@@ -351,7 +359,12 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
             && args.len() == 2
             && let Some((fn_def_id, generics)) = func.const_fn_def()
             && tcx.is_intrinsic(fn_def_id, sym::raw_eq)
-            && let generic_ty = generics.type_at(0)
+            && let Some(generic_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                tcx,
+                fn_def_id,
+                generics,
+                0,
+            )
             && let Ok(layout) = tcx.layout_of(self.typing_env.as_query_input(generic_ty))
             && let Ok(integer) = Integer::from_size(layout.size)
         {
@@ -420,11 +433,17 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
             return;
         };
         let func_ty = func.ty(self.local_decls, self.tcx);
-        let Some((intrinsic_name, args)) = resolve_rust_intrinsic(self.tcx, func_ty) else {
+        let Some((intrinsic_name, def_id, args)) = resolve_rust_intrinsic(self.tcx, func_ty) else {
             return;
         };
-        // The intrinsics we are interested in have one generic parameter
-        let [arg, ..] = args[..] else { return };
+        let Some(arg) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+            self.tcx,
+            def_id,
+            args,
+            0,
+        ) else {
+            return;
+        };
 
         let known_is_valid =
             intrinsic_assert_panics(self.tcx, self.typing_env, arg, intrinsic_name);
@@ -446,21 +465,20 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
 fn intrinsic_assert_panics<'tcx>(
     tcx: TyCtxt<'tcx>,
     typing_env: ty::TypingEnv<'tcx>,
-    arg: ty::GenericArg<'tcx>,
+    arg: Ty<'tcx>,
     intrinsic_name: Symbol,
 ) -> Option<bool> {
     let requirement = ValidityRequirement::from_intrinsic(intrinsic_name)?;
-    let ty = arg.expect_ty();
-    Some(!tcx.check_validity_requirement((requirement, typing_env.as_query_input(ty))).ok()?)
+    Some(!tcx.check_validity_requirement((requirement, typing_env.as_query_input(arg))).ok()?)
 }
 
 fn resolve_rust_intrinsic<'tcx>(
     tcx: TyCtxt<'tcx>,
     func_ty: Ty<'tcx>,
-) -> Option<(Symbol, GenericArgsRef<'tcx>)> {
+) -> Option<(Symbol, DefId, GenericArgsRef<'tcx>)> {
     let ty::FnDef(def_id, args) = *func_ty.kind() else { return None };
     let intrinsic = tcx.intrinsic(def_id)?;
-    Some((intrinsic.name, args.no_bound_vars().unwrap()))
+    Some((intrinsic.name, def_id, args.no_bound_vars()?))
 }
 
 struct SimplifyUbCheck<'tcx> {

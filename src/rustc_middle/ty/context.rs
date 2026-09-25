@@ -2806,7 +2806,11 @@ impl<'tcx> TyCtxt<'tcx> {
         };
 
         let future_trait = self.require_lang_item(LangItem::Future, DUMMY_SP);
-        let item_def_id = self.associated_item_def_ids(future_trait)[0];
+        let item_def_id = self
+            .associated_item_def_ids(future_trait)
+            .iter()
+            .find(|&&item| self.item_name(item) == sym::Output)
+            .copied()?;
 
         self.explicit_item_self_bounds(def_id)
             .iter_instantiated_copied(self, args)

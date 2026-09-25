@@ -27,7 +27,7 @@ use crate::rustc_middle::ty::{
     TypeVisitableExt, TypeVisitor, Unnormalized,
 };
 use crate::rustc_span::def_id::LocalDefId;
-use crate::rustc_span::{DUMMY_SP, Span};
+use crate::rustc_span::{DUMMY_SP, Span, sym};
 use crate::rustc_trait_selection::error_reporting::traits::ArgKind;
 use crate::rustc_trait_selection::traits;
 use tracing::{debug, instrument, trace};
@@ -1059,9 +1059,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return None;
         }
 
-        // The `Future` trait has only one associated item, `Output`,
-        // so check that this is what we see.
-        let output_assoc_item = self.tcx.associated_item_def_ids(trait_def_id)[0];
+        let Some(output_assoc_item) = self
+            .tcx
+            .associated_item_def_ids(trait_def_id)
+            .iter()
+            .find(|&&item| self.tcx.item_name(item) == sym::Output)
+            .copied()
+        else {
+            return None;
+        };
         if output_assoc_item != predicate.def_id() {
             span_bug!(
                 cause_span,

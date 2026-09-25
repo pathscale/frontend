@@ -40,6 +40,7 @@ pub use self::intern::{
     intern_const_alloc_recursive,
 };
 pub use self::intrinsics::VarArgCompatible;
+pub(crate) use self::intrinsics::{intrinsic_const_param, intrinsic_type_param};
 pub use self::machine::{
     AllocMap, Machine, MayLeak, RetagMode, ReturnAction, compile_time_machine,
 };

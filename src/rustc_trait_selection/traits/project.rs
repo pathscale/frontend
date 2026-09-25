@@ -1592,11 +1592,17 @@ fn confirm_builtin_candidate<'cx, 'tcx>(
     let trait_def_id = tcx.parent(item_def_id);
     let args = tcx.mk_args(&[self_ty.into()]);
     let (term, obligations) = if tcx.is_lang_item(trait_def_id, LangItem::DiscriminantKind) {
-        let discriminant_def_id =
-            tcx.require_lang_item(LangItem::Discriminant, obligation.cause.span);
-        assert_eq!(discriminant_def_id, item_def_id);
-
-        (self_ty.discriminant_ty(tcx).into(), PredicateObligations::new())
+        let discriminant_def_id = tcx
+            .associated_item_def_ids(trait_def_id)
+            .iter()
+            .find(|&&item| tcx.item_name(item).as_str() == "Discriminant")
+            .copied();
+        let term = if discriminant_def_id == Some(item_def_id) {
+            self_ty.discriminant_ty(tcx).into()
+        } else {
+            Ty::new_misc_error(tcx).into()
+        };
+        (term, PredicateObligations::new())
     } else if tcx.is_lang_item(trait_def_id, LangItem::PointeeTrait) {
         let metadata_def_id = tcx.require_lang_item(LangItem::Metadata, obligation.cause.span);
         assert_eq!(metadata_def_id, item_def_id);
@@ -1633,19 +1639,20 @@ fn confirm_builtin_candidate<'cx, 'tcx>(
         });
         (metadata_ty.into(), obligations)
     } else if tcx.is_lang_item(trait_def_id, LangItem::Field) {
-        let ty::Adt(def, args) = self_ty.kind() else {
-            bug!("only field representing types can implement `Field`")
+        let field_info = match self_ty.kind() {
+            ty::Adt(def, args) => def.field_representing_type_info(tcx, args),
+            _ => None,
         };
-        let Some(FieldInfo { base, ty, .. }) = def.field_representing_type_info(tcx, args) else {
-            bug!("only field representing types can implement `Field`")
+        let term = match field_info {
+            Some(FieldInfo { base, .. }) if tcx.is_lang_item(item_def_id, LangItem::FieldBase) => {
+                base.into()
+            }
+            Some(FieldInfo { ty, .. }) if tcx.is_lang_item(item_def_id, LangItem::FieldType) => {
+                ty.into()
+            }
+            _ => Ty::new_misc_error(tcx).into(),
         };
-        if tcx.is_lang_item(item_def_id, LangItem::FieldBase) {
-            (base.into(), PredicateObligations::new())
-        } else if tcx.is_lang_item(item_def_id, LangItem::FieldType) {
-            (ty.into(), PredicateObligations::new())
-        } else {
-            bug!("unexpected associated type {:?} in `Field`", obligation.predicate);
-        }
+        (term, PredicateObligations::new())
     } else {
         bug!("unexpected builtin trait with associated type: {:?}", obligation.predicate);
     };

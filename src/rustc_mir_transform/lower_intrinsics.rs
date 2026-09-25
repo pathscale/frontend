@@ -249,7 +249,14 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for LowerIntrinsics {
                             tcx,
                         );
 
-                        let ret_ty = generic_args.type_at(0);
+                        let Some(ret_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                            tcx,
+                            def_id,
+                            generic_args,
+                            0,
+                        ) else {
+                            continue;
+                        };
                         let rvalue = match *ret_ty.kind() {
                             ty::RawPtr(_, Mutability::Not) => {
                                 Rvalue::RawPtr(RawPtrKind::Const, updated_place)
@@ -307,7 +314,14 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for LowerIntrinsics {
                             );
                         };
                         let target = target.unwrap();
-                        let pointer_ty = generic_args.type_at(0);
+                        let Some(pointer_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                            tcx,
+                            def_id,
+                            generic_args,
+                            0,
+                        ) else {
+                            continue;
+                        };
                         let kind = if let ty::RawPtr(pointee_ty, mutability) = pointer_ty.kind() {
                             AggregateKind::RawPtr(*pointee_ty, *mutability)
                         } else {
