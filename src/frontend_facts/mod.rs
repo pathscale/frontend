@@ -2139,11 +2139,15 @@ pub enum Evaluation {
         #[serde(default)]
         steps: u64,
     },
-    /// The call was not run to its end, and why: the source does not compile (its errors), it
-    /// calls something this interpreter does not serve (a foreign function, named), it has
-    /// undefined behavior, its value has no `Debug` (or its `Debug` failed), or the compiler
-    /// hit a bug on the way (what it said).
+    /// The call was not run to its end, for a reason the program gives, and why: the source
+    /// does not compile (its errors), it has undefined behavior, it deadlocks or recurses past
+    /// any stack, or its value has no `Debug` (or its `Debug` failed or panicked).
     Refused { why: String },
+    /// This interpreter could not produce an answer, and why: the call reaches a function whose
+    /// MIR no loaded metadata carries, an intrinsic or foreign function it does not serve, an
+    /// operation it does not support, or it hit a bug of its own. Unlike `Refused`, it says
+    /// nothing about the program: a machine that serves what was missing may well give a value.
+    Unsupported { why: String },
     /// The call did not finish within the caller's step budget: `steps` ran, the budget, and
     /// nothing more. Its own outcome, never a value or a panic: what the call would have come to
     /// is not known. A step is one MIR statement or terminator of the call, as in a `Value`'s
@@ -2254,7 +2258,8 @@ pub fn evaluate(
     };
     match (outcome, session) {
         (Some(outcome), Ok(_)) => outcome,
-        (Some(outcome), Err(payload)) => Evaluation::Refused {
+        // A compiler bug says nothing of the program: this interpreter could not answer.
+        (Some(outcome), Err(payload)) => Evaluation::Unsupported {
             why: with_errors(
                 format!(
                     "the session panicked as it ended, after the call gave {outcome:?}: {}",
@@ -2272,7 +2277,7 @@ pub fn evaluate(
             };
             Evaluation::Refused { why }
         }
-        (None, Err(payload)) => Evaluation::Refused {
+        (None, Err(payload)) => Evaluation::Unsupported {
             why: with_errors(format!("the analyser panicked: {}", panic_text(&payload)), &errors()),
         },
     }
@@ -2300,7 +2305,7 @@ fn evaluate_in(
     };
     let Some(id) = function(entry) else {
         return (
-            Evaluation::Refused { why: "the call's function was not found".to_string() },
+            Evaluation::Unsupported { why: "the call's function was not found".to_string() },
             false,
         );
     };
@@ -2311,7 +2316,7 @@ fn evaluate_in(
             }
             _ => {
                 return (
-                    Evaluation::Refused {
+                    Evaluation::Unsupported {
                         why: "the functions that render a value were not found".to_string(),
                     },
                     false,
@@ -2326,17 +2331,20 @@ fn evaluate_in(
     }) {
         Ok(evaluation) => (evaluation, false),
         Err(payload) => (
-            Evaluation::Refused {
+            Evaluation::Unsupported {
                 why: format!("the interpreter panicked: {}", panic_text(&payload)),
             },
             true,
         ),
     };
+    let reported = || {
+        let said = captured.lock();
+        split_diagnostics(said.get(since..).unwrap_or("")).0
+    };
     let evaluation = match evaluation {
-        Evaluation::Refused { why } => {
-            let said = captured.lock();
-            let (errors, _) = split_diagnostics(said.get(since..).unwrap_or(""));
-            Evaluation::Refused { why: with_errors(why, &errors) }
+        Evaluation::Refused { why } => Evaluation::Refused { why: with_errors(why, &reported()) },
+        Evaluation::Unsupported { why } => {
+            Evaluation::Unsupported { why: with_errors(why, &reported()) }
         }
         other => other,
     };

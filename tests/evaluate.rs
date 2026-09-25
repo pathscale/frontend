@@ -109,8 +109,9 @@ fn an_index_out_of_bounds_is_a_panic() {
 }
 
 /// Nothing unwinds out of `evaluate`. The `Index` fixture above trips a delayed bug in type
-/// checking, which rustc raises as a panic when the session ends; `evaluate` returns it as a
-/// refusal that says what it was, rather than letting the panic reach the caller.
+/// checking, which rustc raises as a panic when the session ends; `evaluate` returns it as an
+/// answer it could not produce that says what it was, rather than letting the panic reach the
+/// caller. A compiler bug says nothing of the program, so it is `Unsupported`, not `Refused`.
 #[test]
 fn a_compiler_bug_is_refused_not_a_panic() {
     let items = "#[lang = \"legacy_receiver\"] pub trait LegacyReceiver {}\n\
@@ -119,18 +120,19 @@ fn a_compiler_bug_is_refused_not_a_panic() {
                  impl<T> Index<usize> for [T] { type Output = T; fn index(&self, index: usize) -> &T { &self[index] } }\n\
                  pub fn at(i: usize) -> u8 { let a: [u8; 3] = [1, 2, 3]; a[i] }\n";
     match run(items, "at(5)", None) {
-        Evaluation::Refused { why } => assert!(!why.is_empty()),
+        Evaluation::Unsupported { why } => assert!(!why.is_empty()),
         other => panic!("{other:?}"),
     }
 }
 
-/// No foreign function runs: the call is refused, and the refusal names it.
+/// No foreign function runs: the call is not answered, and why names it. What this machine
+/// does not serve is `Unsupported`, never a refusal of the program.
 #[test]
 fn a_foreign_call_is_refused_by_name() {
     let items = "unsafe extern \"C\" { fn getpid() -> i32; }\n\
                  pub fn pid() -> i32 { unsafe { getpid() } }\n";
     match run(items, "pid()", None) {
-        Evaluation::Refused { why } => assert!(why.contains("getpid"), "{why}"),
+        Evaluation::Unsupported { why } => assert!(why.contains("getpid"), "{why}"),
         other => panic!("{other:?}"),
     }
 }
@@ -249,4 +251,22 @@ fn a_value_and_a_panic_each_say_their_steps() {
         other => panic!("{other:?}"),
     };
     assert!(value > 0 && panicked > 0, "{value} {panicked}");
+}
+
+/// A constructor called as a function, `E::B` passed where a `fn(u8) -> E` goes, runs as the
+/// aggregate of its variant: no metadata carries a function body for a constructor, and std's
+/// iterator adapters call `ControlFlow::Break` exactly this way (`tests/library_read.rs` runs
+/// `"ab".chars().eq("ba".chars().rev())`).
+#[test]
+fn a_constructor_called_as_a_function_builds_its_variant() {
+    let items = "pub enum E { A(u8), B(u8) }\n\
+                 pub fn apply(f: fn(u8) -> E, x: u8) -> E { f(x) }\n\
+                 pub fn tag(x: u8) -> u8 { match apply(E::B, x) { E::A(v) => v, E::B(v) => v + 1 } }\n\
+                 pub fn first(x: u8) -> u8 { match apply(E::A, x) { E::A(v) => v, E::B(v) => v + 1 } }\n";
+    for (call, want) in [("tag(3)", "4"), ("first(3)", "3")] {
+        match run(items, call, None) {
+            Evaluation::Value { rendered, .. } => assert_eq!(rendered, want, "{call}"),
+            other => panic!("{call}: {other:?}"),
+        }
+    }
 }

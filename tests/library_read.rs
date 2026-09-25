@@ -415,6 +415,12 @@ pub fn count_skipping(text: &str, target: char) -> usize {
     assert!(negative_render >= positive_render, "{negative_render} {positive_render}");
     assert_eq!(steps_of("add(2, -3)", Some(positive)).0, negative);
 
+    // `Iterator::eq` walks both through `try_fold`, which calls `ControlFlow::Break` as a
+    // function: a variant's constructor, with no body in any metadata, built as its aggregate.
+    assert_eq!(value("\"ab\".chars().eq(\"ba\".chars().rev())").0, "true");
+    assert_eq!(value("\"aba\".chars().eq(\"aba\".chars().rev())").0, "true");
+    assert_eq!(value("\"zbcd\".chars().eq(\"zbcd\".chars().rev())").0, "false");
+
     // Panics, with the messages a run prints.
     assert_eq!(panicked("[200u8, 100].iter().sum::<u8>()"), "attempt to add with overflow");
     assert_eq!(
@@ -426,9 +432,9 @@ pub fn count_skipping(text: &str, target: char) -> usize {
         "index out of bounds: the len is 3 but the index is 5"
     );
 
-    // A syscall is refused by name.
+    // A syscall is not served, named: this machine's limit, not the program's answer.
     match eval("std::process::id()") {
-        Evaluation::Refused { why } => assert!(why.contains("foreign function"), "{why}"),
+        Evaluation::Unsupported { why } => assert!(why.contains("foreign function"), "{why}"),
         other => panic!("{other:?}"),
     }
 
@@ -520,9 +526,9 @@ pub fn filter_by_substring(strings: Vec<String>, substring: String) -> Vec<Strin
         Evaluation::Refused { why } => assert!(why.contains("Debug"), "{why}"),
         other => panic!("{other:?}"),
     }
-    // A file is not served: refused by name, not a panic.
+    // A file is not served: named, not a panic, and not the program's refusal.
     match run("std::fs::File::open(\"/etc/hosts\").is_ok()") {
-        Evaluation::Refused { why } => assert!(why.contains("foreign function"), "{why}"),
+        Evaluation::Unsupported { why } => assert!(why.contains("foreign function"), "{why}"),
         other => panic!("{other:?}"),
     }
 }
