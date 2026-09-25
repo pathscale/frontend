@@ -2153,6 +2153,48 @@ pub enum Evaluation {
     /// is not known. A step is one MIR statement or terminator of the call, as in a `Value`'s
     /// `steps`; rendering a value and formatting a panic's message are not counted against it.
     Exhausted { steps: u64 },
+    /// The program ended the process (`std::process::exit`) with `code`, after `steps` steps.
+    /// Like a panic, an answer: the program does that on that input. What it printed is in the
+    /// run's [`Output`], std's own flush included, since `exit` runs it before it exits.
+    Exited { code: i32, steps: u64 },
+}
+
+/// One call to run: the expression, the most steps it may take (`None` is no bound), and the
+/// standard input it reads (`None` serves none: a read of it is [`Evaluation::Unsupported`]).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Call<'a> {
+    pub call: &'a str,
+    pub budget: Option<u64>,
+    pub stdin: Option<&'a [u8]>,
+}
+
+/// What a run wrote to standard output and standard error, every byte in order, whatever the
+/// run came to (empty for a source that does not build).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Output {
+    #[serde(default)]
+    pub stdout: Vec<u8>,
+    #[serde(default)]
+    pub stderr: Vec<u8>,
+    /// Why std's end-of-program flush of standard output did not run to its end, when the run
+    /// reached std's standard output, returned or panicked, and the flush stopped: bytes the
+    /// program wrote may still sit in std's buffer, missing from `stdout`. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unflushed: Option<String>,
+}
+
+/// A call run: what it came to, and what it wrote.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Ran {
+    pub evaluation: Evaluation,
+    pub output: Output,
+}
+
+impl Ran {
+    /// A run that wrote nothing: a source that did not build, a session that failed.
+    fn silent(evaluation: Evaluation) -> Ran {
+        Ran { evaluation, output: Output::default() }
+    }
 }
 
 /// Run `call`, a Rust expression over the items `source` defines (`count("strawberry", 'r')`),
@@ -2185,6 +2227,8 @@ pub enum Evaluation {
 /// `budget` bounds the call's steps; `None` runs until the call returns, however long that is.
 /// Rendering the value and formatting a panic's message run to their ends outside it: the
 /// budget stops a call that runs away, and they only print what the call already built.
+///
+/// This is [`run_call`] with no standard input, what the call wrote left out.
 pub fn evaluate(
     source: &str,
     edition: Option<&str>,
@@ -2192,6 +2236,28 @@ pub fn evaluate(
     call: &str,
     budget: Option<u64>,
 ) -> Evaluation {
+    run_call(source, edition, loaded, Call { call, budget, stdin: None }).evaluation
+}
+
+/// [`evaluate`], with the standard input the call reads and what it writes: a whole program is
+/// the call `main()` over its source, given its input.
+///
+/// **Its input is the caller's.** With `stdin`, reads of standard input are served from those
+/// bytes, in order, and read nothing once they are all read (end of file). Without it, a read of
+/// standard input is [`Evaluation::Unsupported`]. No other input is served.
+///
+/// **Its output comes back**, in [`Ran::output`]: every byte written to standard output and
+/// standard error, for any outcome that ran. When a call that reached `std::io::stdout` returns
+/// or panics, std's own end-of-program flush (`io::cleanup`, which a process runs after `main`)
+/// runs after it, outside the budget, so text printed with no newline is not lost; a call past
+/// its budget is not flushed, as a process stopped there prints nothing more. A call to
+/// `process::exit` ends the run as [`Evaluation::Exited`], std having flushed first.
+///
+/// What std's runtime does around `main` and not in it is not run: the panic hook's message on
+/// standard error (the message is the outcome's), and `Termination`'s report of a returned
+/// `Result` (the value is the call's value).
+pub fn run_call(source: &str, edition: Option<&str>, loaded: Loaded<'_>, asked: Call<'_>) -> Ran {
+    let call = asked.call;
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "evaluate needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -2204,7 +2270,7 @@ pub fn evaluate(
         Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
     let mut opts = match setup.options(&probe) {
         Ok(opts) => opts,
-        Err(errors) => return Evaluation::Refused { why: errors.join("\n") },
+        Err(errors) => return Ran::silent(Evaluation::Refused { why: errors.join("\n") }),
     };
     opts.cg.overflow_checks = Some(true);
     opts.debug_assertions = true;
@@ -2232,7 +2298,7 @@ pub fn evaluate(
     };
     // Handed out rather than returned, as in `analyze_input`: a run with an error ends in an
     // unwind, not a return.
-    let mut outcome: Option<Evaluation> = None;
+    let mut outcome: Option<Ran> = None;
     // Nothing unwinds out of `evaluate`: a fatal error is caught by `catch_fatal_errors`, and
     // any other panic (a compiler bug, a delayed bug flushed when the session ends) by this
     // outer catch, and each becomes a refusal that says what it was.
@@ -2246,7 +2312,7 @@ pub fn evaluate(
                     if tcx.dcx().has_errors().is_some() {
                         return;
                     }
-                    outcome = Some(evaluate_in(tcx, entry, library, budget, &captured, 0).0);
+                    outcome = Some(evaluate_in(tcx, entry, library, asked, &captured, 0).0);
                 })
             })
         })
@@ -2258,15 +2324,19 @@ pub fn evaluate(
     };
     match (outcome, session) {
         (Some(outcome), Ok(_)) => outcome,
-        // A compiler bug says nothing of the program: this interpreter could not answer.
-        (Some(outcome), Err(payload)) => Evaluation::Unsupported {
-            why: with_errors(
-                format!(
-                    "the session panicked as it ended, after the call gave {outcome:?}: {}",
-                    panic_text(&payload)
+        // A compiler bug says nothing of the program: this interpreter could not answer. What
+        // the call wrote before it is still what it wrote.
+        (Some(Ran { evaluation, output }), Err(payload)) => Ran {
+            evaluation: Evaluation::Unsupported {
+                why: with_errors(
+                    format!(
+                        "the session panicked as it ended, after the call gave {evaluation:?}: {}",
+                        panic_text(&payload)
+                    ),
+                    &errors(),
                 ),
-                &errors(),
-            ),
+            },
+            output,
         },
         (None, Ok(_)) => {
             let errors = errors();
@@ -2275,11 +2345,11 @@ pub fn evaluate(
             } else {
                 errors.join("\n")
             };
-            Evaluation::Refused { why }
+            Ran::silent(Evaluation::Refused { why })
         }
-        (None, Err(payload)) => Evaluation::Unsupported {
+        (None, Err(payload)) => Ran::silent(Evaluation::Unsupported {
             why: with_errors(format!("the analyser panicked: {}", panic_text(&payload)), &errors()),
-        },
+        }),
     }
 }
 
@@ -2289,15 +2359,16 @@ pub fn evaluate(
 /// is added to a refusal, since that is what the refusal is about. Only what was reported from
 /// byte `since` of `captured` on is the call's: a session shared by several calls
 /// ([`evaluate_all`]) holds the others' too. The flag is whether the interpreter unwound, after
-/// which the session is not trusted for another call.
+/// which the session is not trusted for another call. `asked` gives the call's budget and its
+/// standard input; its expression is already `entry`'s body.
 fn evaluate_in(
     tcx: TyCtxt<'_>,
     entry: &str,
     library: bool,
-    budget: Option<u64>,
+    asked: Call<'_>,
     captured: &alloc::sync::Arc<eko::thread::Mutex<String>>,
     since: usize,
-) -> (Evaluation, bool) {
+) -> (Ran, bool) {
     let function = |name: &str| {
         tcx.hir_crate_items(()).free_items().map(|item| item.owner_id.def_id).find(|&id| {
             tcx.def_kind(id) == DefKind::Fn && tcx.item_name(id.to_def_id()).as_str() == name
@@ -2305,7 +2376,9 @@ fn evaluate_in(
     };
     let Some(id) = function(entry) else {
         return (
-            Evaluation::Unsupported { why: "the call's function was not found".to_string() },
+            Ran::silent(Evaluation::Unsupported {
+                why: "the call's function was not found".to_string(),
+            }),
             false,
         );
     };
@@ -2316,9 +2389,9 @@ fn evaluate_in(
             }
             _ => {
                 return (
-                    Evaluation::Unsupported {
+                    Ran::silent(Evaluation::Unsupported {
                         why: "the functions that render a value were not found".to_string(),
-                    },
+                    }),
                     false,
                 );
             }
@@ -2326,14 +2399,18 @@ fn evaluate_in(
     } else {
         None
     };
-    let (evaluation, unwound) = match crate::unwind_janky::catch(|| {
-        interpreter::run_entry(tcx, id, render, budget)
+    // What the call wrote before the interpreter panicked is lost with the machine.
+    let ((evaluation, output), unwound) = match crate::unwind_janky::catch(|| {
+        interpreter::run_entry(tcx, id, render, asked.budget, asked.stdin)
     }) {
-        Ok(evaluation) => (evaluation, false),
+        Ok(ran) => (ran, false),
         Err(payload) => (
-            Evaluation::Unsupported {
-                why: format!("the interpreter panicked: {}", panic_text(&payload)),
-            },
+            (
+                Evaluation::Unsupported {
+                    why: format!("the interpreter panicked: {}", panic_text(&payload)),
+                },
+                Output::default(),
+            ),
             true,
         ),
     };
@@ -2348,7 +2425,7 @@ fn evaluate_in(
         }
         other => other,
     };
-    (evaluation, unwound)
+    (Ran { evaluation, output }, unwound)
 }
 
 /// What [`evaluate_all`] answered, and how many compiler sessions it took to.
@@ -2384,18 +2461,46 @@ pub struct EvaluatedAll {
 ///   [`evaluate`]. A shared session that cannot say whose a failure is, never guesses.
 ///
 /// Nothing outlives the call: each session is dropped before the next.
+///
+/// This is [`run_calls`] with no standard input, what each call wrote left out.
 pub fn evaluate_all(
     source: &str,
     edition: Option<&str>,
     loaded: Loaded<'_>,
     calls: &[(&str, Option<u64>)],
 ) -> EvaluatedAll {
-    let mut answers: Vec<Option<Evaluation>> = calls.iter().map(|_| None).collect();
+    let asked: Vec<Call<'_>> =
+        calls.iter().map(|&(call, budget)| Call { call, budget, stdin: None }).collect();
+    let RanAll { runs, sessions } = run_calls(source, edition, loaded, &asked);
+    EvaluatedAll { evaluations: runs.into_iter().map(|ran| ran.evaluation).collect(), sessions }
+}
+
+/// What [`run_calls`] answered, and how many compiler sessions it took to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RanAll {
+    /// One per call, in the order given, each what [`run_call`] answers for that call alone.
+    pub runs: Vec<Ran>,
+    /// As [`EvaluatedAll::sessions`].
+    pub sessions: usize,
+}
+
+/// [`evaluate_all`], each call with its own standard input and what it wrote: [`run_call`] for
+/// every call of `calls` over the one `source`, sharing sessions exactly as `evaluate_all`
+/// does. Each call runs on a machine of its own, so each reads its own input from the start and
+/// its output holds only what it wrote: a program run on several sample inputs is one call per
+/// input, compiled once.
+pub fn run_calls(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    calls: &[Call<'_>],
+) -> RanAll {
+    let mut answers: Vec<Option<Ran>> = calls.iter().map(|_| None).collect();
     let mut sessions = 0;
     // The calls still to answer, by their place in `calls`.
     let mut open: Vec<usize> = (0..calls.len()).collect();
     while open.len() > 1 {
-        let asked: Vec<(&str, Option<u64>)> = open.iter().map(|&at| calls[at]).collect();
+        let asked: Vec<Call<'_>> = open.iter().map(|&at| calls[at]).collect();
         sessions += 1;
         let Some(settled) = shared_session(source, edition, loaded, &asked) else {
             break;
@@ -2412,17 +2517,17 @@ pub fn evaluate_all(
         }
         open = left;
     }
-    let evaluations = answers
+    let runs = answers
         .into_iter()
         .zip(calls)
-        .map(|(answer, &(call, budget))| {
+        .map(|(answer, &asked)| {
             answer.unwrap_or_else(|| {
                 sessions += 1;
-                evaluate(source, edition, loaded, call, budget)
+                run_call(source, edition, loaded, asked)
             })
         })
         .collect();
-    EvaluatedAll { evaluations, sessions }
+    RanAll { runs, sessions }
 }
 
 /// One session over `source` with one function per call of `calls`: each call's answer when
@@ -2432,8 +2537,8 @@ fn shared_session(
     source: &str,
     edition: Option<&str>,
     loaded: Loaded<'_>,
-    calls: &[(&str, Option<u64>)],
-) -> Option<Vec<Option<Evaluation>>> {
+    calls: &[Call<'_>],
+) -> Option<Vec<Option<Ran>>> {
     let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
     let probe =
         Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
@@ -2448,13 +2553,14 @@ fn shared_session(
     // `evaluate` puts them.
     let mut text = format!("{source}\n");
     let source_lines = newlines(&text);
-    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>, Option<u64>)> =
+    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>, Call<'_>)> =
         Vec::with_capacity(calls.len());
-    for (at, &(call, budget)) in calls.iter().enumerate() {
+    for (at, &asked) in calls.iter().enumerate() {
         let name = format!("{}_{at}", interpreter::ENTRY);
         let first = newlines(&text) + 1;
+        let call = asked.call;
         text.push_str(&format!("#[allow(warnings)]\nfn {name}() -> impl Sized {{\n{call}\n}}\n"));
-        entries.push((name, first..=newlines(&text), budget));
+        entries.push((name, first..=newlines(&text), asked));
     }
     if library {
         text.push_str(interpreter::RENDER);
@@ -2471,7 +2577,7 @@ fn shared_session(
         rustc_version: None,
         crate_cfg: setup.loaded.cfg.to_vec(),
     };
-    let mut settled: Option<Vec<Option<Evaluation>>> = None;
+    let mut settled: Option<Vec<Option<Ran>>> = None;
     let session = crate::unwind_janky::catch(|| {
         catch_fatal_errors(|| {
             run_compiler(config, |compiler| {
@@ -2486,18 +2592,17 @@ fn shared_session(
                         if !analysed {
                             return;
                         }
-                        let mut each: Vec<Option<Evaluation>> =
-                            entries.iter().map(|_| None).collect();
-                        for ((name, _, budget), slot) in entries.iter().zip(each.iter_mut()) {
+                        let mut each: Vec<Option<Ran>> = entries.iter().map(|_| None).collect();
+                        for ((name, _, asked), slot) in entries.iter().zip(each.iter_mut()) {
                             let since = captured.lock().len();
-                            let (evaluation, unwound) =
-                                evaluate_in(tcx, name, library, *budget, &captured, since);
+                            let (ran, unwound) =
+                                evaluate_in(tcx, name, library, *asked, &captured, since);
                             // An interpreter that unwound leaves this session untrusted: that
                             // call and every one after it are asked again elsewhere.
                             if unwound {
                                 break;
                             }
-                            *slot = Some(evaluation);
+                            *slot = Some(ran);
                         }
                         settled = Some(each);
                         return;
@@ -2527,14 +2632,18 @@ fn shared_session(
                     if errors.is_empty() {
                         return;
                     }
-                    let refused = |mine: &[usize]| Evaluation::Refused {
-                        why: errors
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| in_source.contains(index) || mine.contains(index))
-                            .map(|(_, error)| error.as_str())
-                            .collect::<Vec<&str>>()
-                            .join("\n"),
+                    let refused = |mine: &[usize]| {
+                        Ran::silent(Evaluation::Refused {
+                            why: errors
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| {
+                                    in_source.contains(index) || mine.contains(index)
+                                })
+                                .map(|(_, error)| error.as_str())
+                                .collect::<Vec<&str>>()
+                                .join("\n"),
+                        })
                     };
                     settled = Some(if in_source.is_empty() {
                         own.iter()

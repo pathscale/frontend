@@ -6,7 +6,9 @@
 //! since no panic runtime is loaded), a foreign function is refused by name, a budget ends a
 //! loop that never would, a source that does not compile is refused with its error, and a
 //! compiler bug on the way is refused rather than unwinding out of `evaluate`. A `no_core` value
-//! has no `Debug` to run, so these values are read by layout.
+//! has no `Debug` to run, so these values are read by layout. With `run_call`, a call reads the
+//! standard input it is given (and is not served one it was not), its output comes back, and
+//! `exit` ends it with its code.
 //!
 //! The same questions against `std` (the strawberry count, a `Vec` sum, a `u8` sum past 255,
 //! `unwrap` on `None`, a formatted panic message), and what only `std` has (printing, a
@@ -16,7 +18,9 @@
 //!
 //! A `std` program, because the catcher needs `std`.
 
-use frontend::frontend_facts::{Evaluation, Loaded, evaluate, evaluate_all};
+use frontend::frontend_facts::{
+    Call, Evaluation, Loaded, Output, Ran, evaluate, evaluate_all, run_call, run_calls,
+};
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
@@ -269,4 +273,130 @@ fn a_constructor_called_as_a_function_builds_its_variant() {
             other => panic!("{call}: {other:?}"),
         }
     }
+}
+
+/// Reads and writes through the two foreign functions std reaches for them, as a `no_core`
+/// source can declare them: what `run_call` serves of standard input and returns of output.
+const IO: &str = "\
+unsafe extern \"C\" {
+    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+    fn exit(code: i32) -> !;
+}
+pub fn echo() -> (isize, isize, isize, [u8; 4]) {
+    let mut b: [u8; 4] = [0; 4];
+    let first = unsafe { read(0, &mut b as *mut [u8; 4] as *mut u8, 4) };
+    unsafe { write(1, &b as *const [u8; 4] as *const u8, 4) };
+    let second = unsafe { read(0, &mut b as *mut [u8; 4] as *mut u8, 4) };
+    let third = unsafe { read(0, &mut b as *mut [u8; 4] as *mut u8, 4) };
+    (first, second, third, b)
+}
+pub fn complain_and_quit() -> u8 {
+    let b: [u8; 2] = [111, 107];
+    unsafe { write(2, &b as *const [u8; 2] as *const u8, 2) };
+    unsafe { exit(3) }
+}
+";
+
+fn ran(call: &str, stdin: Option<&[u8]>) -> Ran {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = format!("{LANG}{IO}");
+    run_call(&source, Some("2021"), Loaded::default(), Call { call, budget: None, stdin })
+}
+
+/// Standard input is the buffer the caller gives, read in order: as many bytes as asked and as
+/// are left, then none (end of file). What the call writes to standard output comes back.
+#[test]
+fn a_call_reads_the_input_it_is_given_and_its_output_comes_back() {
+    let Ran { evaluation, output } = ran("echo()", Some(b"20 25\n"));
+    match evaluation {
+        // "20 2" read first, then "5\n" over its first two bytes, then nothing.
+        Evaluation::Value { rendered, .. } => {
+            assert_eq!(rendered, "(4, 2, 0, [53, 10, 32, 50])")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(output.stdout, b"20 2");
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.unflushed, None, "no std, nothing buffered");
+}
+
+/// A run given no standard input sees a closed descriptor, as a process does.
+#[test]
+fn a_read_of_standard_input_with_none_given_fails() {
+    let Ran { evaluation, output } = ran("echo()", None);
+    match evaluation {
+        Evaluation::Value { rendered, .. } => {
+            assert_eq!(rendered, "(-1, -1, -1, [0, 0, 0, 0])");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(output.stdout, [0, 0, 0, 0]);
+    // `evaluate` is the same run with no input.
+    let source = format!("{LANG}{IO}");
+    let alone = evaluate(&source, Some("2021"), Loaded::default(), "echo()", None);
+    assert!(matches!(alone, Evaluation::Value { .. }), "{alone:?}");
+}
+
+/// `exit` ends the run with its code, and what was written before it is kept.
+#[test]
+fn exit_ends_the_run_with_its_code() {
+    let Ran { evaluation, output } = ran("complain_and_quit()", None);
+    match evaluation {
+        Evaluation::Exited { code, steps } => {
+            assert_eq!(code, 3);
+            assert!(steps > 0);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(output.stderr, b"ok");
+}
+
+/// Calls over one source, each with its own input, share a session, and each reads its own
+/// input from the start and returns only what it wrote: one program on several sample inputs.
+#[test]
+fn calls_sharing_a_session_each_read_their_own_input() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let source = format!("{LANG}{IO}");
+    let calls = [
+        Call { call: "echo()", budget: None, stdin: Some(b"abcdefg") },
+        Call { call: "echo()", budget: None, stdin: Some(b"xy") },
+        Call { call: "echo()", budget: None, stdin: None },
+    ];
+    let all = run_calls(&source, Some("2021"), Loaded::default(), &calls);
+    assert_eq!(all.sessions, 1);
+    let rendered: Vec<&str> = all
+        .runs
+        .iter()
+        .map(|ran| match &ran.evaluation {
+            Evaluation::Value { rendered, .. } => rendered.as_str(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        rendered,
+        [
+            "(4, 3, 0, [101, 102, 103, 100])",
+            "(2, 0, 0, [120, 121, 0, 0])",
+            "(-1, -1, -1, [0, 0, 0, 0])",
+        ]
+    );
+    assert_eq!(all.runs[0].output.stdout, b"abcd");
+    assert_eq!(all.runs[1].output.stdout, b"xy\0\0");
+    assert_eq!(all.runs[2].output.stdout, [0, 0, 0, 0]);
+}
+
+/// The outcome of a program that exited, and a run's output, on the wire.
+#[test]
+fn an_exit_and_an_output_serialize() {
+    let exited = Evaluation::Exited { code: 3, steps: 12 };
+    let json = serde_json::to_string(&exited).unwrap();
+    assert_eq!(json, r#"{"outcome":"exited","code":3,"steps":12}"#);
+    assert_eq!(serde_json::from_str::<Evaluation>(&json).unwrap(), exited);
+    let output = Output { stdout: b"2025\n".to_vec(), stderr: Vec::new(), unflushed: None };
+    let back: Output = serde_json::from_str(&serde_json::to_string(&output).unwrap()).unwrap();
+    assert_eq!(back, output);
+    // A writer that predates `unflushed` reads as flushed.
+    let older: Output = serde_json::from_str(r#"{"stdout":[50],"stderr":[]}"#).unwrap();
+    assert_eq!(older.unflushed, None);
 }
