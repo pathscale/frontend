@@ -1,24 +1,26 @@
 //! See docs in build/expr/mod.rs
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_ast::{AsmMacro, InlineAsmOptions};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_middle::mir::*;
-use crate::span_bug;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty::{self, CanonicalUserTypeAnnotation, Ty};
 use crate::rustc_span::{DUMMY_SP, Spanned, sym};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
+use crate::span_bug;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_build::builder::expr::category::{Category, RvalueFunc};
 use crate::rustc_mir_build::builder::matches::{DeclareLetBindings, Exhaustive, HasMatchGuard};
 use crate::rustc_mir_build::builder::scope::LintLevel;
-use crate::rustc_mir_build::builder::{BlockAnd, BlockAndExtension, BlockFrame, Builder, NeedsTemporary};
+use crate::rustc_mir_build::builder::{
+    BlockAnd, BlockAndExtension, BlockFrame, Builder, NeedsTemporary,
+};
 use crate::rustc_mir_build::diagnostics::{LoopMatchArmWithGuard, LoopMatchUnsupportedType};
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
@@ -247,11 +249,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     None
                 })
             }
-            ExprKind::LoopMatch {
-                state,
-                region_scope,
-                ref match_data,
-            } => {
+            ExprKind::LoopMatch { state, region_scope, ref match_data } => {
                 let LoopMatchMatchData { ref arms, span: match_span, scrutinee } = **match_data;
                 // Intuitively, this is a combination of a loop containing a labeled block
                 // containing a match.
@@ -460,14 +458,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         // Current type: `MaybeDangling<T>`. Field #0 is `T`.
                         let place = place.project_to_field(FieldIdx::ZERO, decls, tcx);
                         // Sanity check.
-                        if let Some(ty) =
-                            crate::rustc_const_eval::interpret::intrinsic_type_param(
-                                tcx,
-                                def_id,
-                                generic_args,
-                                0,
-                            )
-                        {
+                        if let Some(ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                            tcx,
+                            def_id,
+                            generic_args,
+                            0,
+                        ) {
                             assert_eq!(place.ty(decls, tcx).ty, ty);
                         }
 
@@ -538,11 +534,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     block.unit()
                 } else if this.infcx.type_is_use_cloned_modulo_regions(this.param_env, ty) {
                     // Convert `expr.use` to a call like `Clone::clone(&expr)`
-                    let clone_fn = this
-                        .tcx
-                        .lang_items()
-                        .get(LangItem::Clone)
-                        .and_then(|clone_trait| {
+                    let clone_fn =
+                        this.tcx.lang_items().get(LangItem::Clone).and_then(|clone_trait| {
                             this.tcx
                                 .associated_item_def_ids(clone_trait)
                                 .iter()

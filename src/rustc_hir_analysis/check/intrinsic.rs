@@ -19,7 +19,9 @@ use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{Span, Symbol, sym};
 
 use crate::rustc_hir_analysis::check::check_function_signature;
-use crate::rustc_hir_analysis::diagnostics::{UnrecognizedIntrinsicFunction, WrongNumberOfGenericArgumentsToIntrinsic};
+use crate::rustc_hir_analysis::diagnostics::{
+    UnrecognizedIntrinsicFunction, WrongNumberOfGenericArgumentsToIntrinsic,
+};
 
 fn equate_intrinsic_type<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -665,9 +667,8 @@ pub(crate) fn check_intrinsic_type(
                 return;
             };
             let assoc_items = tcx.associated_item_def_ids(discriminant_kind);
-            let Some(&discriminant_def_id) = assoc_items
-                .iter()
-                .find(|&&item| tcx.item_name(item).as_str() == "Discriminant")
+            let Some(&discriminant_def_id) =
+                assoc_items.iter().find(|&&item| tcx.item_name(item).as_str() == "Discriminant")
             else {
                 return;
             };

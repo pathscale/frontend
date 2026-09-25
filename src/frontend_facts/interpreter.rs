@@ -49,7 +49,7 @@ use crate::rustc_const_eval::interpret::{
     CtfeProvenance, FnArg, Frame, ImmTy, Immediate, InterpCx, InterpErrorInfo, InterpErrorKind,
     InterpResult, InvalidProgramInfo, MPlaceTy, Machine, MachineStopType, MayLeak, MemoryKind,
     OpTy, PlaceTy, Pointer, Projectable, Provenance, ResourceExhaustionInfo, ReturnContinuation,
-    Scalar, intrinsic_type_param, interp_ok,
+    Scalar, interp_ok, intrinsic_type_param,
 };
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use crate::rustc_hir::attrs::Linkage;
@@ -388,8 +388,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
     type FrameExtra = ();
     type AllocExtra = ();
     type Bytes = Box<[u8]>;
-    type MemoryMap =
-        MonoMap<AllocId, (MemoryKind<Kind>, Allocation<Prov, (), Box<[u8]>>)>;
+    type MemoryMap = MonoMap<AllocId, (MemoryKind<Kind>, Allocation<Prov, (), Box<[u8]>>)>;
 
     const GLOBAL_KIND: Option<Kind> = Some(Kind::Global);
     const PANIC_ON_ALLOC_FAIL: bool = false;
@@ -495,9 +494,8 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         }
         let name = ecx.tcx.item_name(instance.def_id());
         let tcx = ecx.tcx.tcx;
-        let type_param_at = |index| {
-            intrinsic_type_param(tcx, instance.def_id(), instance.args, index)
-        };
+        let type_param_at =
+            |index| intrinsic_type_param(tcx, instance.def_id(), instance.args, index);
         match name {
             // At run time a pointer comparison is known: the addresses are real.
             sym::ptr_guaranteed_cmp => {
@@ -725,8 +723,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         _failure_ordering: AtomicOrdering,
     ) -> InterpResult<'tcx, (Scalar<Prov>, bool)> {
         let actual = ecx.read_immediate(place)?;
-        let equal =
-            ecx.binary_op(mir::BinOp::Eq, &actual, expected_old)?.to_scalar().to_bool()?;
+        let equal = ecx.binary_op(mir::BinOp::Eq, &actual, expected_old)?.to_scalar().to_bool()?;
         if equal {
             ecx.write_immediate(**new, place)?;
         }
@@ -782,10 +779,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
     /// A foreign static. An `extern_weak` one is absent (null), which a weak symbol is allowed to
     /// be, so std takes the fallback it has for that (on Linux, `getrandom` through `syscall`);
     /// every other foreign static is refused by name.
-    fn extern_static_pointer(
-        ecx: &Ecx<'tcx>,
-        def_id: DefId,
-    ) -> InterpResult<'tcx, Pointer<Prov>> {
+    fn extern_static_pointer(ecx: &Ecx<'tcx>, def_id: DefId) -> InterpResult<'tcx, Pointer<Prov>> {
         let weak = ecx.tcx.codegen_fn_attrs(def_id).import_linkage == Some(Linkage::ExternalWeak);
         if weak && let Some(absent) = ecx.machine.absent_symbol {
             return interp_ok(absent);
@@ -855,10 +849,10 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         frame: Frame<'tcx, Prov>,
     ) -> InterpResult<'tcx, Frame<'tcx, Prov>> {
         if ecx.machine.stack.len() >= MAX_FRAMES {
-            return Err(
-                InterpErrorKind::ResourceExhaustion(ResourceExhaustionInfo::StackFrameLimitReached)
-                    .into(),
-            );
+            return Err(InterpErrorKind::ResourceExhaustion(
+                ResourceExhaustionInfo::StackFrameLimitReached,
+            )
+            .into());
         }
         interp_ok(frame)
     }
@@ -871,10 +865,7 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         &mut ecx.machine.stack
     }
 
-    fn get_global_alloc_salt(
-        _ecx: &Ecx<'tcx>,
-        _instance: Option<ty::Instance<'tcx>>,
-    ) -> usize {
+    fn get_global_alloc_salt(_ecx: &Ecx<'tcx>, _instance: Option<ty::Instance<'tcx>>) -> usize {
         CTFE_ALLOC_SALT
     }
 
@@ -1045,8 +1036,7 @@ fn system_call<'tcx>(
             let count = ecx.read_target_usize(&args[2])?;
             let bytes = ecx.read_bytes_ptr_strip_provenance(buffer, Size::from_bytes(count))?;
             let bytes = bytes.to_vec();
-            let stream =
-                if fd == 1 { &mut ecx.machine.stdout } else { &mut ecx.machine.stderr };
+            let stream = if fd == 1 { &mut ecx.machine.stdout } else { &mut ecx.machine.stderr };
             stream.extend_from_slice(&bytes);
             ecx.write_scalar(int(u128::from(count)), destination)?;
         }
@@ -1112,9 +1102,7 @@ fn system_call<'tcx>(
         "syscall" if !args.is_empty() => {
             let number = ecx.read_scalar(&args[0])?.to_bits(args[0].layout.size)?;
             if number != libc_constant(ecx, "SYS_getrandom")? || args.len() < 3 {
-                return unsupported(format!(
-                    "makes the system call {number}, which is not served"
-                ));
+                return unsupported(format!("makes the system call {number}, which is not served"));
             }
             let buffer = ecx.read_pointer(&args[1])?;
             let count = ecx.read_target_usize(&args[2])?;
@@ -1202,22 +1190,19 @@ fn fill_random<'tcx>(
 /// crate, as Miri reads it: the library's own number, not a table of ours.
 fn libc_constant<'tcx>(ecx: &Ecx<'tcx>, name: &str) -> InterpResult<'tcx, u128> {
     let tcx = *ecx.tcx;
-    let constant = tcx
-        .crates(())
-        .iter()
-        .filter(|&&krate| tcx.crate_name(krate).as_str() == "libc")
-        .find_map(|&krate| {
-            tcx.module_children(krate.as_def_id()).iter().find_map(|child| match child.res {
-                Res::Def(DefKind::Const { .. }, id) if child.ident.name.as_str() == name => {
-                    Some(id)
-                }
-                _ => None,
-            })
-        });
+    let constant =
+        tcx.crates(()).iter().filter(|&&krate| tcx.crate_name(krate).as_str() == "libc").find_map(
+            |&krate| {
+                tcx.module_children(krate.as_def_id()).iter().find_map(|child| match child.res {
+                    Res::Def(DefKind::Const { .. }, id) if child.ident.name.as_str() == name => {
+                        Some(id)
+                    }
+                    _ => None,
+                })
+            },
+        );
     let Some(constant) = constant else {
-        return unsupported(format!(
-            "needs `libc::{name}`, and no loaded `libc` crate defines it"
-        ));
+        return unsupported(format!("needs `libc::{name}`, and no loaded `libc` crate defines it"));
     };
     match tcx.const_eval_poly(constant).ok().and_then(|value| value.try_to_scalar_int()) {
         Some(value) => interp_ok(value.to_bits_unchecked()),
@@ -1611,9 +1596,7 @@ fn stopped<'tcx>(ecx: &Ecx<'tcx>, err: InterpErrorInfo<'tcx>) -> Halt {
         // cannot lay out generically, memory it ran out of. None says anything of the program.
         other @ (InterpErrorKind::Unsupported(_)
         | InterpErrorKind::InvalidProgram(_)
-        | InterpErrorKind::ResourceExhaustion(_)) => {
-            Halt::Unsupported(format!("{other}{within}"))
-        }
+        | InterpErrorKind::ResourceExhaustion(_)) => Halt::Unsupported(format!("{other}{within}")),
     }
 }
 

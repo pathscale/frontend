@@ -13,7 +13,6 @@ use alloc::vec::Vec;
 use core::{fmt, iter};
 
 use crate::rustc_abi::{Float, Integer, IntegerType, Size};
-use rustc_apfloat::Float as _;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use crate::rustc_errors::ErrorGuaranteed;
@@ -22,10 +21,11 @@ use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{CrateNum, DefId, LocalDefId};
 use crate::rustc_hir::{self as hir, find_attr};
 use crate::rustc_index::bit_set::GrowableBitSet;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, extension};
 use crate::rustc_span::sym;
 use crate::rustc_structures::Limit;
 use crate::rustc_type_ir::solve::SizedTraitKind;
+use rustc_apfloat::Float as _;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, extension};
 use smallvec::{SmallVec, smallvec};
 use tracing::{debug, instrument};
 
@@ -277,11 +277,12 @@ impl<'tcx> TyCtxt<'tcx> {
                     Limit(0) => Limit(2),
                     limit => limit * 2,
                 };
-                let reported = self.dcx().emit_err(crate::rustc_middle::diagnostics::RecursionLimitReached {
-                    span: cause.span,
-                    ty,
-                    suggested_limit,
-                });
+                let reported =
+                    self.dcx().emit_err(crate::rustc_middle::diagnostics::RecursionLimitReached {
+                        span: cause.span,
+                        ty,
+                        suggested_limit,
+                    });
                 return Ty::new_error(self, reported);
             }
             match *ty.kind() {

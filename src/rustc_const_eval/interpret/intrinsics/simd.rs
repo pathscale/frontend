@@ -10,14 +10,14 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use either::Either;
 use crate::rustc_abi::{BackendRepr, Endian};
-use rustc_apfloat::ieee::{Double, Half, Quad, Single};
-use rustc_apfloat::{Float, Round};
 use crate::rustc_middle::mir::interpret::{InterpErrorKind, Pointer, UndefinedBehaviorInfo};
 use crate::rustc_middle::ty::{FloatTy, ScalarInt, SimdAlign};
 use crate::rustc_middle::{bug, err_ub_format, mir, span_bug, throw_unsup_format, ty};
 use crate::rustc_span::{Symbol, sym};
+use either::Either;
+use rustc_apfloat::ieee::{Double, Half, Quad, Single};
+use rustc_apfloat::{Float, Round};
 use tracing::trace;
 
 use super::{
@@ -40,9 +40,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
         ret: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx, bool> {
         let tcx = self.tcx.tcx;
-        let const_param_at = |index| {
-            super::intrinsic_const_param(tcx, intrinsic_def_id, generic_args, index)
-        };
+        let const_param_at =
+            |index| super::intrinsic_const_param(tcx, intrinsic_def_id, generic_args, index);
         let dest = dest.force_mplace(self)?;
 
         match intrinsic_name {

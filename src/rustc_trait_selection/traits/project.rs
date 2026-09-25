@@ -38,7 +38,9 @@ use super::{
 use crate::rustc_trait_selection::diagnostics::InherentProjectionNormalizationOverflow;
 use crate::rustc_trait_selection::error_reporting::traits::report_dyn_incompatibility;
 use crate::rustc_trait_selection::infer::{BoundRegionConversionTime, InferOk};
-use crate::rustc_trait_selection::traits::normalize::{normalize_with_depth, normalize_with_depth_to};
+use crate::rustc_trait_selection::traits::normalize::{
+    normalize_with_depth, normalize_with_depth_to,
+};
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
 use crate::rustc_trait_selection::traits::select::ProjectionMatchesProjection;
 

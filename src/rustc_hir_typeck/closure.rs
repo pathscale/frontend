@@ -18,10 +18,10 @@ use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir_analysis::hir_ty_lowering::HirTyLowerer;
-use crate::rustc_infer::infer::{BoundRegionConversionTime, DefineOpaqueTypes, InferOk, InferResult};
+use crate::rustc_infer::infer::{
+    BoundRegionConversionTime, DefineOpaqueTypes, InferOk, InferResult,
+};
 use crate::rustc_infer::traits::{ObligationCauseCode, PredicateObligations};
-use rustc_macros::{TypeFoldable, TypeVisitable};
-use crate::span_bug;
 use crate::rustc_middle::ty::{
     self, ClosureKind, FnSigKind, GenericArgs, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable,
     TypeVisitableExt, TypeVisitor, Unnormalized,
@@ -30,6 +30,8 @@ use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{DUMMY_SP, Span, sym};
 use crate::rustc_trait_selection::error_reporting::traits::ArgKind;
 use crate::rustc_trait_selection::traits;
+use crate::span_bug;
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument, trace};
 
 use super::{CoroutineTypes, Expectation, FnCtxt, check_fn};

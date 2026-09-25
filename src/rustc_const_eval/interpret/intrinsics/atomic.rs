@@ -1,19 +1,19 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_hir::def_id::DefId;
+use crate::rustc_middle::mir::BinOp;
+use crate::rustc_middle::{mir, span_bug, ty};
+use crate::rustc_span::{Symbol, sym};
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use crate::rustc_middle::mir::BinOp;
-use crate::rustc_middle::{mir, span_bug, ty};
-use crate::rustc_hir::def_id::DefId;
-use crate::rustc_span::{Symbol, sym};
 use tracing::trace;
 
 use super::{
-    AtomicRmwOp, Immediate, InterpCx, InterpResult, Machine, OpTy, PlaceTy, Scalar,
-    intrinsic_const_param, interp_ok,
+    AtomicRmwOp, Immediate, InterpCx, InterpResult, Machine, OpTy, PlaceTy, Scalar, interp_ok,
+    intrinsic_const_param,
 };
 
 impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
@@ -31,7 +31,8 @@ impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {
     ) -> InterpResult<'tcx, bool> {
         let tcx = self.tcx.tcx;
         let get_ord_at = |i: usize| {
-            let ordering = intrinsic_const_param(tcx, intrinsic_def_id, generic_args, i)?.to_value();
+            let ordering =
+                intrinsic_const_param(tcx, intrinsic_def_id, generic_args, i)?.to_value();
             Some(ordering.to_branch()[0].to_value().to_leaf().to_atomic_ordering())
         };
 

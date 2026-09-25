@@ -12,8 +12,8 @@ use crate::rustc_abi::FieldIdx;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_span::{Span, sym};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 
 use crate::rustc_middle::ty::{Ty, TyCtxt};
 
@@ -148,9 +148,7 @@ impl OverloadedDeref {
     /// for this overloaded deref's mutability.
     pub fn method_call<'tcx>(&self, tcx: TyCtxt<'tcx>) -> DefId {
         let (trait_def_id, method_name) = match self.mutbl {
-            hir::Mutability::Not => {
-                (tcx.require_lang_item(LangItem::Deref, self.span), sym::deref)
-            }
+            hir::Mutability::Not => (tcx.require_lang_item(LangItem::Deref, self.span), sym::deref),
             hir::Mutability::Mut => {
                 (tcx.require_lang_item(LangItem::DerefMut, self.span), sym::deref_mut)
             }

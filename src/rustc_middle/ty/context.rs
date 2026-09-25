@@ -3,8 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -20,10 +20,10 @@ use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 // `core::marker::PointeeSized` (unstable `sized_hierarchy`) is gone: `RawList` is `Sized`
 // now, so `InternedInSet` needs only the stable `?Sized`.
-use core::ops::Deref;
-use eko::thread::OnceLock;
 use alloc::sync::Arc;
+use core::ops::Deref;
 use core::{fmt, iter, mem};
+use eko::thread::OnceLock;
 
 use crate::rustc_abi::{ExternAbi, FieldIdx, Layout, LayoutData, TargetDataLayout, VariantIdx};
 use crate::rustc_ast as ast;
@@ -35,9 +35,7 @@ use crate::rustc_data_structures::profiling::SelfProfilerRef;
 use crate::rustc_data_structures::sharded::{InternKey, InternSet, IntoPointer};
 use crate::rustc_data_structures::stable_hash::StableHash;
 use crate::rustc_data_structures::steal::Steal;
-use crate::rustc_data_structures::sync::{
-    self, FreezeReadGuard, Lock, RwLock, WorkerLocal,
-};
+use crate::rustc_data_structures::sync::{self, FreezeReadGuard, Lock, RwLock, WorkerLocal};
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, MultiSpan};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::DefKind;
@@ -48,7 +46,6 @@ use crate::rustc_hir::{self as hir, CRATE_HIR_ID, HirId, Node, TraitCandidate, f
 use crate::rustc_index::IndexVec;
 use crate::rustc_lint_defs::Lint;
 use crate::rustc_lint_defs::builtin::UNUSED_FEATURES;
-use rustc_macros::Diagnostic;
 use crate::rustc_session::{IncrCompSession, Session};
 use crate::rustc_span::def_id::{CRATE_DEF_ID, DefPathHash, StableCrateId};
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
@@ -56,6 +53,7 @@ use crate::rustc_structures::{CrateType, Limit};
 use crate::rustc_type_ir::TyKind::*;
 pub use crate::rustc_type_ir::lift::Lift;
 use crate::rustc_type_ir::{CollectAndApply, WithCachedTypeInfo, elaborate, search_graph};
+use rustc_macros::Diagnostic;
 use tracing::{debug, instrument};
 
 use crate::rustc_middle::arena::Arena;
@@ -73,7 +71,9 @@ use crate::rustc_middle::mir::{Body, Local, Place, PlaceElem, ProjectionKind, Pr
 use crate::rustc_middle::query::{IntoQueryKey, LocalCrate, Providers, QuerySystem, TyCtxtAt};
 use crate::rustc_middle::thir::Thir;
 use crate::rustc_middle::traits;
-use crate::rustc_middle::traits::solve::{ExternalConstraints, ExternalConstraintsData, PredefinedOpaques};
+use crate::rustc_middle::traits::solve::{
+    ExternalConstraints, ExternalConstraintsData, PredefinedOpaques,
+};
 use crate::rustc_middle::ty::predicate::ExistentialPredicateStableCmpExt as _;
 use crate::rustc_middle::ty::region::RegionExt;
 use crate::rustc_middle::ty::{
@@ -112,7 +112,9 @@ impl<'tcx> crate::rustc_type_ir::inherent::Safety<TyCtxt<'tcx>> for hir::Safety 
     }
 }
 
-impl<'tcx> crate::rustc_type_ir::inherent::Features<TyCtxt<'tcx>> for &'tcx crate::rustc_feature::Features {
+impl<'tcx> crate::rustc_type_ir::inherent::Features<TyCtxt<'tcx>>
+    for &'tcx crate::rustc_feature::Features
+{
     fn generic_const_exprs(self) -> bool {
         self.generic_const_exprs()
     }
@@ -1664,9 +1666,10 @@ impl<'tcx> TyCtxt<'tcx> {
         self.verify_query_key_hashes();
 
         if let Err((path, error)) = self.dep_graph.finish_encoding() {
-            self.sess
-                .dcx()
-                .emit_fatal(crate::rustc_middle::diagnostics::FailedWritingFile { path: &path, error });
+            self.sess.dcx().emit_fatal(crate::rustc_middle::diagnostics::FailedWritingFile {
+                path: &path,
+                error,
+            });
         }
     }
 
