@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 pub use rmeta::provide;
 
 mod dependency_format;
-mod dylib;
+pub(crate) mod dylib;
 mod eii;
 mod foreign_modules;
 mod native_libs;

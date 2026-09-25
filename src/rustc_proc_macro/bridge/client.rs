@@ -240,6 +240,57 @@ pub struct Client {
     pub(super) run: extern "C" fn(BridgeConfig<'_>) -> Buffer,
 }
 
+/// A `Client` as a stable rustc release lays it out in a proc-macro dylib: the same `run`
+/// entry point, after a pointer to handle counters the client side keeps.
+///
+/// Upstream moved the counters to the server and dropped the field after 1.97 (this tree's
+/// `Client` is the later one); the release that builds the house's dylibs, 1.97.1, still writes
+/// it. The counters only seed the numbers the server hands out as handles, which are opaque to
+/// the client, so the server here keeps its own (`server::HandleStore::new`) and never reads
+/// this pointer. What crosses the boundary afterwards, the `BridgeConfig`, the `Buffer`, the
+/// `Closure` and the method table `with_api!` numbers, is byte for byte the release's; see
+/// `crate::rustc_metadata::dylib` for where that was checked and what gates it.
+///
+/// The release's third field, `_marker: PhantomData<fn(I) -> O>`, is zero-sized and `#[repr(C)]`
+/// gives it no bytes, so it is left out.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct CountedClient {
+    handle_counters: *const (),
+    run: extern "C" fn(BridgeConfig<'_>) -> Buffer,
+}
+
+impl CountedClient {
+    /// The entry point, as the `Client` this tree's server runs.
+    pub fn client(self) -> Client {
+        let _ = self.handle_counters;
+        Client { run: self.run }
+    }
+}
+
+/// One entry of the `__rustc_proc_macro_decls_<id>__` table a stable release writes into a
+/// proc-macro dylib: the release's `proc_macro::bridge::client::ProcMacro`, field for field.
+/// Later compilers write a bare `&[Client]` there and keep the names in metadata; the release
+/// keeps them here, which is what lets a dylib be matched to metadata this tree wrote from the
+/// crate's source by kind and name rather than by position.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub enum CountedProcMacro {
+    CustomDerive {
+        trait_name: &'static str,
+        attributes: &'static [&'static str],
+        client: CountedClient,
+    },
+    Attr {
+        name: &'static str,
+        client: CountedClient,
+    },
+    Bang {
+        name: &'static str,
+        client: CountedClient,
+    },
+}
+
 /// Hide the default panic output within `proc_macro` expansions.
 ///
 /// **Blocked without `std`, and left as the shape to restore.** What stood here chained the panic
