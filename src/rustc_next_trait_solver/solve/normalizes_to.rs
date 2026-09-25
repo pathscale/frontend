@@ -281,6 +281,10 @@ where
             ty::ImplPolarity::Negative => return Err(NoSolution.into()),
             ty::ImplPolarity::Positive => {}
         };
+        // Nor does a reservation impl project anything (`Interner::impl_is_reservation`).
+        if cx.impl_is_reservation(impl_def_id) {
+            return Err(NoSolution.into());
+        }
 
         ecx.probe_trait_candidate(CandidateSource::Impl(impl_def_id)).enter(|ecx| {
             let impl_args = ecx.fresh_args_for_item(impl_def_id.into());

@@ -166,6 +166,13 @@ where
             return Err(NoSolution.into());
         }
 
+        // A reservation impl is no impl, `const` or not; in coherence it is ambiguous. See
+        // `trait_goals`.
+        let reservation = cx.impl_is_reservation(impl_def_id);
+        if reservation && !ecx.typing_mode().is_coherence() {
+            return Err(NoSolution.into());
+        }
+
         ecx.probe_trait_candidate(CandidateSource::Impl(impl_def_id)).enter(|ecx| {
             let impl_args = ecx.fresh_args_for_item(impl_def_id.into());
             ecx.record_impl_args(impl_args);
@@ -193,7 +200,11 @@ where
                 });
             ecx.add_goals(GoalSource::ImplWhereBound, const_conditions)?;
 
-            then(ecx)
+            if reservation {
+                ecx.evaluate_added_goals_and_make_canonical_response(Certainty::AMBIGUOUS)
+            } else {
+                then(ecx)
+            }
         })
     }
 

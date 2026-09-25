@@ -588,6 +588,10 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
         self.impl_polarity(impl_def_id)
     }
 
+    fn impl_is_reservation(self, impl_def_id: DefId) -> bool {
+        self.impl_is_reservation(impl_def_id)
+    }
+
     fn is_fully_generic_for_reflection(self, impl_def_id: Self::ImplId) -> bool {
         self.impl_is_fully_generic_for_reflection(impl_def_id)
     }

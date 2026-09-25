@@ -433,6 +433,16 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let mut candidates = self.filter_impls(candidates, stack.obligation);
 
+        // Coherence must not rely on a reservation impl's absence: a goal it may prove is
+        // ambiguous there, as it was in every rustc that had them.
+        if self.typing_mode().is_coherence()
+            && candidates
+                .iter()
+                .any(|c| matches!(*c, ImplCandidate(def_id) if self.tcx().impl_is_reservation(def_id)))
+        {
+            return Ok(None);
+        }
+
         // If there is more than one candidate, first winnow them down
         // by considering extra conditions (nested obligations and so
         // forth). We don't winnow if there is exactly one
@@ -1423,9 +1433,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     ) -> Vec<SelectionCandidate<'tcx>> {
         trace!("{candidates:#?}");
         let tcx = self.tcx();
+        let coherence = self.typing_mode().is_coherence();
 
         candidates.retain(|candidate| {
             if let &ImplCandidate(def_id) = candidate {
+                // Outside coherence a reservation impl is no impl (`TyCtxt::impl_is_reservation`).
+                // In coherence it is kept, and makes the goal ambiguous (see the caller).
+                if !coherence && tcx.impl_is_reservation(def_id) {
+                    return false;
+                }
                 match (tcx.impl_polarity(def_id), obligation.polarity()) {
                     (ty::ImplPolarity::Positive, ty::ClausePolarity::Positive)
                     | (ty::ImplPolarity::Negative, ty::ClausePolarity::Negative) => true,
