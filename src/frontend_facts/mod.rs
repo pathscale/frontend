@@ -2119,10 +2119,17 @@ pub fn check_source_against(
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Evaluation {
-    /// The call returned. `rendered` is the value as `{:?}` prints it, `ty` its type, and
-    /// `steps` how many MIR statements and terminators the interpreter stepped to get it and
-    /// render it (a `no_core` value is read by layout, in no steps): what a budget is spent on.
-    Value { rendered: String, ty: String, steps: u64 },
+    /// The call returned. `rendered` is the value as `{:?}` prints it, `ty` its type, `steps`
+    /// how many MIR statements and terminators the call took (what a budget bounds), and
+    /// `render_steps` how many its rendering took, apart and outside the budget (none for a
+    /// `no_core` value, read by layout; absent reads as zero, from a writer that predates it).
+    Value {
+        rendered: String,
+        ty: String,
+        steps: u64,
+        #[serde(default)]
+        render_steps: u64,
+    },
     /// The call panicked: an overflow (overflow checks are on, as in a debug build), an index out
     /// of bounds, an `unwrap` of `None`, a `panic!`. `message` is what the panic says, and
     /// `steps` how many MIR statements and terminators ran before it (absent reads as zero, from
@@ -2139,8 +2146,8 @@ pub enum Evaluation {
     Refused { why: String },
     /// The call did not finish within the caller's step budget: `steps` ran, the budget, and
     /// nothing more. Its own outcome, never a value or a panic: what the call would have come to
-    /// is not known. A step is one MIR statement or terminator, the rendering of a value by its
-    /// `Debug` included, as in a `Value`'s `steps`.
+    /// is not known. A step is one MIR statement or terminator of the call, as in a `Value`'s
+    /// `steps`; rendering a value and formatting a panic's message are not counted against it.
     Exhausted { steps: u64 },
 }
 
@@ -2171,7 +2178,9 @@ pub enum Evaluation {
 /// by name. `loaded`, `edition` and the rest are what [`check_source_against`] takes: with no
 /// dependency the source is read `no_core`.
 ///
-/// `budget` bounds the steps; `None` runs until the call returns, however long that is.
+/// `budget` bounds the call's steps; `None` runs until the call returns, however long that is.
+/// Rendering the value and formatting a panic's message run to their ends outside it: the
+/// budget stops a call that runs away, and they only print what the call already built.
 pub fn evaluate(
     source: &str,
     edition: Option<&str>,
@@ -2348,7 +2357,7 @@ pub struct EvaluatedAll {
 /// source is compiled once with one function per call appended, and each call is run by the
 /// interpreter in that session, each on a machine of its own (its own memory, its own
 /// statics' copies), so no call sees another's values. Each call is `(call, budget)`: the most
-/// steps it may take, rendering included, as [`evaluate`]'s `budget`; one past it is
+/// steps the call may take, its value's rendering not counted, as [`evaluate`]'s `budget`; one past it is
 /// [`Evaluation::Exhausted`] and cost no more than that.
 ///
 /// **Each answer is what the call's own session would give.** That is the contract, and every

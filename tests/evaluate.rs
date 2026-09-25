@@ -51,7 +51,7 @@ fn a_call_returns_its_value_rendered_with_its_type() {
     let items =
         "pub fn pair(a: u8, b: u8) -> (u8, bool, char, [u8; 2]) { (a + b, true, 'r', [a, b]) }\n";
     match run(items, "pair(2, 3)", None) {
-        Evaluation::Value { rendered, ty, steps } => {
+        Evaluation::Value { rendered, ty, steps, .. } => {
             assert_eq!(rendered, "(5, true, 'r', [2, 3])");
             assert_eq!(ty, "(u8, bool, char, [u8; 2])");
             assert!(steps > 0);
@@ -156,11 +156,20 @@ fn a_source_that_does_not_compile_is_refused_with_its_error() {
 /// The outcome serializes with its kind named, for callers that take it as JSON.
 #[test]
 fn an_evaluation_serializes_tagged_with_its_outcome() {
-    let value = Evaluation::Value { rendered: "3".into(), ty: "usize".into(), steps: 7 };
+    let value =
+        Evaluation::Value { rendered: "3".into(), ty: "usize".into(), steps: 7, render_steps: 40 };
     let json = serde_json::to_string(&value).unwrap();
-    assert_eq!(json, r#"{"outcome":"value","rendered":"3","ty":"usize","steps":7}"#);
+    assert_eq!(
+        json,
+        r#"{"outcome":"value","rendered":"3","ty":"usize","steps":7,"render_steps":40}"#
+    );
     let back: Evaluation = serde_json::from_str(&json).unwrap();
     assert_eq!(back, value);
+    // A writer that predates the rendering's count is read as rendering in none.
+    let older: Evaluation =
+        serde_json::from_str(r#"{"outcome":"value","rendered":"3","ty":"usize","steps":7}"#)
+            .unwrap();
+    assert!(matches!(older, Evaluation::Value { render_steps: 0, .. }));
 }
 
 /// Several calls over one source share a session, and each answer is the one `evaluate` gives
