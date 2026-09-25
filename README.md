@@ -188,6 +188,29 @@ that is not selected does not run. Nothing else in the crate calls into it. Like
 it needs a panic catcher installed through `unwind_janky::install_catcher`. Provenance is in
 [UPSTREAM.md](UPSTREAM.md).
 
+## Running a call: `evaluate`
+
+`frontend_facts::evaluate(source, edition, loaded, call, budget)` compiles `source` as rustc
+does, then runs the Rust expression `call` over its items through rustc's own MIR interpreter
+(`rustc_const_eval::interpret`, the engine under CTFE and Miri) and returns an `Evaluation`: the
+value as `{:?}` prints it with its type and step count, a panic with its message, a refusal
+with its reason, or an exhausted budget. It exists so that a number a caller reports is what a
+function returned when it ran, and there is one implementation of Rust's semantics to get it
+from: rustc's. Nothing here re-implements any of it.
+
+What is decided here is only the machine's policy (`src/frontend_facts/interpreter.rs`):
+
+- **Addresses are real**, as in Miri: every allocation has an absolute address, so library code
+  that reads a pointer's bits (`fmt::Arguments::as_str`, `align_offset`) runs. CTFE's machine
+  keeps pointers relative and refuses those reads.
+- **Heap allocation is served** from the interpreter's memory (`__rust_alloc` and friends). Every
+  other foreign function, every syscall, file and network access is refused by name.
+- **A debug build**: overflow checks on, so `200u8 + 100` is a panic. A panic stops the run and its
+  message is formatted by the library's own `alloc::fmt::format` on the same interpreter.
+- **Library functions run from their MIR**, so the crates a call reaches must be read with
+  `CrateRead::all_mir` (rustc's `-Zalways-encode-mir`, how Miri's sysroot is built): rustc writes
+  only generic and inline functions' MIR by default. A function without MIR is refused by name.
+
 ## Only if you deliberately name a sysroot
 
 You almost certainly do not need this section; see "Read this first" above. It applies only

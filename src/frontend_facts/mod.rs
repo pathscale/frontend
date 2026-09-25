@@ -25,6 +25,8 @@
 
 pub mod syntax;
 
+mod interpreter;
+
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
 use alloc::format;
@@ -1401,6 +1403,14 @@ pub struct CrateRead<'a> {
     /// carries the id (and a crate hash that covers it), so every later read that loads the
     /// file gets the same id without being told it.
     pub disambiguator: Option<&'a str>,
+    /// Write every function's MIR into the metadata, not only what other crates' compiles need
+    /// (generic and inline functions). [`evaluate`] steps into any library function a call
+    /// reaches, and it can only run a function whose MIR the metadata carries; rustc's own
+    /// switch for this is `-Zalways-encode-mir`, which is how Miri's standard library is built.
+    ///
+    /// It costs the read an optimized MIR body for every function, so it is off by default and a
+    /// caller that keeps metadata keeps the two kinds apart. Only [`evaluate`] needs it.
+    pub all_mir: bool,
 }
 
 impl<'a> CrateRead<'a> {
@@ -1419,12 +1429,18 @@ impl<'a> CrateRead<'a> {
             write_metadata: None,
             library: false,
             disambiguator: None,
+            all_mir: false,
         }
     }
 
     /// This read, as a library read or not: sets the `library` field.
     pub fn library(self, library: bool) -> Self {
         CrateRead { library, ..self }
+    }
+
+    /// This read, writing every function's MIR or not: sets the `all_mir` field.
+    pub fn with_all_mir(self, all_mir: bool) -> Self {
+        CrateRead { all_mir, ..self }
     }
 
     /// The same read under `disambiguator` ([`CrateRead::disambiguator`]).
@@ -1497,6 +1513,7 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
         library: read.library,
         disambiguator: read.disambiguator,
         test: false,
+        all_mir: read.all_mir,
     };
     let input = Input::File(read.root.to_path_buf());
     let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
@@ -1526,6 +1543,8 @@ struct Setup<'a> {
     disambiguator: Option<&'a str>,
     /// rustc's `--test`; see [`check_source_against`].
     test: bool,
+    /// `-Zalways-encode-mir`; see [`CrateRead::all_mir`].
+    all_mir: bool,
 }
 
 impl<'a> Setup<'a> {
@@ -1543,6 +1562,7 @@ impl<'a> Setup<'a> {
             library: false,
             disambiguator: None,
             test: false,
+            all_mir: false,
         }
     }
 
@@ -1562,6 +1582,7 @@ impl<'a> Setup<'a> {
         opts.unstable_features = UnstableFeatures::Allow;
         opts.jobs.frontend = frontend_jobs(self.width);
         opts.unstable_opts.force_unstable_if_unmarked = self.standard_library;
+        opts.unstable_opts.always_encode_mir = self.all_mir;
         // The one switch a library read sets (`Session::is_library_read`), and the lint cap
         // that goes with it: no lint judges a library, whatever levels its source sets.
         if self.library {
@@ -2068,6 +2089,117 @@ pub fn check_source_against(
         Err(errors) => return Checked { errors, warnings: Vec::new(), fatal: true },
     };
     check_input(opts, input, setup.loaded.cfg.to_vec())
+}
+
+/// What [`evaluate`] found when it ran a call.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Evaluation {
+    /// The call returned. `rendered` is the value as `{:?}` prints it, `ty` its type, and
+    /// `steps` how many MIR statements and terminators the interpreter stepped to get it.
+    Value { rendered: String, ty: String, steps: u64 },
+    /// The call panicked: an overflow (overflow checks are on, as in a debug build), an index out
+    /// of bounds, an `unwrap` of `None`, a `panic!`. `message` is what the panic says.
+    Panicked { message: String },
+    /// The call was not run to its end, and why: the source does not compile (its errors), it
+    /// calls something this interpreter does not serve (a foreign function, named), it has
+    /// undefined behavior, or its value is of a type that is not rendered.
+    Refused { why: String },
+    /// The caller's step budget ran out after `steps` steps.
+    Exhausted { steps: u64 },
+}
+
+/// Run `call`, a Rust expression over the items `source` defines (`count("strawberry", 'r')`),
+/// through rustc's MIR interpreter, and return its value.
+///
+/// **One semantics.** The source is compiled as rustc compiles it (type check, borrow check,
+/// MIR building and optimization), with `call` as the body of a function appended to it, and
+/// that function is run by `rustc_const_eval::interpret`, the interpreter under CTFE and Miri.
+/// Every rule of what the program does is that interpreter's; the machine it runs on
+/// (`interpreter.rs`) only decides what is served. Heap allocation is served from the
+/// interpreter's own memory. Any foreign function (a syscall, a C library, file or network I/O)
+/// is refused by name. Overflow checks are on, as in a debug build, and a panic is returned as
+/// [`Evaluation::Panicked`] with its message, never a crash.
+///
+/// **Library functions run from their MIR**, so every crate the call reaches has to have been
+/// read with its MIR written ([`CrateRead::all_mir`]); a function whose MIR is missing is refused
+/// by name. `loaded`, `edition` and the rest are what [`check_source_against`] takes: with no
+/// dependency the source is read `no_core`.
+///
+/// `budget` bounds the steps; `None` runs until the call returns, however long that is.
+pub fn evaluate(
+    source: &str,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    call: &str,
+    budget: Option<u64>,
+) -> Evaluation {
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "evaluate needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    // Appended, so every span of the source is where it was. `impl Sized` lets the call's type
+    // be whatever it is; the interpreter sees it revealed.
+    let entry = interpreter::ENTRY;
+    let text =
+        format!("{source}\n#[allow(warnings)]\nfn {entry}() -> impl Sized {{\n{call}\n}}\n");
+    let source = Arc::new(text);
+    let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
+    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
+    let mut opts = match setup.options(&input) {
+        Ok(opts) => opts,
+        Err(errors) => return Evaluation::Refused { why: errors.join("\n") },
+    };
+    opts.cg.overflow_checks = Some(true);
+    opts.debug_assertions = true;
+    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let config = Config {
+        opts,
+        input,
+        psess_created: Some(capture_diagnostics(&text)),
+        using_internal_features: &USING_INTERNAL_FEATURES,
+        rustc_version: None,
+        crate_cfg: setup.loaded.cfg.to_vec(),
+    };
+    // Handed out rather than returned, as in `analyze_input`: a run with an error ends in an
+    // unwind, not a return.
+    let mut outcome: Option<Evaluation> = None;
+    let _ = catch_fatal_errors(|| {
+        run_compiler(config, |compiler| {
+            let krate = parse(&compiler.sess);
+            create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                // Only a program rustc accepts is run.
+                tcx.analysis(());
+                if tcx.dcx().has_errors().is_some() {
+                    return;
+                }
+                let found = tcx
+                    .hir_crate_items(())
+                    .free_items()
+                    .map(|item| item.owner_id.def_id)
+                    .find(|&id| {
+                        tcx.def_kind(id) == DefKind::Fn
+                            && tcx.item_name(id.to_def_id()).as_str() == entry
+                    });
+                outcome = Some(match found {
+                    Some(id) => interpreter::run_entry(tcx, id, budget),
+                    None => Evaluation::Refused {
+                        why: "the call's function was not found".to_string(),
+                    },
+                });
+            })
+        })
+    });
+    outcome.unwrap_or_else(|| {
+        let (mut errors, _) = split_diagnostics(&text.lock());
+        errors.retain(|error| !error.starts_with("error: aborting due to"));
+        let why = if errors.is_empty() {
+            "the source did not compile".to_string()
+        } else {
+            errors.join("\n")
+        };
+        Evaluation::Refused { why }
+    })
 }
 
 /// `tcx.analysis(())` over one session, and what it said.

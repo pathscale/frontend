@@ -27,6 +27,13 @@
 //!   (`CrateRead::library`): nothing judges it, every error it still meets is in the facts'
 //!   `diagnostics`, and `--emit-metadata` writes its metadata anyway.
 //!
+//! - `--all-mir` writes every function's MIR into `--emit-metadata`'s file (`CrateRead::all_mir`),
+//!   which `--eval` needs of every crate a call reaches.
+//!
+//! `frontend-facts --eval CALL [--budget STEPS] CRATE` emits
+//! [`frontend::frontend_facts::Evaluation`]: stdin's source compiled, and the expression `CALL`
+//! over its items run through rustc's MIR interpreter, against the loaded dependencies.
+//!
 //! With `--check`, the flags check stdin against the loaded dependencies. `--test` (only with
 //! `--check`) checks it as rustc's `--test` does, as `cargo check --all-targets` checks a lib's
 //! test target: `cfg(test)` is set and the test harness is added, which loads the crate `test`,
@@ -59,6 +66,9 @@ fn main() {
     let mut proc_macro = false;
     let mut standard_library = false;
     let mut library = false;
+    let mut all_mir = false;
+    let mut eval: Option<String> = None;
+    let mut budget: Option<u64> = None;
     let mut emit_metadata: Option<String> = None;
     let mut disambiguator: Option<String> = None;
     let mut dependencies: Vec<Dependency> = Vec::new();
@@ -78,6 +88,12 @@ fn main() {
             "--proc-macro" => proc_macro = true,
             "--standard-library" => standard_library = true,
             "--library" => library = true,
+            "--all-mir" => all_mir = true,
+            "--eval" => eval = Some(value("--eval")),
+            "--budget" => {
+                let steps = value("--budget");
+                budget = Some(steps.parse().unwrap_or_else(|_| usage("--budget needs a count")));
+            }
             "--emit-metadata" => emit_metadata = Some(value("--emit-metadata")),
             "--disambiguator" => disambiguator = Some(value("--disambiguator")),
             "--cfg" => cfg.push(value("--cfg")),
@@ -126,6 +142,7 @@ fn main() {
             write_metadata: metadata,
             library,
             disambiguator: disambiguator.as_deref(),
+            all_mir,
             ..CrateRead::new(&crate_name, root)
         };
         match frontend::frontend_facts::read_crate(&read) {
@@ -140,16 +157,32 @@ fn main() {
         }
         return;
     }
-    if emit_metadata.is_some() || proc_macro || library || disambiguator.is_some() {
+    if emit_metadata.is_some() || proc_macro || library || disambiguator.is_some() || all_mir {
         usage(
-            "--emit-metadata, --proc-macro, --library and --disambiguator read a crate from --root",
+            "--emit-metadata, --proc-macro, --library, --disambiguator and --all-mir read a crate \
+             from --root",
         );
+    }
+    if budget.is_some() && eval.is_none() {
+        usage("--budget is for --eval");
     }
     let mut source = String::new();
     if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut source) {
         usage(&format!("read stdin: {error}"));
     }
-    let json = if check {
+    let json = if let Some(call) = eval {
+        if check {
+            usage("--eval and --check are two different questions");
+        }
+        let evaluation = frontend::frontend_facts::evaluate(
+            &source,
+            edition.as_deref(),
+            loaded,
+            &call,
+            budget,
+        );
+        serde_json::to_string(&evaluation)
+    } else if check {
         let checked = frontend::frontend_facts::check_source_against(
             &crate_name,
             std::sync::Arc::new(source),

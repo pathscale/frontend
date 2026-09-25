@@ -51,6 +51,9 @@ Worth stating explicitly, because it is the interesting part:
   cost weight touched.
 - `layout_of`, and the four surviving target specifications.
 - the trait solver, the type system, and borrow checking, apart from the dumpers.
+- the MIR interpreter, `rustc_const_eval::interpret`. `frontend_facts::evaluate` runs calls on it
+  through a `Machine` of its own (`src/frontend_facts/interpreter.rs`, additive), as Miri does;
+  every rule of what a program does stays the interpreter's.
 
 ## Rebasing onto a newer upstream
 

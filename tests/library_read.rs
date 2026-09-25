@@ -224,7 +224,7 @@ fn every_rust_src_reads_core_alloc_and_std_as_a_chain() {
     let mut failures = Vec::new();
     for (index, root) in roots.iter().enumerate() {
         let scratch = Scratch::new(&format!("chain-{index}"));
-        if let Err(failure) = read_chain(root, &scratch.0, false) {
+        if let Err(failure) = read_chain(root, &scratch.0, false, false) {
             failures.push(format!("{}: {failure}", root.display()));
         }
     }
@@ -249,7 +249,7 @@ fn a_test_check_loads_libtest_and_sets_cfg_test() {
         .map(PathBuf::from)
         .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
     let scratch = Scratch::new("test-harness");
-    let written = read_chain(&root, &scratch.0, true)
+    let written = read_chain(&root, &scratch.0, true, false)
         .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
 
     // As a sysroot gives them to a crate cargo builds: none in the extern prelude but what rustc
@@ -299,10 +299,106 @@ mod t {
     assert!(tested.warnings.is_empty(), "{:?}", tested.warnings);
 }
 
+/// `evaluate` against `std`'s chain read from the first `rust-src` tree named, with every
+/// function's MIR written (`CrateRead::all_mir`), so a call runs through the library's own code
+/// on rustc's interpreter. A number is what a function returns when it runs: "strawberry" has 3
+/// r, and the near misses give other numbers. A `u8` sum past 255 and `unwrap` of `None` are
+/// panics with the runtime's own messages, a bounds check's message is formatted by the
+/// library's `fmt` on the same interpreter, and a call that reaches a syscall is refused by name.
+#[test]
+#[ignore = "reads std's chain with every function's MIR from the first tree FRONTEND_RUST_SRC_ROOTS names"]
+fn an_evaluation_runs_std_on_rustcs_interpreter() {
+    use frontend::frontend_facts::{Evaluation, evaluate};
+    let roots = std::env::var("FRONTEND_RUST_SRC_ROOTS").expect(
+        "FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated, each holding `library/`",
+    );
+    frontend::unwind_janky::install_catcher(catcher);
+    let root = roots
+        .split(':')
+        .find(|r| !r.is_empty())
+        .map(PathBuf::from)
+        .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
+    let scratch = Scratch::new("evaluate");
+    let written = read_chain(&root, &scratch.0, false, true)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
+    let dependencies: Vec<Dependency> = written
+        .iter()
+        .map(|(name, metadata)| Dependency::transitive(name.clone(), metadata.clone()))
+        .collect();
+    let loaded = Loaded { dependencies: &dependencies, ..Loaded::default() };
+
+    let source = "\
+pub fn count(text: &str, target: char) -> usize {
+    text.chars().filter(|&c| c == target).count()
+}
+pub fn count_upper(text: &str, target: char) -> usize {
+    text.chars().filter(|&c| c == target.to_ascii_uppercase()).count()
+}
+pub fn count_skipping(text: &str, target: char) -> usize {
+    text.chars().rev().skip(1).filter(|&c| c == target).count()
+}
+";
+    let eval = |call: &str| {
+        let evaluation = evaluate(source, Some("2021"), loaded, call, None);
+        eprintln!("{call} => {evaluation:?}");
+        evaluation
+    };
+    let value = |call: &str| match eval(call) {
+        Evaluation::Value { rendered, ty, .. } => (rendered, ty),
+        other => panic!("{call}: {other:?}"),
+    };
+    let panicked = |call: &str| match eval(call) {
+        Evaluation::Panicked { message } => message,
+        other => panic!("{call}: {other:?}"),
+    };
+
+    // The count, as a function over the question's data and as a bare expression.
+    assert_eq!(value("count(\"strawberry\", 'r')"), ("3".to_string(), "usize".to_string()));
+    assert_eq!(value("\"strawberry\".chars().filter(|&c| c == 'r').count()").0, "3");
+    // Near misses: comparing against the upper case finds none; skipping one from the end
+    // agrees on "strawberry" (its last letter is not an r) and is shown wrong by "r".
+    assert_eq!(value("count_upper(\"strawberry\", 'r')").0, "0");
+    assert_eq!(value("count_skipping(\"strawberry\", 'r')").0, "3");
+    assert_eq!(value("count(\"r\", 'r')").0, "1");
+    assert_eq!(value("count_skipping(\"r\", 'r')").0, "0");
+
+    // Heap values, read back by layout.
+    assert_eq!(value("vec![1, 2, 3, 4].iter().sum::<i32>()"), ("10".to_string(), "i32".to_string()));
+    let (rendered, ty) = value("vec![1u8, 2, 3]");
+    assert_eq!(rendered, "[1, 2, 3]");
+    assert!(ty.contains("Vec<u8"), "{ty}");
+    assert_eq!(value("String::from(\"hi\")").0, "\"hi\"");
+    assert_eq!(value("\"abc\".find('c')").0, "Some(2)");
+    assert_eq!(value("\"abc\".find('z')").0, "None");
+
+    // Panics, with the messages a run prints.
+    assert_eq!(panicked("[200u8, 100].iter().sum::<u8>()"), "attempt to add with overflow");
+    assert_eq!(
+        panicked("None::<u8>.unwrap()"),
+        "called `Option::unwrap()` on a `None` value"
+    );
+    assert_eq!(
+        panicked("vec![1, 2, 3][5]"),
+        "index out of bounds: the len is 3 but the index is 5"
+    );
+
+    // A syscall is refused by name.
+    match eval("std::process::id()") {
+        Evaluation::Refused { why } => assert!(why.contains("foreign function"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// Read one tree's `std` chain into `out`, with `test` (libtest) and its dependencies when
-/// `with_test`. `Err` says which crate was refused and why; `Ok` is each crate read, by name,
-/// with the metadata written for it, in the order read.
-fn read_chain(root: &Path, out: &Path, with_test: bool) -> Result<Vec<(String, String)>, String> {
+/// `with_test`, and every function's MIR in the metadata when `all_mir`. `Err` says which crate
+/// was refused and why; `Ok` is each crate read, by name, with the metadata written for it, in
+/// the order read.
+fn read_chain(
+    root: &Path,
+    out: &Path,
+    with_test: bool,
+    all_mir: bool,
+) -> Result<Vec<(String, String)>, String> {
     let library = root.join("library");
     let mut graph = plan::Graph::for_std(&library)?;
     if with_test {
@@ -358,7 +454,8 @@ fn read_chain(root: &Path, out: &Path, with_test: bool) -> Result<Vec<(String, S
             write_metadata: Some(eko::path::Path::new(&metadata)),
             ..CrateRead::new(&crate_name, eko::path::Path::new(root_file.to_str().expect("UTF-8")))
         }
-        .library(true);
+        .library(true)
+        .with_all_mir(all_mir);
         let facts = read_crate(&read).map_err(|refused| {
             let shown = refused.diagnostics.iter().take(20).cloned().collect::<Vec<_>>().join("\n");
             format!(
