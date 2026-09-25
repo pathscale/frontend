@@ -79,6 +79,12 @@ fn main() {
         let mut value =
             |name: &str| args.next().unwrap_or_else(|| usage(&format!("{name} needs a value")));
         match flag.as_str() {
+            "--help" => {
+                println!(
+                    "Usage: frontend-facts [OPTIONS] [CRATE]\n\nRead crate facts as JSON. Source is read from stdin unless --root PATH is given.\n\nOptions: --root PATH, --target TUPLE, --edition YEAR, --items, --check, --test, --eval CALL, --budget STEPS, --extern NAME=PATH, --cfg SPEC, --env KEY=VALUE, --emit-metadata PATH, --disambiguator VALUE, --proc-macro, --standard-library, --library, --all-mir, --help"
+                );
+                return;
+            }
             "--check" => check = true,
             "--test" => test = true,
             "--root" => root = Some(value("--root")),
@@ -174,13 +180,8 @@ fn main() {
         if check {
             usage("--eval and --check are two different questions");
         }
-        let evaluation = frontend::frontend_facts::evaluate(
-            &source,
-            edition.as_deref(),
-            loaded,
-            &call,
-            budget,
-        );
+        let evaluation =
+            frontend::frontend_facts::evaluate(&source, edition.as_deref(), loaded, &call, budget);
         serde_json::to_string(&evaluation)
     } else if check {
         let checked = frontend::frontend_facts::check_source_against(
