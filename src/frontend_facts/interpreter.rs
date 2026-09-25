@@ -1194,17 +1194,18 @@ fn ended<'tcx>(
 ) -> Evaluation {
     match stopped(ecx, err) {
         Halt::Refused(why) => Evaluation::Refused { why },
-        Halt::Panicked(Some(message)) => Evaluation::Panicked { message },
+        Halt::Panicked(Some(message)) => Evaluation::Panicked { message, steps },
         Halt::Panicked(None) => {
             let left = budget.map(|budget| budget.saturating_sub(steps));
-            Evaluation::Panicked { message: panic_message(ecx, left) }
+            Evaluation::Panicked { message: panic_message(ecx, left), steps }
         }
     }
 }
 
 /// The value at `place` as its type's own `Debug` prints it: [`RENDER`]'s generic function run
-/// on it, on the same interpreter, in what is left of the budget. `ty` stays the call's type and
-/// `steps` the call's own; the rendering's steps count only against the budget.
+/// on it, on the same interpreter, in what is left of the budget. `ty` stays the call's type, and
+/// `steps` are the call's and the rendering's together: what the budget was spent on, so a
+/// caller that sizes a budget from a value's steps sizes it for the same work.
 ///
 /// A type with no `Debug` is refused, and so is one whose `Debug` fails or panics: the call ran,
 /// but there is no rendering of its value to give.
@@ -1231,7 +1232,7 @@ fn render_by_debug<'tcx>(
         Ok((result, true)) => match ecx.read_discriminant(&result) {
             Ok(variant) if variant == FIRST_VARIANT => {
                 let rendered = core::mem::take(&mut ecx.machine.rendered);
-                Evaluation::Value { rendered, ty, steps }
+                Evaluation::Value { rendered, ty, steps: steps + rendering }
             }
             Ok(_) => Evaluation::Refused {
                 why: format!("the call returned a `{ty}`, whose `Debug` returned an error"),
@@ -1241,7 +1242,7 @@ fn render_by_debug<'tcx>(
             },
         },
         Err(err) => match ended(ecx, err, rendering, left) {
-            Evaluation::Panicked { message } => Evaluation::Refused {
+            Evaluation::Panicked { message, .. } => Evaluation::Refused {
                 why: format!("the call returned a `{ty}`, whose `Debug` panicked: {message}"),
             },
             Evaluation::Refused { why } => Evaluation::Refused {

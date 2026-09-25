@@ -77,7 +77,9 @@ fn a_recursive_function_runs() {
 #[test]
 fn an_overflow_is_a_panic() {
     match run("pub fn add(a: u8, b: u8) -> u8 { a + b }\n", "add(200, 100)", None) {
-        Evaluation::Panicked { message } => assert!(message.contains("overflow"), "{message}"),
+        Evaluation::Panicked { message, .. } => {
+            assert!(message.contains("overflow"), "{message}")
+        }
         other => panic!("{other:?}"),
     }
 }
@@ -95,7 +97,7 @@ fn an_index_out_of_bounds_is_a_panic() {
                  impl<T> Index<usize> for [T] { type Output = T; fn index(&self, index: usize) -> &T { &self[index] } }\n\
                  pub fn at(i: usize) -> u8 { let a: [u8; 3] = [1, 2, 3]; a[i] }\n";
     match run(items, "at(5)", None) {
-        Evaluation::Panicked { message } => {
+        Evaluation::Panicked { message, .. } => {
             assert!(message.contains("index out of bounds"), "{message}")
         }
         other => panic!("{other:?}"),
@@ -169,7 +171,8 @@ fn calls_sharing_a_session_are_each_answered_as_alone() {
     frontend::unwind_janky::install_catcher(catcher);
     let source = format!("{LANG}pub fn add(a: u8, b: u8) -> u8 {{ a + b }}\n");
     let calls = ["add(2, 3)", "add(200, 100)", "missing(1)", "add(1, 1)"];
-    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls, None);
+    let asked: Vec<(&str, Option<u64>)> = calls.iter().map(|call| (*call, None)).collect();
+    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &asked);
     assert_eq!(all.evaluations.len(), calls.len());
     for (call, shared) in calls.iter().zip(&all.evaluations) {
         let alone = evaluate(&source, Some("2021"), Loaded::default(), call, None);
@@ -181,7 +184,7 @@ fn calls_sharing_a_session_are_each_answered_as_alone() {
         }
     }
     assert!(matches!(&all.evaluations[0], Evaluation::Value { rendered, .. } if rendered == "5"));
-    assert!(matches!(&all.evaluations[1], Evaluation::Panicked { .. }));
+    assert!(matches!(&all.evaluations[1], Evaluation::Panicked { steps, .. } if *steps > 0));
     assert!(matches!(&all.evaluations[3], Evaluation::Value { rendered, .. } if rendered == "2"));
     assert_eq!(all.sessions, 2, "one to find the call that does not build, one for the rest");
 }
@@ -191,8 +194,8 @@ fn calls_sharing_a_session_are_each_answered_as_alone() {
 fn a_source_that_does_not_compile_refuses_every_call_sharing_it() {
     frontend::unwind_janky::install_catcher(catcher);
     let source = format!("{LANG}pub fn broken() -> u8 {{ nothing }}\n");
-    let calls = ["broken()", "1u8"];
-    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls, None);
+    let calls = [("broken()", None), ("1u8", None)];
+    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls);
     for evaluation in &all.evaluations {
         match evaluation {
             Evaluation::Refused { why } => assert!(why.contains("E0425"), "{why}"),
@@ -202,15 +205,39 @@ fn a_source_that_does_not_compile_refuses_every_call_sharing_it() {
     assert_eq!(all.sessions, 1);
 }
 
-/// Every call that builds is answered in one session, and a budget is each call's own.
+/// Every call that builds is answered in one session, and a budget is each call's own: a call
+/// past its budget is `Exhausted` at exactly that many steps, and one with none, or a larger
+/// one, runs to its end beside it.
 #[test]
 fn calls_that_build_share_one_session_and_each_has_its_budget() {
     frontend::unwind_janky::install_catcher(catcher);
     let source = format!("{LANG}pub fn spin() -> u8 {{ loop {{}} }}\npub fn one() -> u8 {{ 1 }}\n");
-    let calls = ["spin()", "one()", "spin()"];
-    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls, Some(1000));
+    let calls = [
+        ("spin()", Some(1000)),
+        ("one()", None),
+        ("spin()", Some(250)),
+        ("one()", Some(1_000_000)),
+    ];
+    let all = evaluate_all(&source, Some("2021"), Loaded::default(), &calls);
     assert!(matches!(all.evaluations[0], Evaluation::Exhausted { steps: 1000 }));
     assert!(matches!(&all.evaluations[1], Evaluation::Value { rendered, .. } if rendered == "1"));
-    assert!(matches!(all.evaluations[2], Evaluation::Exhausted { steps: 1000 }));
+    assert!(matches!(all.evaluations[2], Evaluation::Exhausted { steps: 250 }));
+    assert!(matches!(&all.evaluations[3], Evaluation::Value { rendered, .. } if rendered == "1"));
     assert_eq!(all.sessions, 1);
+}
+
+/// Every answer that ran says how many steps it took: a value and a panic alike, the panic's
+/// counted up to where it stopped.
+#[test]
+fn a_value_and_a_panic_each_say_their_steps() {
+    let items = "pub fn add(a: u8, b: u8) -> u8 { a + b }\n";
+    let value = match run(items, "add(1, 2)", None) {
+        Evaluation::Value { steps, .. } => steps,
+        other => panic!("{other:?}"),
+    };
+    let panicked = match run(items, "add(200, 100)", None) {
+        Evaluation::Panicked { steps, .. } => steps,
+        other => panic!("{other:?}"),
+    };
+    assert!(value > 0 && panicked > 0, "{value} {panicked}");
 }
