@@ -2103,7 +2103,8 @@ pub enum Evaluation {
     Panicked { message: String },
     /// The call was not run to its end, and why: the source does not compile (its errors), it
     /// calls something this interpreter does not serve (a foreign function, named), it has
-    /// undefined behavior, or its value is of a type that is not rendered.
+    /// undefined behavior, its value has no `Debug` (or its `Debug` failed), or the compiler
+    /// hit a bug on the way (what it said).
     Refused { why: String },
     /// The caller's step budget ran out after `steps` steps.
     Exhausted { steps: u64 },
@@ -2117,9 +2118,19 @@ pub enum Evaluation {
 /// that function is run by `rustc_const_eval::interpret`, the interpreter under CTFE and Miri.
 /// Every rule of what the program does is that interpreter's; the machine it runs on
 /// (`interpreter.rs`) only decides what is served. Heap allocation is served from the
-/// interpreter's own memory. Any foreign function (a syscall, a C library, file or network I/O)
-/// is refused by name. Overflow checks are on, as in a debug build, and a panic is returned as
-/// [`Evaluation::Panicked`] with its message, never a crash.
+/// interpreter's own memory; so are writes to standard output and standard error (a program's
+/// printing is its output), the one thread's thread-local statics, and the OS's random bytes, as
+/// a fixed stream so a run reproduces. Any other foreign function (a syscall, a C library, file
+/// or network I/O) is refused by name. Overflow checks are on, as in a debug build, and a panic
+/// is returned as [`Evaluation::Panicked`] with its message, never a crash. Nothing unwinds out
+/// of this function: a compiler bug on the way is a [`Evaluation::Refused`] that says what it
+/// was.
+///
+/// **The value is rendered by its type's own `Debug`**, run on the same interpreter after the
+/// call returns (`{:?}` of it, through `core::fmt`), so the rendering is the library's and not a
+/// second implementation of it. A `no_core` source has no `Debug`; its primitive values
+/// (integers, `bool`, `char`, floats, `str`, references, arrays, slices, tuples) are read by
+/// layout instead.
 ///
 /// **Library functions run from their MIR**, so every crate the call reaches has to have been
 /// read with its MIR written ([`CrateRead::all_mir`]); a function whose MIR is missing is refused
@@ -2138,21 +2149,32 @@ pub fn evaluate(
         crate::unwind_janky::unwinding_is_enabled(),
         "evaluate needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
-    // Appended, so every span of the source is where it was. `impl Sized` lets the call's type
-    // be whatever it is; the interpreter sees it revealed.
-    let entry = interpreter::ENTRY;
-    let text =
-        format!("{source}\n#[allow(warnings)]\nfn {entry}() -> impl Sized {{\n{call}\n}}\n");
-    let source = Arc::new(text);
     let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
-    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
-    let mut opts = match setup.options(&input) {
+    // A string input's text does not enter the options (only a file root is looked at, for a
+    // `no_core` it declares), so they are taken first: whether a library is loaded decides what
+    // is appended to the source.
+    let probe =
+        Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
+    let mut opts = match setup.options(&probe) {
         Ok(opts) => opts,
         Err(errors) => return Evaluation::Refused { why: errors.join("\n") },
     };
     opts.cg.overflow_checks = Some(true);
     opts.debug_assertions = true;
+    let library = !opts.unstable_opts.crate_attr.iter().any(|attr| attr == "no_core");
+    // Appended, so every span of the source is where it was. `impl Sized` lets the call's type
+    // be whatever it is; the interpreter sees it revealed. With a library, the value is rendered
+    // by its own `Debug`, which `interpreter::RENDER` runs.
+    let entry = interpreter::ENTRY;
+    let mut text =
+        format!("{source}\n#[allow(warnings)]\nfn {entry}() -> impl Sized {{\n{call}\n}}\n");
+    if library {
+        text.push_str(interpreter::RENDER);
+    }
+    let source = Arc::new(text);
+    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
     let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let captured = text.clone();
     let config = Config {
         opts,
         input,
@@ -2164,42 +2186,125 @@ pub fn evaluate(
     // Handed out rather than returned, as in `analyze_input`: a run with an error ends in an
     // unwind, not a return.
     let mut outcome: Option<Evaluation> = None;
-    let _ = catch_fatal_errors(|| {
-        run_compiler(config, |compiler| {
-            let krate = parse(&compiler.sess);
-            create_and_enter_global_ctxt(compiler, krate, |tcx| {
-                // Only a program rustc accepts is run.
-                tcx.analysis(());
-                if tcx.dcx().has_errors().is_some() {
-                    return;
-                }
-                let found = tcx
-                    .hir_crate_items(())
-                    .free_items()
-                    .map(|item| item.owner_id.def_id)
-                    .find(|&id| {
-                        tcx.def_kind(id) == DefKind::Fn
-                            && tcx.item_name(id.to_def_id()).as_str() == entry
-                    });
-                outcome = Some(match found {
-                    Some(id) => interpreter::run_entry(tcx, id, budget),
-                    None => Evaluation::Refused {
-                        why: "the call's function was not found".to_string(),
-                    },
-                });
+    // Nothing unwinds out of `evaluate`: a fatal error is caught by `catch_fatal_errors`, and
+    // any other panic (a compiler bug, a delayed bug flushed when the session ends) by this
+    // outer catch, and each becomes a refusal that says what it was.
+    let session = crate::unwind_janky::catch(|| {
+        catch_fatal_errors(|| {
+            run_compiler(config, |compiler| {
+                let krate = parse(&compiler.sess);
+                create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                    // Only a program rustc accepts is run.
+                    tcx.analysis(());
+                    if tcx.dcx().has_errors().is_some() {
+                        return;
+                    }
+                    outcome = Some(evaluate_in(tcx, entry, library, budget, &captured));
+                })
             })
         })
     });
-    outcome.unwrap_or_else(|| {
+    let errors = || {
         let (mut errors, _) = split_diagnostics(&text.lock());
         errors.retain(|error| !error.starts_with("error: aborting due to"));
-        let why = if errors.is_empty() {
-            "the source did not compile".to_string()
-        } else {
-            errors.join("\n")
-        };
-        Evaluation::Refused { why }
-    })
+        errors
+    };
+    match (outcome, session) {
+        (Some(outcome), Ok(_)) => outcome,
+        (Some(outcome), Err(payload)) => Evaluation::Refused {
+            why: with_errors(
+                format!(
+                    "the session panicked as it ended, after the call gave {outcome:?}: {}",
+                    panic_text(&payload)
+                ),
+                &errors(),
+            ),
+        },
+        (None, Ok(_)) => {
+            let errors = errors();
+            let why = if errors.is_empty() {
+                "the source did not compile".to_string()
+            } else {
+                errors.join("\n")
+            };
+            Evaluation::Refused { why }
+        }
+        (None, Err(payload)) => Evaluation::Refused {
+            why: with_errors(format!("the analyser panicked: {}", panic_text(&payload)), &errors()),
+        },
+    }
+}
+
+/// The part of [`evaluate`] inside the compiled session: find the appended functions and run the
+/// call. A panic out of the interpreter is caught here, nearest to it, where its payload is still
+/// its own; any error rustc reported while the call ran (a constant that failed, a compiler bug)
+/// is added to a refusal, since that is what the refusal is about.
+fn evaluate_in(
+    tcx: TyCtxt<'_>,
+    entry: &str,
+    library: bool,
+    budget: Option<u64>,
+    captured: &alloc::sync::Arc<eko::thread::Mutex<String>>,
+) -> Evaluation {
+    let function = |name: &str| {
+        tcx.hir_crate_items(()).free_items().map(|item| item.owner_id.def_id).find(|&id| {
+            tcx.def_kind(id) == DefKind::Fn && tcx.item_name(id.to_def_id()).as_str() == name
+        })
+    };
+    let Some(id) = function(entry) else {
+        return Evaluation::Refused { why: "the call's function was not found".to_string() };
+    };
+    let render = if library {
+        match (function(interpreter::DEBUG), function(interpreter::SINK)) {
+            (Some(debug), Some(sink)) => {
+                Some(interpreter::Render { debug: debug.to_def_id(), sink: sink.to_def_id() })
+            }
+            _ => {
+                return Evaluation::Refused {
+                    why: "the functions that render a value were not found".to_string(),
+                };
+            }
+        }
+    } else {
+        None
+    };
+    let evaluation = match crate::unwind_janky::catch(|| {
+        interpreter::run_entry(tcx, id, render, budget)
+    }) {
+        Ok(evaluation) => evaluation,
+        Err(payload) => Evaluation::Refused {
+            why: format!("the interpreter panicked: {}", panic_text(&payload)),
+        },
+    };
+    match evaluation {
+        Evaluation::Refused { why } => {
+            let (errors, _) = split_diagnostics(&captured.lock());
+            Evaluation::Refused { why: with_errors(why, &errors) }
+        }
+        other => other,
+    }
+}
+
+/// `why`, then what rustc reported, one diagnostic a line, when it reported anything.
+fn with_errors(why: String, errors: &[String]) -> String {
+    if errors.is_empty() { why } else { format!("{why}\n{}", errors.join("\n")) }
+}
+
+/// What a caught panic said: its payload when that is text, or else what the panic handler
+/// recorded (`unwind_janky::record_panic`), which is also what survives `resume`'s re-raise. A
+/// compiler bug's payload is not text; its message is among the session's diagnostics.
+fn panic_text(payload: &crate::unwind_janky::Payload) -> String {
+    let said = payload
+        .downcast_ref::<&'static str>()
+        .map(|text| text.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned());
+    let recorded = crate::unwind_janky::take_last_panic();
+    match said {
+        Some(said) if said != "resuming a caught panic" => said,
+        said => recorded.or(said).unwrap_or_else(|| {
+            "a panic whose payload is not text (a compiler bug; see the diagnostics)".to_string()
+        }),
+    }
 }
 
 /// `tcx.analysis(())` over one session, and what it said.

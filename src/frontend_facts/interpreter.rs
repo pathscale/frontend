@@ -6,7 +6,16 @@
 //! interpreter's `Machine` is for: which calls are served (heap allocation, from the
 //! interpreter's own memory), which are refused by name (every foreign function, every syscall,
 //! file and network), how a panic ends the run (its message, read and returned), and how the
-//! finished value is read back out of memory by its type's layout.
+//! finished value is handed to its own `Debug` to be rendered.
+//!
+//! **What of the operating system is served, and why only that.** A program's printing is its
+//! output, not an effect on the world, so writes to standard output and standard error are
+//! served and their bytes kept in the machine; every other descriptor, file and socket stays
+//! refused. The one thread a run has gets its thread-local statics, as Miri gives them. The
+//! random bytes std asks the OS for (the keys of a `HashMap`) are a fixed stream, so a run
+//! reproduces: a verifier's answer must not change between two runs of the same call. Each of
+//! these is the few foreign functions std reaches for it on the hosts frontend runs on (macOS
+//! and Linux, read from std's own source), served the way Miri serves them.
 //!
 //! **Why not the compile-time machine.** CTFE refuses non-`const` functions and keeps pointers
 //! relative to their allocation, so a pointer never becomes an integer. Ordinary library code
@@ -28,16 +37,19 @@ use core::fmt;
 use core::hash::Hash;
 use hashbrown::hash_map::Entry;
 
-use crate::rustc_abi::{Align, FieldIdx, Size};
+use crate::rustc_abi::{Align, FIRST_VARIANT, FieldIdx, Size};
+use crate::rustc_ast::Mutability;
 use crate::rustc_const_eval::interpret::{
     AllocBytes, AllocId, AllocInit, AllocMap, Allocation, AtomicRmwOp, CTFE_ALLOC_SALT,
     CtfeProvenance, FnArg, Frame, ImmTy, Immediate, InterpCx, InterpErrorInfo, InterpErrorKind,
-    InterpResult, MPlaceTy, Machine, MachineStopType, MayLeak, MemoryKind, OpTy, PlaceTy, Pointer,
-    Projectable, Provenance, ResourceExhaustionInfo, ReturnContinuation, Scalar, interp_ok,
+    InterpResult, InvalidProgramInfo, MPlaceTy, Machine, MachineStopType, MayLeak, MemoryKind,
+    OpTy, PlaceTy, Pointer, Projectable, Provenance, ResourceExhaustionInfo, ReturnContinuation,
+    Scalar, interp_ok,
 };
-use crate::rustc_data_structures::fx::FxHashMap;
+use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use crate::rustc_hir::attrs::Linkage;
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use crate::rustc_hir::def::{CtorKind, DefKind, Res};
+use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_middle::mir;
 use crate::rustc_middle::ty::layout::{HasTypingEnv, TyAndLayout, ValidityRequirement};
@@ -50,6 +62,41 @@ use super::Evaluation;
 
 /// The name of the function [`super::evaluate`] appends to the source around the call.
 pub(super) const ENTRY: &str = "__frontend_evaluate";
+
+/// The names of the two functions [`RENDER`] defines: the generic one run on the call's value,
+/// and the sink its text is written through.
+pub(super) const DEBUG: &str = "__frontend_debug";
+pub(super) const SINK: &str = "__frontend_sink";
+
+/// Appended to a source that has a library, so a value is rendered by its type's own `Debug`,
+/// run on the interpreter like the call itself: `{:?}` is the library's formatting, never a
+/// second implementation of it. The text goes out through `__frontend_sink`, which the machine
+/// serves by keeping what it is handed ([`Evaluator::rendered`]); `#[inline(never)]` keeps the
+/// call to it in the MIR. Only `core` is named, by a relative path the extern prelude resolves
+/// in every edition, so a `no_std` crate and an edition 2015 crate take it alike.
+pub(super) const RENDER: &str = "\
+#[allow(warnings)]
+mod __frontend_render {
+    pub fn __frontend_debug<T: core::fmt::Debug>(value: &T) -> core::fmt::Result {
+        core::fmt::write(&mut Sink, format_args!(\"{:?}\", value))
+    }
+    struct Sink;
+    impl core::fmt::Write for Sink {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            __frontend_sink(text);
+            core::result::Result::Ok(())
+        }
+    }
+    #[inline(never)]
+    pub fn __frontend_sink(_text: &str) {}
+}
+";
+
+/// The two functions of [`RENDER`], found in the compiled source.
+pub(super) struct Render {
+    pub(super) debug: DefId,
+    pub(super) sink: DefId,
+}
 
 /// The deepest call stack a run may build. A real thread's stack overflows somewhere near here
 /// for small frames; past it the run is refused rather than growing the interpreter's own memory
@@ -89,12 +136,15 @@ impl Provenance for Prov {
     }
 }
 
-/// The machine's own memory kinds: the heap `__rust_alloc` serves, and a global copied out of
-/// `tcx` because the run reads or writes it.
+/// The machine's own memory kinds: the heap `__rust_alloc` serves, a global copied out of
+/// `tcx` because the run reads or writes it, the run's one thread's copy of a thread-local
+/// static, and what the machine provides itself (the null an absent weak symbol reads as).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Heap,
     Global,
+    ThreadLocal,
+    Machine,
 }
 
 impl fmt::Display for Kind {
@@ -102,6 +152,8 @@ impl fmt::Display for Kind {
         f.write_str(match self {
             Kind::Heap => "heap allocation",
             Kind::Global => "global allocation",
+            Kind::ThreadLocal => "thread-local static",
+            Kind::Machine => "machine allocation",
         })
     }
 }
@@ -144,13 +196,32 @@ fn refuse<'tcx, T>(why: String) -> InterpResult<'tcx, T> {
     halt(Halt::Refused(why))
 }
 
-/// The machine: the call stack, the addresses handed out, and a panic's message.
+/// The machine: the call stack, the addresses handed out, a panic's message, and the state of
+/// what it serves of the operating system for the run's one thread.
 pub(crate) struct Evaluator<'tcx> {
     stack: Vec<Frame<'tcx, Prov>>,
     /// Behind a `RefCell` because addresses are handed out from hooks that see `&InterpCx`.
     addresses: RefCell<Addresses>,
     /// The `fmt::Arguments` a panic carried, set when the panic runtime is entered.
     panic_arguments: Option<MPlaceTy<'tcx, Prov>>,
+    /// Each thread-local static the run has reached, by the static: the one thread's copy.
+    thread_locals: FxHashMap<DefId, Pointer<Prov>>,
+    /// A pointer-sized null, made when the run starts, which every `extern_weak` static reads
+    /// as: the symbol is absent, which a weak symbol may be, so std takes its fallback.
+    absent_symbol: Option<Pointer<Prov>>,
+    /// The pthread mutexes held, by address. One thread holds them, so locking one it already
+    /// holds can never return: a deadlock, refused rather than run forever.
+    held: FxHashSet<u64>,
+    /// What the program wrote to standard output and to standard error, in order. Its output,
+    /// kept here: the wire shape of an evaluation does not carry it.
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    /// The state of the stream served as the OS's random bytes: splitmix64 from a fixed seed,
+    /// so a run reproduces, as Miri's seeded generator does.
+    random: u64,
+    /// [`RENDER`]'s sink, when the source has one, and what it has been handed.
+    sink: Option<DefId>,
+    rendered: String,
 }
 
 /// Absolute addresses, one per allocation, handed out in order and never reused, so two live
@@ -161,12 +232,29 @@ struct Addresses {
 }
 
 impl<'tcx> Evaluator<'tcx> {
-    fn new() -> Self {
+    fn new(sink: Option<DefId>) -> Self {
         Evaluator {
             stack: Vec::new(),
             addresses: RefCell::new(Addresses { next: FIRST_ADDRESS, base: FxHashMap::default() }),
             panic_arguments: None,
+            thread_locals: FxHashMap::default(),
+            absent_symbol: None,
+            held: FxHashSet::default(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            random: 0,
+            sink,
+            rendered: String::new(),
         }
+    }
+
+    /// The next eight bytes of the random stream (splitmix64).
+    fn next_random(&mut self) -> u64 {
+        self.random = self.random.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.random;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
     }
 
     /// `id`'s absolute address, handed out the first time it is asked for, aligned to the
@@ -293,6 +381,17 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
     ) -> InterpResult<'tcx, Option<(&'tcx mir::Body<'tcx>, ty::Instance<'tcx>)>> {
         let tcx = *ecx.tcx;
         if let ty::InstanceKind::Item(def_id) = instance.def {
+            // `RENDER`'s sink: the value's `Debug` output, kept.
+            if ecx.machine.sink == Some(def_id) {
+                let Some(text) = args.first() else {
+                    return refuse("the rendering sink was called with no text".to_string());
+                };
+                let text = ecx.deref_pointer(&text.copy_fn_arg())?;
+                let text = ecx.read_str(&text)?.to_string();
+                ecx.machine.rendered.push_str(&text);
+                ecx.return_to_block(target)?;
+                return interp_ok(None);
+            }
             // Every panic reaches the panic runtime with its message: core declares it as the
             // foreign `panic_impl`, and std defines it as the `#[panic_handler]`.
             let foreign = tcx.is_foreign_item(def_id);
@@ -574,10 +673,48 @@ impl<'tcx> Machine<'tcx> for Evaluator<'tcx> {
         interp_ok(matches!(r, mir::RuntimeChecks::OverflowChecks))
     }
 
+    /// A thread-local static, for the one thread a run has: a copy of its initial value made the
+    /// first time the run reaches it, and the same copy every time after, as Miri does (the
+    /// interpreter's default refuses every thread-local). The thread does not exit during a run,
+    /// so the copy is never freed and no destructor registered for it runs.
+    fn thread_local_static_pointer(
+        ecx: &mut Ecx<'tcx>,
+        def_id: DefId,
+    ) -> InterpResult<'tcx, Pointer<Prov>> {
+        if let Some(&pointer) = ecx.machine.thread_locals.get(&def_id) {
+            return interp_ok(pointer);
+        }
+        if ecx.tcx.is_foreign_item(def_id) {
+            let name = shown_path(*ecx.tcx, def_id);
+            return refuse(format!(
+                "reads the foreign thread-local static `{name}`, which is not served"
+            ));
+        }
+        let initial = ecx.ctfe_query(|tcx| tcx.eval_static_initializer(def_id))?;
+        let this: &Ecx<'tcx> = ecx;
+        let mut copy = initial.inner().adjust_from_tcx(
+            this,
+            |bytes, align| interp_ok(<Box<[u8]> as AllocBytes>::from_bytes(bytes, align, ())),
+            |ptr| this.global_root_pointer(ptr),
+        )?;
+        // The thread writes its own copy; the initializer itself is read-only memory.
+        copy.mutability = Mutability::Mut;
+        let pointer = ecx.insert_allocation(copy, MemoryKind::Machine(Kind::ThreadLocal))?;
+        ecx.machine.thread_locals.insert(def_id, pointer);
+        interp_ok(pointer)
+    }
+
+    /// A foreign static. An `extern_weak` one is absent (null), which a weak symbol is allowed to
+    /// be, so std takes the fallback it has for that (on Linux, `getrandom` through `syscall`);
+    /// every other foreign static is refused by name.
     fn extern_static_pointer(
         ecx: &Ecx<'tcx>,
         def_id: DefId,
     ) -> InterpResult<'tcx, Pointer<Prov>> {
+        let weak = ecx.tcx.codegen_fn_attrs(def_id).import_linkage == Some(Linkage::ExternalWeak);
+        if weak && let Some(absent) = ecx.machine.absent_symbol {
+            return interp_ok(absent);
+        }
         let name = shown_path(*ecx.tcx, def_id);
         refuse(format!("reads the foreign static `{name}`, which is not served"))
     }
@@ -690,12 +827,27 @@ fn body_of<'tcx>(
              every function's MIR)"
         ));
     }
+    // A body rustc built from source with an error in it is refused by the interpreter as "an
+    // error has already been reported elsewhere". For a library function that report is in
+    // another session, the library read of its crate, so this names the function and the crate
+    // whose read recorded the error.
+    if ecx.tcx.instance_mir(instance.def).tainted_by_errors.is_some() {
+        let name = match instance.def {
+            ty::InstanceKind::Item(def_id) => shown_path(*ecx.tcx, def_id),
+            _ => instance.to_string(),
+        };
+        let krate = ecx.tcx.crate_name(instance.def_id().krate);
+        return refuse(format!(
+            "calls `{name}`, whose MIR rustc built from a body with an error in it: the error is \
+             among the diagnostics recorded when `{krate}` was read"
+        ));
+    }
     ecx.load_mir(instance.def, None)
 }
 
 /// A call to a foreign function. The allocator's entry points are served from the
-/// interpreter's own memory; every other foreign function (a syscall, a C library, file and
-/// network) is refused by name.
+/// interpreter's own memory, and the operating system's as far as [`system_call`] serves it;
+/// every other foreign function (a syscall, a C library, file and network) is refused by name.
 fn foreign_call<'tcx>(
     ecx: &mut Ecx<'tcx>,
     def_id: DefId,
@@ -744,12 +896,150 @@ fn foreign_call<'tcx>(
         }
         // Only a link-time marker that the allocator shim exists; it does nothing.
         "__rust_no_alloc_shim_is_unstable_v2" => {}
+        _ => return system_call(ecx, def_id, &args, destination),
+    }
+    interp_ok(())
+}
+
+/// The operating system, as far as std's printing, its locks and its hash map keys reach it on
+/// macOS and Linux (read from std's source: `io::stdio`, `sys::stdio::unix`, `sys::fd::unix`,
+/// `sys::pal::unix::sync::mutex`, `sys::random`), each served as Miri serves it. A foreign
+/// function is matched by the symbol it links to (`#[link_name]`), which is what the OS sees.
+///
+/// - `write` to descriptor 1 or 2: the bytes are kept in the machine and all are written. Any
+///   other descriptor is refused by name.
+/// - `pthread_mutex*` (macOS's `Mutex`; Linux's is atomics until two threads contend): one
+///   thread's bookkeeping, by address. Relocking a held mutex is a deadlock and is refused.
+/// - `CCRandomGenerateBytes` (macOS) and `syscall(SYS_getrandom)` (Linux, once the weak
+///   `getrandom` reads as absent): the machine's fixed stream, so a run reproduces.
+/// - `_tlv_atexit` (macOS): a destructor for the thread's locals. The thread does not exit
+///   during a run, so it is not kept.
+fn system_call<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    def_id: DefId,
+    args: &[OpTy<'tcx, Prov>],
+    destination: &PlaceTy<'tcx, Prov>,
+) -> InterpResult<'tcx> {
+    let tcx = *ecx.tcx;
+    let link = tcx.codegen_fn_attrs(def_id).symbol_name.unwrap_or_else(|| tcx.item_name(def_id));
+    let size = destination.layout.size;
+    let int = |value: u128| -> Scalar<Prov> { Scalar::from_uint(value, size) };
+    match link.as_str() {
+        "write" if args.len() == 3 => {
+            let fd = ecx.read_scalar(&args[0])?.to_i32()?;
+            let buffer = ecx.read_pointer(&args[1])?;
+            let count = ecx.read_target_usize(&args[2])?;
+            let bytes = ecx.read_bytes_ptr_strip_provenance(buffer, Size::from_bytes(count))?;
+            let bytes = bytes.to_vec();
+            let stream = match fd {
+                1 => &mut ecx.machine.stdout,
+                2 => &mut ecx.machine.stderr,
+                _ => {
+                    return refuse(format!(
+                        "writes to file descriptor {fd}, which is not served: only standard \
+                         output and standard error are"
+                    ));
+                }
+            };
+            stream.extend_from_slice(&bytes);
+            ecx.write_scalar(int(u128::from(count)), destination)?;
+        }
+        "pthread_mutexattr_init" | "pthread_mutexattr_settype" | "pthread_mutexattr_destroy" => {
+            ecx.write_scalar(int(0), destination)?;
+        }
+        "pthread_mutex_init" | "pthread_mutex_destroy" if !args.is_empty() => {
+            let mutex = ecx.read_pointer(&args[0])?.addr().bytes();
+            ecx.machine.held.remove(&mutex);
+            ecx.write_scalar(int(0), destination)?;
+        }
+        "pthread_mutex_lock" if !args.is_empty() => {
+            let mutex = ecx.read_pointer(&args[0])?.addr().bytes();
+            if !ecx.machine.held.insert(mutex) {
+                return refuse(
+                    "deadlocks: the one thread locks a mutex it already holds".to_string(),
+                );
+            }
+            ecx.write_scalar(int(0), destination)?;
+        }
+        "pthread_mutex_trylock" if !args.is_empty() => {
+            let mutex = ecx.read_pointer(&args[0])?.addr().bytes();
+            let code =
+                if ecx.machine.held.insert(mutex) { 0 } else { libc_constant(ecx, "EBUSY")? };
+            ecx.write_scalar(int(code), destination)?;
+        }
+        "pthread_mutex_unlock" if !args.is_empty() => {
+            let mutex = ecx.read_pointer(&args[0])?.addr().bytes();
+            if !ecx.machine.held.remove(&mutex) {
+                return refuse("unlocks a mutex that is not locked".to_string());
+            }
+            ecx.write_scalar(int(0), destination)?;
+        }
+        "CCRandomGenerateBytes" if args.len() == 2 => {
+            let buffer = ecx.read_pointer(&args[0])?;
+            let count = ecx.read_target_usize(&args[1])?;
+            fill_random(ecx, buffer, count)?;
+            // `kCCSuccess`.
+            ecx.write_scalar(int(0), destination)?;
+        }
+        "syscall" if !args.is_empty() => {
+            let number = ecx.read_scalar(&args[0])?.to_bits(args[0].layout.size)?;
+            if number != libc_constant(ecx, "SYS_getrandom")? || args.len() < 3 {
+                return refuse(format!("makes the system call {number}, which is not served"));
+            }
+            let buffer = ecx.read_pointer(&args[1])?;
+            let count = ecx.read_target_usize(&args[2])?;
+            fill_random(ecx, buffer, count)?;
+            ecx.write_scalar(int(u128::from(count)), destination)?;
+        }
+        "_tlv_atexit" => {}
         _ => {
-            let path = shown_path(*ecx.tcx, def_id);
+            let path = shown_path(tcx, def_id);
             return refuse(format!("calls the foreign function `{path}`, which is not served"));
         }
     }
     interp_ok(())
+}
+
+/// `count` bytes of the machine's random stream, written at `buffer`.
+fn fill_random<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    buffer: Pointer<Option<Prov>>,
+    count: u64,
+) -> InterpResult<'tcx> {
+    // Checked before anything is made, so a count past the buffer allocates nothing here.
+    ecx.get_ptr_alloc(buffer, Size::from_bytes(count))?;
+    let mut bytes = Vec::new();
+    while (bytes.len() as u64) < count {
+        let word = ecx.machine.next_random();
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(usize::try_from(count).unwrap_or(usize::MAX));
+    ecx.write_bytes_ptr(buffer, bytes)
+}
+
+/// The value of the constant `libc::{name}` for the target, evaluated from the loaded `libc`
+/// crate, as Miri reads it: the library's own number, not a table of ours.
+fn libc_constant<'tcx>(ecx: &Ecx<'tcx>, name: &str) -> InterpResult<'tcx, u128> {
+    let tcx = *ecx.tcx;
+    let constant = tcx
+        .crates(())
+        .iter()
+        .filter(|&&krate| tcx.crate_name(krate).as_str() == "libc")
+        .find_map(|&krate| {
+            tcx.module_children(krate.as_def_id()).iter().find_map(|child| match child.res {
+                Res::Def(DefKind::Const { .. }, id) if child.ident.name.as_str() == name => {
+                    Some(id)
+                }
+                _ => None,
+            })
+        });
+    let Some(constant) = constant else {
+        return refuse(format!("needs `libc::{name}`, and no loaded `libc` crate defines it"));
+    };
+    match tcx.const_eval_poly(constant).ok().and_then(|value| value.try_to_scalar_int()) {
+        Some(value) => interp_ok(value.to_bits_unchecked()),
+        None => refuse(format!("needs `libc::{name}`, which did not evaluate to an integer")),
+    }
 }
 
 /// The panic runtime entered with a `&PanicInfo`: keep its `fmt::Arguments` for the message,
@@ -835,45 +1125,157 @@ fn field_index(place: &MPlaceTy<'_, Prov>, name: &str) -> Option<FieldIdx> {
         .map(|(index, _)| index)
 }
 
-/// Run `entry`, a function of no arguments in the local crate, to its value, and read it.
+/// Run `entry`, a function of no arguments in the local crate, to its value, and render it:
+/// with [`RENDER`]'s functions when the source has them (it has a library), and otherwise, for
+/// a `no_core` source, with [`render_primitive`].
 ///
 /// Every path printed on the way (a type, a refusal, an error) is printed in full. A trimmed
 /// path is computed from the whole crate's imports and is only for diagnostics: a session that
 /// trims one and then emits no diagnostic panics when it ends, and a run that succeeds emits
 /// none.
-pub(super) fn run_entry(tcx: TyCtxt<'_>, entry: LocalDefId, budget: Option<u64>) -> Evaluation {
-    with_no_trimmed_paths!(run(tcx, entry, budget))
+pub(super) fn run_entry(
+    tcx: TyCtxt<'_>,
+    entry: LocalDefId,
+    render: Option<Render>,
+    budget: Option<u64>,
+) -> Evaluation {
+    with_no_trimmed_paths!(run(tcx, entry, render, budget))
 }
 
-fn run<'tcx>(tcx: TyCtxt<'tcx>, entry: LocalDefId, budget: Option<u64>) -> Evaluation {
+fn run<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    entry: LocalDefId,
+    render: Option<Render>,
+    budget: Option<u64>,
+) -> Evaluation {
     let instance = ty::Instance::mono(tcx, entry.to_def_id());
     let typing_env = ty::TypingEnv::fully_monomorphized();
-    let mut ecx =
-        InterpCx::new(tcx, tcx.def_span(entry.to_def_id()), typing_env, Evaluator::new());
+    let machine = Evaluator::new(render.as_ref().map(|render| render.sink));
+    let mut ecx = InterpCx::new(tcx, tcx.def_span(entry.to_def_id()), typing_env, machine);
     let mut steps = 0;
-    let started = start(&mut ecx, instance);
+    let started = prepare(&mut ecx).and_then(|()| start(&mut ecx, instance));
     let finished =
         started.and_then(|place| drive(&mut ecx, &mut steps, budget).map(|done| (place, done)));
     match finished {
         Ok((_, false)) => Evaluation::Exhausted { steps },
         Ok((place, true)) => {
-            let ty = with_no_trimmed_paths!(place.layout.ty.to_string());
-            match render(&ecx, &place, 0) {
-                Ok(rendered) => Evaluation::Value { rendered, ty, steps },
-                Err(why) => Evaluation::Refused {
-                    why: format!("the call returned a `{ty}`, which is not rendered: {why}"),
+            let ty = place.layout.ty.to_string();
+            match render {
+                Some(render) => render_by_debug(&mut ecx, &render, &place, ty, steps, budget),
+                None => match render_primitive(&ecx, &place, 0) {
+                    Ok(rendered) => Evaluation::Value { rendered, ty, steps },
+                    Err(why) => Evaluation::Refused {
+                        why: format!("the call returned a `{ty}`, which is not rendered: {why}"),
+                    },
                 },
             }
         }
-        Err(err) => match stopped(err) {
-            Halt::Refused(why) => Evaluation::Refused { why },
-            Halt::Panicked(Some(message)) => Evaluation::Panicked { message },
-            Halt::Panicked(None) => {
-                let left = budget.map(|budget| budget.saturating_sub(steps));
-                Evaluation::Panicked { message: panic_message(&mut ecx, left) }
+        Err(err) => ended(&mut ecx, err, steps, budget),
+    }
+}
+
+/// What the machine makes before a run: the null an absent weak symbol reads as.
+fn prepare<'tcx>(ecx: &mut Ecx<'tcx>) -> InterpResult<'tcx> {
+    let layout = &ecx.tcx.data_layout;
+    let null = alloc::vec![0u8; layout.pointer_size().bytes_usize()];
+    let align = layout.pointer_align().abi;
+    let kind = MemoryKind::Machine(Kind::Machine);
+    let absent = ecx.allocate_bytes_ptr(&null, align, kind, Mutability::Not)?;
+    ecx.machine.absent_symbol = Some(absent);
+    interp_ok(())
+}
+
+/// The outcome of a run that stopped with `err` after `steps` steps.
+fn ended<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    err: InterpErrorInfo<'tcx>,
+    steps: u64,
+    budget: Option<u64>,
+) -> Evaluation {
+    match stopped(ecx, err) {
+        Halt::Refused(why) => Evaluation::Refused { why },
+        Halt::Panicked(Some(message)) => Evaluation::Panicked { message },
+        Halt::Panicked(None) => {
+            let left = budget.map(|budget| budget.saturating_sub(steps));
+            Evaluation::Panicked { message: panic_message(ecx, left) }
+        }
+    }
+}
+
+/// The value at `place` as its type's own `Debug` prints it: [`RENDER`]'s generic function run
+/// on it, on the same interpreter, in what is left of the budget. `ty` stays the call's type and
+/// `steps` the call's own; the rendering's steps count only against the budget.
+///
+/// A type with no `Debug` is refused, and so is one whose `Debug` fails or panics: the call ran,
+/// but there is no rendering of its value to give.
+fn render_by_debug<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    render: &Render,
+    place: &MPlaceTy<'tcx, Prov>,
+    ty: String,
+    steps: u64,
+    budget: Option<u64>,
+) -> Evaluation {
+    if !implements_debug(*ecx.tcx, place.layout.ty) {
+        return Evaluation::Refused {
+            why: format!("the call returned a `{ty}`, which does not implement `Debug`"),
+        };
+    }
+    let left = budget.map(|budget| budget.saturating_sub(steps));
+    let mut rendering = 0;
+    ecx.machine.rendered.clear();
+    let finished = start_render(ecx, render.debug, place)
+        .and_then(|result| drive(ecx, &mut rendering, left).map(|done| (result, done)));
+    match finished {
+        Ok((_, false)) => Evaluation::Exhausted { steps: steps + rendering },
+        Ok((result, true)) => match ecx.read_discriminant(&result) {
+            Ok(variant) if variant == FIRST_VARIANT => {
+                let rendered = core::mem::take(&mut ecx.machine.rendered);
+                Evaluation::Value { rendered, ty, steps }
             }
+            Ok(_) => Evaluation::Refused {
+                why: format!("the call returned a `{ty}`, whose `Debug` returned an error"),
+            },
+            Err(err) => Evaluation::Refused {
+                why: format!("the call returned a `{ty}`, not rendered: {}", stopped(ecx, err)),
+            },
+        },
+        Err(err) => match ended(ecx, err, rendering, left) {
+            Evaluation::Panicked { message } => Evaluation::Refused {
+                why: format!("the call returned a `{ty}`, whose `Debug` panicked: {message}"),
+            },
+            Evaluation::Refused { why } => Evaluation::Refused {
+                why: format!("the call returned a `{ty}`, not rendered: {why}"),
+            },
+            other => other,
         },
     }
+}
+
+/// A root frame calling `debug::<T>(&value)`, `T` the type of the value at `place`.
+fn start_render<'tcx>(
+    ecx: &mut Ecx<'tcx>,
+    debug: DefId,
+    place: &MPlaceTy<'tcx, Prov>,
+) -> InterpResult<'tcx, MPlaceTy<'tcx, Prov>> {
+    let tcx = *ecx.tcx;
+    let ty = place.layout.ty;
+    let instance = ty::Instance::new_raw(debug, tcx.mk_args(&[ty.into()]));
+    let layout = ecx.layout_of(Ty::new_imm_ref(tcx, tcx.lifetimes.re_erased, ty))?;
+    let reference = ImmTy::from_immediate(place.to_ref(&*ecx), layout);
+    start_call(ecx, instance, &[FnArg::Copy(reference.into())])
+}
+
+/// Whether `ty` implements `core::fmt::Debug`: `<ty as Debug>::fmt` resolves to a function.
+fn implements_debug<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
+    let Some(debug) = tcx.get_diagnostic_item(sym::Debug) else { return false };
+    let methods = tcx.associated_item_def_ids(debug);
+    let Some(&fmt) = methods.iter().find(|&&id| tcx.item_name(id) == sym::fmt) else {
+        return false;
+    };
+    let typing_env = ty::TypingEnv::fully_monomorphized();
+    let resolved = ty::Instance::try_resolve(tcx, typing_env, fmt, tcx.mk_args(&[ty.into()]));
+    matches!(resolved, Ok(Some(_)))
 }
 
 /// The root frame: `instance`'s body, returning into a fresh place of its return type, as the
@@ -922,8 +1324,13 @@ fn drive<'tcx>(
     }
 }
 
-/// What stopped a run, as the outcome it is.
-fn stopped(err: InterpErrorInfo<'_>) -> Halt {
+/// What stopped a run, as the outcome it is. An error of the interpreter's own (not a stop of
+/// this machine's) names the function it happened in, the innermost frame still on the stack.
+fn stopped<'tcx>(ecx: &Ecx<'tcx>, err: InterpErrorInfo<'tcx>) -> Halt {
+    let within = match ecx.machine.stack.last() {
+        Some(frame) => format!(" (in `{}`)", frame.instance()),
+        None => String::new(),
+    };
     match err.into_kind() {
         InterpErrorKind::MachineStop(stop) => {
             let shown = stop.to_string();
@@ -934,12 +1341,18 @@ fn stopped(err: InterpErrorInfo<'_>) -> Halt {
             }
         }
         InterpErrorKind::UndefinedBehavior(ub) => {
-            Halt::Refused(format!("undefined behavior: {ub}"))
+            Halt::Refused(format!("undefined behavior{within}: {ub}"))
         }
         InterpErrorKind::ResourceExhaustion(ResourceExhaustionInfo::StackFrameLimitReached) => {
             Halt::Refused(format!("the call stack grew past {MAX_FRAMES} frames"))
         }
-        other => Halt::Refused(other.to_string()),
+        // The interpreter's words for this, "an error has already been reported elsewhere",
+        // hide the error. It is a constant that failed or a type with an error in it: rustc
+        // reported it into this session, and `evaluate` adds what it said.
+        InterpErrorKind::InvalidProgram(InvalidProgramInfo::AlreadyReported(_)) => {
+            Halt::Refused(format!("rustc reported an error{within}, which stops the run"))
+        }
+        other => Halt::Refused(format!("{other}{within}")),
     }
 }
 
@@ -964,21 +1377,24 @@ fn format_arguments<'tcx>(
     // still in memory. Only the stack is dropped, so a new root frame can start.
     ecx.machine.stack.clear();
     let mut steps = 0;
-    let place = start_call(ecx, format, arguments).map_err(|err| stopped(err).to_string())?;
+    let instance = ty::Instance::mono(tcx, format);
+    let place = match start_call(ecx, instance, &[FnArg::Copy(arguments.clone().into())]) {
+        Ok(place) => place,
+        Err(err) => return Err(stopped(ecx, err).to_string()),
+    };
     match drive(ecx, &mut steps, budget) {
         Ok(true) => string_of(ecx, &place),
         Ok(false) => Err("the step budget ran out while formatting it".to_string()),
-        Err(err) => Err(stopped(err).to_string()),
+        Err(err) => Err(stopped(ecx, err).to_string()),
     }
 }
 
-/// A root frame calling `function(argument)`.
+/// A root frame calling `instance` with `args`, returning into a fresh place.
 fn start_call<'tcx>(
     ecx: &mut Ecx<'tcx>,
-    function: DefId,
-    argument: &MPlaceTy<'tcx, Prov>,
+    instance: ty::Instance<'tcx>,
+    args: &[FnArg<'tcx, Prov>],
 ) -> InterpResult<'tcx, MPlaceTy<'tcx, Prov>> {
-    let instance = ty::Instance::mono(*ecx.tcx, function);
     let body = body_of(ecx, instance)?;
     let fn_abi = ecx.fn_abi_of_instance_no_deduced_attrs(instance, ty::List::empty())?;
     let place = ecx.allocate(fn_abi.ret.layout, MemoryKind::Stack)?;
@@ -986,7 +1402,7 @@ fn start_call<'tcx>(
         instance,
         body,
         fn_abi,
-        &[FnArg::Copy(argument.clone().into())],
+        args,
         false,
         &place.clone().into(),
         ReturnContinuation::Stop { cleanup: false },
@@ -1014,16 +1430,18 @@ fn read<'tcx, T>(result: InterpResult<'tcx, T>) -> Result<T, String> {
     result.map_err(|err| err.to_string())
 }
 
-/// The value at `place`, as `{:?}` prints it, read from the interpreter's memory by its type's
-/// layout. The types served: integers, `bool`, `char`, `f32` and `f64`, `str` and `String`,
-/// references, `Box`, arrays, slices and `Vec`, tuples, and any struct or enum whose `Debug` is
-/// derived (`Option`, `Result`, `Ordering` among them), nested. Any other type is refused
-/// rather than printed some other way.
-fn render<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>, depth: u32) -> Rendered {
+/// A value of a `no_core` source, as `{:?}` prints it, read from the interpreter's memory by its
+/// type's layout: integers, `bool`, `char`, `f32` and `f64`, `str`, references, arrays, slices
+/// and tuples, nested. Any other type is refused rather than printed some other way.
+///
+/// Why it is still here: a `no_core` source has no `core::fmt`, so there is no `Debug` to run
+/// and [`render_by_debug`] cannot serve it. Every source with a library is rendered by its
+/// type's own `Debug` instead; this covers only the primitive shapes a `no_core` source can
+/// build, and derives nothing a library defines.
+fn render_primitive<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>, depth: u32) -> Rendered {
     if depth > 256 {
         return Err("the value is nested too deeply".to_string());
     }
-    let tcx = *ecx.tcx;
     let ty = place.layout.ty;
     let scalar = || read(ecx.read_scalar(place));
     match ty.kind() {
@@ -1038,86 +1456,29 @@ fn render<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>, depth: u32) -> Re
             Ok(format!("{:?}", f64::from_bits(read(scalar()?.to_u64())?)))
         }
         ty::Str => Ok(format!("{:?}", read(ecx.read_str(place))?)),
-        ty::Ref(..) => render(ecx, &read(ecx.deref_pointer(place))?, depth + 1),
+        ty::Ref(..) => render_primitive(ecx, &read(ecx.deref_pointer(place))?, depth + 1),
         ty::Array(..) | ty::Slice(_) => {
             let len = read(place.len(ecx))?;
-            list(ecx, place, len, depth)
+            let mut parts = Vec::new();
+            for index in 0..len {
+                let element = read(ecx.project_index(place, index))?;
+                parts.push(render_primitive(ecx, &element, depth + 1)?);
+            }
+            Ok(format!("[{}]", parts.join(", ")))
         }
         ty::Tuple(fields) => {
             let mut parts = Vec::with_capacity(fields.len());
             for index in 0..fields.len() {
                 let field = read(ecx.project_field(place, FieldIdx::from_usize(index)))?;
-                parts.push(render(ecx, &field, depth + 1)?);
+                parts.push(render_primitive(ecx, &field, depth + 1)?);
             }
             Ok(match parts.len() {
                 1 => format!("({},)", parts[0]),
                 _ => format!("({})", parts.join(", ")),
             })
         }
-        ty::Adt(def, args) => {
-            if ty.is_box_global(tcx) {
-                return render(ecx, &read(ecx.deref_pointer(place))?, depth + 1);
-            }
-            if is_string(tcx, def.did()) {
-                return Ok(format!("{:?}", string_of(ecx, place)?));
-            }
-            if tcx.is_diagnostic_item(sym::Vec, def.did()) {
-                let (pointer, len) = vec_parts(ecx, place)?;
-                let array = Ty::new_array(tcx, args.type_at(0), len);
-                let layout = ecx.layout_of(array).map_err(|err| err.to_string())?;
-                let elements = ecx.ptr_to_mplace(pointer, layout);
-                return list(ecx, &elements, len, depth);
-            }
-            if !debug_is_derived(tcx, ty) {
-                return Err(format!("`{ty}` has no derived `Debug`"));
-            }
-            let variant_index = if def.is_enum() {
-                read(ecx.read_discriminant(place))?
-            } else {
-                crate::rustc_abi::FIRST_VARIANT
-            };
-            let variant = def.variant(variant_index);
-            let place = if def.is_enum() {
-                read(ecx.project_downcast(place, variant_index))?
-            } else {
-                place.clone()
-            };
-            let mut fields = Vec::with_capacity(variant.fields.len());
-            for (index, field) in variant.fields.iter_enumerated() {
-                let value = read(ecx.project_field(&place, index))?;
-                fields.push((field.name, render(ecx, &value, depth + 1)?));
-            }
-            let name = variant.name;
-            Ok(if fields.is_empty() {
-                name.to_string()
-            } else if variant.ctor_kind() == Some(CtorKind::Fn) {
-                let values: Vec<String> = fields.into_iter().map(|(_, value)| value).collect();
-                format!("{name}({})", values.join(", "))
-            } else {
-                let values: Vec<String> =
-                    fields.into_iter().map(|(field, value)| format!("{field}: {value}")).collect();
-                format!("{name} {{ {} }}", values.join(", "))
-            })
-        }
-        _ => Err(format!("`{ty}` is not a type whose value is rendered")),
+        _ => Err(format!("`{ty}` is not a type whose value is rendered without a library")),
     }
-}
-
-/// `[a, b, c]`: the first `len` elements of an array or slice place.
-fn list<'tcx>(ecx: &Ecx<'tcx>, place: &MPlaceTy<'tcx, Prov>, len: u64, depth: u32) -> Rendered {
-    let mut parts = Vec::new();
-    for index in 0..len {
-        let element = read(ecx.project_index(place, index))?;
-        parts.push(render(ecx, &element, depth + 1)?);
-    }
-    Ok(format!("[{}]", parts.join(", ")))
-}
-
-/// Whether `ty`'s `Debug` impl is the derived one, which prints the value's shape and so is
-/// what [`render`] reproduces.
-fn debug_is_derived<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
-    let Some(debug) = tcx.get_diagnostic_item(sym::Debug) else { return false };
-    tcx.non_blanket_impls_for_ty(debug, ty).any(|imp| tcx.is_automatically_derived(imp))
 }
 
 /// Whether `did` is `alloc::string::String`, which the library marks as a lang item (`Vec` is a
