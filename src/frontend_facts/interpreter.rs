@@ -1161,16 +1161,16 @@ fn run<'tcx>(
         Ok((place, true)) => {
             let ty = place.layout.ty.to_string();
             match render {
-                Some(render) => render_by_debug(&mut ecx, &render, &place, ty, steps, budget),
+                Some(render) => render_by_debug(&mut ecx, &render, &place, ty, steps),
                 None => match render_primitive(&ecx, &place, 0) {
-                    Ok(rendered) => Evaluation::Value { rendered, ty, steps },
+                    Ok(rendered) => Evaluation::Value { rendered, ty, steps, render_steps: 0 },
                     Err(why) => Evaluation::Refused {
                         why: format!("the call returned a `{ty}`, which is not rendered: {why}"),
                     },
                 },
             }
         }
-        Err(err) => ended(&mut ecx, err, steps, budget),
+        Err(err) => ended(&mut ecx, err, steps),
     }
 }
 
@@ -1186,26 +1186,27 @@ fn prepare<'tcx>(ecx: &mut Ecx<'tcx>) -> InterpResult<'tcx> {
 }
 
 /// The outcome of a run that stopped with `err` after `steps` steps.
-fn ended<'tcx>(
-    ecx: &mut Ecx<'tcx>,
-    err: InterpErrorInfo<'tcx>,
-    steps: u64,
-    budget: Option<u64>,
-) -> Evaluation {
+///
+/// A panic's message is formatted outside the budget, as a value is rendered: the budget
+/// stops a call that runs away, and the call has already stopped. `steps` are the call's.
+fn ended<'tcx>(ecx: &mut Ecx<'tcx>, err: InterpErrorInfo<'tcx>, steps: u64) -> Evaluation {
     match stopped(ecx, err) {
         Halt::Refused(why) => Evaluation::Refused { why },
         Halt::Panicked(Some(message)) => Evaluation::Panicked { message, steps },
-        Halt::Panicked(None) => {
-            let left = budget.map(|budget| budget.saturating_sub(steps));
-            Evaluation::Panicked { message: panic_message(ecx, left), steps }
-        }
+        Halt::Panicked(None) => Evaluation::Panicked { message: panic_message(ecx, None), steps },
     }
 }
 
 /// The value at `place` as its type's own `Debug` prints it: [`RENDER`]'s generic function run
-/// on it, on the same interpreter, in what is left of the budget. `ty` stays the call's type, and
-/// `steps` are the call's and the rendering's together: what the budget was spent on, so a
-/// caller that sizes a budget from a value's steps sizes it for the same work.
+/// on it, on the same interpreter. `ty` stays the call's type, `steps` the call's own, and
+/// `render_steps` what the rendering took.
+///
+/// **Outside the budget.** The budget stops a call that runs away (a range walk to
+/// `isize::MAX`); it is not a limit on how long a finished value takes to print. A rendering
+/// counted against it made two calls whose values differ only in how they print (a negative
+/// number takes more steps than a positive one) differ in whether they finished, and an answer
+/// dropped for that hid the one input two readings disagree on. What there is to render is what
+/// the call built within its budget.
 ///
 /// A type with no `Debug` is refused, and so is one whose `Debug` fails or panics: the call ran,
 /// but there is no rendering of its value to give.
@@ -1215,24 +1216,22 @@ fn render_by_debug<'tcx>(
     place: &MPlaceTy<'tcx, Prov>,
     ty: String,
     steps: u64,
-    budget: Option<u64>,
 ) -> Evaluation {
     if !implements_debug(*ecx.tcx, place.layout.ty) {
         return Evaluation::Refused {
             why: format!("the call returned a `{ty}`, which does not implement `Debug`"),
         };
     }
-    let left = budget.map(|budget| budget.saturating_sub(steps));
     let mut rendering = 0;
     ecx.machine.rendered.clear();
+    // With no budget the drive runs until the rendering returns; `done` is always true.
     let finished = start_render(ecx, render.debug, place)
-        .and_then(|result| drive(ecx, &mut rendering, left).map(|done| (result, done)));
+        .and_then(|result| drive(ecx, &mut rendering, None).map(|_| result));
     match finished {
-        Ok((_, false)) => Evaluation::Exhausted { steps: steps + rendering },
-        Ok((result, true)) => match ecx.read_discriminant(&result) {
+        Ok(result) => match ecx.read_discriminant(&result) {
             Ok(variant) if variant == FIRST_VARIANT => {
                 let rendered = core::mem::take(&mut ecx.machine.rendered);
-                Evaluation::Value { rendered, ty, steps: steps + rendering }
+                Evaluation::Value { rendered, ty, steps, render_steps: rendering }
             }
             Ok(_) => Evaluation::Refused {
                 why: format!("the call returned a `{ty}`, whose `Debug` returned an error"),
@@ -1241,7 +1240,7 @@ fn render_by_debug<'tcx>(
                 why: format!("the call returned a `{ty}`, not rendered: {}", stopped(ecx, err)),
             },
         },
-        Err(err) => match ended(ecx, err, rendering, left) {
+        Err(err) => match ended(ecx, err, rendering) {
             Evaluation::Panicked { message, .. } => Evaluation::Refused {
                 why: format!("the call returned a `{ty}`, whose `Debug` panicked: {message}"),
             },

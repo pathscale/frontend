@@ -399,6 +399,22 @@ pub fn count_skipping(text: &str, target: char) -> usize {
     assert_eq!(value("\"abc\".find('c')").0, "Some(2)");
     assert_eq!(value("\"abc\".find('z')").0, "None");
 
+    // The budget bounds the call alone. `2 + -3` and `2 + 3` take the same steps to compute;
+    // the negative one takes at least as many to render, apart; and a budget of exactly the
+    // call's steps lets it finish, however long its value takes to print.
+    let add = "pub fn add(x: i64, y: i64) -> i64 { x + y }\n";
+    let steps_of = |call: &str, budget: Option<u64>| {
+        match evaluate(add, Some("2021"), loaded, call, budget) {
+            Evaluation::Value { steps, render_steps, .. } => (steps, render_steps),
+            other => panic!("{call}: {other:?}"),
+        }
+    };
+    let (positive, positive_render) = steps_of("add(2, 3)", None);
+    let (negative, negative_render) = steps_of("add(2, -3)", None);
+    assert_eq!(positive, negative, "the same addition, whatever the signs");
+    assert!(negative_render >= positive_render, "{negative_render} {positive_render}");
+    assert_eq!(steps_of("add(2, -3)", Some(positive)).0, negative);
+
     // Panics, with the messages a run prints.
     assert_eq!(panicked("[200u8, 100].iter().sum::<u8>()"), "attempt to add with overflow");
     assert_eq!(
