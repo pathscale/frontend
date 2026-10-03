@@ -104,20 +104,28 @@ const NO_LANG_ITEMS: &[&str] = &[
     "fn broken( {\n",
 ];
 
-/// Real files from this crate: large, full of library paths the `no_core` session cannot see,
-/// so they carry many errors and many bodies.
+/// Several source shapes exercise item, body and diagnostic walks without value evaluation.
 const FILES: &[&str] = &[
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frontend_facts/syntax.rs")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rustc_span/edit_distance.rs")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/frontend_facts/site.rs")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rustc_span/fatal_error.rs")),
+    "pub struct Pair { pub left: bool, pub right: bool }\n\
+     impl Pair { pub fn choose(&self, left: bool) -> bool { if left { self.left } else { self.right } } }\n\
+     pub enum Choice { Empty, Flag(bool), Pair(bool, bool) }\n\
+     pub fn selected(choice: Choice) -> bool { match choice { Choice::Empty => false, Choice::Flag(value) => value, Choice::Pair(left, _) => left } }\n",
+    "pub trait Read { fn read(&self) -> bool; }\n\
+     pub struct Cell(bool);\n\
+     impl Read for Cell { fn read(&self) -> bool { self.0 } }\n\
+     pub mod nested { use super::{Cell, Read}; pub fn get() -> bool { Cell(true).read() } }\n",
+    "pub struct Point { pub x: bool, pub y: bool }\n\
+     impl Point { pub fn x(&self) -> bool { self.x } pub fn y(&self) -> bool { self.y } }\n\
+     pub fn call(point: &Point) -> bool { point.x() }\n",
+    "pub fn mismatch(value: bool) -> bool { if value { 1 } else { false } }\n\
+     pub fn unresolved() { missing(); }\n",
 ];
 
 /// Every input, in a fixed order.
 fn inputs() -> Vec<String> {
     let mut all = vec![format!("{LANG}{MANY_ITEMS}"), format!("{LANG}{WITH_ERRORS}")];
     all.extend(NO_LANG_ITEMS.iter().map(|s| s.to_string()));
-    all.extend(FILES.iter().map(|s| s.to_string()));
+    all.extend(FILES.iter().map(|source| format!("{LANG}{source}")));
     all
 }
 
