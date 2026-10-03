@@ -656,8 +656,9 @@ fn collect_bindings(
                 &bindings,
                 syn_source,
             ) {
-                let base = (expression.len() == 3)
-                    .then(|| projection_base(&expression[0].text, item_parameter, field_parameters, &bindings))
+                let projection = projection_expression(expression);
+                let base = (projection.len() == 3)
+                    .then(|| projection_base(&projection[0].text, item_parameter, field_parameters, &bindings))
                     .flatten();
                 add_binding(&mut bindings, name, None, base, why);
                 continue;

@@ -486,6 +486,7 @@ impl MultiItemModifier for UnrunProcMacro {
                     }
                     Err(error) => {
                         error.emit();
+                        ecx.sess.record_loss();
                         break;
                     }
                 }

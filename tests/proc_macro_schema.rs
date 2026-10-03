@@ -204,7 +204,7 @@ fn exact_and_opaque_derives_transcribe_from_loaded_metadata_without_an_interpret
     ];
     let exact_root = scratch.write(
         "exact_consumer",
-        "#![feature(no_core, lang_items)]\n#![allow(internal_features)]\n#![no_core]\n\
+        "#![feature(no_core, lang_items, rustc_attrs, decl_macro)]\n#![allow(internal_features)]\n#![no_core]\n#[rustc_builtin_macro] macro derive($item:item) {}\n\
          extern crate fixture_macros;\n\
          #[derive(fixture_macros::Exact)] pub struct ExactItem<T: 'static = u8> where T: 'static { pub first: T, pub second: T }\n",
     );
@@ -237,7 +237,7 @@ fn exact_and_opaque_derives_transcribe_from_loaded_metadata_without_an_interpret
 
     let opaque_root = scratch.write(
         "opaque_consumer",
-        "#![feature(no_core, lang_items)]\n#![allow(internal_features)]\n#![no_core]\n\
+        "#![feature(no_core, lang_items, rustc_attrs, decl_macro)]\n#![allow(internal_features)]\n#![no_core]\n#[rustc_builtin_macro] macro derive($item:item) {}\n\
          extern crate fixture_macros;\n\
          #[derive(fixture_macros::Opaque)] pub struct OpaqueItem { pub field: u8 }\n",
     );
