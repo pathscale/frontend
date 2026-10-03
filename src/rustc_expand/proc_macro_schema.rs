@@ -1033,7 +1033,7 @@ pub(crate) fn rewrite_template(rule: &SchemaRule) -> Option<RewrittenSchemaTempl
             .iter()
             .any(|(open, close)| *open < index && index < *close);
         let replacement = match &hole {
-            SchemaHole::Exact(_) => "$".to_string(),
+            SchemaHole::Exact(_) => format!("${}", next.text),
             SchemaHole::Opaque { why } if in_function_body => {
                 format!("compile_error!({:?});", format!("opaque: {why}"))
             }
