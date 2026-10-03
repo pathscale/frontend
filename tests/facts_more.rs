@@ -20,7 +20,7 @@ fn impl_facts_keep_their_origin_and_opaque_bodies_are_named() {
     ready();
     assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
     let source = r#"
-#![feature(no_core, lang_items)]
+#![feature(no_core, lang_items, rustc_attrs, decl_macro)]
 #![allow(internal_features)]
 #![no_core]
 
@@ -35,6 +35,10 @@ impl<T: ?Sized> LegacyReceiver for &mut T {}
 }
 #[lang = "copy"] pub trait Copy: Clone {}
 pub mod clone { pub use super::Clone; }
+extern crate self as core;
+#[rustc_builtin_macro] pub macro derive($item:item) {}
+#[rustc_builtin_macro] pub macro Clone($item:item) {}
+#[rustc_builtin_macro] pub macro compile_error($msg:expr $(,)?) {}
 
 pub struct S;
 impl S {}

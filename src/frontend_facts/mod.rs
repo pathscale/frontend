@@ -651,9 +651,17 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // last type-checks those functions' bodies, as a full compile does). When it stops on a
     // fatal error (a lang item a `no_core` session lacks), the resolver's table is what there
     // is, and associated items read as not exported.
-    let exported = catch_fatal_errors(|| tcx.effective_visibilities(()));
+    // In a strict `no_core` read, use that resolver table directly instead of forcing a query
+    // that can require language items the input does not provide.
+    let exported = if tcx.features().enabled(crate::rustc_span::sym::no_core)
+        && !tcx.sess.is_library_read()
+    {
+        None
+    } else {
+        catch_fatal_errors(|| tcx.effective_visibilities(())).ok()
+    };
     // A fallback is whole when this crate has no definitions whose exported status privacy adds.
-    let exports_whole = exported.is_ok()
+    let exports_whole = exported.is_some()
         || (tcx.sess.is_library_read()
             && (0..count).all(|i| {
                 let local = LocalDefId {
@@ -1092,21 +1100,32 @@ fn is_indexed_assert_macro(tcx: TyCtxt<'_>, expansion: ExpnId) -> bool {
     )
 }
 
-struct CompileErrorVisitor {
+struct CompileErrorVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
     found: bool,
 }
 
-impl<'tcx> Visitor<'tcx> for CompileErrorVisitor {
+impl<'tcx> Visitor<'tcx> for CompileErrorVisitor<'tcx> {
     type NestedFilter = intravisit::IgnoreNested;
     type Result = ();
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
         if matches!(expr.kind, ExprKind::Err(_)) {
             let data = expr.span.ctxt().outer_expn_data();
-            if matches!(
-                data.kind,
-                ExpnKind::Macro(MacroKind::Bang, name) if name.as_str() == "compile_error"
-            ) {
+            // In statement position the error stands at the call site itself, which is not marked as
+            // an expansion, so the written call is read too.
+            let written = self
+                .tcx
+                .sess
+                .source_map()
+                .span_to_snippet(expr.span)
+                .is_ok_and(|text| text.trim_start().starts_with("compile_error!"));
+            if written
+                || matches!(
+                    data.kind,
+                    ExpnKind::Macro(MacroKind::Bang, name) if name.as_str() == "compile_error"
+                )
+            {
                 self.found = true;
             }
         }
@@ -1116,7 +1135,7 @@ impl<'tcx> Visitor<'tcx> for CompileErrorVisitor {
 
 fn body_has_compile_error(tcx: TyCtxt<'_>, local: LocalDefId) -> bool {
     let Some(body) = tcx.hir_maybe_body_owned_by(local) else { return false };
-    let mut visitor = CompileErrorVisitor { found: false };
+    let mut visitor = CompileErrorVisitor { tcx, found: false };
     visitor.visit_expr(body.value);
     visitor.found
 }
@@ -1606,13 +1625,16 @@ fn source_text(tcx: TyCtxt<'_>, span: Span) -> Option<String> {
     tcx.sess.source_map().span_to_snippet(span).ok()
 }
 
-/// A HIR type as written. Falls back to the HIR pretty printer for a type with no source text,
-/// such as one a macro assembled from pieces.
+/// A HIR type as written. Expansion spans can point at the invocation, so print those from
+/// HIR instead of copying unrelated source text.
 fn type_text(tcx: TyCtxt<'_>, ty: &hir::Ty<'_>) -> String {
-    source_text(tcx, ty.span).unwrap_or_else(|| {
-        let ann: &dyn crate::rustc_hir::intravisit::HirTyCtxt<'_> = &tcx;
-        crate::rustc_hir_pretty::ty_to_string(&ann, ty)
-    })
+    if !ty.span.from_expansion() {
+        if let Some(text) = source_text(tcx, ty.span) {
+            return text;
+        }
+    }
+    let ann: &dyn crate::rustc_hir::intravisit::HirTyCtxt<'_> = &tcx;
+    crate::rustc_hir_pretty::ty_to_string(&ann, ty)
 }
 
 /// The flag every session here is handed as `Config::using_internal_features`.
