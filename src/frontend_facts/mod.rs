@@ -1442,7 +1442,14 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
             generics,
             predicates,
             span: names.span(tcx.def_span(def_id)),
-            origin: if tcx.sess.is_schema_transcriber_span(tcx.def_span(def_id)) {
+            origin: if tcx.sess.is_schema_transcriber_span(tcx.def_span(def_id))
+                || hir_impl.is_some_and(|hir_impl| {
+                    hir_impl.items.iter().any(|item| {
+                        tcx.sess
+                            .is_schema_transcriber_span(tcx.def_span(item.owner_id.to_def_id()))
+                    })
+                })
+            {
                 FactOrigin::Schema
             } else if tcx.is_builtin_derived(def_id) {
                 FactOrigin::Builtin
