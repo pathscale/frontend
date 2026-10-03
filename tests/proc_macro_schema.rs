@@ -228,7 +228,12 @@ fn exact_and_opaque_derives_transcribe_from_loaded_metadata_without_an_interpret
         })
         .flat_map(|implementation| implementation.items.iter().map(|item| item.name.as_str()))
         .collect::<Vec<_>>();
-    assert_eq!(generated_methods, ["first", "second"]);
+    assert_eq!(
+        generated_methods,
+        ["first", "second"],
+        "exact impls and origins: {:#?}",
+        exact_facts.impls,
+    );
 
     let opaque_root = scratch.write(
         "opaque_consumer",

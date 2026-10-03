@@ -46,13 +46,21 @@ fn opaque_body() { compile_error!("opaque: body"); }
     let facts = analyze_source("facts_origin", source).expect("source parses");
     assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
 
+    let clean_source = source.replace(
+        "fn opaque_body() { compile_error!(\"opaque: body\"); }\n",
+        "",
+    );
+    let clean_facts = analyze_source("facts_origin_clean", &clean_source)
+        .expect("source without opaque body parses");
+    assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
+
     let implementation = facts
         .impls
         .iter()
         .find(|item| item.self_type == "S")
         .expect("impl S");
     assert_eq!(implementation.origin, FactOrigin::Written);
-    let derived = facts
+    let derived = clean_facts
         .impls
         .iter()
         .find(|item| {
