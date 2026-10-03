@@ -9,9 +9,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_middle::mir;
+use crate::rustc_hir::def_id::DefId;
+use crate::rustc_middle::ty::{self, GenericArgsRef, Ty, TyCtxt};
 
 mod alignment;
-pub(crate) mod caller_location;
 mod check_validity_requirement;
 mod compare_types;
 mod type_name;
@@ -21,6 +22,21 @@ pub use self::check_validity_requirement::check_validity_requirement;
 pub(crate) use self::check_validity_requirement::validate_scalar_in_layout;
 pub use self::compare_types::{relate_types, sub_types};
 pub use self::type_name::type_name;
+
+pub(crate) fn intrinsic_type_param<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: GenericArgsRef<'tcx>,
+    type_index: usize,
+) -> Option<Ty<'tcx>> {
+    let param = tcx
+        .generics_of(def_id)
+        .own_params
+        .iter()
+        .filter(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
+        .nth(type_index)?;
+    args.get(param.index as usize).copied()?.as_type()
+}
 
 /// Classify whether an operator is "left-homogeneous", i.e., the LHS has the
 /// same type as the result.

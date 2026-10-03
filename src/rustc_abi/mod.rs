@@ -1981,8 +1981,7 @@ pub enum TagEncoding<VariantIdx: Idx> {
     /// For a variant with variant index `i`, such that `i != untagged_variant`,
     /// the tag is set to `(i - niche_variants.start).wrapping_add(niche_start)`
     /// (this is wrapping arithmetic using the type of the niche field, cf. the
-    /// [`tag_for_variant`](../rustc_const_eval/interpret/struct.InterpCx.html#method.tag_for_variant)
-    /// query implementation).
+    /// `tag_for_variant` query implementation).
     /// To recover the variant index `i` from a `tag`, the above formula has to be reversed,
     /// i.e. `i = tag.wrapping_sub(niche_start) + niche_variants.start`. If `i` ends up outside
     /// `niche_variants`, the tag must have encoded the `untagged_variant`.

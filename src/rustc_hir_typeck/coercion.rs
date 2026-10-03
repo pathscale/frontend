@@ -2122,15 +2122,14 @@ impl<'tcx> CoerceMany<'tcx> {
     /// false but technically valid for typeck.
     fn is_return_ty_definitely_unsized(&self, fcx: &FnCtxt<'_, 'tcx>) -> bool {
         if let Some(sig) = fcx.fn_sig() {
+            let Some(sized) = fcx.tcx.lang_items().get(LangItem::Sized) else {
+                return false;
+            };
             !fcx.predicate_may_hold(&Obligation::new(
                 fcx.tcx,
                 ObligationCause::dummy(),
                 fcx.param_env,
-                ty::TraitRef::new(
-                    fcx.tcx,
-                    fcx.tcx.require_lang_item(LangItem::Sized, DUMMY_SP),
-                    [sig.output()],
-                ),
+                ty::TraitRef::new(fcx.tcx, sized, [sig.output()]),
             ))
         } else {
             false

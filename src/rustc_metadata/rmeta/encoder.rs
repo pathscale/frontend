@@ -23,6 +23,7 @@ use crate::rustc_data_structures::memmap::{Mmap, MmapMut};
 use crate::rustc_data_structures::temp_dir::MaybeTempDir;
 use crate::rustc_data_structures::thousands::usize_with_underscores;
 use crate::rustc_hir as hir;
+use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::attrs::{AttributeKind, EncodeCrossCrate};
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, LOCAL_CRATE, LocalDefId, LocalDefIdSet};
 use crate::rustc_hir::definitions::DefPathData;
@@ -52,6 +53,321 @@ use tracing::{debug, instrument, trace};
 use crate::rustc_metadata::diagnostics::{FailCreateFileEncoder, FailWriteFile};
 use crate::rustc_metadata::eii::EiiMapEncodedKeyValue;
 use crate::rustc_metadata::rmeta::*;
+
+fn proc_macro_entry_body(tcx: TyCtxt<'_>, id: LocalDefId) -> ProcMacroEntryBody {
+    let hir::Node::Item(hir::Item {
+        kind: hir::ItemKind::Fn { has_body: true, .. },
+        ..
+    }) = tcx.hir_node_by_def_id(id)
+    else {
+        return ProcMacroEntryBody::Unclassified;
+    };
+    let Some(body) = tcx.hir_maybe_body_owned_by(id) else {
+        return ProcMacroEntryBody::Unclassified;
+    };
+    let Some(expr) = single_proc_macro_expr(body.value) else {
+        return ProcMacroEntryBody::Unclassified;
+    };
+
+    let expansion = expr.span.ctxt().outer_expn_data();
+    if let Some(macro_def_id) = expansion.macro_def_id {
+        let macro_name = tcx.item_name(macro_def_id);
+        if macro_name.as_str() == "parse_macro_input" {
+            let source = tcx
+                .sess
+                .source_map()
+                .span_to_snippet(expansion.call_site)
+                .ok()
+                .or_else(|| tcx.sess.source_map().span_to_snippet(expr.span).ok());
+            return source
+                .as_deref()
+                .and_then(proc_macro_parse_type)
+                .map(|ty| ProcMacroEntryBody::Parse { ty })
+                .unwrap_or(ProcMacroEntryBody::Unclassified);
+        }
+        if macro_name == crate::rustc_span::sym::quote {
+            let source = tcx
+                .sess
+                .source_map()
+                .span_to_snippet(expansion.call_site)
+                .ok()
+                .or_else(|| tcx.sess.source_map().span_to_snippet(expr.span).ok());
+            return if source.as_deref().and_then(proc_macro_quote_is_empty) == Some(true) {
+                ProcMacroEntryBody::QuoteEmpty
+            } else {
+                ProcMacroEntryBody::Quote
+            };
+        }
+    }
+
+    if let Ok(source) = tcx.sess.source_map().span_to_snippet(expr.span) {
+        if let Some(ty) = proc_macro_parse_type(&source) {
+            return ProcMacroEntryBody::Parse { ty };
+        }
+        if let Some(is_empty) = proc_macro_quote_is_empty(&source) {
+            return if is_empty {
+                ProcMacroEntryBody::QuoteEmpty
+            } else {
+                ProcMacroEntryBody::Quote
+            };
+        }
+    }
+
+    match expr.kind {
+        hir::ExprKind::Call(callee, _) => {
+            let hir::ExprKind::Path(hir::QPath::Resolved(None, path)) = callee.kind else {
+                return ProcMacroEntryBody::Unclassified;
+            };
+            let mut path_text = String::new();
+            for (index, segment) in path.segments.iter().enumerate() {
+                if index != 0 {
+                    path_text.push_str("::");
+                }
+                path_text.push_str(segment.ident.name.as_str());
+            }
+            if path_text.is_empty() {
+                ProcMacroEntryBody::Unclassified
+            } else {
+                ProcMacroEntryBody::Call { path: path_text }
+            }
+        }
+        hir::ExprKind::Match(scrutinee, ..) if proc_macro_matches_parameter(body, scrutinee) => {
+            ProcMacroEntryBody::Match
+        }
+        _ => ProcMacroEntryBody::Unclassified,
+    }
+}
+
+fn syn_item(
+    tcx: TyCtxt<'_>,
+    root: crate::rustc_hir::def_id::DefId,
+    name: &str,
+) -> Option<crate::rustc_hir::def_id::DefId> {
+    tcx.module_children(root).iter().find_map(|child| {
+        if child.ident.name.as_str() != name {
+            return None;
+        }
+        match child.res {
+            Res::Def(_, def_id) => Some(def_id),
+            _ => None,
+        }
+    })
+}
+
+fn named_field_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    adt: crate::rustc_hir::def_id::DefId,
+    name: &str,
+) -> Option<crate::rustc_middle::ty::Ty<'tcx>> {
+    if !matches!(tcx.def_kind(adt), DefKind::Struct | DefKind::Union) {
+        return None;
+    }
+    let field = tcx
+        .adt_def(adt)
+        .all_fields()
+        .find(|field| field.name.as_str() == name)?;
+    Some(tcx.type_of(field.did).instantiate_identity().skip_norm_wip())
+}
+
+fn adt_type_is(
+    ty: crate::rustc_middle::ty::Ty<'_>,
+    expected: crate::rustc_hir::def_id::DefId,
+) -> bool {
+    matches!(ty.kind(), ty::TyKind::Adt(adt, _) if adt.did() == expected)
+}
+
+fn syn_projection_shape(tcx: TyCtxt<'_>, crate_num: crate::rustc_hir::def_id::CrateNum) -> bool {
+    let root = crate_num.as_def_id();
+    let Some(derive_input) = syn_item(tcx, root, "DeriveInput") else { return false };
+    let Some(field) = syn_item(tcx, root, "Field") else { return false };
+    let Some(generics) = syn_item(tcx, root, "Generics") else { return false };
+    let Some(ident_def) = syn_item(tcx, root, "Ident") else { return false };
+    let Some(visibility) = syn_item(tcx, root, "Visibility") else { return false };
+
+    if !named_field_type(tcx, derive_input, "ident")
+        .is_some_and(|ty| adt_type_is(ty, ident_def))
+        || !named_field_type(tcx, derive_input, "vis")
+            .is_some_and(|ty| adt_type_is(ty, visibility))
+        || !named_field_type(tcx, derive_input, "generics")
+            .is_some_and(|ty| adt_type_is(ty, generics))
+    {
+        return false;
+    }
+
+    let Some(option_ident) = named_field_type(tcx, field, "ident") else { return false };
+    let ty::TyKind::Adt(option_adt, args) = option_ident.kind() else { return false };
+    if tcx.def_kind(option_adt.did()) != DefKind::Enum
+        || tcx.opt_item_name(option_adt.did()).is_none_or(|name| name.as_str() != "Option")
+    {
+        return false;
+    }
+    let mut type_arguments = args.types();
+    let Some(ident_argument) = type_arguments.next() else { return false };
+    if args.len() != 1
+        || type_arguments.next().is_some()
+        || !matches!(
+            ident_argument.kind(),
+            ty::TyKind::Adt(argument_adt, _) if argument_adt.did() == ident_def
+        )
+    {
+        return false;
+    }
+
+    tcx.inherent_impls(generics)
+        .iter()
+        .any(|impl_id| tcx.associated_items(*impl_id).in_definition_order().any(|item| {
+            item.name().as_str() == "split_for_impl"
+        }))
+}
+
+fn syn_projections_from_loaded_facts(tcx: TyCtxt<'_>) -> bool {
+    let syn_crates = tcx
+        .crates(())
+        .iter()
+        .copied()
+        .filter(|&crate_num| tcx.crate_name(crate_num).as_str() == "syn")
+        .collect::<Vec<_>>();
+    !syn_crates.is_empty() && syn_crates.into_iter().all(|crate_num| syn_projection_shape(tcx, crate_num))
+}
+
+fn proc_macro_schema(tcx: TyCtxt<'_>, id: LocalDefId, syn_projections: bool) -> ProcMacroSchema {
+    let Some(body) = tcx.hir_maybe_body_owned_by(id) else {
+        return ProcMacroSchema::default();
+    };
+    let Ok(source) = tcx.sess.source_map().span_to_snippet(body.value.span) else {
+        return ProcMacroSchema::default();
+    };
+    let Some(parameters) = body
+        .params
+        .iter()
+        .map(|param| match param.pat.kind {
+            hir::PatKind::Binding(_, _, ident, _) => Some(ident.name.as_str().to_owned()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return ProcMacroSchema::default();
+    };
+    crate::rustc_expand::proc_macro_schema::analyze_source(
+        &tcx.sess.psess,
+        &source,
+        &parameters,
+        syn_projections,
+    )
+}
+
+fn proc_macro_matches_parameter(body: &hir::Body<'_>, expr: &hir::Expr<'_>) -> bool {
+    let hir::ExprKind::Path(hir::QPath::Resolved(None, path)) = expr.kind else {
+        return false;
+    };
+    let [segment] = path.segments else { return false };
+    body.params.iter().any(|param| {
+        matches!(
+            param.pat.kind,
+            hir::PatKind::Binding(_, _, ident, _) if ident.name == segment.ident.name
+        )
+    })
+}
+
+fn single_proc_macro_expr<'hir>(mut expr: &'hir hir::Expr<'hir>) -> Option<&'hir hir::Expr<'hir>> {
+    loop {
+        match expr.kind {
+            hir::ExprKind::DropTemps(inner) => expr = inner,
+            hir::ExprKind::Block(block, _) if expr.span.ctxt().is_root() => {
+                if block.stmts.is_empty() {
+                    expr = block.expr?;
+                } else if block.expr.is_none() && block.stmts.len() == 1 {
+                    match block.stmts[0].kind {
+                        hir::StmtKind::Expr(inner) | hir::StmtKind::Semi(inner) => expr = inner,
+                        _ => return None,
+                    }
+                } else {
+                    return None;
+                }
+            }
+            _ => return Some(expr),
+        }
+    }
+}
+
+fn proc_macro_parse_type(source: &str) -> Option<String> {
+    let input = proc_macro_macro_args(source, "parse_macro_input")?;
+    let start = top_level_as(input)?;
+    let ty = input.get(start..)?.trim();
+    (!ty.is_empty()).then(|| ty.to_string())
+}
+
+fn proc_macro_macro_args<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let bang = source.find('!')?;
+    if !proc_macro_macro_is(source, name) {
+        return None;
+    }
+
+    let invocation = source.get(bang + 1..)?.trim_start();
+    let open = invocation.chars().next()?;
+    let close = match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        _ => return None,
+    };
+    let content = invocation.get(open.len_utf8()..)?;
+    let mut depth = 1usize;
+    for (index, ch) in content.char_indices() {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                let rest = content.get(index + close.len_utf8()..)?.trim();
+                return (rest.is_empty() || rest == ";").then(|| &content[..index]);
+            }
+        }
+    }
+    None
+}
+
+fn top_level_as(input: &str) -> Option<usize> {
+    let mut angles = 0usize;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    for (index, ch) in input.char_indices() {
+        if angles == 0
+            && parens == 0
+            && brackets == 0
+            && braces == 0
+            && input[index..].starts_with(" as ")
+        {
+            return Some(index + 4);
+        }
+        match ch {
+            '<' => angles += 1,
+            '>' => angles = angles.saturating_sub(1),
+            '(' => parens += 1,
+            ')' => parens = parens.saturating_sub(1),
+            '[' => brackets += 1,
+            ']' => brackets = brackets.saturating_sub(1),
+            '{' => braces += 1,
+            '}' => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn proc_macro_quote_is_empty(source: &str) -> Option<bool> {
+    proc_macro_macro_args(source, "quote").map(|tokens| tokens.trim().is_empty())
+}
+
+fn proc_macro_macro_is(source: &str, name: &str) -> bool {
+    source
+        .find('!')
+        .and_then(|bang| source.get(..bang))
+        .map(str::trim)
+        .and_then(|path| path.rsplit("::").next())
+        .is_some_and(|last| last.trim_start_matches("r#") == name)
+}
 
 pub(super) struct EncodeContext<'a, 'tcx> {
     opaque: opaque::FileEncoder<'a>,
@@ -1108,54 +1424,12 @@ fn should_encode_stability(def_kind: DefKind) -> bool {
 
 /// Whether we should encode MIR. Return a pair, resp. for CTFE and for LLVM.
 ///
-/// Computing, optimizing and encoding the MIR is a relatively expensive operation.
-/// We want to avoid this work when not required. Therefore:
-/// - we only compute `mir_for_ctfe` on items with const-eval semantics;
-/// - we skip `optimized_mir` for check runs.
-/// - we only encode `optimized_mir` that could be generated in other crates, that is, a code that
-///   is either generic or has inline hint, and is reachable from the other crates (contained
-///   in reachable set).
-///
-/// Note: Reachable set describes definitions that might be generated or referenced from other
-/// crates and it can be used to limit optimized MIR that needs to be encoded. On the other hand,
-/// the reachable set doesn't have much to say about which definitions might be evaluated at compile
-/// time in other crates, so it cannot be used to omit CTFE MIR. For example, `f` below is
-/// unreachable and yet it can be evaluated in other crates:
-///
-/// ```
-/// const fn f() -> usize { 0 }
-/// pub struct S { pub a: [usize; f()] }
-/// ```
 fn should_encode_mir(
-    tcx: TyCtxt<'_>,
-    reachable_set: &LocalDefIdSet,
-    def_id: LocalDefId,
+    _tcx: TyCtxt<'_>,
+    _reachable_set: &LocalDefIdSet,
+    _def_id: LocalDefId,
 ) -> (bool, bool) {
-    match tcx.def_kind(def_id) {
-        // instance_mir uses mir_for_ctfe rather than optimized_mir for constructors
-        DefKind::Ctor(_, _) => (true, false),
-        // Constants
-        DefKind::AnonConst | DefKind::AssocConst { .. } | DefKind::Const { .. } => (true, false),
-        // Coroutines require optimized MIR to compute layout.
-        DefKind::Closure if tcx.is_coroutine(def_id.to_def_id()) => (false, true),
-        DefKind::SyntheticCoroutineBody => (false, true),
-        // Full-fledged functions + closures
-        DefKind::AssocFn | DefKind::Fn | DefKind::Closure => {
-            let opt = tcx.sess.opts.unstable_opts.always_encode_mir
-                || (tcx.sess.opts.output_types.should_codegen()
-                    && reachable_set.contains(&def_id)
-                    && (tcx.generics_of(def_id).requires_monomorphization(tcx)
-                        || tcx.cross_crate_inlinable(def_id)));
-            // Comptime fns do not have optimized MIR at all.
-            let opt =
-                opt && !matches!(tcx.constness(def_id), hir::Constness::Const { always: true });
-            // The function has a `const` modifier or is in a `const trait`.
-            let is_const_fn = tcx.is_const_fn(def_id.to_def_id());
-            (is_const_fn, opt)
-        }
-        // The others don't have MIR.
-        _ => (false, false),
-    }
+    (false, false)
 }
 
 fn should_encode_variances<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, def_kind: DefKind) -> bool {
@@ -2093,6 +2367,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             }
 
             let mut macros = vec![];
+            let syn_projections = syn_projections_from_loaded_facts(tcx);
 
             // Normally, this information is encoded when we walk the items
             // defined in this crate. However, we skip doing that for proc-macro crates,
@@ -2102,13 +2377,29 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 let proc_macro = tcx.local_def_id_to_hir_id(proc_macro);
                 let mut name = tcx.hir_name(proc_macro);
                 let span = tcx.hir_span(proc_macro);
+                let entry_body = proc_macro_entry_body(tcx, id);
+                let schema = proc_macro_schema(tcx, id, syn_projections);
                 // Proc-macros may have attributes like `#[allow_internal_unstable]`,
                 // so downstream crates need access to them.
                 let attrs = tcx.hir_attrs(proc_macro);
                 let (macro_kind, kind) = if find_attr!(attrs, ProcMacro) {
-                    (MacroKind::Bang, ProcMacroKind::Bang { name: name.as_str().to_owned() })
+                    (
+                        MacroKind::Bang,
+                        ProcMacroKind::Bang {
+                            name: name.as_str().to_owned(),
+                            entry_body: Some(entry_body),
+                            schema,
+                        },
+                    )
                 } else if find_attr!(attrs, ProcMacroAttribute) {
-                    (MacroKind::Attr, ProcMacroKind::Attr { name: name.as_str().to_owned() })
+                    (
+                        MacroKind::Attr,
+                        ProcMacroKind::Attr {
+                            name: name.as_str().to_owned(),
+                            entry_body: Some(entry_body),
+                            schema,
+                        },
+                    )
                 } else if let Some((trait_name, helper_attrs)) = find_attr!(attrs,
                     ProcMacroDerive { trait_name, helper_attrs } => (trait_name, helper_attrs))
                 {
@@ -2121,6 +2412,8 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                                 .iter()
                                 .map(|attr| attr.as_str().to_owned())
                                 .collect(),
+                            entry_body: Some(entry_body),
+                            schema,
                         },
                     )
                 } else {

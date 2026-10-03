@@ -3,7 +3,6 @@
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
 // `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
-use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -11,10 +10,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::Integer;
-use crate::rustc_const_eval::const_eval::mk_eval_cx_for_const_val;
 use crate::rustc_middle::mir::*;
+use crate::rustc_middle::mir::interpret::Scalar;
 use crate::rustc_middle::ty::layout::{IntegerExt, TyAndLayout};
-use crate::rustc_middle::ty::util::Discr;
 use crate::rustc_middle::ty::{self, ScalarInt, Ty, TyCtxt};
 
 use super::simplify::simplify_cfg;
@@ -142,7 +140,7 @@ impl<'tcx, 'a> SimplifyMatch<'tcx, 'a> {
             let const_cmp = Operand::const_from_scalar(
                 self.tcx,
                 self.discr_ty,
-                crate::rustc_const_eval::interpret::Scalar::from_uint(first_case, size),
+                Scalar::from_uint(first_case, size),
                 crate::rustc_span::DUMMY_SP,
             );
             let op = if first_bool { BinOp::Eq } else { BinOp::Ne };
@@ -223,98 +221,9 @@ impl<'tcx, 'a> SimplifyMatch<'tcx, 'a> {
         }
     }
 
-    /// This is primarily used to unify these copy statements that simplified the canonical enum clone method by GVN.
-    /// The GVN simplified
-    /// ```ignore (syntax-highlighting-only)
-    /// match a {
-    ///     Foo::A(x) => Foo::A(*x),
-    ///     Foo::B => Foo::B
-    /// }
-    /// ```
-    /// to
-    /// ```ignore (syntax-highlighting-only)
-    /// match a {
-    ///     Foo::A(_x) => a, // copy a
-    ///     Foo::B => Foo::B
-    /// }
-    /// ```
-    /// This will simplify into a copy statement.
-    fn unify_by_copy(
-        &self,
-        dest: Place<'tcx>,
-        rvals: &[(u128, &Rvalue<'tcx>)],
-    ) -> Option<StatementKind<'tcx>> {
-        let bbs = &self.body.basic_blocks;
-        // Check if the copy source matches the following pattern.
-        // _2 = discriminant(*_1); // "*_1" is the expected the copy source.
-        // switchInt(move _2) -> [0: bb3, 1: bb2, otherwise: bb1];
-        let &Statement { kind: StatementKind::Assign(ref assign), .. } =
-            bbs[self.switch_bb].statements.last()?
-        else {
-            return None;
-        };
-        let (discr_place, Rvalue::Discriminant(copy_src_place)) = **assign else {
-            return None;
-        };
-        if self.discr.place() != Some(discr_place) {
-            return None;
-        }
-        let src_ty = copy_src_place.ty(self.body.local_decls(), self.tcx);
-        if !src_ty.ty.is_enum() || src_ty.variant_index.is_some() {
-            return None;
-        }
-        let dest_ty = dest.ty(self.body.local_decls(), self.tcx);
-        if dest_ty.ty != src_ty.ty || dest_ty.variant_index.is_some() {
-            return None;
-        }
-        let ty::Adt(def, _) = dest_ty.ty.kind() else {
-            return None;
-        };
-
-        for &(case, rvalue) in rvals.iter() {
-            match rvalue {
-                // Check if `_3 = const Foo::B` can be transformed to `_3 = copy *_1`.
-                Rvalue::Use(Operand::Constant(constant), _)
-                    if let Const::Val(const_, ty) = constant.const_ =>
-                {
-                    let (ecx, op) = mk_eval_cx_for_const_val(
-                        self.tcx.at(constant.span),
-                        self.typing_env,
-                        const_,
-                        ty,
-                    )?;
-                    let variant = ecx.read_discriminant(&op).discard_err()?;
-                    if !def.variants()[variant].fields.is_empty() {
-                        return None;
-                    }
-                    let Discr { val, .. } = ty.discriminant_for_variant(self.tcx, variant)?;
-                    if val != case {
-                        return None;
-                    }
-                }
-                Rvalue::Use(Operand::Copy(src_place), _) if *src_place == copy_src_place => {}
-                // Check if `_3 = Foo::B` can be transformed to `_3 = copy *_1`.
-                Rvalue::Aggregate(kind, fields)
-                    if let AggregateKind::Adt(_, variant_index, _, _, None) = &**kind
-                        && fields.is_empty()
-                        && let Some(Discr { val, .. }) =
-                            src_ty.ty.discriminant_for_variant(self.tcx, *variant_index)
-                        && val == case => {}
-                _ => return None,
-            }
-        }
-        // We didn't remember the `WithRetag` of the original assignments, so in case
-        // one of them had "no", we also have to use "no" here.
-        Some(StatementKind::Assign(Box::new((
-            dest,
-            Rvalue::Use(Operand::Copy(copy_src_place), WithRetag::No),
-        ))))
-    }
-
     /// Returns a new statement if we can use the statement replace all statements.
     fn try_unify_stmts(
         &mut self,
-        index: usize,
         stmts: &[(u128, &StatementKind<'tcx>)],
         otherwise: Option<&StatementKind<'tcx>>,
     ) -> Option<StatementKind<'tcx>> {
@@ -338,16 +247,6 @@ impl<'tcx, 'a> SimplifyMatch<'tcx, 'a> {
             }
         }
 
-        // We only know the first statement is safe to introduce new dereferences.
-        if index == 0
-            // We cannot create overlapping assignments.
-            && dest.is_stable_offset()
-            // Requires the otherwise is unreachable.
-            && otherwise.is_none()
-            && let Some(new_stmt) = self.unify_by_copy(dest, &rvals)
-        {
-            return Some(new_stmt);
-        }
         None
     }
 }
@@ -432,7 +331,7 @@ fn simplify_match<'tcx>(
         for &(case, bb) in &reachable_cases {
             cases.push((case, &body.basic_blocks[bb].statements[index].kind));
         }
-        let Some(new_stmt) = simplify_match.try_unify_stmts(index, &cases, otherwise) else {
+        let Some(new_stmt) = simplify_match.try_unify_stmts(&cases, otherwise) else {
             return false;
         };
         new_stmts.push(new_stmt);

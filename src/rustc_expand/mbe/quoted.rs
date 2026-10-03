@@ -181,6 +181,15 @@ fn parse(
     result
 }
 
+pub(super) fn parse_body(
+    input: &tokenstream::TokenStream,
+    sess: &Session,
+    features: &Features,
+    edition: Edition,
+) -> Vec<TokenTree> {
+    parse(input, RulePart::Body, sess, crate::rustc_ast::DUMMY_NODE_ID, features, edition)
+}
+
 /// Takes a `tokenstream::TokenTree` and returns a `self::TokenTree`. Like `parse`, but for a
 /// single token tree. Emits errors to `sess` if needed.
 #[inline]

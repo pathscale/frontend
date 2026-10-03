@@ -26,7 +26,9 @@ pub use crate::rustc_attr_ir::canonical_symbols::{CanonicalSymbol, CanonicalSymb
 use crate::rustc_attr_ir::diagnostic::*;
 use crate::rustc_attr_ir::lang_items::LangItem;
 use crate::rustc_attr_ir::pretty_printing::PrintAttribute;
-use crate::rustc_attr_ir::stability::{DefaultBodyStability, PartialConstStability, Stability};
+use crate::rustc_attr_ir::stability::{
+    DefaultBodyStability, PartialConstStability, Stability, VERSION_PLACEHOLDER,
+};
 
 #[derive(Copy, Clone, Debug, StableHash, Encodable, Decodable, PrintAttribute)]
 pub enum EiiImplResolution {
@@ -185,14 +187,13 @@ pub struct Deprecation {
     pub suggestion: Option<Symbol>,
 }
 
-/// Release in which an API is deprecated.
+/// Source value for an API's deprecation timing.
 #[derive(Copy, Debug, Encodable, Decodable, Clone, StableHash, PrintAttribute)]
 pub enum DeprecatedSince {
     RustcVersion(RustcVersion),
     /// Deprecated in the future ("to be determined").
     Future,
-    /// `feature(staged_api)` is off. Deprecation versions outside the standard
-    /// library are allowed to be arbitrary strings, for better or worse.
+    /// A deprecation marker preserved without interpreting it as a Rust version.
     NonStandard(Symbol),
     /// Deprecation version is unspecified but optional.
     Unspecified,
@@ -218,14 +219,10 @@ pub enum RustcAbiAttrKind {
 }
 
 impl Deprecation {
-    /// Whether an item marked with #[deprecated(since = "X")] is currently
-    /// deprecated (i.e., whether X is not greater than the current rustc
-    /// version).
     pub fn is_in_effect(&self) -> bool {
         match self.since {
-            DeprecatedSince::RustcVersion(since) => since <= RustcVersion::CURRENT,
+            DeprecatedSince::RustcVersion(_) => true,
             DeprecatedSince::Future => false,
-            // The `since` field doesn't have semantic purpose without `#![staged_api]`.
             DeprecatedSince::NonStandard(_) => true,
             // Assume deprecation is in effect if "since" field is absent or invalid.
             DeprecatedSince::Unspecified | DeprecatedSince::Err => true,
@@ -233,7 +230,11 @@ impl Deprecation {
     }
 
     pub fn is_since_rustc_version(&self) -> bool {
-        matches!(self.since, DeprecatedSince::RustcVersion(_))
+        match self.since {
+            DeprecatedSince::RustcVersion(_) => true,
+            DeprecatedSince::NonStandard(since) => since.as_str() == VERSION_PLACEHOLDER,
+            _ => false,
+        }
     }
 }
 

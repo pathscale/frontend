@@ -542,7 +542,10 @@ pub(super) fn impl_super_outlives(
     tcx: TyCtxt<'_>,
     def_id: DefId,
 ) -> ty::EarlyBinder<'_, ty::Clauses<'_>> {
-    tcx.impl_trait_header(def_id).trait_ref.map_bound(|trait_ref| {
+    let Some(trait_ref) = tcx.impl_opt_trait_ref(def_id) else {
+        return ty::EarlyBinder::bind(tcx, ty::ListWithCachedTypeInfo::empty());
+    };
+    trait_ref.map_bound(|trait_ref| {
         let clause: ty::Clause<'_> = trait_ref.upcast(tcx);
         tcx.mk_clauses_from_iter(util::elaborate(tcx, [clause]).filter(|clause| {
             matches!(

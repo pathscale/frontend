@@ -2147,7 +2147,9 @@ impl<'tcx> TyCtxt<'tcx> {
         let ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, .. }) = *ty.kind() else {
             return false;
         };
-        let future_trait = self.require_lang_item(LangItem::Future, DUMMY_SP);
+        let Some(future_trait) = self.lang_items().get(LangItem::Future) else {
+            return false;
+        };
 
         self.explicit_item_self_bounds(def_id).skip_binder().iter().any(|&(predicate, _)| {
             let ty::ClauseKind::Trait(trait_predicate) = predicate.kind().skip_binder() else {
@@ -2746,7 +2748,7 @@ impl<'tcx> TyCtxt<'tcx> {
 
     /// Whether the trait impl is marked const. This does not consider stability or feature gates.
     pub fn is_const_trait_impl(self, def_id: DefId) -> bool {
-        self.def_kind(def_id) == DefKind::Impl { of_trait: true }
+        self.impl_is_of_trait(def_id)
             && matches!(
                 self.impl_trait_header(def_id).constness,
                 hir::Constness::Const { always: false }
@@ -2909,4 +2911,196 @@ pub fn provide(providers: &mut Providers) {
         tcx.lang_items().panic_impl().is_some_and(|did| did.is_local())
     };
     providers.source_span = |tcx, def_id| tcx.untracked.source_span.get(def_id).unwrap_or(DUMMY_SP);
+}
+
+pub(crate) mod const_term {
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+
+    use crate::rustc_hir as hir;
+    use crate::rustc_hir::def::{DefKind, Res};
+    use crate::rustc_hir::def_id::{DefId, LocalDefId};
+    use crate::rustc_middle::ty::{self, LitToConstInput, TyCtxt};
+    use crate::rustc_type_ir::{ConstTerm, ConstTermBinOp, ConstTermUnOp};
+
+    const MAX_PATH_DEPTH: usize = 32;
+
+    pub(crate) fn read_const_term<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        def_id: DefId,
+    ) -> ConstTerm<TyCtxt<'tcx>> {
+        read_definition(tcx, def_id, &mut Vec::new(), 0)
+    }
+
+    fn read_definition<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        def_id: DefId,
+        path: &mut Vec<DefId>,
+        depth: usize,
+    ) -> ConstTerm<TyCtxt<'tcx>> {
+        if depth >= MAX_PATH_DEPTH || path.contains(&def_id) {
+            tcx.sess.record_uncomputed_const(tcx.def_path_str(def_id));
+            return ConstTerm::Opaque;
+        }
+
+        if !matches!(
+            tcx.def_kind(def_id),
+            DefKind::Const { .. } | DefKind::AssocConst { .. } | DefKind::AnonConst
+        ) {
+            tcx.sess.record_uncomputed_const(tcx.def_path_str(def_id));
+            return ConstTerm::Opaque;
+        }
+
+        let Some(local_def_id) = def_id.as_local() else {
+            tcx.sess.record_uncomputed_const(tcx.def_path_str(def_id));
+            return ConstTerm::Opaque;
+        };
+        let Some(body_id) = tcx.hir_node_by_def_id(local_def_id).body_id() else {
+            tcx.sess.record_uncomputed_const(tcx.def_path_str(def_id));
+            return ConstTerm::Opaque;
+        };
+
+        path.push(def_id);
+        let body = tcx.hir_body(body_id);
+        let term = read_body_expr(tcx, local_def_id, body.value, path, depth);
+        path.pop();
+
+        if contains_opaque(&term) {
+            tcx.sess.record_uncomputed_const(tcx.def_path_str(def_id));
+        }
+        term
+    }
+
+    fn read_body_expr<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        owner: LocalDefId,
+        mut expr: &'tcx hir::Expr<'tcx>,
+        path: &mut Vec<DefId>,
+        depth: usize,
+    ) -> ConstTerm<TyCtxt<'tcx>> {
+        loop {
+            match expr.kind {
+                hir::ExprKind::DropTemps(inner) => expr = inner,
+                hir::ExprKind::Block(block, _) if block.stmts.is_empty() => {
+                    let Some(tail) = block.expr else {
+                        return ConstTerm::Opaque;
+                    };
+                    expr = tail;
+                }
+                _ => break,
+            }
+        }
+
+        read_expr(tcx, owner, expr, path, depth)
+    }
+
+    fn read_expr<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        owner: LocalDefId,
+        expr: &'tcx hir::Expr<'tcx>,
+        path: &mut Vec<DefId>,
+        depth: usize,
+    ) -> ConstTerm<TyCtxt<'tcx>> {
+        let expr = expr.peel_drop_temps();
+        match expr.kind {
+            hir::ExprKind::Lit(lit) => {
+                let ty = tcx.typeck(owner).node_type(expr.hir_id);
+                match tcx.at(expr.span).lit_to_const(LitToConstInput {
+                    lit: lit.node,
+                    ty: Some(ty),
+                    neg: false,
+                }) {
+                    Some(value) => ConstTerm::Literal(ty::Const::new_value(
+                        tcx,
+                        value.valtree,
+                        value.ty,
+                    )),
+                    None => ConstTerm::Opaque,
+                }
+            }
+            hir::ExprKind::Path(hir::QPath::Resolved(_, path_hir)) => match path_hir.res {
+                Res::Def(DefKind::Const { .. } | DefKind::AssocConst { .. }, path_def_id) => {
+                    read_definition(tcx, path_def_id, path, depth + 1)
+                }
+                Res::Def(DefKind::ConstParam, path_def_id) => {
+                    let generics = tcx.generics_of(tcx.parent(path_def_id));
+                    let Some(index) = generics.param_def_id_to_index(tcx, path_def_id) else {
+                        return ConstTerm::Opaque;
+                    };
+                    ConstTerm::Param(ty::ParamConst::for_def(
+                        generics.param_at(index as usize, tcx),
+                    ))
+                }
+                _ => ConstTerm::Opaque,
+            },
+            hir::ExprKind::Binary(op, lhs, rhs) => {
+                let op = bin_op(op.node);
+                ConstTerm::Binary(
+                    op,
+                    Box::new(read_expr(tcx, owner, lhs, path, depth)),
+                    Box::new(read_expr(tcx, owner, rhs, path, depth)),
+                )
+            }
+            hir::ExprKind::Unary(op, operand) => {
+                let op = un_op(op);
+                ConstTerm::Unary(op, Box::new(read_expr(tcx, owner, operand, path, depth)))
+            }
+            hir::ExprKind::Call(func, args) => {
+                let hir::ExprKind::Path(hir::QPath::Resolved(_, path_hir)) = func.kind else {
+                    return ConstTerm::Opaque;
+                };
+                let Res::Def(_, function_def_id) = path_hir.res else {
+                    return ConstTerm::Opaque;
+                };
+                ConstTerm::Call(
+                    function_def_id,
+                    args.iter()
+                        .map(|arg| read_expr(tcx, owner, arg, path, depth))
+                        .collect(),
+                )
+            }
+            _ => ConstTerm::Opaque,
+        }
+    }
+
+    fn bin_op(op: hir::BinOpKind) -> ConstTermBinOp {
+        match op {
+            hir::BinOpKind::Add => ConstTermBinOp::Add,
+            hir::BinOpKind::Sub => ConstTermBinOp::Sub,
+            hir::BinOpKind::Mul => ConstTermBinOp::Mul,
+            hir::BinOpKind::Div => ConstTermBinOp::Div,
+            hir::BinOpKind::Rem => ConstTermBinOp::Rem,
+            hir::BinOpKind::And => ConstTermBinOp::And,
+            hir::BinOpKind::Or => ConstTermBinOp::Or,
+            hir::BinOpKind::BitXor => ConstTermBinOp::BitXor,
+            hir::BinOpKind::BitAnd => ConstTermBinOp::BitAnd,
+            hir::BinOpKind::BitOr => ConstTermBinOp::BitOr,
+            hir::BinOpKind::Shl => ConstTermBinOp::Shl,
+            hir::BinOpKind::Shr => ConstTermBinOp::Shr,
+            hir::BinOpKind::Eq => ConstTermBinOp::Eq,
+            hir::BinOpKind::Lt => ConstTermBinOp::Lt,
+            hir::BinOpKind::Le => ConstTermBinOp::Le,
+            hir::BinOpKind::Ne => ConstTermBinOp::Ne,
+            hir::BinOpKind::Ge => ConstTermBinOp::Ge,
+            hir::BinOpKind::Gt => ConstTermBinOp::Gt,
+        }
+    }
+
+    fn un_op(op: hir::UnOp) -> ConstTermUnOp {
+        match op {
+            hir::UnOp::Deref => ConstTermUnOp::Deref,
+            hir::UnOp::Not => ConstTermUnOp::Not,
+            hir::UnOp::Neg => ConstTermUnOp::Neg,
+        }
+    }
+
+    fn contains_opaque<I: crate::rustc_type_ir::Interner>(term: &ConstTerm<I>) -> bool {
+        match term {
+            ConstTerm::Binary(_, lhs, rhs) => contains_opaque(lhs) || contains_opaque(rhs),
+            ConstTerm::Unary(_, operand) => contains_opaque(operand),
+            ConstTerm::Call(_, args) => args.iter().any(contains_opaque),
+            ConstTerm::Literal(_) | ConstTerm::Param(_) => false,
+            ConstTerm::Opaque => true,
+        }
+    }
 }

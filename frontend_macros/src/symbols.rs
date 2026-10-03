@@ -19,9 +19,8 @@
 //! ```bash
 //! cargo install --locked cargo-expand # this is necessary only once
 //! cd compiler/rustc_span
-//! # The specific version number in CFG_RELEASE doesn't matter.
 //! # The output is large.
-//! CFG_RELEASE="0.0.0" cargo +nightly expand > /tmp/rustc_span.rs
+//! cargo +nightly expand > /tmp/rustc_span.rs
 //! ```
 
 // `indexmap` is built without `std` here, so the default hasher is gone and the third parameter

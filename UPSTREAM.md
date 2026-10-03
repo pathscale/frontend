@@ -6,16 +6,9 @@ commit 4b7e3a76d8df78960dc7c65cad43f5da1dac8ade
        2026-08-30, "Auto merge of #162028"
 ```
 
-The exact commit is what matters here, more than it usually does: this frontend can only read
-crate metadata written by a compiler built from the same source. `.cargo/config.toml` carries the
-version string that pins the match, and `scripts/build-sysroot.sh` builds a library from this
-commit so there is one to read.
-
-Verify the pin rather than trusting this file:
-
-```sh
-grep CFG_VERSION .cargo/config.toml
-```
+This commit identifies the upstream source snapshot used by the frontend. Source parsing does not
+require a sysroot or a matching compiler version. A caller may provide a sysroot when it wants
+paths resolved through compiled library metadata.
 
 ## What was changed
 
@@ -53,14 +46,11 @@ Worth stating explicitly, because it is the interesting part:
 - the trait solver, the type system, and borrow checking, apart from the dumpers and one thing
   put back: `#[rustc_reservation_impl]` (`TyCtxt::impl_is_reservation`). Upstream removed it
   with the impl that used it when `!` was stabilized, but a library read of an older `rust-src`
-  (stable 1.97's core, `impl<T> From<!> for T`) still meets it. It is read as every rustc that
+  (`impl<T> From<!> for T`) still meets it. It is read as every rustc that
   had it read it: no impl outside coherence (both solvers' impl candidates, projection, `const`
   impls), ambiguity inside it, and no overlap with anything. Without it `!: From<!>` is ambiguous,
   so every body converting out of `!` (`Result::into_ok`, alloc's in-place collect) was built with
   an error.
-- the MIR interpreter, `rustc_const_eval::interpret`. `frontend_facts::evaluate` runs calls on it
-  through a `Machine` of its own (`src/frontend_facts/interpreter.rs`, additive), as Miri does;
-  every rule of what a program does stays the interpreter's.
 
 ## Rebasing onto a newer upstream
 
@@ -70,8 +60,8 @@ crate and **let rustc enumerate the breakage** rather than grepping for `std::`.
 what a grep cannot see - `Vec`, `String`, `Box`, `format!`, `vec!`, `println!` name no path, and a
 crate can read as clean and stop compiling the moment the attribute lands.
 
-Whatever you rebase onto, rebuild the sysroot from the same commit and update `CFG_VERSION`
-together with it. They are one decision in two files.
+Update the source snapshot recorded above when rebasing. No sysroot build or version setting is
+needed for parsing.
 
 ## rust-analyzer
 

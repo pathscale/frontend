@@ -325,15 +325,6 @@ pub struct Config {
     /// Called when the parse session exists so a consumer can install its diagnostic sink.
     pub psess_created: Option<Box<dyn FnOnce(&mut ParseSess) + Send>>,
     pub using_internal_features: &'static core::sync::atomic::AtomicBool,
-    /// The rustc version this session claims to be, or `None` for the one compiled in.
-    ///
-    /// Crate metadata carries the string of the compiler that wrote it, and loading an rlib whose
-    /// string differs is E0514 "compiled by an incompatible version of rustc". The compiled-in
-    /// value comes from `CFG_VERSION`, set in `.cargo/config.toml`, which means the sysroot
-    /// this frontend can read is fixed when the binary is built. That is the wrong place for it:
-    /// the sysroot is chosen at run time with `--sysroot`, so the string that has to match it
-    /// belongs beside that choice and not inside the executable.
-    pub rustc_version: Option<alloc::string::String>,
     /// `--cfg` specs, as the command line writes them: `feature="std"`, `tokio_unstable`. A
     /// crate read from source is read under the configuration its build would have given it,
     /// which its manifest's features and its build script decide, not this compiler.
@@ -400,13 +391,9 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
                 },
                 Default::default(),
                 target,
-                match config.rustc_version {
-                    // Leaked because `Session::cfg_version` is `&'static str` and has to outlive
-                    // the session holding it. One leak per compiler run, in a process that runs
-                    // the compiler and then answers the next request with a fresh one.
-                    Some(claimed) => alloc::boxed::Box::leak(claimed.into_boxed_str()),
-                    None => util::rustc_version_str().unwrap_or(util::DEFAULT_CFG_VERSION),
-                },
+                // frontend's own identity, not a rustc version: it is written into the metadata
+                // this build encodes and hashed into crate ids, and nothing compares it.
+                concat!("frontend ", env!("CARGO_PKG_VERSION")),
                 None,
                 config.using_internal_features,
             );

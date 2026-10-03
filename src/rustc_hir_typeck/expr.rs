@@ -1274,13 +1274,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // Can only assign if the type is sized, so if `DerefMut` yields a type that is
                 // unsized, do not suggest dereferencing it.
                 let lhs_deref_ty_is_sized = self
-                    .infcx
-                    .type_implements_trait(
-                        self.tcx.require_lang_item(LangItem::Sized, span),
-                        [lhs_deref_ty],
-                        self.param_env,
-                    )
-                    .may_apply();
+                    .tcx
+                    .lang_items()
+                    .get(LangItem::Sized)
+                    .is_some_and(|sized| {
+                        self.infcx
+                            .type_implements_trait(sized, [lhs_deref_ty], self.param_env)
+                            .may_apply()
+                    });
                 if lhs_deref_ty_is_sized && self.may_coerce(rhs_ty, lhs_deref_ty) {
                     err.span_suggestion_verbose(
                         lhs.span.shrink_to_lo(),

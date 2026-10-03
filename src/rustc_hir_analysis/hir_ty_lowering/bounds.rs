@@ -119,16 +119,18 @@ fn collect_sizedness_bounds<'tcx>(
     tcx: TyCtxt<'tcx>,
     hir_bounds: &[hir::GenericBound<'_>],
     context: ImpliedBoundsContext<'tcx>,
-    span: Span,
+    _span: Span,
 ) -> CollectedSizednessBounds {
-    let sized_did = tcx.require_lang_item(LangItem::Sized, span);
-    let sized = collect_bounds(hir_bounds, context, sized_did);
-
-    let meta_sized_did = tcx.require_lang_item(LangItem::MetaSized, span);
-    let meta_sized = collect_bounds(hir_bounds, context, meta_sized_did);
-
-    let pointee_sized_did = tcx.require_lang_item(LangItem::PointeeSized, span);
-    let pointee_sized = collect_bounds(hir_bounds, context, pointee_sized_did);
+    let collect = |lang_item| {
+        tcx.lang_items()
+            .get(lang_item)
+            .map_or_else(CollectedBound::default, |did| {
+                collect_bounds(hir_bounds, context, did)
+            })
+    };
+    let sized = collect(LangItem::Sized);
+    let meta_sized = collect(LangItem::MetaSized);
+    let pointee_sized = collect(LangItem::PointeeSized);
 
     CollectedSizednessBounds { sized, meta_sized, pointee_sized }
 }
@@ -171,15 +173,15 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             return;
         }
 
-        let meta_sized_did = tcx.require_lang_item(LangItem::MetaSized, span);
-        let pointee_sized_did = tcx.require_lang_item(LangItem::PointeeSized, span);
+        let meta_sized_did = tcx.lang_items().get(LangItem::MetaSized);
+        let pointee_sized_did = tcx.lang_items().get(LangItem::PointeeSized);
 
         // If adding sizedness bounds to a trait, then there are some relevant early exits
         match context {
             ImpliedBoundsContext::TraitDef(trait_did) => {
                 let trait_did = trait_did.to_def_id();
                 // Never add a default supertrait to `PointeeSized`.
-                if trait_did == pointee_sized_did {
+                if pointee_sized_did == Some(trait_did) {
                     return;
                 }
                 // Don't add default sizedness supertraits to auto traits because it isn't possible to
@@ -199,20 +201,25 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         {
             // `?Sized` is equivalent to `MetaSized` (but only add the bound if there aren't any
             // other explicit ones) - this can happen for trait aliases as well as bounds.
-            add_trait_bound(tcx, bounds, self_ty, meta_sized_did, span);
+            if let Some(meta_sized_did) = meta_sized_did {
+                add_trait_bound(tcx, bounds, self_ty, meta_sized_did, span);
+            }
         } else if !collected.any() {
             match context {
                 ImpliedBoundsContext::TraitDef(..) => {
                     // If there are no explicit sizedness bounds on a trait then add a default
                     // `MetaSized` supertrait.
-                    add_trait_bound(tcx, bounds, self_ty, meta_sized_did, span);
+                    if let Some(meta_sized_did) = meta_sized_did {
+                        add_trait_bound(tcx, bounds, self_ty, meta_sized_did, span);
+                    }
                 }
                 ImpliedBoundsContext::TyParam(..)
                 | ImpliedBoundsContext::AssociatedTypeOrImplTrait => {
                     // If there are no explicit sizedness bounds on a parameter then add a default
                     // `Sized` bound.
-                    let sized_did = tcx.require_lang_item(LangItem::Sized, span);
-                    add_trait_bound(tcx, bounds, self_ty, sized_did, span);
+                    if let Some(sized_did) = tcx.lang_items().get(LangItem::Sized) {
+                        add_trait_bound(tcx, bounds, self_ty, sized_did, span);
+                    }
                 }
             }
         }

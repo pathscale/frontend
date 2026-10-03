@@ -18,7 +18,6 @@ use core::hash::Hash;
 use core::num::NonZero;
 use eko::path::{Path, PathBuf};
 use core::str::{self, FromStr};
-use core::{iter};
 
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::stable_hash::{StableHasher, StableOrd};
@@ -42,7 +41,7 @@ pub use crate::rustc_session::config::cfg::{Cfg, CheckCfg, ExpectedValues};
 use crate::rustc_session::diagnostics::FileWriteFail;
 pub use crate::rustc_session::options::*;
 use crate::rustc_session::utils::CanonicalizedPath;
-use crate::rustc_session::{EarlyDiagCtxt, Session, filesearch};
+use crate::rustc_session::{EarlyDiagCtxt, Session};
 
 mod cfg;
 pub mod sigpipe;
@@ -1224,22 +1223,21 @@ impl OutputFilenames {
 #[derive(Clone, Debug)]
 pub struct Sysroot {
     pub explicit: Option<PathBuf>,
-    pub default: PathBuf,
 }
 
 impl Sysroot {
     pub fn new(explicit: Option<PathBuf>) -> Sysroot {
-        Sysroot { explicit, default: filesearch::default_sysroot() }
+        Sysroot { explicit }
     }
 
-    /// Return explicit sysroot if it was passed with `--sysroot`, or default sysroot otherwise.
-    pub fn path(&self) -> &Path {
-        self.explicit.as_deref().unwrap_or(&self.default)
+    /// Return the sysroot passed by the caller, if any.
+    pub fn path(&self) -> Option<&Path> {
+        self.explicit.as_deref()
     }
 
-    /// Returns both explicit sysroot if it was passed with `--sysroot` and the default sysroot.
+    /// Return the sysroot passed by the caller, if any.
     pub fn all_paths(&self) -> impl Iterator<Item = &Path> {
-        self.explicit.as_deref().into_iter().chain(iter::once(&*self.default))
+        self.explicit.as_deref().into_iter()
     }
 }
 
@@ -1531,7 +1529,7 @@ pub fn build_configuration(sess: &Session, mut user_cfg: Cfg) -> Cfg {
 pub fn build_target_config(
     early_dcx: &EarlyDiagCtxt,
     target: &TargetTuple,
-    sysroot: &Path,
+    sysroot: Option<&Path>,
     unstable_options: bool,
 ) -> Target {
     match Target::search(target, sysroot, unstable_options) {

@@ -38,7 +38,7 @@ use rustc_macros::StableHash;
 pub use crate::rustc_span::def_id::StableCrateId;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::source_map::{FilePathMapping, SourceMap};
-use crate::rustc_span::{RealFileName, Span, Symbol};
+use crate::rustc_span::{LocalExpnId, RealFileName, Span, Symbol};
 use crate::rustc_structures::{CrateType, Limit};
 use crate::rustc_target::asm::InlineAsmArch;
 use crate::rustc_target::spec::{
@@ -343,7 +343,7 @@ pub struct Session {
     pub wasm_proc_macro_tuple: TargetTuple,
     pub wasm_proc_macro_target: Target,
     pub opts: config::Options,
-    pub target_tlib_path: SearchPath,
+    pub target_tlib_path: Option<SearchPath>,
     pub psess: ParseSess,
     pub unstable_features: UnstableFeatures,
     pub config: Cfg,
@@ -443,6 +443,10 @@ pub struct Session {
     /// How many times a library read lost part of its input: counted by [`Session::record_loss`]
     /// and read by [`Session::losses`]. Always zero outside a library read.
     lost: AtomicUsize,
+    /// Const definitions whose symbolic term could not be compared exactly.
+    uncomputed_consts: Lock<Vec<String>>,
+    /// Macro expansions whose tokens came from a stored proc-macro schema.
+    schema_transcriber_expansions: Lock<Vec<LocalExpnId>>,
 }
 
 #[derive(Clone, Copy)]
@@ -594,6 +598,42 @@ impl Session {
     /// How many losses [`Session::record_loss`] recorded. Always zero outside a library read.
     pub fn losses(&self) -> usize {
         self.lost.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records a const definition whose expression was opaque or needed arithmetic.
+    pub fn record_uncomputed_const(&self, def_path: String) {
+        let mut consts = self.uncomputed_consts.lock();
+        if !consts.contains(&def_path) {
+            consts.push(def_path);
+        }
+    }
+
+    /// Const definition paths whose symbolic terms were not fully compared.
+    pub fn uncomputed_consts(&self) -> Vec<String> {
+        let mut consts = self.uncomputed_consts.lock().clone();
+        consts.sort();
+        consts
+    }
+
+    /// Mark an expansion produced by the stored proc-macro schema transcriber.
+    pub fn mark_schema_transcriber_expansion(&self, expansion: LocalExpnId) {
+        let mut expansions = self.schema_transcriber_expansions.lock();
+        if !expansions.contains(&expansion) {
+            expansions.push(expansion);
+        }
+    }
+
+    /// Whether an expansion was produced by the stored proc-macro schema transcriber.
+    pub fn is_schema_transcriber_expansion(&self, expansion: LocalExpnId) -> bool {
+        self.schema_transcriber_expansions.lock().contains(&expansion)
+    }
+
+    /// Whether the outer expansion on a span came from the stored proc-macro schema.
+    pub fn is_schema_transcriber_span(&self, span: Span) -> bool {
+        span.ctxt()
+            .outer_expn()
+            .as_local()
+            .is_some_and(|expansion| self.is_schema_transcriber_expansion(expansion))
     }
 
     /// The start of a parser run a library read watches: the session's error count then, or
@@ -1415,10 +1455,17 @@ pub fn build_session(
     let host_triple = config::host_tuple();
     let target_triple = sopts.target_triple.tuple();
     // FIXME use host sysroot?
-    let host_tlib_path = SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), host_triple);
-    let target_tlib_path = SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), target_triple);
-    let wasm_proc_macro_tlib_path =
-        SearchPath::from_sysroot_and_triple(sopts.sysroot.path(), wasm_proc_macro_tuple.tuple());
+    let host_tlib_path = sopts
+        .sysroot
+        .path()
+        .map(|sysroot| SearchPath::from_sysroot_and_triple(sysroot, host_triple));
+    let target_tlib_path = sopts
+        .sysroot
+        .path()
+        .map(|sysroot| SearchPath::from_sysroot_and_triple(sysroot, target_triple));
+    let wasm_proc_macro_tlib_path = sopts.sysroot.path().map(|sysroot| {
+        SearchPath::from_sysroot_and_triple(sysroot, wasm_proc_macro_tuple.tuple())
+    });
 
     let prof = SelfProfilerRef::new(
         sopts.unstable_opts.time_passes.then(|| sopts.unstable_opts.time_passes_format),
@@ -1433,7 +1480,7 @@ pub fn build_session(
     let asm_arch = if target.allow_asm { InlineAsmArch::from_arch(&target.arch) } else { None };
     let target_filesearch = Arc::new(filesearch::FileSearch::new(
         &sopts.search_paths,
-        &target_tlib_path,
+        target_tlib_path.as_ref(),
         &target,
         sopts.unstable_opts.implicit_sysroot_deps,
     ));
@@ -1442,7 +1489,7 @@ pub fn build_session(
     } else {
         Arc::new(filesearch::FileSearch::new(
             &sopts.search_paths,
-            &host_tlib_path,
+            host_tlib_path.as_ref(),
             &host,
             sopts.unstable_opts.implicit_sysroot_deps,
         ))
@@ -1450,7 +1497,7 @@ pub fn build_session(
     let wasm_proc_macro_filesearch = if sopts.unstable_opts.wasm_proc_macros {
         Some(Arc::new(FileSearch::new(
             &sopts.search_paths,
-            &wasm_proc_macro_tlib_path,
+            wasm_proc_macro_tlib_path.as_ref(),
             &wasm_proc_macro_target,
             sopts.unstable_opts.implicit_sysroot_deps,
         )))
@@ -1499,6 +1546,8 @@ pub fn build_session(
         removed_rustc_main_attr: AtomicBool::new(false),
         pointer_auth_config,
         lost: AtomicUsize::new(0),
+        uncomputed_consts: Lock::new(Vec::new()),
+        schema_transcriber_expansions: Lock::new(Vec::new()),
     };
 
     validate_commandline_args_with_session_available(&sess);

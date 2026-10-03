@@ -2256,7 +2256,19 @@ impl<'tcx> TyCtxt<'tcx> {
         let DefKind::Impl { of_trait } = self.def_kind(def_id) else {
             panic!("expected Impl for {def_id:?}");
         };
-        of_trait
+        if !of_trait {
+            return false;
+        }
+        let Some(local_def_id) = def_id.as_local() else {
+            return true;
+        };
+        let Some(of_trait) = self.hir_expect_item(local_def_id).expect_impl().of_trait else {
+            return false;
+        };
+        matches!(
+            of_trait.trait_ref.path.res,
+            Res::Def(DefKind::Trait | DefKind::TraitAlias, _)
+        )
     }
 
     /// If the given `DefId` is an associated item of an impl,

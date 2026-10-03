@@ -566,7 +566,7 @@ fn mir_drops_elaborated_and_const_checked(tcx: TyCtxt<'_>, def: LocalDefId) -> &
         tcx.ensure_done().mir_coroutine_witnesses(def);
     }
 
-    // A library read does not judge a body it evaluates at compile time: the borrow check,
+    // A library read does not judge a body: the borrow check,
     // transmute sizes and well-formedness below only refuse it, so none of their results taints
     // the body, and the last two do not run. The borrow check still runs, before the MIR it
     // reads is stolen below, because it is also what infers an opaque type's hidden type, which
@@ -699,7 +699,6 @@ fn run_runtime_lowering_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         &erase_deref_temps::EraseDerefTemps,
         &elaborate_box_derefs::ElaborateBoxDerefs,
         &coroutine::StateTransform,
-        &Lint(known_panics_lint::KnownPanicsLint),
     ];
     pm::run_passes_no_validate(tcx, body, passes, Some(MirPhase::Runtime(RuntimePhase::Initial)));
 }
@@ -762,8 +761,7 @@ pub(crate) fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'
             &o1(simplify::SimplifyCfg::AfterUnreachableEnumBranching),
             &multiple_return_terminators::MultipleReturnTerminators,
             // After simplifycfg, it allows us to discover new opportunities for peephole
-            // optimizations. This invalidates CFG caches, so avoid putting between
-            // `ReferencePropagation` and `GVN` which both use the dominator tree.
+            // optimizations. This invalidates CFG caches.
             &instsimplify::InstSimplify::AfterSimplifyCfg,
             // After `InstSimplify-after-simplifycfg` with `-Zub_checks=false`, simplify
             // ```
@@ -780,8 +778,6 @@ pub(crate) fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'
             &dead_store_elimination::DeadStoreElimination::Initial,
             &gvn::GVN,
             &simplify::SimplifyLocals::AfterGVN,
-            // This pass does attempt to track assignments.
-            // Keep it close to GVN which merges identical values into the same local.
             &ssa_range_prop::SsaRangePropagation,
             &match_branches::MatchBranchSimplification,
             &dataflow_const_prop::DataflowConstProp,

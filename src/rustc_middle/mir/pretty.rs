@@ -1980,12 +1980,7 @@ fn pretty_print_const_value_tcx<'tcx>(
         }
         // Aggregates, printed as array/tuple/struct/variant construction syntax.
         //
-        // NB: the `has_non_region_param` check ensures that we can use
-        // the `try_destructure_mir_constant_for_user_output ` query with
-        // an empty `TypingEnv::fully_monomorphized` without
-        // introducing ICEs (e.g. via `layout_of`) from missing bounds.
-        // E.g. `transmute([0usize; 2]): (u8, *mut T)` needs to know `T: Sized`
-        // to be able to destructure the tuple into `(0u8, *mut T)`
+        // The optional destructuring hook can decline values whose fields require memory access.
         (_, ty::Array(..) | ty::Tuple(..) | ty::Adt(..)) if !ty.has_non_region_param() => {
             if let Some(contents) = tcx.try_destructure_mir_constant_for_user_output(ct, ty) {
                 let fields: Vec<(ConstValue, Ty<'_>)> = contents.fields.to_vec();

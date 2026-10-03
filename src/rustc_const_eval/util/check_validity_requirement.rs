@@ -3,7 +3,6 @@
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
 // `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
-use crate::rustc_middle::mir::interpret::InterpResultExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -14,26 +13,11 @@ use crate::rustc_abi::{BackendRepr, FieldsShape, Scalar, Variants};
 use crate::rustc_middle::ty::layout::{
     HasTyCtxt, LayoutCx, LayoutError, LayoutOf, TyAndLayout, ValidityRequirement,
 };
-use crate::rustc_middle::ty::print::with_no_trimmed_paths;
 use crate::rustc_middle::ty::{PseudoCanonicalInput, ScalarInt, Ty, TyCtxt};
-use crate::rustc_middle::{bug, ty};
-use crate::rustc_span::DUMMY_SP;
+use crate::rustc_middle::bug;
 
-use crate::rustc_const_eval::const_eval::{CanAccessMutGlobal, CheckAlignment, CompileTimeMachine};
-use crate::rustc_const_eval::interpret::{InterpCx, MemoryKind};
-
-/// Determines if this type permits "raw" initialization by just transmuting some memory into an
-/// instance of `T`.
-///
-/// `init_kind` indicates if the memory is zero-initialized or left uninitialized. We assume
-/// uninitialized memory is mitigated by filling it with 0x01, which reduces the chance of causing
-/// LLVM UB.
-///
-/// By default we check whether that operation would cause *LLVM UB*, i.e., whether the LLVM IR we
-/// generate has UB or not. This is a mitigation strategy, which is why we are okay with accepting
-/// Rust UB as long as there is no risk of miscompilations. The `strict_init_checks` can be set to
-/// do a full check against Rust UB instead (in which case we will also ignore the 0x01-filling and
-/// to the full uninit check).
+/// Determines whether the layout permits raw initialization by transmuting memory into `T`.
+/// `init_kind` specifies whether the memory is zero-initialized or filled with `0x01`.
 pub fn check_validity_requirement<'tcx>(
     tcx: TyCtxt<'tcx>,
     kind: ValidityRequirement,
@@ -46,56 +30,12 @@ pub fn check_validity_requirement<'tcx>(
         return Ok(!layout.is_uninhabited());
     }
 
+    if kind == ValidityRequirement::Uninit {
+        return Ok(false);
+    }
+
     let layout_cx = LayoutCx::new(tcx, input.typing_env);
-    if kind == ValidityRequirement::Uninit || tcx.sess.opts.unstable_opts.strict_init_checks {
-        Ok(check_validity_requirement_strict(layout, &layout_cx, kind))
-    } else {
-        check_validity_requirement_lax(layout, &layout_cx, kind)
-    }
-}
-
-/// Implements the 'strict' version of the [`check_validity_requirement`] checks; see that function
-/// for details.
-fn check_validity_requirement_strict<'tcx>(
-    ty: TyAndLayout<'tcx>,
-    cx: &LayoutCx<'tcx>,
-    kind: ValidityRequirement,
-) -> bool {
-    let machine = CompileTimeMachine::new(CanAccessMutGlobal::No, CheckAlignment::Error);
-
-    let mut cx = InterpCx::new(cx.tcx(), DUMMY_SP, cx.typing_env, machine);
-
-    // It doesn't really matter which `MemoryKind` we use here, `Stack` is the least wrong.
-    let allocated =
-        cx.allocate(ty, MemoryKind::Stack).expect("OOM: failed to allocate for uninit check");
-
-    if kind == ValidityRequirement::Zero {
-        cx.write_bytes_ptr(
-            allocated.ptr(),
-            core::iter::repeat_n(0_u8, ty.layout.size().bytes_usize()),
-        )
-        .expect("failed to write bytes for zero valid check");
-    }
-
-    // Assume that if it failed, it's a validation failure.
-    // This does *not* actually check that references are dereferenceable, but since all types that
-    // require dereferenceability also require non-null, we don't actually get any false negatives
-    // due to this.
-    // The value we are validating is temporary and discarded at the end of this function, so
-    // there is no point in resetting provenance and padding.
-    // This is pretty inefficient: we do the full path tracking and even format an error message
-    // in case there is a problem, only to entirely throw that away again. For a nightly-only
-    // option this is fine, but if this is ever meant to be stable we should probably add
-    // a "fast mode" to validation.
-    with_no_trimmed_paths!(
-        cx.validate_place(
-            &allocated.into(),
-            /*recursive*/ false,
-            /*reset_provenance_and_padding*/ false,
-        )
-        .discard_err()
-        .is_some()
-    )
+    check_validity_requirement_lax(layout, &layout_cx, kind)
 }
 
 /// Implements the 'lax' (default) version of the [`check_validity_requirement`] checks; see that
@@ -193,30 +133,9 @@ fn check_validity_requirement_lax<'tcx>(
 }
 
 pub(crate) fn validate_scalar_in_layout<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    scalar: ScalarInt,
-    ty: Ty<'tcx>,
+    _tcx: TyCtxt<'tcx>,
+    _scalar: ScalarInt,
+    _ty: Ty<'tcx>,
 ) -> bool {
-    let machine = CompileTimeMachine::new(CanAccessMutGlobal::No, CheckAlignment::Error);
-
-    let typing_env = ty::TypingEnv::fully_monomorphized();
-    let mut cx = InterpCx::new(tcx, DUMMY_SP, typing_env, machine);
-
-    let Ok(layout) = cx.layout_of(ty) else {
-        bug!("could not compute layout of {scalar:?}:{ty:?}")
-    };
-
-    // It doesn't really matter which `MemoryKind` we use here, `Stack` is the least wrong.
-    let allocated =
-        cx.allocate(layout, MemoryKind::Stack).expect("OOM: failed to allocate for uninit check");
-
-    cx.write_scalar(scalar, &allocated).unwrap();
-
-    cx.validate_place(
-        &allocated.into(),
-        /*recursive*/ false,
-        /*reset_provenance_and_padding*/ false,
-    )
-    .discard_err()
-    .is_some()
+    false
 }

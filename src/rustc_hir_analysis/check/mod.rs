@@ -172,51 +172,6 @@ fn get_owner_return_paths(
     })
 }
 
-pub(super) fn maybe_check_static_with_link_section(tcx: TyCtxt<'_>, id: LocalDefId) {
-    // Only restricted on wasm target for now
-    if !tcx.sess.target.is_like_wasm {
-        return;
-    }
-
-    // If `#[link_section]` is missing, then nothing to verify
-    let Some(link_section) = tcx.codegen_fn_attrs(id).link_section else {
-        return;
-    };
-
-    // For the wasm32 target statics with `#[link_section]` other than `.init_array`
-    // are placed into custom sections of the final output file, but this isn't like
-    // custom sections of other executable formats. Namely we can only embed a list
-    // of bytes, nothing with provenance (pointers to anything else). If any
-    // provenance show up, reject it here.
-    // `#[link_section]` may contain arbitrary, or even undefined bytes, but it is
-    // the consumer's responsibility to ensure all bytes that have been read
-    // have defined values.
-    //
-    // The `.init_array` section is left to go through the normal custom section code path.
-    // When dealing with `.init_array` wasm-ld currently has several limitations. This manifests
-    // in workarounds in user-code.
-    //
-    //   * The linker fails to merge multiple items in a crate into the .init_array section.
-    //     To work around this, a single array can be used placing multiple items in the array.
-    //     #[link_section = ".init_array"]
-    //     static FOO: [unsafe extern "C" fn(); 2] = [ctor, ctor];
-    //   * Even symbols marked used get gc'd from dependant crates unless at least one symbol
-    //     in the crate is marked with an `#[export_name]`
-    //
-    //  Once `.init_array` support in wasm-ld is complete, the user code workarounds should
-    //  continue to work, but would no longer be necessary.
-
-    if let Ok(alloc) = tcx.eval_static_initializer(id.to_def_id())
-        && !alloc.inner().provenance().ptrs().is_empty()
-        && !link_section.as_str().starts_with(".init_array")
-    {
-        let msg = "statics with a custom `#[link_section]` must be a \
-                        simple list of bytes on the wasm target with no \
-                        extra levels of indirection such as references";
-        tcx.dcx().span_err(tcx.def_span(id), msg);
-    }
-}
-
 fn impl_suggestion_span(tcx: TyCtxt<'_>, impl_def_id: LocalDefId) -> Span {
     let full_impl_span = tcx.hir_span_with_body(tcx.local_def_id_to_hir_id(impl_def_id));
     if let Ok(snippet) = tcx.sess.source_map().span_to_snippet(full_impl_span)

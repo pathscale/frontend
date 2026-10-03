@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use {alloc::string::ToString, alloc::vec::Vec};
 use alloc::borrow::Borrow;
+use alloc::boxed::Box;
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::ops::Deref;
@@ -26,6 +27,44 @@ use crate::rustc_type_ir::{
     self as ty, BoundRegion, BoundVar, CanonicalParamEnvCache, DebruijnIndex, Region, RegionKind,
     TraitRef, search_graph,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstTermBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    And,
+    Or,
+    BitXor,
+    BitAnd,
+    BitOr,
+    Shl,
+    Shr,
+    Eq,
+    Lt,
+    Le,
+    Ne,
+    Ge,
+    Gt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstTermUnOp {
+    Deref,
+    Not,
+    Neg,
+}
+
+pub enum ConstTerm<I: Interner> {
+    Literal(I::Const),
+    Param(I::ParamConst),
+    Binary(ConstTermBinOp, Box<Self>, Box<Self>),
+    Unary(ConstTermUnOp, Box<Self>),
+    Call(I::DefId, Vec<Self>),
+    Opaque,
+}
 
 /// The central trait in the shared abstraction layer, specifying all implementation-specific
 /// details for rustc and rust-analyzer.
@@ -270,6 +309,8 @@ pub trait Interner:
     fn is_type_const(self, def_id: Self::DefId) -> bool;
     fn const_of_item(self, def_id: Self::DefId) -> ty::EarlyBinder<Self, Self::Const>;
     fn anon_const_kind(self, def_id: Self::DefId) -> ty::AnonConstKind;
+    fn const_term(self, def_id: Self::DefId) -> Option<ConstTerm<Self>>;
+    fn record_uncomputed_const(self, def_id: Self::DefId);
 
     fn def_span(self, def_id: Self::DefId) -> Self::Span;
 

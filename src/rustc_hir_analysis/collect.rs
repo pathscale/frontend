@@ -35,7 +35,7 @@ use crate::rustc_data_structures::thin_vec::{ThinVec, thin_vec};
 use crate::rustc_errors::{
     Applicability, Diag, DiagCtxtHandle, Diagnostic, E0228, ErrorGuaranteed, Level, StashKey,
 };
-use crate::rustc_hir::def::DefKind;
+use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::intravisit::{InferKind, Visitor, VisitorExt};
 use crate::rustc_hir::{self as hir, GenericParamKind, HirId, Node, PreciseCapturingArgKind, find_attr};
@@ -1550,7 +1550,8 @@ pub fn suggest_impl_trait<'tcx>(
 }
 
 fn impl_is_fully_generic_for_reflection(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
-    tcx.impl_trait_header(def_id).is_fully_generic_for_reflection()
+    tcx.impl_is_of_trait(def_id)
+        && tcx.impl_trait_header(def_id).is_fully_generic_for_reflection()
         && tcx.explicit_clauses_of(def_id).is_fully_generic_for_reflection()
 }
 
@@ -1565,7 +1566,18 @@ fn impl_trait_header(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::ImplTraitHeader
 
     check_impl_constness(tcx, impl_.constness, &of_trait.trait_ref);
 
-    let trait_ref = icx.lowerer().lower_impl_trait_ref(&of_trait.trait_ref, selfty);
+    let trait_ref = icx
+        .lowerer()
+        .lower_impl_trait_ref(&of_trait.trait_ref, selfty)
+        .unwrap_or_else(|| {
+            // The resolver already reports the bad path. Keep the required header query readable
+            // with an error-typed sentinel; impl_opt_trait_ref hides this impl from trait queries.
+            let guar = tcx.dcx().span_err(
+                of_trait.trait_ref.path.span,
+                "the trait in this impl did not resolve",
+            );
+            ty::TraitRef::new(tcx, def_id.to_def_id(), [Ty::new_error(tcx, guar)])
+        });
 
     ty::ImplTraitHeader {
         trait_ref: ty::EarlyBinder::bind(tcx, trait_ref),
@@ -1584,7 +1596,10 @@ fn check_impl_constness(
         return;
     }
 
-    let Some(trait_def_id) = hir_trait_ref.trait_def_id() else { return };
+    let trait_def_id = match hir_trait_ref.path.res {
+        Res::Def(DefKind::Trait | DefKind::TraitAlias, trait_def_id) => trait_def_id,
+        _ => return,
+    };
     if tcx.is_const_trait(trait_def_id) {
         return;
     }

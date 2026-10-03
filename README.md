@@ -56,11 +56,8 @@ rustc_interface = { git = "...", rev = "..." }
 rustc_middle    = { git = "...", rev = "..." }
 ```
 
-Upstream's build wants a set of `CFG_*` variables that only bootstrap sets, and upstream's
-`rustc_macros` refuses outright to compile without `RUSTC_BOOTSTRAP`. Both would have made every
-consumer discover, through a build-script panic in a crate they never named, that they were
-supposed to know a variable name. So the defaults live in this repository instead - in three build
-scripts and one proc macro - and every one of them still yields to a value you set yourself.
+Source parsing needs no sysroot, compiler version, or release channel. A caller may provide a
+sysroot when it wants paths resolved through compiled library metadata.
 
 The `.cargo/config.toml` here configures *this* workspace's own build. Cargo does not apply it to
 dependents, and dependents do not need it.
@@ -188,97 +185,11 @@ that is not selected does not run. Nothing else in the crate calls into it. Like
 it needs a panic catcher installed through `unwind_janky::install_catcher`. Provenance is in
 [UPSTREAM.md](UPSTREAM.md).
 
-## Running a call: `evaluate`
+## Optional sysroot
 
-`frontend_facts::evaluate(source, edition, loaded, call, budget)` compiles `source` as rustc
-does, then runs the Rust expression `call` over its items through rustc's own MIR interpreter
-(`rustc_const_eval::interpret`, the engine under CTFE and Miri) and returns an `Evaluation`: the
-value as its `{:?}` prints it with its type and step count, a panic with its message, a refusal
-with its reason, or an exhausted budget. It exists so that a number a caller reports is what a
-function returned when it ran, and there is one implementation of Rust's semantics to get it
-from: rustc's. Nothing here re-implements any of it.
-
-What is decided here is only the machine's policy (`src/frontend_facts/interpreter.rs`):
-
-- **Addresses are real**, as in Miri: every allocation has an absolute address, so library code
-  that reads a pointer's bits (`fmt::Arguments::as_str`, `align_offset`) runs. CTFE's machine
-  keeps pointers relative and refuses those reads.
-- **Heap allocation is served** from the interpreter's memory (`__rust_alloc` and friends).
-- **Printing is served, as output.** `write` to descriptors 1 and 2 keeps the bytes in the machine
-  (a program's printing is its output, not an effect on the world), with what std's stdout path
-  reaches on the way: macOS's `pthread_mutex*`, one thread's bookkeeping. Every other descriptor,
-  file and socket stays refused by name.
-- **One thread, with its thread-locals**, as Miri gives them: a `#[thread_local]` static is a
-  copy of its initializer made when the run first reaches it. A destructor registered for one
-  never runs (the thread does not exit during a run).
-- **Random bytes are a fixed stream** (splitmix64 from seed 0): `CCRandomGenerateBytes` on macOS,
-  `syscall(SYS_getrandom)` on Linux, where the weak `getrandom` symbol reads as absent. A
-  `HashMap`'s keys come from here, and determinism is the point: a verifier run must reproduce.
-- Every other foreign function, every syscall, file and network access is refused by name.
-- **A value is rendered by its type's own `Debug`**, run on the same interpreter after the call
-  returns (`{:?}` through `core::fmt`, written into a sink the machine keeps), so there is no
-  second implementation of `Debug`. Only a `no_core` source, which has no `Debug`, is read by
-  layout, for its primitive shapes.
-- **Nothing unwinds out of `evaluate`.** A compiler bug, or an error rustc reports while the call
-  runs (a constant that fails, a library body read with an error), comes back as a refusal that
-  names it and carries what rustc said.
-- **A debug build**: overflow checks on, so `200u8 + 100` is a panic. A panic stops the run and its
-  message is formatted by the library's own `alloc::fmt::format` on the same interpreter.
-- **Library functions run from their MIR**, so the crates a call reaches must be read with
-  `CrateRead::all_mir` (rustc's `-Zalways-encode-mir`, how Miri's sysroot is built): rustc writes
-  only generic and inline functions' MIR by default. A function without MIR is refused by name.
-
-## Only if you deliberately name a sysroot
-
-You almost certainly do not need this section; see "Read this first" above. It applies only
-when a caller names a sysroot on purpose so paths resolve into a compiled library.
-
-**A matching vintage is mandatory, and no published nightly can supply one.** The sysroot has to
-have been built from the exact upstream commit in [UPSTREAM.md](UPSTREAM.md). That pin sits
-*between two nightlies*, so both directions fail, and no failure says "wrong sysroot":
-
-| sysroot relative to this fork | what you get |
-| --- | --- |
-| older | an assertion inside `rustc_serialize`, which reads as a corrupt file |
-| newer | an `ExplicitBug` in `rustc_hir_typeck`, usually "expected associated item for operator trait" |
-| any other commit, version check silenced | a bare `error[E0463]: can't find crate for `std`` |
-
-The version string is the smaller half of this. The larger half is that crate metadata encodes
-every preinterned symbol as a bare index into the `symbols!` list in `rustc_span::symbol`
-(`SYMBOL_PREDEFINED`). Upstream adds and removes entries in that list continuously, and an index
-written by one commit means a different string under another. When the crate name recorded in
-`libstd`'s metadata decodes to the wrong symbol, `crate_matches` rejects the file without
-recording a rejection, so the diagnostic is a bare `E0463` with no note about versions at all.
-Crates whose names sit before the first divergence still load, so the failure is partial: `core`
-and `alloc` can come up while `std`, `test` and `unwind` do not.
-
-`rustc_version_of_sysroot` therefore does **not** make a published nightly usable. It silences the
-version check and leaves the symbol table wrong, turning an `E0514` that names the problem into an
-`E0463` that names nothing. Enable the `force_pinned_sysroot` cargo feature to keep the
-compiled-in `CFG_VERSION` and refuse any other vintage.
-
-So the library has to be built from the same upstream commit:
-
-```sh
-./scripts/build-sysroot.sh
-```
-
-It clones nothing you have not already got and takes about twenty seconds once the upstream
-checkout is present. Read the script before running it; it says what it needs and why.
-
-`CFG_VERSION` in `.cargo/config.toml` is the string that has to match, and the script prints the
-one your sysroot actually carries and tells you whether they agree.
-
-If you build that sysroot somewhere the compiled-in default does not describe, you can read the
-string out of it instead of writing it down twice:
-
-```rust
-config.rustc_version = rustc_interface::util::rustc_version_of_sysroot(&sysroot);
-```
-
-That is for a sysroot built from the pinned commit under a different `CFG_VERSION`. It is not a
-way to accept a sysroot from a different commit: see above, the version string is not the thing
-that has to match.
+Parsing source and producing syntax-level diagnostics require no sysroot. A caller may provide
+one when it wants paths resolved through compiled library metadata. The frontend does not query
+the sysroot for a rustc version or require a matching version setting.
 
 ## Deliberate differences from upstream
 

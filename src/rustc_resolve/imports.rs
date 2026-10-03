@@ -29,6 +29,7 @@ use crate::rustc_middle::metadata::{AmbigModChild, ModChild, Reexport};
 use crate::span_bug;
 use crate::rustc_middle::ty::Visibility;
 use crate::rustc_session::diagnostics::feature_err;
+use crate::rustc_session::config::Input;
 use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::hygiene::LocalExpnId;
 use crate::rustc_span::{Ident, Span, Symbol, kw, sym};
@@ -1006,7 +1007,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             }
         }
 
-        if self.cstore().had_extern_crate_load_failure() {
+        if self.cstore().had_extern_crate_load_failure()
+            && matches!(&self.tcx.sess.io.input, Input::File(_))
+        {
             self.tcx.sess.dcx().abort_if_errors();
         }
 

@@ -3,6 +3,7 @@
 //! why we call this module `mbe`. For external documentation, prefer the
 //! official terminology: "declarative macros".
 
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 pub(crate) mod diagnostics;
 pub(crate) mod macro_rules;
@@ -14,10 +15,20 @@ mod quoted;
 mod transcribe;
 
 use metavar_expr::MetaVarExpr;
-use crate::rustc_ast::token::{Delimiter, NonterminalKind, Token, TokenKind};
-use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan};
+use crate::rustc_ast::token::{Delimiter, InvisibleOrigin, NonterminalKind, Token, TokenKind};
+use crate::rustc_ast::tokenstream::{
+    DelimSpacing, DelimSpan, Spacing, TokenStream as AstTokenStream,
+    TokenTree as AstTokenTree,
+};
+use crate::rustc_data_structures::fx::FxHashMap;
+use crate::rustc_errors::ErrorGuaranteed;
+use crate::rustc_feature::Features;
+use crate::rustc_parse::parser::ParseNtResult;
+use crate::rustc_session::Session;
 use rustc_macros::{Decodable, Encodable};
-use crate::rustc_span::{Ident, Span};
+use crate::rustc_span::edition::Edition;
+use crate::rustc_span::hygiene::{LocalExpnId, Transparency};
+use crate::rustc_span::{Ident, MacroRulesNormalizedIdent, Span};
 
 /// Contains the sub-token-trees of a "delimited" token tree such as `(a b c)`.
 /// The delimiters are not represented explicitly in the `tts` vector.
@@ -88,6 +99,120 @@ pub(crate) enum TokenTree {
     },
     /// A meta-variable expression inside `${...}`.
     MetaVarExpr(DelimSpan, MetaVarExpr),
+}
+
+pub(crate) struct SchemaBinding {
+    pub name: String,
+    pub values: Vec<AstTokenStream>,
+    pub repeated: bool,
+}
+
+fn schema_metavar(stream: AstTokenStream, span: Span) -> ParseNtResult {
+    ParseNtResult::Tt(AstTokenTree::Delimited(
+        DelimSpan::from_single(span),
+        DelimSpacing::new(Spacing::Alone, Spacing::Alone),
+        Delimiter::Invisible(InvisibleOrigin::ProcMacro),
+        stream,
+    ))
+}
+
+fn bind_schema_metavariables(
+    trees: &[TokenTree],
+    sequence_depth: usize,
+    bindings: &[SchemaBinding],
+    interp: &mut FxHashMap<MacroRulesNormalizedIdent, macro_parser::NamedMatch>,
+    seen: &mut Vec<String>,
+) -> Option<usize> {
+    let mut count = 0usize;
+    for tree in trees {
+        match tree {
+            TokenTree::MetaVar(_, ident) => {
+                let name = ident.name.as_str();
+                let binding = bindings.iter().find(|binding| binding.name == name)?;
+                if binding.repeated != (sequence_depth != 0) {
+                    return None;
+                }
+                let value = if sequence_depth != 0 {
+                    macro_parser::MatchedSeq(
+                        binding
+                            .values
+                            .iter()
+                            .cloned()
+                            .map(|stream| macro_parser::MatchedSingle(schema_metavar(stream, ident.span)))
+                            .collect(),
+                    )
+                } else {
+                    let [stream] = binding.values.as_slice() else { return None };
+                    macro_parser::MatchedSingle(schema_metavar(stream.clone(), ident.span))
+                };
+                let normalized = MacroRulesNormalizedIdent::new(*ident);
+                if !seen.iter().any(|seen| seen == name) {
+                    interp.insert(normalized, value);
+                    seen.push(name.to_string());
+                }
+                count += 1;
+            }
+            TokenTree::Delimited(_, _, delimited) => {
+                count += bind_schema_metavariables(
+                    &delimited.tts,
+                    sequence_depth,
+                    bindings,
+                    interp,
+                    seen,
+                )?;
+            }
+            TokenTree::Sequence(_, sequence) => {
+                if sequence_depth != 0 {
+                    return None;
+                }
+                let sequence_count = bind_schema_metavariables(
+                    &sequence.tts,
+                    sequence_depth + 1,
+                    bindings,
+                    interp,
+                    seen,
+                )?;
+                if sequence_count == 0 {
+                    return None;
+                }
+                count += sequence_count;
+            }
+            TokenTree::Token(_) | TokenTree::MetaVarDecl { .. } | TokenTree::MetaVarExpr(..) => {}
+        }
+    }
+    Some(count)
+}
+
+pub(crate) fn transcribe_schema(
+    sess: &Session,
+    rhs: AstTokenStream,
+    bindings: &[SchemaBinding],
+    features: &Features,
+    edition: Edition,
+    span: Span,
+    transparency: Transparency,
+    expansion: LocalExpnId,
+) -> Result<Option<AstTokenStream>, ErrorGuaranteed> {
+    let rhs_trees = quoted::parse_body(&rhs, sess, features, edition);
+    let rhs = Delimited { delim: Delimiter::Brace, tts: rhs_trees };
+    let mut interp = FxHashMap::default();
+    let mut seen = Vec::new();
+    if bind_schema_metavariables(&rhs.tts, 0, bindings, &mut interp, &mut seen).is_none()
+        || bindings.iter().any(|binding| !seen.iter().any(|seen| seen == &binding.name))
+    {
+        return Ok(None);
+    }
+
+    transcribe::transcribe(
+        &sess.psess,
+        &interp,
+        &rhs,
+        DelimSpan::from_single(span),
+        transparency,
+        expansion,
+    )
+    .map(Some)
+    .map_err(|error| error.emit())
 }
 
 impl TokenTree {

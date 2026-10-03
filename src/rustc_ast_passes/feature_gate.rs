@@ -619,10 +619,10 @@ fn maybe_stage_features(sess: &Session, features: &Features, krate: &ast::Crate)
     if let Some(Attribute::Parsed(AttributeKind::Feature(feature_idents, first_span))) =
         AttributeParser::parse_limited_sym(sess, &krate.attrs, &[sym::feature])
     {
-        // `feature(...)` used on non-nightly. This is definitely an error.
+        // `feature(...)` was used while unstable features are disabled.
         let mut err = diagnostics::FeatureOnNonNightly {
             span: first_span,
-            channel: option_env!("CFG_RELEASE_CHANNEL").unwrap_or("(unknown)"),
+            channel: "(unknown)",
             stable_features: vec![],
             sugg: None,
         };

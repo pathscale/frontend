@@ -17,7 +17,7 @@ use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use crate::rustc_hir::def::{CtorKind, DefKind};
+use crate::rustc_hir::def::{CtorKind, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_span::{DUMMY_SP, Span, Symbol};
 use crate::rustc_type_ir::lang_items::{SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem};
@@ -202,6 +202,38 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
     }
     fn anon_const_kind(self, def_id: DefId) -> ty::AnonConstKind {
         self.anon_const_kind(def_id)
+    }
+
+    fn const_term(self, def_id: DefId) -> Option<crate::rustc_type_ir::ConstTerm<Self>> {
+        Some(super::const_term::read_const_term(self, def_id))
+    }
+
+    fn record_uncomputed_const(self, def_id: DefId) {
+        let named_const = def_id.as_local().and_then(|local| {
+            let hir::Node::AnonConst(constant) = self.hir_node_by_def_id(local) else {
+                return None;
+            };
+            let mut expr = self.hir_body(constant.body).value.peel_drop_temps();
+            loop {
+                match expr.kind {
+                    hir::ExprKind::Block(block, _) if block.stmts.is_empty() => {
+                        let Some(tail) = block.expr else {
+                            break;
+                        };
+                        expr = tail.peel_drop_temps();
+                    }
+                    _ => break,
+                }
+            }
+            let hir::ExprKind::Path(hir::QPath::Resolved(_, path)) = expr.kind else {
+                return None;
+            };
+            let Res::Def(DefKind::Const { .. } | DefKind::AssocConst { .. }, named) = path.res else {
+                return None;
+            };
+            Some(named)
+        });
+        self.sess.record_uncomputed_const(self.def_path_str(named_const.unwrap_or(def_id)));
     }
 
     fn def_span(self, def_id: DefId) -> Span {

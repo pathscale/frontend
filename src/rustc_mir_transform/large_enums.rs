@@ -9,9 +9,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::{HasDataLayout, Size, TagEncoding, Variants};
-use crate::rustc_const_eval::interpret::{Scalar, alloc_range};
 use crate::rustc_data_structures::fx::FxHashMap;
-use crate::rustc_middle::mir::interpret::AllocId;
+use crate::rustc_middle::mir::interpret::{AllocId, Scalar, alloc_range};
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::util::IntTypeExt;
 use crate::rustc_middle::ty::{self, AdtDef, Ty, TyCtxt};

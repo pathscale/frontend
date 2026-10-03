@@ -10,9 +10,8 @@ use crate::rustc_attr_parsing::context::AcceptContext;
 use crate::rustc_attr_parsing::diagnostics::LimitInvalid;
 use crate::rustc_attr_parsing::parser::{ArgParser, NameValueParser};
 
-/// Parse a rustc version number written inside string literal in an attribute,
-/// like appears in `since = "1.0.0"`. Suffixes like "-dev" and "-nightly" are
-/// not accepted in this position, unlike when parsing `CFG_RELEASE`.
+/// Parse a rustc version number written inside a string literal in an attribute,
+/// such as `since = "1.0.0"`. Suffixes like "-dev" and "-nightly" are not accepted.
 pub fn parse_version(s: Symbol) -> Option<RustcVersion> {
     let mut components = s.as_str().split('-');
     let d = components.next()?;

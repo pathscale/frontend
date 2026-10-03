@@ -11,6 +11,27 @@ use crate::rustc_session::diagnostics::feature_err;
 use super::prelude::*;
 use crate::rustc_attr_parsing::diagnostics;
 
+pub const REPR_OPTIONS: &[Symbol] = &[
+    sym::align,
+    sym::packed,
+    sym::Rust,
+    sym::C,
+    sym::simd,
+    sym::transparent,
+    sym::i8,
+    sym::u8,
+    sym::i16,
+    sym::u16,
+    sym::i32,
+    sym::u32,
+    sym::i64,
+    sym::u64,
+    sym::i128,
+    sym::u128,
+    sym::isize,
+    sym::usize,
+];
+
 /// Parse #[repr(...)] forms.
 ///
 /// Valid repr contents:
@@ -187,26 +208,7 @@ fn parse_repr(cx: &mut AcceptContext<'_, '_>, param: &MetaItemParser) -> Option<
         _ => {
             cx.adcx().expected_specific_argument(
                 param.span(),
-                &[
-                    sym::align,
-                    sym::packed,
-                    sym::Rust,
-                    sym::C,
-                    sym::simd,
-                    sym::transparent,
-                    sym::i8,
-                    sym::u8,
-                    sym::i16,
-                    sym::u16,
-                    sym::i32,
-                    sym::u32,
-                    sym::i64,
-                    sym::u64,
-                    sym::i128,
-                    sym::u128,
-                    sym::isize,
-                    sym::usize,
-                ],
+                REPR_OPTIONS,
             );
             None
         }

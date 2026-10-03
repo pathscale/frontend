@@ -7,10 +7,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-// `attr/version.rs` reads `RUSTC_OVERRIDE_VERSION_STRING` from the environment and caches
-// it in a `OnceLock`. A test hook, and environmental input rather than computation - it
-// goes when the version is passed in rather than read.
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //

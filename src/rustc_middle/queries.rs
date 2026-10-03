@@ -1403,7 +1403,7 @@ rustc_queries! {
     }
 
     /// Converts a type-level constant value into a MIR constant value.
-    query valtree_to_const_val(key: ty::Value<'tcx>) -> mir::ConstValue {
+    query valtree_to_const_val(key: ty::Value<'tcx>) -> EvalToConstValueResult<'tcx> {
         desc { "converting type-level constant value to MIR constant value"}
     }
 
