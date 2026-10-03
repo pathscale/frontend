@@ -887,8 +887,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             }
                             fragment
                         }
-                        Err(guar) => {
-                            return ExpandResult::Ready(self.lost(fragment_kind, span, guar));
+                        Err(_) => {
+                            self.cx.sess.record_loss();
+                            fragment_kind.expect_from_annotatables(iter::once(item))
                         }
                     }
                 } else if let SyntaxExtensionKind::LegacyAttr(expander) = ext {

@@ -1,0 +1,12 @@
+/// Return the byte index just past the closing quote of a string body that starts at the given index and skip the character after each backslash
+/// >>> quoted_end("\"hi\"", 1)
+/// 4
+/// >>> quoted_end("\"a\\\"b\"", 1)
+/// 6
+/// >>> quoted_end("\"hi", 1)
+/// 3
+/// >>> quoted_end("\"é\"", 1)
+/// 4
+fn quoted_end(src: &str, mut i: usize) -> usize {
+    let mut just = false ; for (byte , the) in src [i ..] . char_indices () { let byte = i + byte ; if just { just = false ; } else if the == '\\' { just = true ; } else if the == '"' { return byte + the . len_utf8 () ; } } src . len ()
+}

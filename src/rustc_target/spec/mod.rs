@@ -12,8 +12,10 @@
 //! Invoking "rustc --target=${TUPLE}" will result in rustc initiating the [`Target::search`] by
 //! - checking if "$TUPLE" is a complete path to a json (ending with ".json") and loading if so
 //! - checking builtin targets for "${TUPLE}"
-//! - checking directories in "${RUST_TARGET_PATH}" for "${TUPLE}.json"
-//! - checking for "${RUSTC_SYSROOT}/lib/rustlib/${TUPLE}/target.json"
+//! - when a sysroot was supplied, checking directories in
+//!   "${RUST_TARGET_PATH}" for "${TUPLE}.json"
+//! - when a sysroot was supplied, checking that sysroot for
+//!   "${TUPLE}/target.json"
 //!
 //! Code will then be compiled using the first discovered target spec.
 //!
@@ -2480,16 +2482,15 @@ impl Target {
 
     /// Search for a JSON file specifying the given target tuple.
     ///
-    /// If none is found in `$RUST_TARGET_PATH`, look for a file called `target.json` inside the
-    /// sysroot under the target-tuple's `rustlib` directory. Note that it could also just be a
-    /// bare filename already, so also check for that. If one of the hardcoded targets we know
-    /// about, just return it directly.
+    /// A caller-supplied sysroot enables lookup in `$RUST_TARGET_PATH` and in that sysroot.
+    /// Without one, tuple lookup uses built-in targets only and does not inspect the environment
+    /// or filesystem.
     ///
     /// The error string could come from any of the APIs called, including filesystem access and
     /// JSON decoding.
     pub fn search(
         target_tuple: &TargetTuple,
-        sysroot: &Path,
+        sysroot: Option<&Path>,
         unstable_options: bool,
     ) -> Result<(Target, TargetWarnings), String> {
         use eko::file;
@@ -2514,33 +2515,33 @@ impl Target {
                     return Ok((t, TargetWarnings::empty()));
                 }
 
-                // search for a file named `target_tuple`.json in RUST_TARGET_PATH
-                let path = {
-                    let mut target = target_tuple.to_string();
-                    target.push_str(".json");
-                    PathBuf::from(target)
-                };
+                if let Some(sysroot) = sysroot {
+                    // Search paths and sysroot target specs only when the caller named a sysroot.
+                    let path = {
+                        let mut target = target_tuple.to_string();
+                        target.push_str(".json");
+                        PathBuf::from(target)
+                    };
 
-                let target_path =
-                    eko::env::var_os("RUST_TARGET_PATH").unwrap_or_default();
+                    let target_path = eko::env::var_os("RUST_TARGET_PATH").unwrap_or_default();
 
-                for dir in eko::env::split_paths(&target_path) {
-                    let p = Path::new(dir).join(&path);
+                    for dir in eko::env::split_paths(&target_path) {
+                        let p = Path::new(dir).join(&path);
+                        if p.is_file() {
+                            return load_file(&p, unstable_options);
+                        }
+                    }
+
+                    let rustlib_path =
+                        crate::rustc_target::relative_target_rustlib_path(sysroot, target_tuple);
+                    let p = PathBuf::from_iter([
+                        Path::new(sysroot),
+                        Path::new(&rustlib_path),
+                        Path::new("target.json"),
+                    ]);
                     if p.is_file() {
                         return load_file(&p, unstable_options);
                     }
-                }
-
-                // Additionally look in the sysroot under `lib/rustlib/<tuple>/target.json`
-                // as a fallback.
-                let rustlib_path = crate::rustc_target::relative_target_rustlib_path(sysroot, target_tuple);
-                let p = PathBuf::from_iter([
-                    Path::new(sysroot),
-                    Path::new(&rustlib_path),
-                    Path::new("target.json"),
-                ]);
-                if p.is_file() {
-                    return load_file(&p, unstable_options);
                 }
 
                 Err(format!("could not find specification for target {target_tuple:?}"))

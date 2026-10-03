@@ -743,25 +743,8 @@ mod blob {
 }
 
 impl MetadataBlob {
-    pub(crate) fn check_compatibility(
-        &self,
-        cfg_version: &'static str,
-    ) -> Result<(), Option<String>> {
-        if !self.starts_with(METADATA_HEADER) {
-            if self.starts_with(b"rust") {
-                return Err(Some("<unknown rustc version>".to_owned()));
-            }
-            return Err(None);
-        }
-
-        let found_version =
-            LazyValue::<String>::from_position(NonZero::new(METADATA_HEADER.len() + 8).unwrap())
-                .decode(self);
-        if rustc_version(cfg_version) != found_version {
-            return Err(Some(found_version));
-        }
-
-        Ok(())
+    pub(crate) fn check_compatibility(&self) -> Result<(), ()> {
+        if self.starts_with(METADATA_HEADER) { Ok(()) } else { Err(()) }
     }
 
     fn root_pos(&self) -> NonZero<usize> {
@@ -1121,32 +1104,41 @@ impl CrateMetadata {
     }
 
     fn load_proc_macro<'tcx>(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> SyntaxExtension {
-        // No client is a proc-macro crate this frontend read from source and wrote metadata for,
-        // with no compiled code to run: its macros resolve, and expanding one is an error.
-        let unrun = |name: &str| Arc::new(UnrunProcMacro { name: Symbol::intern(name) });
+        let unrun = |name: &str,
+                     entry_body: Option<ProcMacroEntryBody>,
+                     schema: ProcMacroSchema| {
+            Arc::new(UnrunProcMacro {
+                name: Symbol::intern(name),
+                entry_body: entry_body.unwrap_or(ProcMacroEntryBody::Unclassified),
+                schema,
+            })
+        };
         let (name, kind, helper_attrs) = match self.raw_proc_macro(tcx, id) {
-            (client, ProcMacroKind::CustomDerive { trait_name, attributes }) => {
+            (
+                client,
+                ProcMacroKind::CustomDerive { trait_name, attributes, entry_body, schema },
+            ) => {
                 let helper_attrs =
                     attributes.into_iter().map(|attr| Symbol::intern(&attr)).collect();
                 let kind = match client {
                     Some(client) => {
                         SyntaxExtensionKind::Derive(Arc::new(DeriveProcMacro { client }))
                     }
-                    None => SyntaxExtensionKind::Derive(unrun(&trait_name)),
+                    None => SyntaxExtensionKind::Derive(unrun(&trait_name, entry_body, schema)),
                 };
                 (trait_name, kind, helper_attrs)
             }
-            (client, ProcMacroKind::Attr { name }) => {
+            (client, ProcMacroKind::Attr { name, entry_body, schema }) => {
                 let kind = match client {
                     Some(client) => SyntaxExtensionKind::Attr(Arc::new(AttrProcMacro { client })),
-                    None => SyntaxExtensionKind::Attr(unrun(&name)),
+                    None => SyntaxExtensionKind::Attr(unrun(&name, entry_body, schema)),
                 };
                 (name, kind, Vec::new())
             }
-            (client, ProcMacroKind::Bang { name }) => {
+            (client, ProcMacroKind::Bang { name, entry_body, schema }) => {
                 let kind = match client {
                     Some(client) => SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client })),
-                    None => SyntaxExtensionKind::Bang(unrun(&name)),
+                    None => SyntaxExtensionKind::Bang(unrun(&name, entry_body, schema)),
                 };
                 (name, kind, Vec::new())
             }

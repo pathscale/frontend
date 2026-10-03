@@ -1395,14 +1395,13 @@ impl<'a, G: EmissionGuarantee> Diag<'a, G> {
     }
 }
 
-/// Destructor bomb: every `Diag` must be consumed (emitted, cancelled, etc.)
-/// or we emit a bug.
+/// A dropped `Diag` emits a bug unless an earlier error already explains the failure.
 impl<G: EmissionGuarantee> Drop for Diag<'_, G> {
     fn drop(&mut self) {
         match self.diag.take() {
-            // Was `if !panicking()`. With `panic = "abort"` there is no unwinding, so a
-            // destructor can never run during a panic and `thread::panicking()` is always
-            // `false`; the guard is therefore always taken. Restore it if unwinding returns.
+            Some(diag) if self.dcx.has_errors().is_some() => {
+                self.dcx.emit_diagnostic(*diag);
+            }
             Some(diag) => {
                 self.dcx.emit_diagnostic(DiagInner::new(
                     Level::Bug,

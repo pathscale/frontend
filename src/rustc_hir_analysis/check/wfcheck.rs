@@ -30,7 +30,6 @@ use crate::rustc_infer::infer::{BoundRegionConversionTime, SolverRegionConstrain
 use crate::rustc_infer::traits::{PredicateObligations, TraitErrors};
 use crate::rustc_lint_defs::builtin::{REDUNDANT_LIFETIMES, SHADOWING_SUPERTRAIT_ITEMS};
 use rustc_macros::{Diagnostic, TypeFoldable, TypeVisitable};
-use crate::rustc_middle::mir::interpret::ErrorHandled;
 use crate::rustc_middle::traits::solve::NoSolution;
 use crate::rustc_middle::ty::trait_def::TraitSpecializationKind;
 use crate::rustc_middle::ty::{
@@ -129,6 +128,27 @@ impl<'tcx> WfCheckingCtxt<'_, 'tcx> {
         } else {
             self.normalize(span, loc, value)
         }
+    }
+
+    pub(super) fn register_sized_bound(
+        &self,
+        span: Span,
+        ty: Ty<'tcx>,
+        code: ObligationCauseCode<'tcx>,
+    ) {
+        let Some(sized_trait) = self.tcx().lang_items().get(LangItem::Sized) else {
+            let _ = self.tcx().dcx().span_delayed_bug(
+                span,
+                "skipping a Sized obligation because the Sized lang item is missing",
+            );
+            return;
+        };
+        self.register_bound(
+            ObligationCause::new(span, self.body_def_id, code),
+            self.param_env,
+            ty,
+            sized_trait,
+        );
     }
 
     pub(super) fn register_wf_obligation(
@@ -289,9 +309,19 @@ pub(super) fn check_item<'tcx>(
         // won't be allowed unless there's an *explicit* implementation of `Send`
         // for `T`
         hir::ItemKind::Impl(ref impl_) => {
-            crate::rustc_hir_analysis::impl_wf_check::check_impl_wf(tcx, def_id, impl_.of_trait.is_some())?;
+            let resolved_of_trait = impl_.of_trait.filter(|of_trait| {
+                matches!(
+                    of_trait.trait_ref.path.res,
+                    Res::Def(DefKind::Trait | DefKind::TraitAlias, _)
+                )
+            });
+            crate::rustc_hir_analysis::impl_wf_check::check_impl_wf(
+                tcx,
+                def_id,
+                resolved_of_trait.is_some(),
+            )?;
             let mut res = Ok(());
-            if let Some(of_trait) = impl_.of_trait {
+            if let Some(of_trait) = resolved_of_trait {
                 let header = tcx.impl_trait_header(def_id);
                 let is_auto = tcx.trait_is_auto(header.trait_ref.skip_binder().def_id);
                 if let (hir::Defaultness::Default { .. }, true) = (of_trait.defaultness, is_auto) {
@@ -944,12 +974,10 @@ pub(crate) fn check_associated_item(
                 }
 
                 if has_value {
-                    let code = ObligationCauseCode::SizedConstOrStatic;
-                    wfcx.register_bound(
-                        ObligationCause::new(span, def_id, code),
-                        wfcx.param_env,
+                    wfcx.register_sized_bound(
+                        span,
                         ty,
-                        tcx.require_lang_item(LangItem::Sized, span),
+                        ObligationCauseCode::SizedConstOrStatic,
                     );
                 }
 
@@ -993,26 +1021,6 @@ pub(crate) fn check_type_defn<'tcx>(
         for variant in variants.iter() {
             // All field types must be well-formed.
             for field in &variant.fields {
-                if let Some(def_id) = field.value
-                    && let Some(_ty) = tcx.type_of(def_id).no_bound_vars()
-                {
-                    // FIXME(generic_const_exprs, default_field_values): this is a hack and needs to
-                    // be refactored to check the instantiate-ability of the code better.
-                    if let Some(def_id) = def_id.as_local()
-                        && let DefKind::AnonConst = tcx.def_kind(def_id)
-                        && let hir::Node::AnonConst(anon) = tcx.hir_node_by_def_id(def_id)
-                        && let expr = &tcx.hir_body(anon.body).value
-                        && let hir::ExprKind::Path(hir::QPath::Resolved(None, path)) = expr.kind
-                        && let Res::Def(DefKind::ConstParam, _def_id) = path.res
-                    {
-                        // Do not evaluate bare `const` params, as those would ICE and are only
-                        // usable if `#![feature(generic_const_exprs)]` is enabled.
-                    } else {
-                        // Evaluate the constant proactively, to emit an error if the constant has
-                        // an unconditional error. We only do so if the const has no type params.
-                        let _ = tcx.const_eval_poly(def_id);
-                    }
-                }
                 let field_id = field.did.expect_local();
                 let span = tcx.ty_span(field_id);
                 let ty = wfcx.deeply_normalize(
@@ -1056,32 +1064,17 @@ pub(crate) fn check_type_defn<'tcx>(
                 let last = idx == variant.fields.len() - 1;
                 let span = tcx.ty_span(field.did.expect_local());
                 let ty = wfcx.normalize(span, None, tcx.type_of(field.did).instantiate_identity());
-                wfcx.register_bound(
-                    traits::ObligationCause::new(
-                        span,
-                        wfcx.body_def_id,
-                        ObligationCauseCode::FieldSized {
-                            adt_kind: adt_def.adt_kind(),
-                            span,
-                            last,
-                        },
-                    ),
-                    wfcx.param_env,
+                wfcx.register_sized_bound(
+                    span,
                     ty,
-                    tcx.require_lang_item(LangItem::Sized, span),
+                    ObligationCauseCode::FieldSized {
+                        adt_kind: adt_def.adt_kind(),
+                        span,
+                        last,
+                    },
                 );
             }
 
-            // Explicit `enum` discriminant values must const-evaluate successfully.
-            if let ty::VariantDiscr::Explicit(discr_def_id) = variant.discr {
-                match tcx.const_eval_poly(discr_def_id) {
-                    Ok(_) => {}
-                    Err(ErrorHandled::Reported(..)) => {}
-                    Err(ErrorHandled::TooGeneric(sp)) => {
-                        span_bug!(sp, "enum variant discr was too generic to eval")
-                    }
-                }
-            }
         }
 
         check_where_clauses(wfcx, item);
@@ -1238,16 +1231,7 @@ pub(crate) fn check_static_item<'tcx>(
         wfcx.register_wf_obligation(span, Some(WellFormedLoc::Ty(item_id)), item_ty.into());
         if forbid_unsized {
             let span = tcx.def_span(item_id);
-            wfcx.register_bound(
-                traits::ObligationCause::new(
-                    span,
-                    wfcx.body_def_id,
-                    ObligationCauseCode::SizedConstOrStatic,
-                ),
-                wfcx.param_env,
-                item_ty,
-                tcx.require_lang_item(LangItem::Sized, span),
-            );
+            wfcx.register_sized_bound(span, item_ty, ObligationCauseCode::SizedConstOrStatic);
         }
 
         // Ensure that the end result is `Sync` in a non-thread local `static`.
@@ -1660,12 +1644,7 @@ fn check_fn_or_method<'tcx>(
                 *ty,
                 tcx.require_lang_item(LangItem::Tuple, span),
             );
-            wfcx.register_bound(
-                ObligationCause::new(span, wfcx.body_def_id, ObligationCauseCode::RustCall),
-                wfcx.param_env,
-                *ty,
-                tcx.require_lang_item(LangItem::Sized, span),
-            );
+            wfcx.register_sized_bound(span, *ty, ObligationCauseCode::RustCall);
         } else {
             tcx.dcx().span_err(
                 hir_decl.inputs.last().map_or(span, |input| input.span),
@@ -1688,12 +1667,7 @@ fn check_fn_or_method<'tcx>(
             hir::FnRetTy::DefaultReturn(_) => body.value.span,
         };
 
-        wfcx.register_bound(
-            ObligationCause::new(span, def_id, ObligationCauseCode::SizedReturnType),
-            wfcx.param_env,
-            sig.output(),
-            tcx.require_lang_item(LangItem::Sized, span),
-        );
+        wfcx.register_sized_bound(span, sig.output(), ObligationCauseCode::SizedReturnType);
     }
 }
 

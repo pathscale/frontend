@@ -7,7 +7,7 @@ use crate::rustc_ast::token::Delimiter;
 use crate::rustc_ast::tokenstream::{DelimSpan, WithTokens};
 use crate::rustc_ast::{AttrItem, Attribute, LitKind, ast, token};
 use crate::rustc_attr_ir::target::Target;
-use crate::rustc_attr_ir::{AttrPath, CfgEntry, RustcVersion};
+use crate::rustc_attr_ir::{AttrPath, CfgEntry};
 use crate::rustc_errors::{Applicability, Diagnostic, PResult, msg};
 use crate::rustc_feature::{Features, GatedCfg, find_gated_cfg};
 use crate::rustc_lint_defs::builtin::UNEXPECTED_CFGS;
@@ -271,23 +271,13 @@ pub fn eval_config_entry(sess: &Session, cfg_entry: &CfgEntry) -> EvalConfigResu
             }
         }
         CfgEntry::Version(min_version, version_span) => {
-            let Some(min_version) = min_version else {
+            if min_version.is_none() {
                 return EvalConfigResult::False {
                     reason: cfg_entry.clone(),
                     reason_span: *version_span,
                 };
-            };
-            // See https://github.com/rust-lang/rust/issues/64796#issuecomment-640851454 for details
-            let min_version_ok = if sess.opts.unstable_opts.assume_incomplete_release {
-                RustcVersion::current_overridable() > *min_version
-            } else {
-                RustcVersion::current_overridable() >= *min_version
-            };
-            if min_version_ok {
-                EvalConfigResult::True
-            } else {
-                EvalConfigResult::False { reason: cfg_entry.clone(), reason_span: *version_span }
             }
+            EvalConfigResult::True
         }
     }
 }

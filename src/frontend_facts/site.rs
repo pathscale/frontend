@@ -151,6 +151,8 @@ pub enum ItemCategory {
     Mod,
     /// A `macro_rules!` or `macro` definition.
     Macro,
+    /// A keyword, snippet or postfix offer rather than a named item.
+    Other,
 }
 
 /// How a name in scope was introduced.
@@ -178,8 +180,32 @@ pub struct Binding {
     /// The span of the name where it is declared.
     pub span: TextRange,
     /// The type when the source writes one for this name: a param's type, an annotated `let`,
-    /// a const or static's type, a const generic's type. `None` when it would take inference.
+    /// a const or static's type, a const generic's type, or an indexed item's candidate type.
+    /// `None` when it would take inference.
     pub ty: Option<String>,
+}
+
+/// Add resolved names without replacing a written binding, filling only its missing item facts.
+pub fn extend_scope(
+    scope: &mut Vec<Binding>,
+    supplied: impl IntoIterator<Item = Binding>,
+) {
+    for binding in supplied {
+        if let Some(existing) = scope.iter_mut().find(|existing| existing.name == binding.name) {
+            if matches!(existing.kind, BindingKind::Import | BindingKind::Item(_)) {
+                if existing.kind == BindingKind::Import
+                    && matches!(binding.kind, BindingKind::Item(_))
+                {
+                    existing.kind = binding.kind;
+                }
+                if existing.ty.is_none() {
+                    existing.ty = binding.ty;
+                }
+            }
+        } else {
+            scope.push(binding);
+        }
+    }
 }
 
 /// The answer [`site_at`] gives for one offset.
@@ -1006,10 +1032,9 @@ impl<'a, 'v> Visitor<'a> for PatIdents<'v> {
 mod tests {
     use super::*;
 
-    // These call `locate`, not `site_at`: the catcher `site_at` asserts on can only be built
-    // from `std::panic::catch_unwind`, and `std` cannot be named in this crate, test builds
-    // included. None of these sources makes the parser raise a fatal error, so nothing needs
-    // catching.
+    // These call `locate` directly, not `site_at`: the
+    // wrapper asserts on a catcher built from `std::panic::catch_unwind`, and `std` cannot be
+    // named in this crate, test builds included. None of these sources raises a parser fatal.
     fn at_marker(source: &str) -> Site {
         let offset = source.find("/*HERE*/").expect("the source has a marker") as u32;
         let captured = Arc::new(eko::thread::Mutex::new(String::new()));
@@ -1018,6 +1043,53 @@ mod tests {
 
     fn find<'s>(site: &'s Site, name: &str) -> Option<&'s Binding> {
         site.scope.iter().find(|b| b.name == name)
+    }
+
+    #[test]
+    fn resolved_module_scope_keeps_written_names_first() {
+        let mut scope = alloc::vec![Binding {
+            name: "renamed".into(),
+            kind: BindingKind::Import,
+            span: TextRange { start: 1, end: 8 },
+            ty: None,
+        }];
+        extend_scope(
+            &mut scope,
+            alloc::vec![
+                Binding {
+                    name: "renamed".into(),
+                    kind: BindingKind::Item(ItemCategory::Fn),
+                    span: TextRange { start: 0, end: 0 },
+                    ty: Some("PathBuf".into()),
+                },
+                Binding {
+                    name: "from_glob".into(),
+                    kind: BindingKind::Item(ItemCategory::Fn),
+                    span: TextRange { start: 0, end: 0 },
+                    ty: Some("bool".into()),
+                },
+            ],
+        );
+        assert_eq!(
+            scope.iter().map(|binding| binding.name.as_str()).collect::<Vec<_>>(),
+            ["renamed", "from_glob"]
+        );
+        assert_eq!(scope[0].kind, BindingKind::Item(ItemCategory::Fn));
+        assert_eq!(scope[0].span, TextRange { start: 1, end: 8 });
+        assert_eq!(scope[0].ty.as_deref(), Some("PathBuf"));
+        assert_eq!(scope[1].ty.as_deref(), Some("bool"));
+
+        let mut glob_only = Vec::new();
+        extend_scope(
+            &mut glob_only,
+            alloc::vec![Binding {
+                name: "from_glob".into(),
+                kind: BindingKind::Item(ItemCategory::Fn),
+                span: TextRange { start: 0, end: 0 },
+                ty: Some("bool".into()),
+            }],
+        );
+        assert_eq!(glob_only[0].name, "from_glob");
     }
 
     #[test]

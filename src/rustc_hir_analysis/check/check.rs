@@ -842,7 +842,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(),
             tcx.ensure_ok().type_of(def_id);
             tcx.ensure_ok().clauses_of(def_id);
             tcx.ensure_ok().associated_items(def_id);
-            if of_trait {
+            if of_trait && tcx.impl_is_of_trait(def_id) {
                 let impl_trait_header = tcx.impl_trait_header(def_id);
                 res = res
                     .and(tcx.ensure_result().coherent_trait(impl_trait_header.trait_ref.def_id()));
@@ -952,16 +952,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(),
                 let ty_span = tcx.ty_span(def_id);
                 let ty = wfcx.deeply_normalize(ty_span, Some(WellFormedLoc::Ty(def_id)), ty);
                 wfcx.register_wf_obligation(ty_span, Some(WellFormedLoc::Ty(def_id)), ty.into());
-                wfcx.register_bound(
-                    traits::ObligationCause::new(
-                        ty_span,
-                        def_id,
-                        ObligationCauseCode::SizedConstOrStatic,
-                    ),
-                    tcx.param_env(def_id),
-                    ty,
-                    tcx.require_lang_item(LangItem::Sized, ty_span),
-                );
+                wfcx.register_sized_bound(ty_span, ty, ObligationCauseCode::SizedConstOrStatic);
                 check_where_clauses(wfcx, def_id);
 
                 if tcx.is_type_const(def_id) {

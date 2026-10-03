@@ -41,8 +41,7 @@ use crate::rustc_data_structures::sso::SsoHashSet;
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{
-    Applicability, Diag, DiagCtxtHandle, ErrorGuaranteed, FatalError, StashKey,
-    struct_span_code_err,
+    Applicability, Diag, DiagCtxtHandle, ErrorGuaranteed, StashKey, struct_span_code_err,
 };
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
@@ -929,18 +928,23 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         &self,
         trait_ref: &hir::TraitRef<'tcx>,
         self_ty: Ty<'tcx>,
-    ) -> ty::TraitRef<'tcx> {
+    ) -> Option<ty::TraitRef<'tcx>> {
         let [leading_segments @ .., segment] = trait_ref.path.segments else { bug!() };
 
         let _ = self.prohibit_generic_args(leading_segments.iter(), GenericsArgsErrExtend::None);
 
-        self.lower_mono_trait_ref(
+        let trait_def_id = match trait_ref.path.res {
+            Res::Def(DefKind::Trait | DefKind::TraitAlias, trait_def_id) => trait_def_id,
+            _ => return None,
+        };
+
+        Some(self.lower_mono_trait_ref(
             trait_ref.path.span,
-            trait_ref.trait_def_id().unwrap_or_else(|| FatalError.raise()),
+            trait_def_id,
             self_ty,
             segment,
             true,
-        )
+        ))
     }
 
     /// Lower a polymorphic trait reference given a self type into `bounds`.
@@ -986,7 +990,15 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         // also include the bound vars of the overarching predicate if applicable.
         let _ = bound_generic_params;
 
-        let trait_def_id = trait_ref.trait_def_id().unwrap_or_else(|| FatalError.raise());
+        // An unresolved trait already reported its resolution error. Analysis of one file of a
+        // larger crate meets this constantly (a `crate::` trait it cannot see), so the bound is
+        // dropped and the rest of the item stays analysable instead of aborting the session.
+        let Some(trait_def_id) = trait_ref.trait_def_id() else {
+            return GenericArgCountResult {
+                explicit_late_bound: ExplicitLateBound::No,
+                correct: Ok(()),
+            };
+        };
 
         // Relaxed bounds `?Trait` and `PointeeSized` bounds aren't represented in the middle::ty IR
         // as they denote the *absence* of a default bound. However, we can't bail out early here since
@@ -3784,7 +3796,8 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         };
         let i = tcx.parent_hir_node(fn_hir_id).expect_item().expect_impl();
 
-        let trait_ref = self.lower_impl_trait_ref(&i.of_trait?.trait_ref, self.lower_ty(i.self_ty));
+        let trait_ref =
+            self.lower_impl_trait_ref(&i.of_trait?.trait_ref, self.lower_ty(i.self_ty))?;
 
         let assoc = tcx.associated_items(trait_ref.def_id).find_by_ident_and_kind(
             tcx,

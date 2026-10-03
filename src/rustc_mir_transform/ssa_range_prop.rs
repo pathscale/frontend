@@ -20,7 +20,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::WrappingRange;
-use crate::rustc_const_eval::interpret::Scalar;
+use crate::rustc_middle::mir::interpret::Scalar;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::graph::dominators::Dominators;
 use crate::rustc_index::bit_set::DenseBitSet;

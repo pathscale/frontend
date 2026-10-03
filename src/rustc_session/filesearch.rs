@@ -5,24 +5,17 @@
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use eko::path::{Path, PathBuf};
-use alloc::sync::Arc;
-use core::{iter};
-use eko::{env, file as fs};
-
-use crate::rustc_fs_util::try_canonicalize;
 use crate::rustc_target::spec::Target;
 
 use crate::rustc_session::search_paths::{PathKind, SearchPath};
 
 pub struct FileSearch {
     cli_search_paths: Vec<SearchPath>,
-    tlib_path: SearchPath,
+    tlib_path: Option<SearchPath>,
     use_implicit_sysroot_deps: bool,
     files: Vec<FileSearchCandidate>,
 }
@@ -36,7 +29,7 @@ impl FileSearch {
         // If the crate is `PathKind::Crate` (a top level dependency)
         // and `-Z implicit-sysroot-deps=false`, then don't include the sysroot in the search paths.
         let exclude_sysroot = kind.matches(PathKind::Crate) && !self.use_implicit_sysroot_deps;
-        let maybe_tlib = (!exclude_sysroot).then_some(&self.tlib_path);
+        let maybe_tlib = (!exclude_sysroot).then_some(self.tlib_path.as_ref()).flatten();
 
         self.cli_search_paths
             .iter()
@@ -76,7 +69,7 @@ impl FileSearch {
 
     pub fn new(
         cli_search_paths: &[SearchPath],
-        tlib_path: &SearchPath,
+        tlib_path: Option<&SearchPath>,
         target: &Target,
         use_implicit_sysroot_deps: bool,
     ) -> Self {
@@ -88,8 +81,10 @@ impl FileSearch {
         // Load all files from all search paths, filter them by supported prefixes, and sort them,
         // so that we can efficiently look them up in `get_file_candidates` via binary search.
         let mut files: Vec<FileSearchCandidate> = Vec::with_capacity(cli_search_paths.len());
-        for (search_path, is_sysroot) in
-            cli_search_paths.iter().map(|path| (path, false)).chain(iter::once((tlib_path, true)))
+        for (search_path, is_sysroot) in cli_search_paths
+            .iter()
+            .map(|path| (path, false))
+            .chain(tlib_path.into_iter().map(|path| (path, true)))
         {
             let Ok(dir) = eko::file::read_dir(&search_path.dir) else {
                 continue;
@@ -114,7 +109,7 @@ impl FileSearch {
 
         FileSearch {
             cli_search_paths: cli_search_paths.to_owned(),
-            tlib_path: tlib_path.clone(),
+            tlib_path: tlib_path.cloned(),
             use_implicit_sysroot_deps,
             files,
         }
@@ -154,164 +149,4 @@ pub fn make_target_lib_path(sysroot: &Path, target_triple: &str) -> PathBuf {
 pub fn make_target_bin_path(sysroot: &Path, target_triple: &str) -> PathBuf {
     let rustlib_path = crate::rustc_target::relative_target_rustlib_path(sysroot, target_triple);
     sysroot.join(rustlib_path).join("bin")
-}
-
-/// Attempts to find the path to the dynamic library containing a function.
-///
-/// SAFETY: `function` must be a valid pointer to some function.
-#[cfg(unix)]
-pub unsafe fn dll_path(function: *mut core::ffi::c_void) -> Result<PathBuf, String> {
-    use core::ffi::CStr;
-
-    #[cfg(not(target_os = "aix"))]
-    unsafe {
-        let mut info = core::mem::zeroed();
-        if libc::dladdr(function, &mut info) == 0 {
-            return Err("dladdr failed".into());
-        }
-        #[cfg(target_os = "cygwin")]
-        let fname_ptr = info.dli_fname.as_ptr();
-        #[cfg(not(target_os = "cygwin"))]
-        let fname_ptr = {
-            assert!(!info.dli_fname.is_null(), "dli_fname cannot be null");
-            info.dli_fname
-        };
-        let bytes = CStr::from_ptr(fname_ptr).to_bytes();
-        try_canonicalize(Path::new(bytes)).map_err(|e| e.to_string())
-    }
-
-    #[cfg(target_os = "aix")]
-    unsafe {
-        // On AIX, the symbol references a function descriptor.
-        // A function descriptor is consisted of (See https://reviews.llvm.org/D62532)
-        // * The address of the entry point of the function.
-        // * The TOC base address for the function.
-        // * The environment pointer.
-        // The function descriptor is in the data section.
-        let addr = function as u64;
-        let mut buffer = vec![core::mem::zeroed::<libc::ld_info>(); 64];
-        loop {
-            if libc::loadquery(
-                libc::L_GETINFO,
-                buffer.as_mut_ptr() as *mut libc::c_void,
-                (size_of::<libc::ld_info>() * buffer.len()) as u32,
-            ) >= 0
-            {
-                break;
-            } else {
-                if eko::file::Error::last_os_error().raw_os_error().unwrap() != libc::ENOMEM {
-                    return Err("loadquery failed".into());
-                }
-                buffer.resize(buffer.len() * 2, core::mem::zeroed::<libc::ld_info>());
-            }
-        }
-        let mut current = buffer.as_mut_ptr() as *mut libc::ld_info;
-        loop {
-            let data_base = (*current).ldinfo_dataorg as u64;
-            let data_end = data_base + (*current).ldinfo_datasize;
-            if (data_base..data_end).contains(&addr) {
-                let bytes = CStr::from_ptr(&(*current).ldinfo_filename[0]).to_bytes();
-                // `OsStr::from_bytes` is gone: a path is bytes already.
-                return try_canonicalize(Path::new(bytes)).map_err(|e| e.to_string());
-            }
-            if (*current).ldinfo_next == 0 {
-                break;
-            }
-            current =
-                (current as *mut i8).offset((*current).ldinfo_next as isize) as *mut libc::ld_info;
-        }
-        return Err(format!("current dll's address {} is not in the load map", addr));
-    }
-}
-
-// The Windows `dll_path` is gone with the rest of the Windows support. It walked
-// `GetModuleHandleExW`/`GetModuleFileNameW` into a UTF-16 `OsString`, which is the one path
-// shape that cannot be bytes - and this compiler has one target, which is not Windows.
-
-#[cfg(target_os = "wasi")]
-pub unsafe fn dll_path(function: *mut core::ffi::c_void) -> Result<PathBuf, String> {
-    Err("dll_path is not supported on WASI".to_string())
-}
-
-fn current_dll_path() -> Result<PathBuf, String> {
-    use eko::thread::OnceLock;
-
-    // This is somewhat expensive relative to other work when compiling `fn main() {}` as `dladdr`
-    // needs to iterate over the symbol table of librustc_driver.so until it finds a match.
-    // As such cache this to avoid recomputing if we try to get the sysroot in multiple places.
-    static CURRENT_DLL_PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    CURRENT_DLL_PATH
-        .get_or_init(|| unsafe { dll_path(current_dll_path as fn() -> _ as *mut _) })
-        .clone()
-}
-
-/// This function checks if sysroot is found using env::args().next(), and if it
-/// is not found, finds sysroot from current rustc_driver dll.
-pub(crate) fn default_sysroot() -> PathBuf {
-    fn default_from_rustc_driver_dll() -> Result<PathBuf, String> {
-        let dll = current_dll_path()?;
-
-        // `dll` will be in one of the following two:
-        // - compiler's libdir: $sysroot/lib/*.dll
-        // - target's libdir: $sysroot/lib/rustlib/$target/lib/*.dll
-        //
-        // use `parent` twice to chop off the file name and then also the
-        // directory containing the dll
-        let dir = dll.parent().and_then(|p| p.parent()).ok_or_else(|| {
-            format!("Could not move 2 levels upper using `parent()` on {}", dll.display())
-        })?;
-
-        // if `dir` points to target's dir, move up to the sysroot
-        let mut sysroot_dir = if dir.ends_with(crate::rustc_session::config::host_tuple()) {
-            dir.parent() // chop off `$target`
-                .and_then(|p| p.parent()) // chop off `rustlib`
-                .and_then(|p| p.parent()) // chop off `lib`
-                .map(|s| s.to_owned())
-                .ok_or_else(|| {
-                    format!("Could not move 3 levels upper using `parent()` on {}", dir.display())
-                })?
-        } else {
-            dir.to_owned()
-        };
-
-        // On multiarch linux systems, there will be multiarch directory named
-        // with the architecture(e.g `x86_64-linux-gnu`) under the `lib` directory.
-        // Which cause us to mistakenly end up in the lib directory instead of the sysroot directory.
-        if sysroot_dir.ends_with("lib") {
-            sysroot_dir =
-                sysroot_dir.parent().map(|real_sysroot| real_sysroot.to_owned()).ok_or_else(
-                    || format!("Could not move to parent path of {}", sysroot_dir.display()),
-                )?
-        }
-
-        Ok(sysroot_dir)
-    }
-
-    // Use env::args().next() to get the path of the executable without
-    // following symlinks/canonicalizing any component. This makes the rustc
-    // binary able to locate Rust libraries in systems using content-addressable
-    // storage (CAS).
-    fn from_env_args_next() -> Option<PathBuf> {
-        let mut p = PathBuf::from_bytes(eko::env::args().into_iter().next()?);
-
-        // Check if sysroot is found using env::args().next() only if the rustc in argv[0]
-        // is a symlink (see #79253). We might want to change/remove it to conform with
-        // https://www.gnu.org/prep/standards/standards.html#Finding-Program-Files in the
-        // future.
-        if eko::file::read_link(&p).is_err() {
-            // Path is not a symbolic link or does not exist.
-            return None;
-        }
-
-        // Pop off `bin/rustc`, obtaining the suspected sysroot.
-        p.pop();
-        p.pop();
-        // Look for the target rustlib directory in the suspected sysroot.
-        let mut rustlib_path = crate::rustc_target::relative_target_rustlib_path(&p, "dummy");
-        rustlib_path.pop(); // pop off the dummy target.
-        rustlib_path.exists().then_some(p)
-    }
-
-    from_env_args_next()
-        .unwrap_or_else(|| default_from_rustc_driver_dll().expect("Failed finding sysroot"))
 }

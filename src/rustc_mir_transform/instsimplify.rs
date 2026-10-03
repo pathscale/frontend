@@ -306,7 +306,7 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
             } else {
                 return;
             };
-            let Some(generic_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+            let Some(generic_ty) = crate::rustc_const_eval::util::intrinsic_type_param(
                 self.tcx,
                 fn_def_id,
                 generics,
@@ -359,7 +359,7 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
             && args.len() == 2
             && let Some((fn_def_id, generics)) = func.const_fn_def()
             && tcx.is_intrinsic(fn_def_id, sym::raw_eq)
-            && let Some(generic_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+            && let Some(generic_ty) = crate::rustc_const_eval::util::intrinsic_type_param(
                 tcx,
                 fn_def_id,
                 generics,
@@ -436,7 +436,7 @@ impl<'tcx> InstSimplifyContext<'_, 'tcx> {
         let Some((intrinsic_name, def_id, args)) = resolve_rust_intrinsic(self.tcx, func_ty) else {
             return;
         };
-        let Some(arg) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+        let Some(arg) = crate::rustc_const_eval::util::intrinsic_type_param(
             self.tcx,
             def_id,
             args,

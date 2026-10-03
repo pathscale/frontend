@@ -458,7 +458,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         // Current type: `MaybeDangling<T>`. Field #0 is `T`.
                         let place = place.project_to_field(FieldIdx::ZERO, decls, tcx);
                         // Sanity check.
-                        if let Some(ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                        if let Some(ty) = crate::rustc_const_eval::util::intrinsic_type_param(
                             tcx,
                             def_id,
                             generic_args,

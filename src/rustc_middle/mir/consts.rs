@@ -15,7 +15,7 @@ use core::fmt::{self, Debug, Display, Formatter};
 use crate::rustc_abi::{HasDataLayout, Size};
 use crate::rustc_hir::def_id::DefId;
 use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
-use crate::rustc_span::{DUMMY_SP, RemapPathScopeComponents, Span, Symbol};
+use crate::rustc_span::{DUMMY_SP, Span};
 use crate::rustc_type_ir::TypeVisitableExt;
 
 use super::interpret::ReportedErrorInfo;
@@ -334,15 +334,19 @@ impl<'tcx> Const<'tcx> {
             Const::Ty(_, c) => {
                 // FIXME(generic_const_exprs): We shouldn't encounter placeholders here
                 // and could change this to ICE when encountering them instead.
-                if c.has_non_region_param() || c.has_non_region_placeholders() {
+                if c.has_non_region_param()
+                    || c.has_non_region_placeholders()
+                    || c.has_non_region_bound_vars()
+                    || c.has_non_region_infer()
+                {
                     return Err(ErrorHandled::TooGeneric(span));
                 }
 
                 match c.kind() {
-                    ConstKind::Value(cv) => Ok(tcx.valtree_to_const_val(cv)),
-                    ConstKind::Expr(_) => {
-                        bug!("Normalization of `ty::ConstKind::Expr` is unimplemented")
-                    }
+                    ConstKind::Value(cv) => tcx.valtree_to_const_val(cv),
+                    ConstKind::Expr(_) => Err(ErrorHandled::TooGeneric(span)),
+                    // Without a const interpreter, item aliases can remain unresolved here.
+                    ConstKind::Alias(..) => Err(ErrorHandled::TooGeneric(span)),
                     _ => Err(ReportedErrorInfo::non_const_eval_error(
                         tcx.dcx().delayed_bug("Unevaluated `ty::Const` in MIR body"),
                     )
@@ -527,17 +531,3 @@ impl<'tcx> Display for Const<'tcx> {
 
 ///////////////////////////////////////////////////////////////////////////
 // Const-related utilities
-
-impl<'tcx> TyCtxt<'tcx> {
-    pub fn span_as_caller_location(self, span: Span) -> ConstValue {
-        let topmost = span.ctxt().outer_expn().expansion_cause().unwrap_or(span);
-        let caller = self.sess.source_map().lookup_char_pos(topmost.lo());
-        self.const_caller_location(
-            Symbol::intern(
-                &caller.file.name.display(RemapPathScopeComponents::MACRO).to_string_lossy(),
-            ),
-            caller.line as u32,
-            caller.col_display as u32 + 1,
-        )
-    }
-}

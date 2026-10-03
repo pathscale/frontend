@@ -26,7 +26,7 @@ use crate::rustc_data_structures::sync::{FreezeReadGuard, FreezeWriteGuard};
 use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_expand::base::SyntaxExtension;
 use crate::rustc_hir as hir;
-use crate::rustc_hir::def_id::{CrateNum, LOCAL_CRATE, LocalDefId, StableCrateId};
+use crate::rustc_hir::def_id::{CrateNum, LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::definitions::Definitions;
 use crate::rustc_index::IndexVec;
 use crate::rustc_lint_defs as lint;
@@ -34,7 +34,6 @@ use crate::rustc_lint_defs::builtin::UNUSED_CRATE_DEPENDENCIES;
 use crate::bug;
 use crate::rustc_middle::ty::data_structures::IndexSet;
 use crate::rustc_middle::ty::{TyCtxt, TyCtxtFeed};
-use crate::rustc_proc_macro::bridge::client::Client as ProcMacroClient;
 use crate::rustc_session::Session;
 use crate::rustc_session::config::mitigation_coverage::DeniedPartialMitigationLevel;
 use crate::rustc_session::config::{
@@ -50,7 +49,6 @@ use crate::rustc_target::spec::{PanicStrategy, Target};
 use tracing::{debug, info};
 
 use crate::rustc_metadata::diagnostics;
-use crate::rustc_metadata::dylib;
 use crate::rustc_metadata::locator::{CrateError, CrateLocator, CratePaths, CrateRejections};
 use crate::rustc_metadata::rmeta::{
     CrateDep, CrateMetadata, CrateNumMap, CrateRoot, MetadataBlob, TargetModifiers,
@@ -645,38 +643,11 @@ impl CStore {
             private_dep,
         )?;
 
-        let raw_proc_macros = if crate_root.is_proc_macro_crate() {
-            let temp_root;
-            let (dlsym_source, dlsym_root) = match &host_lib {
-                Some(host_lib) => (&host_lib.source, {
-                    temp_root = host_lib.metadata.get_root();
-                    &temp_root
-                }),
-                None => (&source, &crate_root),
-            };
-            // No dylib is a proc-macro crate known by its metadata alone, as frontend writes it
-            // for one it read from source: its macros are declared and none of them runs (see
-            // `UnrunProcMacro`).
-            // A caller may hand over the dylib cargo built for such a crate
-            // (`Options::proc_macro_dylibs`), and then its macros run.
-            match dlsym_source.dylib.as_ref() {
-                Some(dlsym_dylib) => {
-                    Some(self.dlsym_proc_macros(dlsym_dylib, dlsym_root.stable_crate_id())?)
-                }
-                None => match supplied_proc_macro_dylib(tcx.sess, dlsym_source) {
-                    Some(dylib) => Some(self.dlsym_release_proc_macros(&dylib, &metadata)?),
-                    None => None,
-                },
-            }
-        } else {
-            None
-        };
-
         let crate_metadata = CrateMetadata::new(
             tcx,
             metadata,
             crate_root,
-            raw_proc_macros,
+            None,
             cnum,
             cnum_map,
             dep_kind,
@@ -975,115 +946,6 @@ impl CStore {
 
         debug!("resolve_crate_deps: cnum_map for {:?} is {:?}", krate, crate_num_map);
         Ok(crate_num_map)
-    }
-
-    /// The `Client` for each macro a proc-macro crate exports, read out of its shared object.
-    ///
-    /// The crate was compiled to a `.dylib` rather than to metadata alone, and the harness in
-    /// `crate::rustc_builtin_macros::proc_macro_harness` put a `#[rustc_proc_macro_decls] static _DECLS:
-    /// &[Client]` in it under a name derived from the crate's `StableCrateId`. This opens the
-    /// object and reads that static. Everything after it - `run1`/`run2`, the dispatch loop, the
-    /// `TokenStream` handles - is `proc_macro::bridge`, which is already here and already used.
-    ///
-    /// # What is being trusted, and why it holds
-    ///
-    /// A `Client` is one `extern "C"` function pointer into a shared object compiled by some
-    /// other compiler, and calling it hands that compiler's code a `BridgeConfig` laid out by
-    /// this one. Nothing on disk states the layout, so the compatibility is by construction:
-    /// `bridge`'s wire types are `#[repr(C)]` and its method table is a fixed order, and this
-    /// tree's copy of them is upstream's, unchanged apart from `use` lines. That is the same
-    /// guarantee upstream relies on between one rustc and the proc-macro dylibs of another.
-    ///
-    /// A mismatch is not caught here and cannot be: it surfaces as a crash inside the macro.
-    /// The check that stands between the two is the one on the metadata - a dylib built by an
-    /// incompatible compiler is rejected by the locator before this is reached, because its
-    /// `.rmeta` header does not match.
-    ///
-    /// # The handle is never closed
-    ///
-    /// See `dylib::load_symbol_from_dylib`. the process outlives a single compilation, so the leak is per proc-macro
-    /// crate for the life of the session rather than per compile.
-    fn dlsym_proc_macros(
-        &self,
-        path: &Path,
-        stable_crate_id: StableCrateId,
-    ) -> Result<&'static [ProcMacroClient], CrateError> {
-        let sym_name = crate::rustc_session::generate_proc_macro_decls_symbol(stable_crate_id);
-        debug!("trying to dlsym proc_macro_decls {} from {}", sym_name, path.display());
-
-        // SAFETY: `sym_name` names a `static &[Client]`. The harness that emitted it is in this
-        // tree (`crate::rustc_builtin_macros::proc_macro_harness::mk_decls`) and writes exactly that
-        // type; a shared object that does not export it fails below rather than being misread.
-        match unsafe { dylib::load_symbol_from_dylib::<&'static [ProcMacroClient]>(path, &sym_name) }
-        {
-            Ok(decls) => Ok(decls),
-            Err(err) => {
-                Err(CrateError::DlOpen(path.display().to_string(), err.into_message()))
-            }
-        }
-    }
-
-    /// The `Client` for each macro of a proc-macro crate this frontend read from source, out of
-    /// the dylib a stable release built from the same source, in the order `metadata` declares
-    /// them (the order `CrateMetadata::raw_proc_macro` indexes).
-    ///
-    /// The dylib is not this build's own output, so three things are established before any of
-    /// its code runs, each from the file rather than from anything the caller says:
-    ///
-    /// - **Which compiler wrote it**, from its `.rustc` section, and that its bridge is one this
-    ///   tree's server speaks (`dylib::COUNTED_TABLE_RELEASES`). Anything else is refused: the
-    ///   table would be read with the wrong layout and the wire would number methods wrongly.
-    /// - **Where the table is**: the one `__rustc_proc_macro_decls_*__` symbol it exports. Its
-    ///   name carries the `StableCrateId` cargo's build gave the crate, which differs from the
-    ///   id this read gave it, so it is looked up, not computed.
-    /// - **That it is the same crate**: every macro the source declares is in the table under
-    ///   the same kind and name. A table short of one is a dylib built from other source and is
-    ///   refused; nothing is matched by position.
-    ///
-    /// The slice is leaked, as the table it is taken from lives as long as the never-closed
-    /// handle: one small allocation per load of the crate, bounded by the reads that load it.
-    fn dlsym_release_proc_macros(
-        &self,
-        path: &Path,
-        metadata: &MetadataBlob,
-    ) -> Result<&'static [ProcMacroClient], CrateError> {
-        use crate::rustc_metadata::rmeta::ProcMacroKind;
-        use crate::rustc_proc_macro::bridge::client::CountedProcMacro;
-
-        let refuse = |message: String| CrateError::DlOpen(path.display().to_string(), message);
-
-        debug!("reading the release proc-macro table of {}", path.display());
-        let table =
-            dylib::release_proc_macro_table(path).map_err(|e| refuse(e.into_message()))?;
-
-        let mut clients = Vec::new();
-        for declared in metadata.get_proc_macro_info() {
-            let found = table.iter().find_map(|entry| match (&declared, *entry) {
-                (
-                    ProcMacroKind::CustomDerive { trait_name, .. },
-                    CountedProcMacro::CustomDerive { trait_name: built, client, .. },
-                ) if trait_name.as_str() == built => Some(client),
-                (ProcMacroKind::Attr { name }, CountedProcMacro::Attr { name: built, client })
-                | (ProcMacroKind::Bang { name }, CountedProcMacro::Bang { name: built, client })
-                    if name.as_str() == built =>
-                {
-                    Some(client)
-                }
-                _ => None,
-            });
-            let Some(client) = found else {
-                let (kind, name) = match &declared {
-                    ProcMacroKind::CustomDerive { trait_name, .. } => ("derive", trait_name),
-                    ProcMacroKind::Attr { name } => ("attribute macro", name),
-                    ProcMacroKind::Bang { name } => ("function-like macro", name),
-                };
-                return Err(refuse(format!(
-                    "the crate's source declares the {kind} `{name}` and this dylib does not export it: it was built from other source"
-                )));
-            };
-            clients.push(client.client());
-        }
-        Ok(Box::leak(clients.into_boxed_slice()))
     }
 
     fn inject_panic_runtime(&mut self, tcx: TyCtxt<'_>, krate: &ast::Crate) {
@@ -1524,27 +1386,6 @@ impl CStore {
     pub fn maybe_process_path_extern(&mut self, tcx: TyCtxt<'_>, name: Symbol) -> Option<CrateNum> {
         self.maybe_resolve_crate(tcx, name, CrateDepKind::Unconditional, CrateOrigin::Extern).ok()
     }
-}
-
-/// The dylib the caller supplied for the crate at `source`, when it supplied one
-/// (`Options::proc_macro_dylibs`, keyed by the metadata file that crate was loaded from).
-///
-/// Keyed by file rather than by name, because two crates of one name may be loaded in one
-/// session and each has its own build. Both sides are canonicalized, so a relative path, a
-/// symlink or a `..` in either names the same file.
-fn supplied_proc_macro_dylib(sess: &Session, source: &CrateSource) -> Option<eko::path::PathBuf> {
-    use crate::rustc_fs_util::try_canonicalize;
-
-    let supplied = &sess.opts.proc_macro_dylibs;
-    if supplied.is_empty() {
-        return None;
-    }
-    let loaded: Vec<eko::path::PathBuf> =
-        source.paths().filter_map(|path| try_canonicalize(path).ok()).collect();
-    supplied.iter().find_map(|(metadata, dylib)| {
-        let metadata = try_canonicalize(metadata).ok()?;
-        loaded.contains(&metadata).then(|| dylib.clone())
-    })
 }
 
 fn fn_spans(krate: &ast::Crate, name: Symbol) -> Vec<Span> {

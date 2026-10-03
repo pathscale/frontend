@@ -1163,9 +1163,12 @@ impl<'hir> LoweringContext<'_, 'hir> {
         span: Span,
         args: Option<&'hir hir::GenericArgs<'hir>>,
     ) -> &'hir hir::Path<'hir> {
-        let def_id = self.tcx.require_lang_item(lang_item, span);
-        let def_kind = self.tcx.def_kind(def_id);
-        let res = Res::Def(def_kind, def_id);
+        // Without a sysroot the lang item may be absent; an error path keeps the rest of the
+        // body analysable instead of aborting the whole session.
+        let res = match self.tcx.lang_items().get(lang_item) {
+            Some(def_id) => Res::Def(self.tcx.def_kind(def_id), def_id),
+            None => Res::Err,
+        };
         self.arena.alloc(hir::Path {
             span,
             res,

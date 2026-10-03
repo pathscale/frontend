@@ -545,9 +545,121 @@ pub fn structurally_relate_tys<I: Interner, R: TypeRelation<I>>(
     }
 }
 
+fn const_term_from_const<I: Interner>(value: I::Const) -> Option<ty::ConstTerm<I>> {
+    match value.kind() {
+        ty::ConstKind::Param(param) => Some(ty::ConstTerm::Param(param)),
+        ty::ConstKind::Value(_) => Some(ty::ConstTerm::Literal(value)),
+        _ => None,
+    }
+}
+
+fn const_alias_def<I: Interner>(value: I::Const) -> Option<I::DefId> {
+    match value.kind() {
+        ty::ConstKind::Alias(_, alias) => alias.kind.opt_def_id(),
+        _ => None,
+    }
+}
+
+fn const_terms_equal<I: Interner, R: TypeRelation<I>>(
+    relation: &mut R,
+    a: &ty::ConstTerm<I>,
+    b: &ty::ConstTerm<I>,
+) -> bool {
+    match (a, b) {
+        (ty::ConstTerm::Literal(a), ty::ConstTerm::Literal(b)) => {
+            relation.relate(*a, *b).is_ok()
+        }
+        (ty::ConstTerm::Param(a), ty::ConstTerm::Param(b)) => a.index() == b.index(),
+        (ty::ConstTerm::Binary(a_op, a_lhs, a_rhs), ty::ConstTerm::Binary(b_op, b_lhs, b_rhs)) => {
+            a_op == b_op
+                && const_terms_equal(relation, a_lhs, b_lhs)
+                && const_terms_equal(relation, a_rhs, b_rhs)
+        }
+        (ty::ConstTerm::Unary(a_op, a_arg), ty::ConstTerm::Unary(b_op, b_arg)) => {
+            a_op == b_op && const_terms_equal(relation, a_arg, b_arg)
+        }
+        (ty::ConstTerm::Call(a_def, a_args), ty::ConstTerm::Call(b_def, b_args)) => {
+            a_def == b_def
+                && a_args.len() == b_args.len()
+                && a_args
+                    .iter()
+                    .zip(b_args.iter())
+                    .all(|(a, b)| const_terms_equal(relation, a, b))
+        }
+        _ => false,
+    }
+}
+
+fn const_term_has_operation<I: Interner>(term: &ty::ConstTerm<I>) -> bool {
+    match term {
+        ty::ConstTerm::Binary(..) | ty::ConstTerm::Unary(..) | ty::ConstTerm::Call(..) => true,
+        ty::ConstTerm::Literal(_) | ty::ConstTerm::Param(_) | ty::ConstTerm::Opaque => false,
+    }
+}
+
+fn relate_const_alias_terms<I: Interner, R: TypeRelation<I>>(
+    relation: &mut R,
+    a: I::Const,
+    b: I::Const,
+) -> Option<RelateResult<I, I::Const>> {
+    if matches!(a.kind(), ty::ConstKind::Infer(_) | ty::ConstKind::Error(_))
+        || matches!(b.kind(), ty::ConstKind::Infer(_) | ty::ConstKind::Error(_))
+    {
+        return None;
+    }
+
+    let a_def = const_alias_def::<I>(a);
+    let b_def = const_alias_def::<I>(b);
+    if matches!((a_def, b_def), (Some(a_def), Some(b_def)) if a_def == b_def) {
+        return None;
+    }
+
+    let cx = relation.cx();
+    let a_term = a_def.and_then(|def_id| cx.const_term(def_id).map(|term| (def_id, term)));
+    let b_term = b_def.and_then(|def_id| cx.const_term(def_id).map(|term| (def_id, term)));
+    if a_term.is_none() && b_term.is_none() {
+        return None;
+    }
+
+    let a_has_operation = a_term
+        .as_ref()
+        .is_some_and(|(_, term)| const_term_has_operation(term));
+    let b_has_operation = b_term
+        .as_ref()
+        .is_some_and(|(_, term)| const_term_has_operation(term));
+    let a_term = a_term.map(|(_, term)| term).or_else(|| const_term_from_const(a));
+    let b_term = b_term.map(|(_, term)| term).or_else(|| const_term_from_const(b));
+    let (Some(a_term), Some(b_term)) = (a_term, b_term) else {
+        if a_has_operation && let Some(def_id) = a_def {
+            cx.record_uncomputed_const(def_id);
+        }
+        if b_has_operation && let Some(def_id) = b_def {
+            cx.record_uncomputed_const(def_id);
+        }
+        return Some(Err(TypeError::ConstMismatch(ExpectedFound::new(a, b))));
+    };
+
+    if const_terms_equal(relation, &a_term, &b_term) {
+        return Some(Ok(a));
+    }
+
+    if const_term_has_operation(&a_term)
+        && let Some(def_id) = a_def
+    {
+        cx.record_uncomputed_const(def_id);
+    }
+    if const_term_has_operation(&b_term)
+        && let Some(def_id) = b_def
+    {
+        cx.record_uncomputed_const(def_id);
+    }
+
+    Some(Err(TypeError::ConstMismatch(ExpectedFound::new(a, b))))
+}
+
 /// Relates `a` and `b` structurally, calling the relation for all nested values.
-/// Any semantic equality, e.g. of alias consts, and inference variables have
-/// to be handled by the caller.
+/// Supported local const aliases are read as symbolic HIR terms. Other semantic
+/// equalities and inference variables have to be handled by the caller.
 ///
 /// FIXME: This is not totally structural, which probably should be fixed.
 /// See the HACKs below.
@@ -575,6 +687,10 @@ pub fn structurally_relate_consts<I: Interner, R: TypeRelation<I>>(
         a,
         b
     );
+
+    if let Some(result) = relate_const_alias_terms(relation, a, b) {
+        return result;
+    }
 
     // Currently, the values that can be unified are primitive types,
     // and those that derive both `PartialEq` and `Eq`, corresponding

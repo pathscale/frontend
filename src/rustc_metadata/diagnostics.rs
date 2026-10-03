@@ -406,21 +406,6 @@ pub(crate) struct FoundStaticlib {
     pub found_crates: String,
 }
 
-#[derive(Diagnostic)]
-#[diag("found crate `{$crate_name}` compiled by an incompatible version of rustc{$add_info}", code = E0514)]
-#[note("the following crate versions were found:{$found_crates}")]
-#[help(
-    "please recompile that crate using this compiler ({$rustc_version}) (consider running `cargo clean` first)"
-)]
-pub(crate) struct IncompatibleRustc {
-    #[primary_span]
-    pub span: Span,
-    pub crate_name: Symbol,
-    pub add_info: String,
-    pub found_crates: String,
-    pub rustc_version: String,
-}
-
 pub(crate) struct InvalidMetadataFiles {
     pub span: Span,
     pub crate_name: Symbol,
@@ -493,10 +478,8 @@ pub(crate) struct CannotFindCrate {
     pub searched: Vec<String>,
     pub missing_core: bool,
     pub current_crate: String,
-    pub is_nightly_build: bool,
     pub profiler_runtime: Symbol,
     pub locator_triple: TargetTuple,
-    pub is_ui_testing: bool,
     pub is_tier_3: bool,
 }
 
@@ -523,10 +506,7 @@ impl<G: EmissionGuarantee> Diagnostic<'_, G> for CannotFindCrate {
             let has_precompiled_std = !self.is_tier_3;
 
             if self.missing_core {
-                if env!("CFG_RELEASE_CHANNEL") == "dev" && !self.is_ui_testing {
-                    // Note: Emits the nicer suggestion only for the dev channel.
-                    diag.help(msg!("consider adding the standard library to the sysroot with `x build library --target {$locator_triple}`"));
-                } else if has_precompiled_std {
+                if has_precompiled_std {
                     // NOTE: this suggests using rustup, even though the user may not have it installed.
                     // That's because they could choose to install it; or this may give them a hint which
                     // target they need to install from their distro.
@@ -543,9 +523,7 @@ impl<G: EmissionGuarantee> Diagnostic<'_, G> for CannotFindCrate {
             if !self.missing_core && self.span.is_dummy() {
                 diag.note(msg!("`std` is required by `{$current_crate}` because it does not declare `#![no_std]`"));
             }
-            // Recommend -Zbuild-std even on stable builds for Tier 3 targets because
-            // it's the recommended way to use the target, the user should switch to nightly.
-            if self.is_nightly_build || !has_precompiled_std {
+            if !has_precompiled_std {
                 diag.help(msg!("consider building the standard library from source with `cargo build -Zbuild-std`"));
             }
         } else if self.crate_name == self.profiler_runtime {

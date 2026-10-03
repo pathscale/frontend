@@ -249,7 +249,7 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for LowerIntrinsics {
                             tcx,
                         );
 
-                        let Some(ret_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                        let Some(ret_ty) = crate::rustc_const_eval::util::intrinsic_type_param(
                             tcx,
                             def_id,
                             generic_args,
@@ -314,7 +314,7 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for LowerIntrinsics {
                             );
                         };
                         let target = target.unwrap();
-                        let Some(pointer_ty) = crate::rustc_const_eval::interpret::intrinsic_type_param(
+                        let Some(pointer_ty) = crate::rustc_const_eval::util::intrinsic_type_param(
                             tcx,
                             def_id,
                             generic_args,

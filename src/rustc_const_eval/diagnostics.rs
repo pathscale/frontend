@@ -8,87 +8,13 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use alloc::borrow::Cow;
-
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::formatting::DiagMessageAddArg;
-use crate::rustc_errors::{Diag, DiagArgValue, EmissionGuarantee, MultiSpan, Subdiagnostic, msg};
+use crate::rustc_errors::{Subdiagnostic, msg};
 use crate::rustc_hir::ConstContext;
 use rustc_macros::{Diagnostic, Subdiagnostic};
-use crate::rustc_middle::ty::{Mutability, Ty};
+use crate::rustc_middle::ty::Ty;
 use crate::rustc_span::{Span, Symbol};
-
-use crate::rustc_const_eval::interpret::InternKind;
-
-#[derive(Diagnostic)]
-#[diag(
-    r#"encountered dangling pointer in final value of {$kind ->
-    [static] static
-    [static_mut] mutable static
-    [const] constant
-    [promoted] promoted
-    *[other] {""}
-}"#
-)]
-pub(crate) struct DanglingPtrInFinal {
-    #[primary_span]
-    pub span: Span,
-    pub kind: InternKind,
-}
-
-#[derive(Diagnostic)]
-#[diag(
-    "#[thread_local] does not support implicit nested statics, please create explicit static items and refer to them instead"
-)]
-pub(crate) struct NestedStaticInThreadLocal {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(
-    r#"encountered mutable pointer in final value of {$kind ->
-    [static] static
-    [static_mut] mutable static
-    [const] constant
-    [promoted] promoted
-    *[other] {""}
-}"#
-)]
-pub(crate) struct MutablePtrInFinal {
-    #[primary_span]
-    pub span: Span,
-    pub kind: InternKind,
-}
-
-#[derive(Diagnostic)]
-#[diag("encountered `const_allocate` pointer in final value that was not made global")]
-#[note(
-    "use `const_make_global` to turn allocated pointers into immutable globals before returning"
-)]
-pub(crate) struct ConstHeapPtrInFinal {
-    #[primary_span]
-    pub span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag(
-    r#"encountered partial pointer in final value of {$kind ->
-    [static] static
-    [static_mut] mutable static
-    [const] constant
-    [promoted] promoted
-    *[other] {""}
-}"#
-)]
-#[note(
-    "while pointers can be broken apart into individual bytes during const-evaluation, only complete pointers (with all their bytes in the right order) are supported in the final value"
-)]
-pub(crate) struct PartialPtrInFinal {
-    #[primary_span]
-    pub span: Span,
-    pub kind: InternKind,
-}
 
 #[derive(Diagnostic)]
 #[diag(
@@ -289,77 +215,11 @@ pub(crate) struct InteriorMutableBorrowEscaping {
     pub kind: ConstContext,
 }
 
-#[derive(Diagnostic)]
-#[diag("constant evaluation is taking a long time")]
-#[note(
-    "this lint makes sure the compiler doesn't get stuck due to infinite loops in const eval.
-    If your compilation actually takes a long time, you can safely allow the lint"
-)]
-pub(crate) struct LongRunning {
-    #[help("the constant being evaluated")]
-    pub item_span: Span,
-}
-
-#[derive(Diagnostic)]
-#[diag("constant evaluation is taking a long time")]
-pub(crate) struct LongRunningWarn {
-    #[primary_span]
-    #[label("the const evaluator is currently interpreting this expression")]
-    pub span: Span,
-    #[help("the constant being evaluated")]
-    pub item_span: Span,
-}
-
 #[derive(Subdiagnostic)]
 #[note("impl defined here, but it is not `const`")]
 pub(crate) struct NonConstImplNote {
     #[primary_span]
     pub span: Span,
-}
-
-#[derive(Clone)]
-pub(crate) struct FrameNote {
-    pub span: Span,
-    pub times: i32,
-    pub where_: &'static str,
-    pub instance: String,
-    pub has_label: bool,
-}
-
-impl Subdiagnostic for FrameNote {
-    fn add_to_diag<G: EmissionGuarantee>(self, diag: &mut Diag<'_, G>) {
-        let mut span: MultiSpan = self.span.into();
-        if self.has_label && !self.span.is_dummy() {
-            span.push_span_label(self.span, msg!("the failure occurred here"));
-        }
-        let msg = msg!(
-            r#"{$times ->
-                [0] inside {$where_ ->
-                    [closure] closure
-                    [instance] `{$instance}`
-                    *[other] {""}
-                }
-                *[other] [... {$times} additional calls inside {$where_ ->
-                    [closure] closure
-                    [instance] `{$instance}`
-                    *[other] {""}
-                } ...]
-            }"#
-        )
-        .arg("times", self.times)
-        .arg("where_", self.where_)
-        .arg("instance", self.instance)
-        .format();
-        diag.span_note(span, msg);
-    }
-}
-
-#[derive(Subdiagnostic)]
-#[note(r#"the raw bytes of the constant (size: {$size}, align: {$align}) {"{"}{$bytes}{"}"}"#)]
-pub(crate) struct RawBytesNote {
-    pub size: u64,
-    pub align: u64,
-    pub bytes: String,
 }
 
 #[derive(Diagnostic)]
@@ -500,15 +360,4 @@ pub(crate) struct LiveDrop<'tcx> {
     pub dropped_ty: Ty<'tcx>,
     #[label("value is dropped here")]
     pub dropped_at: Span,
-}
-
-impl crate::rustc_errors::IntoDiagArg for InternKind {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> DiagArgValue {
-        DiagArgValue::Str(Cow::Borrowed(match self {
-            InternKind::Static(Mutability::Not) => "static",
-            InternKind::Static(Mutability::Mut) => "static_mut",
-            InternKind::Constant => "const",
-            InternKind::Promoted => "promoted",
-        }))
-    }
 }

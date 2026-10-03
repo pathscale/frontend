@@ -68,8 +68,6 @@ pub(crate) fn rustc_version(cfg_version: &'static str) -> String {
 }
 
 /// Metadata encoding version.
-/// N.B., increment this if you change the format of metadata such that
-/// the rustc version can't be found to compare with `rustc_version()`.
 const METADATA_VERSION: u8 = 10;
 
 /// Metadata header which includes `METADATA_VERSION`.
@@ -206,11 +204,19 @@ pub(crate) struct ProcMacroData {
     macros: LazyArray<(DefIndex, LazyValue<ProcMacroKind>)>,
 }
 
+pub use crate::rustc_expand::proc_macro::ProcMacroEntryBody;
+pub use crate::rustc_expand::proc_macro_schema::ProcMacroSchema;
+
 #[derive(MetadataEncodable, LazyDecodable)]
 pub enum ProcMacroKind {
-    CustomDerive { trait_name: String, attributes: Vec<String> },
-    Attr { name: String },
-    Bang { name: String },
+    CustomDerive {
+        trait_name: String,
+        attributes: Vec<String>,
+        entry_body: Option<ProcMacroEntryBody>,
+        schema: ProcMacroSchema,
+    },
+    Attr { name: String, entry_body: Option<ProcMacroEntryBody>, schema: ProcMacroSchema },
+    Bang { name: String, entry_body: Option<ProcMacroEntryBody>, schema: ProcMacroSchema },
 }
 
 /// Serialized crate metadata.

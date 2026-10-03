@@ -65,13 +65,8 @@ pub fn relative_target_rustlib_path(sysroot: &Path, target_triple: &str) -> Path
 
 /// The name of the directory rustc expects libraries to be located.
 fn find_relative_libdir(sysroot: &Path) -> alloc::borrow::Cow<'static, str> {
-    // FIXME: This is a quick hack to make the rustc binary able to locate
-    // Rust libraries in Linux environments where libraries might be installed
-    // to lib64/lib32. This would be more foolproof by basing the sysroot off
-    // of the directory where `librustc_driver` is located, rather than
-    // where the rustc binary is.
-    // If --libdir is set during configuration to the value other than
-    // "lib" (i.e., non-default), this value is used (see issue #16552).
+    // Resolve the library directory beneath the caller's sysroot. Linux systems may use
+    // `lib64` or `lib32`; a configured non-default libdir takes precedence.
 
     #[cfg(target_pointer_width = "64")]
     const PRIMARY_LIB_DIR: &str = "lib64";

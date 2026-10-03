@@ -40,6 +40,30 @@ fn a_real_file_keeps_its_facts_when_its_bodies_do_not_type_check() {
 }
 
 #[test]
+fn a_field_keeps_its_first_doc_line_without_type_checking_its_owner() {
+    ready();
+    let source = "\
+struct Record {
+    /// The first line.
+    /// More detail.
+    documented: u8,
+    undocumented: u16,
+}
+fn broken() -> u8 { 1u16 }
+";
+    let facts = match analyze_source("field_docs", source) {
+        Ok(facts) => facts,
+        Err(error) => panic!("analyze_source refused: {error:?}"),
+    };
+    assert!(facts.definitions.iter().any(|definition| definition.name == "Record"));
+    assert!(facts.definitions.iter().any(|definition| definition.name == "broken"));
+    assert!(facts.diagnostics.iter().any(|diagnostic| diagnostic.contains("mismatched types")));
+    let record = facts.definitions.iter().find(|definition| definition.name == "Record").expect("Record");
+    assert_eq!(record.fields[0].doc.as_deref(), Some("The first line."));
+    assert_eq!(record.fields[1].doc, None);
+}
+
+#[test]
 fn the_site_of_an_offset_names_its_scope() {
     ready();
     let offset = SOURCE.find("n }").expect("marker") as u32;
@@ -104,4 +128,91 @@ impl Pat for S { fn is_in(&self, at: u32) -> bool { true } }
     assert_eq!(unstable("Pat"), [Some("pat")]);
     // The trait's own `is_in` and the impl's: both need `pat`.
     assert_eq!(unstable("is_in"), [Some("pat"), Some("pat")]);
+}
+
+#[test]
+fn a_small_crate_records_written_generics_docs_and_impl_items() {
+    ready();
+    let source = r#"
+pub trait Plain {}
+pub struct Holder;
+pub trait HasItem<T> {
+    type Item;
+
+    ///
+    /// Converts a value to its item.
+    fn convert<U: Plain>(&self, value: U) -> Self::Item
+    where
+        T: Plain;
+}
+
+impl<T> HasItem<T> for Holder
+where
+    T: Plain,
+{
+    type Item = char;
+
+    fn convert<U: Plain>(&self, _: U) -> char
+    where
+        T: Plain,
+    {
+        'x'
+    }
+}
+
+impl Holder {
+    pub unsafe fn peek(&self, pointer: *const u8) -> u8 {
+        unsafe { *pointer }
+    }
+
+    pub const fn zero() -> u8 {
+        0
+    }
+}
+"#;
+    let facts = match analyze_source("written", source) {
+        Ok(facts) => facts,
+        Err(error) => panic!("analyze_source refused: {error:?}"),
+    };
+
+    let method = facts
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "convert" && definition.doc.is_some())
+        .expect("documented trait method");
+    assert_eq!(method.doc.as_deref(), Some("Converts a value to its item."));
+    let signature = method.signature.as_ref().expect("method signature");
+    assert_eq!(signature.generics, ["U"], "{signature:?}");
+    // The inline bound and the `where` clause, each as written.
+    assert_eq!(signature.predicates, ["U: Plain", "T: Plain"], "{signature:?}");
+    assert!(!signature.unsafety && !signature.constness, "{signature:?}");
+
+    // The header's `unsafe` and `const`, as written.
+    let header = |name: &str| {
+        let definition = facts
+            .definitions
+            .iter()
+            .find(|definition| definition.name == name)
+            .unwrap_or_else(|| panic!("{name} missing"));
+        let signature = definition.signature.as_ref().expect("fn signature");
+        (signature.unsafety, signature.constness)
+    };
+    assert_eq!(header("peek"), (true, false));
+    assert_eq!(header("zero"), (false, true));
+
+    let implementation = facts
+        .impls
+        .iter()
+        .find(|implementation| implementation.items.iter().any(|item| item.name == "Item"))
+        .expect("HasItem impl");
+    assert_eq!(implementation.self_type, "Holder", "{implementation:?}");
+    assert_eq!(implementation.trait_ref.as_deref(), Some("HasItem<T>"), "{implementation:?}");
+    assert_eq!(implementation.generics, ["T"], "{implementation:?}");
+    assert_eq!(implementation.predicates, ["T: Plain"], "{implementation:?}");
+    let item = implementation
+        .items
+        .iter()
+        .find(|item| item.name == "Item")
+        .expect("associated type");
+    assert_eq!(item.value.as_deref(), Some("char"));
 }

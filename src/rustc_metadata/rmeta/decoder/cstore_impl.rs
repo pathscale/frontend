@@ -21,6 +21,7 @@ use crate::rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
 use crate::rustc_middle::arena::ArenaAllocatable;
 use crate::bug;
 use crate::rustc_middle::metadata::{AmbigModChild, ModChild};
+use crate::rustc_middle::mir::interpret::ErrorHandled;
 use crate::rustc_middle::middle::exported_symbols::ExportedSymbol;
 use crate::rustc_middle::middle::stability::DeprecationEntry;
 use crate::rustc_middle::queries::ExternProviders;
@@ -32,7 +33,7 @@ use crate::rustc_serialize::Decoder;
 use crate::rustc_session::StableCrateId;
 use crate::rustc_span::def_id::ModId;
 use crate::rustc_span::hygiene::ExpnId;
-use crate::rustc_span::{Span, Symbol, kw};
+use crate::rustc_span::{DUMMY_SP, Span, Symbol, kw};
 
 use super::{Decodable, DecodeIterator};
 use crate::rustc_metadata::creader::{CStore, LoadedMacro};
@@ -284,7 +285,24 @@ provide! { tcx, def_id, other, cdata,
             .map(|lazy| lazy.decode((cdata, tcx)))
             .process_decoded(tcx, || panic!("{def_id:?} does not have coerce_unsized_info")))
     }
-    mir_const_qualif => { table }
+    mir_const_qualif => {
+        // Qualifs are written beside a const's MIR, and metadata written for analysis carries
+        // no MIR, so a dependency's const has none. Answer the conservative qualifs: promotion
+        // (reached through borrowck when an `impl Trait` return type is inferred) then leaves
+        // the operand alone, where a panic here refused the whole dependency read.
+        cdata
+            .root
+            .tables
+            .mir_const_qualif
+            .get(cdata, def_id.index)
+            .map(|lazy| lazy.decode((cdata, tcx)))
+            .unwrap_or(crate::rustc_middle::mir::ConstQualifs {
+                has_mut_interior: true,
+                needs_drop: true,
+                needs_non_const_drop: true,
+                tainted_by_errors: None,
+            })
+    }
     rendered_const => { table }
     rendered_precise_capturing_args => { table }
     asyncness => { table_direct }
@@ -293,13 +311,13 @@ provide! { tcx, def_id, other, cdata,
     coroutine_for_closure => { table }
     coroutine_by_move_body_def_id => { table }
     eval_static_initializer => {
-        Ok(cdata
+        cdata
             .root
             .tables
             .eval_static_initializer
             .get(cdata, def_id.index)
             .map(|lazy| lazy.decode((cdata, tcx)))
-            .unwrap_or_else(|| panic!("{def_id:?} does not have eval_static_initializer")))
+            .ok_or(ErrorHandled::TooGeneric(DUMMY_SP))
     }
     trait_def => { table }
     deduced_param_attrs => {

@@ -104,7 +104,6 @@ use crate::rustc_abi::{CVariadicStatus, ExternAbi};
 use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
-use crate::rustc_middle::mir::interpret::GlobalId;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{Const, Ty, TyCtxt};
 use crate::rustc_middle::{middle, ty};
@@ -206,26 +205,6 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
     }, |owners, index| {
         let item_def_id = owners[index];
         let def_kind = tcx.def_kind(item_def_id);
-        // Make sure we evaluate all static and (non-associated) const items, even if unused.
-        // If any of these fail to evaluate, we do not want this crate to pass compilation.
-        match def_kind {
-            DefKind::Static { .. } => {
-                tcx.ensure_ok().eval_static_initializer(item_def_id);
-                check::maybe_check_static_with_link_section(tcx, item_def_id);
-            }
-            DefKind::Const { .. }
-                if !tcx.generics_of(item_def_id).own_requires_monomorphization()
-                    && !tcx.is_type_const(item_def_id) =>
-            {
-                // FIXME(generic_const_items): Passing empty instead of identity args is fishy but
-                //                             seems to be fine for now. Revisit this!
-                let instance = ty::Instance::new_raw(item_def_id.into(), ty::GenericArgs::empty());
-                let cid = GlobalId { instance, promoted: None };
-                let typing_env = ty::TypingEnv::fully_monomorphized();
-                tcx.ensure_ok().eval_to_const_value_raw(typing_env.as_query_input(cid));
-            }
-            _ => (),
-        }
         // Skip `AnonConst`s and type system `InlineConst`s because we feed their `type_of` in
         // `feed_anon_const_type`.
         // Also skip items for which typeck forwards to parent typeck.

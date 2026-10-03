@@ -19,7 +19,7 @@ use crate::rustc_errors::{
 };
 use crate::rustc_feature::{GateIssue, find_feature_issue};
 use rustc_macros::{Diagnostic, Subdiagnostic};
-use crate::rustc_span::{Span, Symbol, sym};
+use crate::rustc_span::{Span, Symbol};
 use crate::rustc_target::spec::{SplitDebuginfo, StackProtector, TargetTuple};
 
 use crate::rustc_session::Session;
@@ -131,7 +131,7 @@ pub fn add_feature_diagnostics_for_issue<G: EmissionGuarantee>(
         err.subdiagnostic(FeatureDiagnosticForIssue { n });
     }
 
-    // #23973: do not suggest `#![feature(...)]` if we are in beta/stable
+    // Only suggest an enabling attribute when unstable features are allowed.
     if sess.unstable_features.is_nightly_build() {
         if feature_from_cli {
             err.subdiagnostic(CliFeatureDiagnosticHelp { feature });
@@ -139,15 +139,6 @@ pub fn add_feature_diagnostics_for_issue<G: EmissionGuarantee>(
             err.subdiagnostic(FeatureDiagnosticSuggestion { feature, span });
         } else {
             err.subdiagnostic(FeatureDiagnosticHelp { feature });
-        }
-        if feature == sym::rustc_attrs {
-            // We're unlikely to stabilize something out of `rustc_attrs`
-            // without at least renaming it, so pointing out how old
-            // the compiler is will do little good.
-        } else if sess.opts.unstable_opts.ui_testing {
-            err.subdiagnostic(SuggestUpgradeCompiler::ui_testing());
-        } else if let Some(suggestion) = SuggestUpgradeCompiler::new() {
-            err.subdiagnostic(suggestion);
         }
     }
 }
@@ -175,19 +166,9 @@ pub fn feature_err_unstable_feature_bound(
 
     let mut err = sess.dcx().create_err(FeatureGateError { span, explain: explain.into() });
 
-    // #23973: do not suggest `#![feature(...)]` if we are in beta/stable
+    // Only suggest an enabling attribute when unstable features are allowed.
     if sess.unstable_features.is_nightly_build() {
         err.subdiagnostic(FeatureDiagnosticHelp { feature });
-
-        if feature == sym::rustc_attrs {
-            // We're unlikely to stabilize something out of `rustc_attrs`
-            // without at least renaming it, so pointing out how old
-            // the compiler is will do little good.
-        } else if sess.opts.unstable_opts.ui_testing {
-            err.subdiagnostic(SuggestUpgradeCompiler::ui_testing());
-        } else if let Some(suggestion) = SuggestUpgradeCompiler::new() {
-            err.subdiagnostic(suggestion);
-        }
     }
     err
 }
@@ -218,24 +199,6 @@ impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for FeatureGateError {
 #[note("see issue #{$n} <https://github.com/rust-lang/rust/issues/{$n}> for more information")]
 pub(crate) struct FeatureDiagnosticForIssue {
     pub(crate) n: NonZero<u32>,
-}
-
-#[derive(Subdiagnostic)]
-#[note("this compiler was built on {$date}; consider upgrading it if it is out of date")]
-pub(crate) struct SuggestUpgradeCompiler {
-    date: &'static str,
-}
-
-impl SuggestUpgradeCompiler {
-    pub(crate) fn ui_testing() -> Self {
-        Self { date: "YYYY-MM-DD" }
-    }
-
-    pub(crate) fn new() -> Option<Self> {
-        let date = option_env!("CFG_VER_DATE")?;
-
-        Some(Self { date })
-    }
 }
 
 #[derive(Subdiagnostic)]

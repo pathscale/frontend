@@ -592,8 +592,6 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
     /// them.
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
-    /// Most likely, you want to use the `PlaceTy` and `OperandTy`-based methods
-    /// on `InterpCx` instead.
     #[inline]
     pub fn get_bytes_strip_provenance(
         &self,
@@ -628,8 +626,6 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
     /// actually overwrite all the data there!
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
-    /// Most likely, you want to use the `PlaceTy` and `OperandTy`-based methods
-    /// on `InterpCx` instead.
     pub fn get_bytes_unchecked_for_overwrite(
         &mut self,
         cx: &impl HasDataLayout,
@@ -695,7 +691,6 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
     /// for ZSTness anyway due to integer pointers being valid for ZSTs.
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
-    /// Most likely, you want to call `InterpCx::read_scalar` instead of this method.
     pub fn read_scalar(
         &self,
         cx: &impl HasDataLayout,
@@ -743,7 +738,6 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
     /// for ZSTness anyway due to integer pointers being valid for ZSTs.
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
-    /// Most likely, you want to call `InterpCx::write_scalar` instead of this method.
     pub fn write_scalar(
         &mut self,
         cx: &impl HasDataLayout,

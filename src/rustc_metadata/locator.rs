@@ -244,19 +244,17 @@ use crate::rustc_session::utils::CanonicalizedPath;
 use crate::rustc_session::{Session, config};
 use crate::rustc_span::{Span, Symbol};
 use crate::rustc_target::spec::{Target, TargetTuple};
-use crate::rustc_fs_util::TempDirBuilder;
 use tracing::{debug, info};
 
 use crate::rustc_metadata::creader::{Library, MetadataLoader};
 use crate::rustc_metadata::diagnostics;
-use crate::rustc_metadata::rmeta::{METADATA_HEADER, MetadataBlob, rustc_version};
+use crate::rustc_metadata::rmeta::{METADATA_HEADER, MetadataBlob};
 
 #[derive(Clone)]
 pub(crate) struct CrateLocator<'a> {
     // Immutable per-session configuration.
     only_needs_metadata: bool,
     metadata_loader: &'a dyn MetadataLoader,
-    cfg_version: &'static str,
 
     // Immutable per-search configuration.
     crate_name: Symbol,
@@ -340,7 +338,6 @@ impl<'a> CrateLocator<'a> {
         CrateLocator {
             only_needs_metadata,
             metadata_loader,
-            cfg_version: sess.cfg_version,
             crate_name,
             // Upstream reads `--extern` only when `hash` is `None`, on the grounds that an SVH
             // means this is a transitive dependency and the command line describes the direct
@@ -680,8 +677,6 @@ impl<'a> CrateLocator<'a> {
                 flavor,
                 &lib,
                 self.metadata_loader,
-                self.cfg_version,
-                Some(self.crate_name),
             ) {
                 Ok(blob) => {
                     if let Some(h) = self.crate_matches(crate_rejections, &blob, &lib) {
@@ -691,19 +686,6 @@ impl<'a> CrateLocator<'a> {
                         continue;
                     }
                 }
-                Err(MetadataError::VersionMismatch { expected_version, found_version }) => {
-                    // The file was present and created by the same compiler version, but we
-                    // couldn't load it for some reason. Give a hard error instead of silently
-                    // ignoring it, but only if we would have given an error anyway.
-                    info!(
-                        "Rejecting via version: expected {} got {}",
-                        expected_version, found_version
-                    );
-                    crate_rejections
-                        .via_version
-                        .push(CrateMismatch { path: lib, got: found_version });
-                    continue;
-                }
                 Err(MetadataError::LoadFailure(err)) => {
                     info!("no metadata found: {}", err);
                     // Metadata was loaded from interface file earlier.
@@ -711,9 +693,7 @@ impl<'a> CrateLocator<'a> {
                         ret = Some(lib);
                         continue;
                     }
-                    // The file was present and created by the same compiler version, but we
-                    // couldn't load it for some reason. Give a hard error instead of silently
-                    // ignoring it, but only if we would have given an error anyway.
+                    // Preserve why a present metadata file could not be read.
                     crate_rejections.via_invalid.push(CrateMismatch { path: lib, got: err });
                     continue;
                 }
@@ -891,8 +871,6 @@ fn get_metadata_section<'p>(
     flavor: CrateFlavor,
     filename: &'p Path,
     loader: &dyn MetadataLoader,
-    cfg_version: &'static str,
-    crate_name: Option<Symbol>,
 ) -> Result<MetadataBlob, MetadataError<'p>> {
     if !filename.exists() {
         return Err(MetadataError::NotPresent(filename));
@@ -902,57 +880,10 @@ fn get_metadata_section<'p>(
             loader.get_rlib_metadata(target, filename).map_err(MetadataError::LoadFailure)?
         }
         CrateFlavor::SDylib => {
-            let compiler = eko::env::current_exe()
-                .map(eko::path::PathBuf::from_bytes)
-                .ok_or_else(|| {
-                    MetadataError::LoadFailure(
-                        "couldn't obtain current compiler binary when loading sdylib interface"
-                            .to_string(),
-                    )
-                })?;
-
-            let tmp_path = match TempDirBuilder::new().prefix("rustc").tempdir() {
-                Ok(tmp_path) => tmp_path,
-                Err(error) => {
-                    return Err(MetadataError::LoadFailure(format!(
-                        "couldn't create a temp dir: {}",
-                        error
-                    )));
-                }
-            };
-
-            let crate_name = crate_name.unwrap();
-            debug!("compiling {}", filename.display());
-            // FIXME: This will need to be done either within the current compiler session or
-            // as a separate compiler session in the same process.
-            let res = eko::command::Command::new(compiler)
-                .arg(&filename)
-                .arg("--emit=metadata")
-                .arg(format!("--crate-name={}", crate_name))
-                .arg(format!("--out-dir={}", tmp_path.path().display()))
-                .arg("-Zbuild-sdylib-interface")
-                .output()
-                .ok_or_else(|| {
-                    MetadataError::LoadFailure(
-                        "couldn't spawn a compiler to build the interface".to_string(),
-                    )
-                })?;
-
-            if !res.success() {
-                return Err(MetadataError::LoadFailure(format!(
-                    "couldn't compile interface: {}",
-                    core::str::from_utf8(&res.stderr).unwrap_or_default()
-                )));
-            }
-
-            // Load interface metadata instead of crate metadata.
-            let interface_metadata_name = format!("lib{}.rmeta", crate_name);
-            let rmeta_file = tmp_path.path().join(interface_metadata_name);
-            debug!("loading interface metadata from {}", rmeta_file.display());
-            let rmeta = get_rmeta_metadata_section(rmeta_file.as_path())?;
-            let _ = eko::file::remove_file(rmeta_file);
-
-            rmeta
+            return Err(MetadataError::LoadFailure(format!(
+                "failed to load interface metadata from {}",
+                filename.display()
+            )));
         }
         CrateFlavor::Dylib => {
             let buf =
@@ -991,22 +922,14 @@ fn get_metadata_section<'p>(
             filename.display()
         )));
     };
-    match blob.check_compatibility(cfg_version) {
-        Ok(()) => {
-            debug!("metadata blob read okay");
-            Ok(blob)
-        }
-        Err(None) => Err(MetadataError::LoadFailure(format!(
+    if blob.check_compatibility().is_err() {
+        return Err(MetadataError::LoadFailure(format!(
             "invalid metadata version found: {}",
             filename.display()
-        ))),
-        Err(Some(found_version)) => {
-            return Err(MetadataError::VersionMismatch {
-                expected_version: rustc_version(cfg_version),
-                found_version,
-            });
-        }
+        )));
     }
+    debug!("metadata blob read okay");
+    Ok(blob)
 }
 
 fn get_rmeta_metadata_section<'a, 'p>(filename: &'p Path) -> Result<OwnedSlice, MetadataError<'a>> {
@@ -1035,10 +958,9 @@ pub fn list_file_metadata(
     metadata_loader: &dyn MetadataLoader,
     out: &mut dyn Write,
     ls_kinds: &[String],
-    cfg_version: &'static str,
 ) -> IoResult<()> {
     let flavor = get_flavor_from_path(path);
-    match get_metadata_section(target, flavor, path, metadata_loader, cfg_version, None) {
+    match get_metadata_section(target, flavor, path, metadata_loader) {
         // `list_crate_metadata` writes through a `core::fmt::Write`, so its failure is a
         // `fmt::Error`, which carries nothing. The path is what is worth reporting and the
         // caller already has it.
@@ -1074,7 +996,6 @@ pub(crate) struct CrateRejections {
     via_hash: Vec<CrateMismatch>,
     via_triple: Vec<CrateMismatch>,
     via_kind: Vec<CrateMismatch>,
-    via_version: Vec<CrateMismatch>,
     via_filename: Vec<CrateMismatch>,
     via_invalid: Vec<CrateMismatch>,
 }
@@ -1104,7 +1025,6 @@ pub(crate) enum CrateError {
     FullMetadataNotFound(Symbol, CrateFlavor),
     SymbolConflictsCurrent(Symbol),
     StableCrateIdCollision(Symbol, Symbol),
-    DlOpen(String, String),
     LocatorCombined(Box<CombinedLocatorError>),
     /// The crate's file was found and read, and a *previous* attempt to register it failed part
     /// of the way through: its `StableCrateId` is claimed but no metadata was ever filed under
@@ -1141,9 +1061,6 @@ impl CrateError {
             CrateError::StableCrateIdCollision(a, b) => {
                 format!("`{a}` and `{b}` have the same stable crate id")
             }
-            CrateError::DlOpen(path, err) => {
-                if err.is_empty() { path.clone() } else { format!("{path}: {err}") }
-            }
             CrateError::LocatorCombined(e) => format!("could not locate `{}`", e.crate_name),
             CrateError::RegistrationFailedEarlier(name, why) => match why {
                 Some(why) => format!("`{name}` failed to load earlier: {why}"),
@@ -1159,8 +1076,6 @@ pub(crate) enum MetadataError<'a> {
     NotPresent(&'a Path),
     /// The file was present and invalid.
     LoadFailure(String),
-    /// The file was present, but compiled with a different rustc version.
-    VersionMismatch { expected_version: String, found_version: String },
 }
 
 impl fmt::Display for MetadataError<'_> {
@@ -1170,12 +1085,6 @@ impl fmt::Display for MetadataError<'_> {
                 f.write_str(&format!("no such file: '{}'", filename.display()))
             }
             MetadataError::LoadFailure(msg) => f.write_str(msg),
-            MetadataError::VersionMismatch { expected_version, found_version } => {
-                f.write_str(&format!(
-                    "rustc version mismatch. expected {}, found {}",
-                    expected_version, found_version,
-                ))
-            }
         }
     }
 }
@@ -1221,9 +1130,6 @@ impl CrateError {
                     crate_name0,
                     crate_name1,
                 });
-            }
-            CrateError::DlOpen(path, err) => {
-                dcx.emit_err(diagnostics::DlError { span, path, err });
             }
             CrateError::LocatorCombined(locator) => {
                 let crate_name = locator.crate_name;
@@ -1303,23 +1209,6 @@ impl CrateError {
                         add_info,
                         found_crates,
                     });
-                } else if !locator.crate_rejections.via_version.is_empty() {
-                    let mismatches = locator.crate_rejections.via_version.iter();
-                    for CrateMismatch { path, got } in mismatches {
-                        found_crates.push_str(&format!(
-                            "\ncrate `{}` compiled by {}: {}",
-                            crate_name,
-                            got,
-                            path.display(),
-                        ));
-                    }
-                    dcx.emit_err(diagnostics::IncompatibleRustc {
-                        span,
-                        crate_name,
-                        add_info,
-                        found_crates,
-                        rustc_version: rustc_version(sess.cfg_version),
-                    });
                 } else if !locator.crate_rejections.via_invalid.is_empty() {
                     let mut crate_rejections = Vec::new();
                     for CrateMismatch { path: _, got } in locator.crate_rejections.via_invalid {
@@ -1347,10 +1236,8 @@ impl CrateError {
                             .crate_name
                             .clone()
                             .unwrap_or_else(|| "<unknown>".to_string()),
-                        is_nightly_build: sess.is_nightly_build(),
                         profiler_runtime: Symbol::intern(&sess.opts.unstable_opts.profiler_runtime),
                         locator_triple: locator.triple,
-                        is_ui_testing: sess.opts.unstable_opts.ui_testing,
                         is_tier_3: sess.target.metadata.tier == Some(3),
                     };
                     // The diagnostic for missing core is very good, but it is followed by a lot of

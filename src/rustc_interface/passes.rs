@@ -239,9 +239,12 @@ fn configure_and_expand(
         // Expand macros now!
         let krate = sess.time("expand_crate", || ecx.monotonic_expander().expand_crate(krate));
 
-        // A library read does not stop here: a macro that did not expand costs what it would have
-        // written, the error is recorded, and the rest of the crate is still read.
-        if ecx.nb_macro_errors > 0 && !sess.is_library_read() {
+        // A library read and a single-source analysis keep the dummy expansion and its error so
+        // the rest of the crate still has HIR to read. File-backed compilation keeps the stop.
+        if ecx.nb_macro_errors > 0
+            && !sess.is_library_read()
+            && matches!(&sess.io.input, Input::File(_))
+        {
             sess.dcx().abort_if_errors();
         }
 
@@ -1453,7 +1456,7 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     // If `-Zvalidate-mir` is set, we also want to compute the final MIR for each item
     // (either its `mir_for_ctfe` or `optimized_mir`) since that helps uncover any bugs
     // in MIR optimizations that may only be reachable through codegen, or other codepaths
-    // that requires the optimized/ctfe MIR, coroutine bodies, or evaluating consts.
+    // that require optimized MIR, CTFE MIR, or coroutine bodies.
     // Nevertheless, wait after type checking is finished, as optimizing code that does not
     // type-check is very prone to ICEs.
     if tcx.sess.opts.unstable_opts.validate_mir {
@@ -1483,10 +1486,8 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
 ///   That resolves each item's bound variables, which creates the lifetime parameters its
 ///   opaque types capture; creates the associated types of `impl Trait` in a trait and its
 ///   impls; and feeds the type of each anon const written in a signature.
-/// - a body that contains an anon const of the type system is type checked, which is what feeds
-///   that const's type; the encoder evaluates the const, and the strict compiler has always type
-///   checked the body around it by then. No other body is type checked here.
-/// - a `static`'s value is evaluated, which makes each allocation it points to a definition.
+/// - a body that contains an anon const of the type system is type checked, which feeds that
+///   const's type. No other body is type checked here.
 /// - the MIR keys are listed, which creates the by-move body of each async closure.
 ///
 /// Each item runs in its own `catch_fatal_errors`: a fatal error in one (a trait solver overflow
@@ -1515,14 +1516,6 @@ fn library_analysis(tcx: TyCtxt<'_>) {
             let root = tcx.typeck_root_def_id_local(body);
             step(root, "type checking the body around a constant", &|| {
                 let _ = tcx.ensure_ok().typeck(root);
-            });
-        }
-    }
-
-    for &owner in tcx.hir_body_owner_ids() {
-        if let DefKind::Static { nested: false, .. } = tcx.def_kind(owner) {
-            step(owner, "evaluating this static", &|| {
-                let _ = tcx.ensure_ok().eval_static_initializer(owner);
             });
         }
     }

@@ -16,16 +16,17 @@
 //! need `panic = "unwind"`.
 //!
 //! These types serialize, so a caller can also take them as JSON from `frontend-facts`.
-//! The crate builds on stable 1.97.1, so a caller can equally link it.
-//!
-//! Within-crate first. A sysroot is optional: when present it is the library
-//! tree this session reads, when absent rustc's default search is used. The
-//! `force_pinned_sysroot` cargo feature is the opt-in vintage pin; without it
-//! the session claims the version the chosen sysroot actually carries.
+//! Within-crate first. A sysroot is optional and is used only when a caller names one.
 
 pub mod syntax;
+mod emit;
+pub mod facts_api;
+pub mod depend;
+pub mod effects;
+pub mod lang_item_stubs;
 
-mod interpreter;
+pub use emit::CapturedDiagnostics;
+use emit::FactEmitter;
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
@@ -42,13 +43,12 @@ use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
-#[cfg(not(feature = "force_pinned_sysroot"))]
-use crate::rustc_interface::util::rustc_version_of_sysroot;
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
 use crate::rustc_middle::middle::privacy::EffectiveVisibilities;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
+use crate::rustc_span::hygiene::{ExpnId, ExpnKind, MacroKind};
 use crate::rustc_span::{FileName, SourceFile, Span};
 use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
@@ -66,6 +66,49 @@ pub struct ByteSpan {
     pub file: Arc<str>,
     pub start: u32,
     pub end: u32,
+}
+
+/// One type-checking diagnostic emitted for the source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TypeDiagnostic {
+    /// Error code or lint name, when present.
+    pub code: Option<String>,
+    /// Error or warning.
+    pub severity: Severity,
+    pub message: String,
+    /// Primary span in the source file.
+    pub span: ByteSpan,
+    /// False when the primary span is dummy or has no source file.
+    pub span_known: bool,
+    /// Suggested edits, retained as information and never applied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<Suggestion>,
+}
+
+/// One diagnostic suggestion and one of its alternative edits.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub applicability: Applicability,
+    pub message: String,
+    pub parts: Vec<SuggestionPart>,
+}
+
+/// One source range and its suggested replacement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SuggestionPart {
+    pub span: ByteSpan,
+    pub span_known: bool,
+    pub replacement: String,
+}
+
+/// Confidence rustc attached to a suggestion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Applicability {
+    MachineApplicable,
+    MaybeIncorrect,
+    HasPlaceholders,
+    Unspecified,
 }
 
 /// Kind of a named definition. Anonymous compiler items are omitted, not guessed.
@@ -104,6 +147,9 @@ pub struct Definition {
     pub name: String,
     pub kind: FactKind,
     pub span: ByteSpan,
+    /// Whether the signature is known after attribute expansion.
+    #[serde(default = "true_when_absent", skip_serializing_if = "is_true")]
+    pub signature_settled: bool,
     /// For `Fn` and `AssocFn`: the signature as written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<FnSignature>,
@@ -133,6 +179,46 @@ pub struct Definition {
     /// stability.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unstable: Option<String>,
+    /// The first non-empty line of the item's doc comment, trimmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    /// All doc comment lines, joined with newlines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_full: Option<String>,
+    /// Doc text grouped by Markdown level-one headings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_sections: Vec<DocSection>,
+    /// Doctest prompts and fenced code, retained as text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<DocExample>,
+    /// Parts a source-backed expansion could not establish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opaque: Vec<String>,
+    /// Indexed assertion macro invocations from the item's body.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asserts: Vec<String>,
+}
+
+/// One Markdown section in an item's documentation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocSection {
+    pub heading: String,
+    pub body: String,
+}
+
+/// One documentation example preserved as text.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DocExample {
+    pub kind: DocExampleKind,
+    pub text: String,
+}
+
+/// How a documentation example appeared in the comments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocExampleKind {
+    Doctest,
+    Fenced,
 }
 
 /// One enum variant's shape: how it is constructed, and with how many fields.
@@ -211,6 +297,21 @@ pub struct FnSignature {
     pub params: Vec<FnParam>,
     /// The written return type. `None` for a function that writes none, which returns `()`.
     pub ret: Option<String>,
+    /// The function's own generic parameters as written: `I`, `'a`, `impl Pattern`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generics: Vec<String>,
+    /// Its predicates as written, inline bounds and the `where` clause alike:
+    /// `I: SliceIndex<str>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<String>,
+    /// The header says `unsafe`: calling it needs an `unsafe` block. A safe
+    /// `#[target_feature]` function counts, since a caller without those features needs one
+    /// too, and so does a foreign function not declared `safe`.
+    #[serde(default)]
+    pub unsafety: bool,
+    /// The header says `const`.
+    #[serde(default)]
+    pub constness: bool,
 }
 
 /// One non-receiver parameter.
@@ -250,6 +351,15 @@ pub struct Receiver {
 pub struct FieldSignature {
     pub name: String,
     pub ty: String,
+    /// The first non-empty line of the field's doc comment, trimmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_full: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_sections: Vec<DocSection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<DocExample>,
 }
 
 /// One `use` / `pub use`.
@@ -270,11 +380,37 @@ pub struct Impl {
     pub def_path: Arc<str>,
     pub self_type: String,
     pub trait_def_path: Option<Arc<str>>,
+    /// The trait as written, generic arguments included: `SliceIndex<str>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trait_ref: Option<String>,
+    /// The impl's generic parameters as written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generics: Vec<String>,
+    /// The impl's predicates as written, inline bounds and the `where` clause alike.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<String>,
     pub span: ByteSpan,
+    /// Where this impl came from.
+    #[serde(default, skip_serializing_if = "is_written")]
+    pub origin: FactOrigin,
     /// The associated items this block defines, in source order. Items a trait impl inherits
     /// from the trait's defaults are not here: this block does not define them.
     #[serde(default)]
     pub items: Vec<ImplItem>,
+}
+
+/// Source of an impl fact.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactOrigin {
+    #[default]
+    Written,
+    Builtin,
+    Schema,
+}
+
+fn is_written(origin: &FactOrigin) -> bool {
+    *origin == FactOrigin::Written
 }
 
 /// One associated item an `impl` block defines. Its full [`Definition`] is in
@@ -284,6 +420,8 @@ pub struct ImplItem {
     pub name: String,
     pub kind: FactKind,
     pub def_path: Arc<str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// Kind of a resolved use of a definition.
@@ -317,10 +455,16 @@ pub struct Reference {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
+    /// Library feature gates enabled by this crate's root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_features: Vec<String>,
     pub definitions: Vec<Definition>,
     pub imports: Vec<Import>,
     pub impls: Vec<Impl>,
     pub references: Vec<Reference>,
+    /// Error and warning diagnostics with their primary source spans.
+    #[serde(default)]
+    pub typed: Vec<TypeDiagnostic>,
     /// Every error the frontend emitted, one string each, in emission order, with its
     /// location lines. The closing "aborting due to" summary is left out: it counts the others
     /// rather than saying anything of its own.
@@ -331,6 +475,9 @@ pub struct CrateFacts {
     /// references that did resolve are kept.
     #[serde(default)]
     pub unanalyzed_bodies: Vec<Arc<str>>,
+    /// Def paths whose const values were requested but left uncomputed as too generic.
+    #[serde(default)]
+    pub uncomputed_consts: Vec<String>,
     /// The facts are whole: reading lost nothing. What that is measured by depends on the read.
     ///
     /// **A strict read** is complete when no error was emitted and every body was type checked.
@@ -338,14 +485,15 @@ pub struct CrateFacts {
     /// unaffected.
     ///
     /// **A library read** (the `library` field of [`CrateRead`]) judges nothing, and most of
-    /// what it still emits is one compiler version's bookkeeping about another's source: an ABI,
-    /// an attribute, a lang item or a stability mark this build does not know, on an item that
+    /// what it still emits is bookkeeping about source it does not know: an ABI, an attribute,
+    /// a lang item or a stability mark on an item that
     /// is read all the same. None of that loses a fact, so none of it makes a library read
     /// incomplete; it is all in `diagnostics` still.
     ///
-    /// A library read is complete when every body it checked was type checked, the privacy
-    /// pass's exports were read, and reading lost none of the crate's input where input turns
-    /// into names: no parser run (the crate root, a module's file, a macro's output) emitted an
+    /// A library read is complete when every body it checked was type checked, exported
+    /// reachability was established for every local definition, and reading lost none of the
+    /// crate's input where input turns into names: no parser run (the crate root, a module's
+    /// file, a macro's output) emitted an
     /// error, no module file failed to load, no macro invocation was left without its output
     /// (a bang or derive macro that could not be found counts; an unknown attribute does not,
     /// its item is kept), and every import resolved. When true, the modules' names, the
@@ -473,6 +621,11 @@ pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
 fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
+    facts.enabled_features = tcx
+        .features()
+        .enabled_features_iter_stable_order()
+        .map(|(feature, _)| feature.as_str().to_string())
+        .collect();
 
     // Not `tcx.iter_local_def_id()`: that depends on the `analysis` query so that it lists the
     // definitions of a finished compilation, and `analysis` runs well-formedness checking over
@@ -499,9 +652,23 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // fatal error (a lang item a `no_core` session lacks), the resolver's table is what there
     // is, and associated items read as not exported.
     let exported = catch_fatal_errors(|| tcx.effective_visibilities(()));
-    // Whether the privacy pass's table is the one read: a library read that fell back to the
-    // resolver's has lost the associated items' exports.
-    let exports_whole = exported.is_ok();
+    // A fallback is whole when this crate has no definitions whose exported status privacy adds.
+    let exports_whole = exported.is_ok()
+        || (tcx.sess.is_library_read()
+            && (0..count).all(|i| {
+                let local = LocalDefId {
+                    local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i),
+                };
+                !matches!(
+                    tcx.def_kind(local),
+                    DefKind::AssocFn
+                        | DefKind::AssocConst { .. }
+                        | DefKind::AssocTy
+                        | DefKind::Field
+                        | DefKind::Variant
+                        | DefKind::OpaqueTy
+                )
+            }));
     let exported = exported.unwrap_or(&tcx.resolutions(()).effective_visibilities);
 
     // **Definitions and impls, one item per local definition.** Each index is read on its own:
@@ -631,6 +798,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
         tcx.dcx().has_errors().is_none()
     };
     facts.complete = whole && facts.unanalyzed_bodies.is_empty();
+    facts.uncomputed_consts = tcx.sess.uncomputed_consts();
 
     facts
         .definitions
@@ -788,8 +956,9 @@ struct PendingImpl {
     fact: Impl,
     /// The implemented trait, when it is local.
     local_trait: Option<LocalDefId>,
-    /// Each item's name, kind and id, in source order.
-    items: Vec<(String, FactKind, LocalDefId)>,
+    /// Each item's name, kind, id and, for an associated type, its type as written, in source
+    /// order.
+    items: Vec<(String, FactKind, LocalDefId, Option<String>)>,
 }
 
 /// The paths a [`PendingImpl`] was waiting for, in the same order.
@@ -802,7 +971,7 @@ impl PendingImpl {
     fn paths(&self, names: &Names<'_, '_>) -> ImplPaths {
         ImplPaths {
             local_trait: self.local_trait.map(|id| names.path(id.to_def_id())),
-            items: self.items.iter().map(|(_, _, id)| names.path(id.to_def_id())).collect(),
+            items: self.items.iter().map(|(_, _, id, _)| names.path(id.to_def_id())).collect(),
         }
     }
 
@@ -815,7 +984,7 @@ impl PendingImpl {
             .items
             .into_iter()
             .zip(paths.items)
-            .map(|((name, kind, _), def_path)| ImplItem { name, kind, def_path })
+            .map(|((name, kind, _, value), def_path)| ImplItem { name, kind, def_path, value })
             .collect();
         fact
     }
@@ -840,6 +1009,13 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         name: name.to_string(),
         kind,
         span: names.span(tcx.def_span(def_id)),
+        signature_settled: !matches!(
+            tcx.def_span(def_id).ctxt().outer_expn_data().kind,
+            crate::rustc_span::hygiene::ExpnKind::Macro(
+                crate::rustc_span::hygiene::MacroKind::Attr,
+                _
+            )
+        ),
         signature: None,
         fields: Vec::new(),
         variants: Vec::new(),
@@ -847,16 +1023,109 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         public: tcx.local_visibility(local).is_public(),
         exported: names.exported.is_exported(local),
         unstable: unstable_feature(tcx, def_id),
+        doc: None,
+        doc_full: None,
+        doc_sections: Vec::new(),
+        examples: Vec::new(),
+        opaque: Vec::new(),
+        asserts: assertions_in_body(tcx, local),
     };
+    let docs = doc_facts(tcx, def_id);
+    definition.doc = docs.first;
+    definition.doc_full = docs.full;
+    definition.doc_sections = docs.sections;
+    definition.examples = docs.examples;
+    if body_has_compile_error(tcx, local) {
+        definition.opaque.push("body".to_string());
+    }
     describe_shape(tcx, local, &mut definition);
     DefFact::Definition(definition)
+}
+
+struct AssertVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    seen: Vec<ExpnId>,
+    found: Vec<String>,
+}
+
+impl<'tcx> Visitor<'tcx> for AssertVisitor<'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
+
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
+        let expansion = expr.span.ctxt().outer_expn();
+        if !self.seen.contains(&expansion) && is_indexed_assert_macro(self.tcx, expansion) {
+            self.seen.push(expansion);
+            if let Some(text) = source_text(self.tcx, expansion.expn_data().call_site) {
+                self.found.push(text);
+            }
+        }
+        intravisit::walk_expr(self, expr);
+    }
+}
+
+fn assertions_in_body(tcx: TyCtxt<'_>, local: LocalDefId) -> Vec<String> {
+    let Some(body) = tcx.hir_maybe_body_owned_by(local) else { return Vec::new() };
+    let mut visitor = AssertVisitor { tcx, seen: Vec::new(), found: Vec::new() };
+    visitor.visit_expr(body.value);
+    visitor.found
+}
+
+fn is_indexed_assert_macro(tcx: TyCtxt<'_>, expansion: ExpnId) -> bool {
+    let data = expansion.expn_data();
+    if !matches!(data.kind, ExpnKind::Macro(MacroKind::Bang, _)) {
+        return false;
+    }
+    let Some(def_id) = data.macro_def_id else { return false };
+    let crate_name = tcx.crate_name(def_id.krate);
+    if !matches!(crate_name.as_str(), "core" | "std") {
+        return false;
+    }
+    let Some(name) = tcx.opt_item_name(def_id) else { return false };
+    matches!(
+        name.as_str(),
+        "assert"
+            | "assert_eq"
+            | "debug_assert"
+            | "debug_assert_eq"
+            | "debug_assert_ne"
+    )
+}
+
+struct CompileErrorVisitor {
+    found: bool,
+}
+
+impl<'tcx> Visitor<'tcx> for CompileErrorVisitor {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
+
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
+        if matches!(expr.kind, ExprKind::Err(_)) {
+            let data = expr.span.ctxt().outer_expn_data();
+            if matches!(
+                data.kind,
+                ExpnKind::Macro(MacroKind::Bang, name) if name.as_str() == "compile_error"
+            ) {
+                self.found = true;
+            }
+        }
+        intravisit::walk_expr(self, expr);
+    }
+}
+
+fn body_has_compile_error(tcx: TyCtxt<'_>, local: LocalDefId) -> bool {
+    let Some(body) = tcx.hir_maybe_body_owned_by(local) else { return false };
+    let mut visitor = CompileErrorVisitor { found: false };
+    visitor.visit_expr(body.value);
+    visitor.found
 }
 
 /// The feature rustc's stability check asks of a use of `def_id`, when it is unstable. An item
 /// of a trait impl is checked as the trait item it implements (a method call resolves to it,
 /// and an impl's own mark is not what rustc enforces), which may be another crate's, read from
 /// its metadata.
-fn unstable_feature(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
+pub fn unstable_feature(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
     catch_fatal_errors(|| {
         let checked = tcx.trait_item_of(def_id).unwrap_or(def_id);
         tcx.lookup_stability(checked)
@@ -865,6 +1134,132 @@ fn unstable_feature(tcx: TyCtxt<'_>, def_id: DefId) -> Option<String> {
     })
     .ok()
     .flatten()
+}
+
+#[derive(Default)]
+struct DocFacts {
+    first: Option<String>,
+    full: Option<String>,
+    sections: Vec<DocSection>,
+    examples: Vec<DocExample>,
+}
+
+fn doc_facts(tcx: TyCtxt<'_>, def_id: DefId) -> DocFacts {
+    catch_fatal_errors(|| doc_facts_from_attrs(tcx.get_all_attrs(def_id)))
+        .unwrap_or_default()
+}
+
+fn doc_facts_from_attrs(attrs: &[hir::Attribute]) -> DocFacts {
+    let docs: Vec<String> = attrs
+        .iter()
+        .filter_map(|attribute| attribute.doc_str())
+        .map(|doc| doc.as_str().to_string())
+        .collect();
+    let full = (!docs.is_empty()).then(|| docs.join("\n"));
+    let sections = full.as_deref().map(doc_sections).unwrap_or_default();
+    let examples = full.as_deref().map(doc_examples).unwrap_or_default();
+    DocFacts { first: doc_first_line_from_attrs(attrs), full, sections, examples }
+}
+
+fn doc_first_line_from_attrs(attrs: &[hir::Attribute]) -> Option<String> {
+    attrs.iter().filter_map(|attribute| attribute.doc_str()).find_map(|doc| {
+        doc.as_str()
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.to_string())
+    })
+}
+
+fn doc_sections(doc: &str) -> Vec<DocSection> {
+    let mut sections = Vec::new();
+    let mut heading: Option<String> = None;
+    let mut body = Vec::new();
+    for line in doc.split('\n') {
+        if let Some(text) = line.trim_start().strip_prefix("# ") {
+            if let Some(heading) = heading.take() {
+                sections.push(DocSection { heading, body: body.join("\n") });
+                body.clear();
+            }
+            heading = Some(text.trim().to_string());
+        } else if heading.is_some() {
+            body.push(line.to_string());
+        }
+    }
+    if let Some(heading) = heading {
+        sections.push(DocSection { heading, body: body.join("\n") });
+    }
+    sections
+}
+
+fn doc_examples(doc: &str) -> Vec<DocExample> {
+    let lines: Vec<&str> = doc.split('\n').collect();
+    let mut examples = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim_start().starts_with("```") {
+            index += 1;
+            let mut code = Vec::new();
+            while index < lines.len() && !lines[index].trim_start().starts_with("```") {
+                code.push(lines[index].to_string());
+                index += 1;
+            }
+            if index < lines.len() {
+                index += 1;
+            }
+            examples.push(DocExample { kind: DocExampleKind::Fenced, text: code.join("\n") });
+        } else if lines[index].trim_start().starts_with(">>>") {
+            let mut prompts = Vec::new();
+            while index < lines.len() {
+                let line = lines[index];
+                if line.trim_start().starts_with(">>>") || line.trim_start().starts_with("...") {
+                    prompts.push(line.to_string());
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            examples.push(DocExample { kind: DocExampleKind::Doctest, text: prompts.join("\n") });
+        } else {
+            index += 1;
+        }
+    }
+    examples
+}
+
+/// An item's generic parameters and its predicates, each as written: `I`, `'a`, `impl Pattern`,
+/// and `I: SliceIndex<str>` whether it was written inline or in the `where` clause. Read from
+/// the source the parser saw, never from type checking; a piece no source text covers is left
+/// out.
+fn generics_text(tcx: TyCtxt<'_>, generics: &hir::Generics<'_>) -> (Vec<String>, Vec<String>) {
+    // A lifetime lowering added for an elided one (`&self`) was never written.
+    let params = generics
+        .params
+        .iter()
+        .filter(|param| {
+            !matches!(
+                param.kind,
+                hir::GenericParamKind::Lifetime { kind: hir::LifetimeParamKind::Elided(_) }
+            )
+        })
+        .filter_map(|param| source_text(tcx, param.span))
+        .collect();
+    // An inline bound's span covers only its bounds (`: Plain`), so a bound predicate is
+    // spelled as its bounded type, then its bounds, each from its own text.
+    let predicates = generics
+        .predicates
+        .iter()
+        .filter_map(|predicate| match predicate.kind {
+            hir::WherePredicateKind::BoundPredicate(bound) => {
+                let bounds: Vec<String> =
+                    bound.bounds.iter().filter_map(|b| source_text(tcx, b.span())).collect();
+                (!bounds.is_empty())
+                    .then(|| format!("{}: {}", type_text(tcx, bound.bounded_ty), bounds.join(" + ")))
+            }
+            hir::WherePredicateKind::RegionPredicate(_) => source_text(tcx, predicate.span),
+        })
+        .collect();
+    (params, predicates)
 }
 
 /// One free item's import, or `None` when it is not a `use` that binds anything. The body of
@@ -1005,6 +1400,12 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
     .or_else(|| hir_impl.map(|hir_impl| type_text(tcx, hir_impl.self_ty)))
     .unwrap_or_default();
     let trait_id = catch_fatal_errors(|| tcx.impl_opt_trait_id(def_id)).ok().flatten();
+    // The trait as written, generic arguments and all: `SliceIndex<str>`.
+    let trait_ref = hir_impl
+        .and_then(|hir_impl| hir_impl.of_trait)
+        .and_then(|header| source_text(tcx, header.trait_ref.path.span));
+    let (generics, predicates) =
+        hir_impl.map(|hir_impl| generics_text(tcx, hir_impl.generics)).unwrap_or_default();
     let local_trait = trait_id.and_then(DefId::as_local);
     // A trait from another crate has no fact here to share, so it is printed now.
     let trait_def_path = match (trait_id, local_trait) {
@@ -1018,11 +1419,16 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
                 .iter()
                 .filter_map(|item| {
                     let item_id = item.owner_id.to_def_id();
-                    Some((
-                        tcx.opt_item_name(item_id)?.to_string(),
-                        fact_kind(tcx.def_kind(item_id))?,
-                        item.owner_id.def_id,
-                    ))
+                    let name = tcx.opt_item_name(item_id)?.to_string();
+                    let kind = fact_kind(tcx.def_kind(item_id))?;
+                    // `type Item = char;`: the type as written.
+                    let value = match tcx.hir_node_by_def_id(item.owner_id.def_id) {
+                        Node::ImplItem(hir::ImplItem {
+                            kind: hir::ImplItemKind::Type(ty), ..
+                        }) => Some(type_text(tcx, ty)),
+                        _ => None,
+                    };
+                    Some((name, kind, item.owner_id.def_id, value))
                 })
                 .collect()
         })
@@ -1032,7 +1438,17 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
             def_path: names.path(def_id),
             self_type,
             trait_def_path,
+            trait_ref,
+            generics,
+            predicates,
             span: names.span(tcx.def_span(def_id)),
+            origin: if tcx.sess.is_schema_transcriber_span(tcx.def_span(def_id)) {
+                FactOrigin::Schema
+            } else if tcx.is_builtin_derived(def_id) {
+                FactOrigin::Builtin
+            } else {
+                FactOrigin::Written
+            },
             items: Vec::new(),
         },
         local_trait,
@@ -1055,9 +1471,16 @@ fn describe_shape(tcx: TyCtxt<'_>, local: LocalDefId, definition: &mut Definitio
                 definition.fields = data
                     .fields()
                     .iter()
-                    .map(|field| FieldSignature {
-                        name: field.ident.as_str().to_string(),
-                        ty: type_text(tcx, field.ty),
+                    .map(|field| {
+                        let docs = doc_facts_from_attrs(tcx.hir_attrs(field.hir_id));
+                        FieldSignature {
+                            name: field.ident.as_str().to_string(),
+                            ty: type_text(tcx, field.ty),
+                            doc: docs.first,
+                            doc_full: docs.full,
+                            doc_sections: docs.sections,
+                            examples: docs.examples,
+                        }
                     })
                     .collect();
             }
@@ -1118,6 +1541,8 @@ fn fn_signature<'tcx>(tcx: TyCtxt<'tcx>, node: Node<'tcx>) -> Option<FnSignature
         }) => (None, *names),
         _ => return None,
     };
+    let (generics, predicates) =
+        node.generics().map(|generics| generics_text(tcx, generics)).unwrap_or_default();
     // The name a parameter binds, when its pattern is a plain name.
     let ident = |index: usize| match body {
         Some(body) => body.params.get(index).and_then(|param| match param.pat.kind {
@@ -1164,7 +1589,9 @@ fn fn_signature<'tcx>(tcx: TyCtxt<'tcx>, node: Node<'tcx>) -> Option<FnSignature
         hir::FnRetTy::Return(ty) => Some(type_text(tcx, ty)).filter(|text| !text.is_empty()),
         hir::FnRetTy::DefaultReturn(_) => None,
     };
-    Some(FnSignature { receiver, params, ret })
+    let unsafety = sig.header.is_unsafe();
+    let constness = matches!(sig.header.constness, hir::Constness::Const { .. });
+    Some(FnSignature { receiver, params, ret, generics, predicates, unsafety, constness })
 }
 
 /// The source text a span covers, or `None` when the source map has none for it.
@@ -1193,15 +1620,16 @@ fn type_text(tcx: TyCtxt<'_>, ty: &hir::Ty<'_>) -> String {
 /// the `store(true)` in `rustc_expand::config`, so the flag is write-only and a value one call
 /// leaves behind cannot change what another call reports. If an ICE message ever starts reading
 /// it, it has to become per session again, owned by the call rather than leaked by it.
-static USING_INTERNAL_FEATURES: AtomicBool = AtomicBool::new(false);
+pub static USING_INTERNAL_FEATURES: AtomicBool = AtomicBool::new(false);
 
 /// Analyse one crate from source.
 ///
 /// A program with errors still has facts. Anything that leaves resolution and the HIR intact
 /// (a type error, an unresolved name, a body that needs a lang item `no_core` does not have)
 /// comes back as `Ok`, with the errors in [`CrateFacts::diagnostics`] and
-/// [`CrateFacts::complete`] false. `Err(FatalError)` is kept for a program with no HIR to read:
-/// one that does not parse, or whose macros do not expand. Diagnostics are captured, not
+/// [`CrateFacts::complete`] false. In single-source analysis, an unresolved macro is lowered to
+/// a dummy error node so later passes can keep building facts. `Err(FatalError)` is kept for a
+/// program with no HIR to read, such as one that does not parse. Diagnostics are captured, not
 /// printed, in both cases. Equivalent to [`analyze_source_with_sysroot`] with `sysroot = None`.
 pub fn analyze_source(crate_name: &str, source: &str) -> Result<CrateFacts, FatalError> {
     analyze_source_with_sysroot(crate_name, source, None)
@@ -1209,26 +1637,8 @@ pub fn analyze_source(crate_name: &str, source: &str) -> Result<CrateFacts, Fata
 
 /// Analyse one crate from source against an optional sysroot.
 ///
-/// `sysroot` is defined when `Some`: that tree is this session's library root.
-/// When `None`, an `FRONTEND_SYSROOT` env value is used if set, otherwise
-/// rustc's default sysroot search.
-///
-/// **The tree has to have been built from this frontend's upstream commit.**
-/// Crate metadata encodes every preinterned symbol as a bare index into the
-/// `symbols!` table in `rustc_span::symbol` (`SYMBOL_PREDEFINED`, see
-/// `rustc_metadata::rmeta::encoder::encode_symbol_or_byte_symbol`), and that
-/// table changes commit to commit. A sysroot from any other commit decodes its
-/// late symbols as whatever now sits at that index, so a crate whose name is a
-/// preinterned symbol is not recognised and `E0463` says only "can't find
-/// crate". Crates whose names sit before the first divergence still load, so a
-/// mismatched sysroot fails partially rather than cleanly.
-///
-/// Without the `force_pinned_sysroot` feature, the session claims the version
-/// string the chosen sysroot actually carries. With the feature, the compiled-in
-/// `CFG_VERSION` is kept and other vintages are refused. Claiming the sysroot's
-/// own string only silences the version check; it does not make the symbol table
-/// agree, so it turns a loud `E0514` into a silent `E0463`. Prefer
-/// `force_pinned_sysroot` unless you know the sysroot is from the pinned commit.
+/// `sysroot` is used only when `Some`. With `None`, no sysroot is supplied and the
+/// source is read without a standard library.
 pub fn analyze_source_with_sysroot(
     crate_name: &str,
     source: &str,
@@ -1310,20 +1720,6 @@ pub struct Dependency {
     /// files of one name are ambiguous and refused, as rustc refuses two `--extern` files.
     #[serde(default = "true_when_absent", skip_serializing_if = "is_true")]
     pub prelude: bool,
-    /// For a proc-macro crate ([`CrateRead::proc_macro`]): the shared object a compiler built
-    /// from the same source for the host, as cargo leaves it
-    /// (`target/<profile>/deps/lib<name>-<hash>.dylib`, `.so` on Linux). With it the crate's
-    /// macros run when the crate being read uses them; without it they are declared and every
-    /// expansion is an error that says so.
-    ///
-    /// **This runs the dylib's code in this process**, as rustc does with every proc macro it
-    /// expands. What is checked before anything runs, from the file itself: the compiler that
-    /// wrote it is one whose proc-macro bridge frontend's server speaks (stable 1.97), it
-    /// exports one proc-macro table, and that table has every macro the crate's source declares,
-    /// under the same kind and name. A dylib that fails any of the three makes the crate fail to
-    /// load, with a message naming the file and the reason.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proc_macro_dylib: Option<String>,
 }
 
 impl Dependency {
@@ -1333,7 +1729,6 @@ impl Dependency {
             name: name.into(),
             metadata: metadata.into(),
             prelude: true,
-            proc_macro_dylib: None,
         }
     }
 
@@ -1341,22 +1736,6 @@ impl Dependency {
     pub fn transitive(name: impl Into<String>, metadata: impl Into<String>) -> Self {
         Dependency { prelude: false, ..Dependency::new(name, metadata) }
     }
-
-    /// This proc-macro dependency, with its macros run from `dylib`
-    /// ([`Dependency::proc_macro_dylib`]).
-    pub fn with_proc_macro_dylib(self, dylib: impl Into<String>) -> Self {
-        Dependency { proc_macro_dylib: Some(dylib.into()), ..self }
-    }
-}
-
-/// The macros a proc-macro dylib exports, as `(kind, name)` with kind `derive`, `attr` or
-/// `bang`, read with exactly the checks a [`Dependency::proc_macro_dylib`] gets before its
-/// macros run: which compiler wrote it, and its one proc-macro table. For a caller to confirm a
-/// dylib before handing it over, and to say which file it was when one is refused.
-///
-/// This opens the dylib, which runs its initializers in this process.
-pub fn proc_macro_dylib_macros(dylib: &str) -> Result<Vec<(&'static str, String)>, String> {
-    crate::rustc_metadata::dylib::proc_macro_dylib_macros(eko::path::Path::new(dylib))
 }
 
 /// What a session reads besides its source: the crates it depends on and the configuration its
@@ -1389,10 +1768,7 @@ pub struct CrateRead<'a> {
     /// [`extract_items`]: no body is type checked and no reference is reported.
     pub items_only: bool,
     pub width: usize,
-    /// A `proc-macro` crate. Its macros are declared to the crates that load its metadata, and
-    /// they are not run: running one means compiling it, and frontend compiles nothing. An
-    /// expansion of one is an error that says so, unless the crate that loads it is handed the
-    /// dylib a compiler built from this source ([`Dependency::proc_macro_dylib`]).
+    /// A `proc-macro` crate. Its macros are declared to the crates that load its metadata.
     pub proc_macro: bool,
     /// One of the standard library's crates or a crate it depends on (hashbrown, libc), read as
     /// rustc's bootstrap reads them: `-Zforce-unstable-if-unmarked`, so an item not marked stable
@@ -1444,14 +1820,6 @@ pub struct CrateRead<'a> {
     /// carries the id (and a crate hash that covers it), so every later read that loads the
     /// file gets the same id without being told it.
     pub disambiguator: Option<&'a str>,
-    /// Write every function's MIR into the metadata, not only what other crates' compiles need
-    /// (generic and inline functions). [`evaluate`] steps into any library function a call
-    /// reaches, and it can only run a function whose MIR the metadata carries; rustc's own
-    /// switch for this is `-Zalways-encode-mir`, which is how Miri's standard library is built.
-    ///
-    /// It costs the read an optimized MIR body for every function, so it is off by default and a
-    /// caller that keeps metadata keeps the two kinds apart. Only [`evaluate`] needs it.
-    pub all_mir: bool,
 }
 
 impl<'a> CrateRead<'a> {
@@ -1470,18 +1838,12 @@ impl<'a> CrateRead<'a> {
             write_metadata: None,
             library: false,
             disambiguator: None,
-            all_mir: false,
         }
     }
 
     /// This read, as a library read or not: sets the `library` field.
     pub fn library(self, library: bool) -> Self {
         CrateRead { library, ..self }
-    }
-
-    /// This read, writing every function's MIR or not: sets the `all_mir` field.
-    pub fn with_all_mir(self, all_mir: bool) -> Self {
-        CrateRead { all_mir, ..self }
     }
 
     /// The same read under `disambiguator` ([`CrateRead::disambiguator`]).
@@ -1533,8 +1895,7 @@ pub fn analyze_crate(
 /// its prelude, and a loaded crate gets the one it was read against ([`Dependency::prelude`]).
 ///
 /// **Only source.** Every crate in the chain was read from source by this function; no
-/// toolchain's library is opened, and the metadata this build writes is refused by any other
-/// build (it carries this build's version string).
+/// toolchain's library is opened.
 ///
 /// **What writing metadata costs.** Metadata holds what another crate's type check asks of this
 /// one: every item's signature, and the bodies another crate evaluates or looks through, which
@@ -1554,7 +1915,6 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
         library: read.library,
         disambiguator: read.disambiguator,
         test: false,
-        all_mir: read.all_mir,
     };
     let input = Input::File(read.root.to_path_buf());
     let refused = |diagnostics| Refused { crate_name: read.crate_name.to_string(), diagnostics };
@@ -1569,28 +1929,26 @@ pub fn read_crate(read: &CrateRead<'_>) -> Result<CrateFacts, Refused> {
 
 /// Everything a session is built from except its input.
 #[derive(Clone, Copy)]
-struct Setup<'a> {
-    crate_name: &'a str,
-    sysroot: Option<&'a str>,
-    target: Option<&'a str>,
-    edition: Option<&'a str>,
-    width: usize,
-    proc_macro: bool,
-    standard_library: bool,
-    loaded: Loaded<'a>,
+pub struct Setup<'a> {
+    pub crate_name: &'a str,
+    pub sysroot: Option<&'a str>,
+    pub target: Option<&'a str>,
+    pub edition: Option<&'a str>,
+    pub width: usize,
+    pub proc_macro: bool,
+    pub standard_library: bool,
+    pub loaded: Loaded<'a>,
     /// A library read: `CrateRead`'s `library`.
-    library: bool,
+    pub library: bool,
     /// `-C metadata`; see [`CrateRead::disambiguator`].
-    disambiguator: Option<&'a str>,
+    pub disambiguator: Option<&'a str>,
     /// rustc's `--test`; see [`check_source_against`].
-    test: bool,
-    /// `-Zalways-encode-mir`; see [`CrateRead::all_mir`].
-    all_mir: bool,
+    pub test: bool,
 }
 
 impl<'a> Setup<'a> {
     /// One crate, `no_core`, host target, edition 2015, serial, strict.
-    fn plain(crate_name: &'a str) -> Self {
+    pub fn plain(crate_name: &'a str) -> Self {
         Setup {
             crate_name,
             sysroot: None,
@@ -1603,13 +1961,12 @@ impl<'a> Setup<'a> {
             library: false,
             disambiguator: None,
             test: false,
-            all_mir: false,
         }
     }
 
     /// The session's options, and whether its input may be read `no_core`: nothing to load
     /// (no sysroot, no dependency) and a root that does not declare it already.
-    fn options(&self, input: &Input) -> Result<Options, Vec<String>> {
+    pub fn options(&self, input: &Input) -> Result<Options, Vec<String>> {
         let mut opts = Options::default();
         opts.crate_name = Some(self.crate_name.to_string());
         opts.crate_types =
@@ -1623,7 +1980,6 @@ impl<'a> Setup<'a> {
         opts.unstable_features = UnstableFeatures::Allow;
         opts.jobs.frontend = frontend_jobs(self.width);
         opts.unstable_opts.force_unstable_if_unmarked = self.standard_library;
-        opts.unstable_opts.always_encode_mir = self.all_mir;
         // The one switch a library read sets (`Session::is_library_read`), and the lint cap
         // that goes with it: no lint judges a library, whatever levels its source sets.
         if self.library {
@@ -1639,19 +1995,6 @@ impl<'a> Setup<'a> {
                 .map_err(|()| alloc::vec![format!("error: unknown edition `{edition}`")])?;
         }
         opts.externs = externs(self.loaded.dependencies);
-        // Keyed by the metadata file, not the name: two crates of one name have two builds.
-        opts.proc_macro_dylibs = self
-            .loaded
-            .dependencies
-            .iter()
-            .filter_map(|dependency| {
-                let dylib = dependency.proc_macro_dylib.as_deref()?;
-                Some((
-                    eko::path::PathBuf::from(dependency.metadata.as_str()),
-                    eko::path::PathBuf::from(dylib),
-                ))
-            })
-            .collect();
         // rustc's `-C metadata`, which `StableCrateId::new` hashes with the crate's name.
         opts.cg.metadata = self.disambiguator.map(str::to_string).into_iter().collect();
         opts.logical_env = self.loaded.env.iter().cloned().collect();
@@ -1669,53 +2012,20 @@ impl<'a> Setup<'a> {
         // the source, because prepended text moves every byte span this crate
         // reports and those spans are the whole product.
         //
-        // This used to fall back to `rustc --print sysroot`, which fetched a
-        // library nobody had asked for and then failed to read it: crate metadata
-        // encodes preinterned symbols as bare indices into `rustc_span::symbol`'s
-        // table, nothing checks that two tables agree, and a table from another
-        // commit decodes `std` as whatever now sits at that index. The result was a
-        // bare `E0463` for a library the caller never wanted.
-        // A session handed its dependencies reads those and nothing else, so the environment's
-        // sysroot is not asked for.
-        let named = self.sysroot.map(eko::path::PathBuf::from).or_else(|| {
-            self.loaded
-                .dependencies
-                .is_empty()
-                .then(|| eko::env::var_os("FRONTEND_SYSROOT").map(eko::path::PathBuf::from))
-                .flatten()
-        });
+        let named = self.sysroot.map(eko::path::PathBuf::from);
         if named.is_some() {
             opts.sysroot = Sysroot::new(named);
         } else if self.loaded.dependencies.is_empty()
-            && !matches!(input, Input::File(root) if syntax::declares_no_core(root))
+            && !match input {
+                Input::File(root) => syntax::declares_no_core(root),
+                Input::Str { input, .. } => syntax::declares_no_core_source(input),
+            }
         {
             // A crate that is `no_core` already (core itself) gets nothing added.
             opts.unstable_opts.crate_attr.push("no_core".to_string());
             opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
         }
         Ok(opts)
-    }
-
-    /// The version string the session claims: the named sysroot's, when there is one to agree
-    /// with; otherwise the compiled-in one, which is also what metadata this build writes
-    /// carries and what it expects of metadata it reads.
-    fn rustc_version(&self, opts: &Options) -> Option<String> {
-        #[cfg(feature = "force_pinned_sysroot")]
-        {
-            let _ = opts;
-            None
-        }
-        #[cfg(not(feature = "force_pinned_sysroot"))]
-        {
-            // Only worth asking when something will actually be read. With
-            // `no_core` no metadata is opened, so there is no vintage to agree
-            // with and no reason to spawn a compiler to ask about one.
-            if opts.sysroot.explicit.is_some() {
-                rustc_version_of_sysroot(opts.sysroot.path()).or_else(host_rustc_version)
-            } else {
-                None
-            }
-        }
     }
 }
 
@@ -1772,7 +2082,24 @@ fn analyze_input(
         crate::unwind_janky::unwinding_is_enabled(),
         "analyze_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
+    // Without a sysroot, real bodies reach lang items (`?`, ranges, `Sized`) that no_core lacks;
+    // append the synthetic declarations so analysis continues instead of aborting.
+    let no_sysroot = setup.sysroot.is_none() && setup.loaded.dependencies.is_empty();
+    let (input, inject_stubs) = match input {
+        Input::Str { name, input: text }
+            if write_metadata.is_none() && lang_item_stubs::should_inject(&text, no_sysroot) =>
+        {
+            let appended = alloc::format!("{}\n{}", text, lang_item_stubs::MINIMAL_LANG_ITEMS);
+            (Input::Str { name, input: Arc::new(appended) }, true)
+        }
+        other => (other, false),
+    };
     let mut opts = setup.options(&input)?;
+    if inject_stubs {
+        opts.unstable_opts
+            .crate_attr
+            .push("feature(lang_items, unboxed_closures, rustc_attrs)".to_string());
+    }
     if let Some(path) = write_metadata {
         // What rustc's `--emit=metadata=PATH` records; it is also what makes lowering keep the
         // HIR hashes the metadata's crate hash is made of.
@@ -1781,22 +2108,19 @@ fn analyze_input(
             Some(crate::rustc_session::config::OutFileName::Real(path.to_path_buf())),
         )]);
     }
-    let rustc_version = setup.rustc_version(&opts);
-    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let captured = alloc::sync::Arc::new(eko::thread::Mutex::new(CapturedDiagnostics::default()));
     // Shared, not leaked per call; see `USING_INTERNAL_FEATURES`.
     let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
         input,
-        psess_created: Some(capture_diagnostics(&text)),
+        psess_created: Some(capture_diagnostics(&captured)),
         using_internal_features,
-        rustc_version,
         crate_cfg: setup.loaded.cfg.to_vec(),
     };
-    // The facts are handed out through `extracted` rather than returned, because returning is
-    // not the way out of a run that emitted an error: `run_compiler` ends every such run in
-    // `abort_if_errors`, which unwinds past the return value. What `extract` finished before
-    // that is kept here, and the unwind only tells us the run had errors.
+    // The facts are handed out through `extracted` rather than returned because a strict read
+    // ends in `abort_if_errors`. A library read clears that final error gate after extraction;
+    // its separate capture keeps diagnostics on the returned facts.
     let mut extracted: Option<CrateFacts> = None;
     let library = setup.library;
     // Encoding began, and encoding returned.
@@ -1816,19 +2140,22 @@ fn analyze_input(
                     crate::rustc_metadata::encode_metadata(tcx, path, None);
                     encoded = true;
                 }
-            })
+                if let Some(facts) = extracted.as_mut() {
+                    facts.uncomputed_consts = compiler.sess.uncomputed_consts();
+                }
+            });
+            if library {
+                let _ = compiler.sess.dcx().emit_stashed_diagnostics();
+                if compiler.sess.dcx().has_errors().is_some() {
+                    compiler.sess.dcx().reset_err_count();
+                }
+            }
         })
     });
-    // Only the errors that are kept become strings: warnings and the closing summary are read
-    // in place and never copied.
-    let mut errors = Vec::new();
-    let captured = text.lock();
-    for_each_diagnostic(&captured, |severity, entry| {
-        if severity == Severity::Error && !entry.text.starts_with("error: aborting due to") {
-            errors.push(entry.to_owned_string());
-        }
-    });
-    drop(captured);
+    let (typed, mut errors) = {
+        let captured = captured.lock();
+        (captured.typed.clone(), captured_strings(&captured, Severity::Error))
+    };
     // Metadata begun and then stopped by an error (encoding checks the bodies it carries) is
     // not a crate anyone may load. In a library read an error does not stop it; only an encoding
     // that did not return leaves metadata no one may load.
@@ -1852,6 +2179,7 @@ fn analyze_input(
         ));
         return Err(errors);
     }
+    facts.typed = typed;
     facts.diagnostics = errors;
     // A library read's `complete` is `extract`'s, whole: its run ends in an error whenever it
     // recorded one, and nothing it records is a loss by itself (see `CrateFacts::complete`).
@@ -1867,6 +2195,11 @@ fn analyze_input(
 pub struct Checked {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub typed: Vec<TypeDiagnostic>,
+    /// Const terms a source check could not fully compare.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncomputed_consts: Vec<String>,
     /// The session stopped on a fatal error before the analysis finished. `errors` says why
     /// when the frontend said anything; when it said nothing this is the only signal.
     pub fatal: bool,
@@ -1880,6 +2213,7 @@ impl Checked {
 }
 
 /// A `fmt::Write` into a buffer the caller keeps a handle on, so the emitter can own one end.
+/// The syntax-only entry points (`syntax`, `diagnostics`) still render through it.
 struct Sink(alloc::sync::Arc<eko::thread::Mutex<String>>);
 
 impl core::fmt::Write for Sink {
@@ -1889,43 +2223,35 @@ impl core::fmt::Write for Sink {
     }
 }
 
-/// The `psess_created` hook that sends every diagnostic to `text`, one short line each.
-///
-/// A library has no terminal to print to, and a diagnostic written to stderr is one the caller
-/// cannot read back. So the session's emitter is replaced before anything is parsed, and what
-/// it would have printed lands in a buffer the caller still holds.
-///
-/// **The buffer is in serial order in parallel mode too, and nothing here has to do anything
-/// for that.** This is the final sink: a diagnostic is rendered to text once, by this emitter,
-/// when `DiagCtxt` prints it. A diagnostic emitted inside a par item does not get here when it
-/// is emitted; it travels as the item's owned output and is printed when the item's turn comes
-/// in item order (`rustc_errors::item_scope`, which every stage in `rustc_data_structures::sync`
-/// runs every item of a parallel stage through). So the emitter is only ever called in the
-/// order a serial run calls it, and always under the `DiagCtxt` lock, which is why `Sink`'s
-/// own lock is never contended by two diagnostics at once.
-fn capture_diagnostics(
-    text: &alloc::sync::Arc<eko::thread::Mutex<String>>,
+/// Install the structured fact emitter for this compiler session.
+pub fn capture_diagnostics(
+    captured: &alloc::sync::Arc<eko::thread::Mutex<CapturedDiagnostics>>,
 ) -> alloc::boxed::Box<dyn FnOnce(&mut crate::rustc_session::parse::ParseSess) + Send> {
-    let sink = text.clone();
+    let captured = captured.clone();
     alloc::boxed::Box::new(move |psess: &mut crate::rustc_session::parse::ParseSess| {
-        let emitter = crate::rustc_errors::plain_emitter::PlainEmitter::new()
-            .sm(Some(psess.clone_source_map()))
-            .short_message(true)
-            .dst(alloc::boxed::Box::new(Sink(sink)));
+        let emitter = FactEmitter::new(psess.clone_source_map(), captured);
         psess.set_emitter(alloc::boxed::Box::new(emitter));
     })
 }
 
-/// Split captured emitter output into errors and warnings, in emission order.
+pub fn captured_strings(captured: &CapturedDiagnostics, severity: Severity) -> Vec<String> {
+    captured
+        .typed
+        .iter()
+        .zip(&captured.rendered)
+        .filter(|(diagnostic, _)| diagnostic.severity == severity)
+        .map(|(_, rendered)| rendered.clone())
+        .collect()
+}
+
+/// Split rendered diagnostic text into errors and warnings, in emission order.
 ///
 /// One diagnostic starts at a line with no leading space; its `-->` location lines follow.
 /// Anything that is neither an error nor a warning (a `note`, "For more information") is
-/// dropped: it annotates a diagnostic rather than being one. An internal compiler error counts
-/// as an error: input the compiler could not handle has not been shown to be clean.
+/// dropped: it annotates a diagnostic rather than being one. An internal compiler error is
+/// grouped with errors so its diagnostic is retained.
 ///
-/// The one splitter for every entry point here, `syntax` and `diagnostics` included, so what
-/// counts as an error cannot differ between them. Each returned string is one allocation,
-/// copied once out of `captured`.
+/// Each returned string is one allocation, copied once out of the rendered input.
 pub(crate) fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -1936,14 +2262,15 @@ pub(crate) fn split_diagnostics(captured: &str) -> (Vec<String>, Vec<String>) {
     (errors, warnings)
 }
 
-/// Whether a captured diagnostic is an error or a warning.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Severity {
+/// Whether a diagnostic is an error or a warning.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
     Error,
     Warning,
 }
 
-/// One diagnostic in captured emitter output: its first line through its last location line,
+/// One diagnostic in rendered text: its first line through its last location line,
 /// borrowed from the capture.
 #[derive(Clone, Copy)]
 struct Entry<'a> {
@@ -2022,15 +2349,14 @@ fn for_each_diagnostic<'a>(captured: &'a str, mut f: impl FnMut(Severity, Entry<
 
 /// Type check, borrow check and lint one crate from source, and return what was said.
 ///
-/// **Reading, never running.** This is `tcx.analysis(())`: typeck, then borrowck, then the
-/// builtin lints (skipped when typeck or borrowck already failed). Nothing is compiled to a
-/// binary and nothing is executed. It is how a caller establishes whether a program compiles
-/// and lints clean without rustc, cargo or clippy.
+/// This is `tcx.analysis(())`: typeck, then borrowck, then the builtin lints (skipped when
+/// typeck or borrowck already failed). It returns the emitted diagnostics without compiling a
+/// binary or executing the source.
 ///
 /// Runs as `no_core`, like [`analyze_source`] with no sysroot: see rule zero in `AGENTS.md`.
-/// Diagnostics go to this crate's `PlainEmitter`, one line each, captured rather than printed.
-/// Needs a catcher installed through [`crate::unwind_janky::install_catcher`], because a
-/// refused program ends in `abort_if_errors`, which unwinds.
+/// The session stores structured diagnostics and their rendered strings.
+/// Needs a catcher installed through [`crate::unwind_janky::install_catcher`], because fatal
+/// diagnostics unwind through `abort_if_errors`.
 pub fn check_source(crate_name: &str, source: &str) -> Checked {
     check_source_with_width(crate_name, source, 1)
 }
@@ -2071,8 +2397,10 @@ fn check_no_core_source(
     opts.test = test;
     opts.unstable_features = UnstableFeatures::Allow;
     opts.jobs.frontend = frontend_jobs(width);
-    opts.unstable_opts.crate_attr.push("no_core".to_string());
-    opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
+    if !syntax::declares_no_core_source(&source) {
+        opts.unstable_opts.crate_attr.push("no_core".to_string());
+        opts.unstable_opts.crate_attr.push("feature(no_core)".to_string());
+    }
 
     check_input(
         opts,
@@ -2125,622 +2453,54 @@ pub fn check_source_against(
     let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
     let opts = match setup.options(&input) {
         Ok(opts) => opts,
-        Err(errors) => return Checked { errors, warnings: Vec::new(), fatal: true },
+        Err(errors) => {
+            return Checked {
+                errors,
+                warnings: Vec::new(),
+                typed: Vec::new(),
+                uncomputed_consts: Vec::new(),
+                fatal: true,
+            };
+        }
     };
     check_input(opts, input, setup.loaded.cfg.to_vec())
 }
 
-/// What [`evaluate`] found when it ran a call.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum Evaluation {
-    /// The call returned. `rendered` is the value as `{:?}` prints it, `ty` its type, `steps`
-    /// how many MIR statements and terminators the call took (what a budget bounds), and
-    /// `render_steps` how many its rendering took, apart and outside the budget (none for a
-    /// `no_core` value, read by layout; absent reads as zero, from a writer that predates it).
-    Value {
-        rendered: String,
-        ty: String,
-        steps: u64,
-        #[serde(default)]
-        render_steps: u64,
-    },
-    /// The call panicked: an overflow (overflow checks are on, as in a debug build), an index out
-    /// of bounds, an `unwrap` of `None`, a `panic!`. `message` is what the panic says, and
-    /// `steps` how many MIR statements and terminators ran before it (absent reads as zero, from
-    /// a writer that predates it).
-    Panicked {
-        message: String,
-        #[serde(default)]
-        steps: u64,
-    },
-    /// The call was not run to its end, for a reason the program gives, and why: the source
-    /// does not compile (its errors), it has undefined behavior, it deadlocks or recurses past
-    /// any stack, or its value has no `Debug` (or its `Debug` failed or panicked).
-    Refused { why: String },
-    /// This interpreter could not produce an answer, and why: the call reaches a function whose
-    /// MIR no loaded metadata carries, an intrinsic or foreign function it does not serve, an
-    /// operation it does not support, or it hit a bug of its own. Unlike `Refused`, it says
-    /// nothing about the program: a machine that serves what was missing may well give a value.
-    Unsupported { why: String },
-    /// The call did not finish within the caller's step budget: `steps` ran, the budget, and
-    /// nothing more. Its own outcome, never a value or a panic: what the call would have come to
-    /// is not known. A step is one MIR statement or terminator of the call, as in a `Value`'s
-    /// `steps`; rendering a value and formatting a panic's message are not counted against it.
-    Exhausted { steps: u64 },
-    /// The program ended the process (`std::process::exit`) with `code`, after `steps` steps.
-    /// Like a panic, an answer: the program does that on that input. What it printed is in the
-    /// run's [`Output`], std's own flush included, since `exit` runs it before it exits.
-    Exited { code: i32, steps: u64 },
-}
-
-/// One call to run: the expression, the most steps it may take (`None` is no bound), and the
-/// standard input it reads (`None` serves none: a read of it is [`Evaluation::Unsupported`]).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Call<'a> {
-    pub call: &'a str,
-    pub budget: Option<u64>,
-    pub stdin: Option<&'a [u8]>,
-}
-
-/// What a run wrote to standard output and standard error, every byte in order, whatever the
-/// run came to (empty for a source that does not build).
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Output {
-    #[serde(default)]
-    pub stdout: Vec<u8>,
-    #[serde(default)]
-    pub stderr: Vec<u8>,
-    /// Why std's end-of-program flush of standard output did not run to its end, when the run
-    /// reached std's standard output, returned or panicked, and the flush stopped: bytes the
-    /// program wrote may still sit in std's buffer, missing from `stdout`. `None` otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unflushed: Option<String>,
-}
-
-/// A call run: what it came to, and what it wrote.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Ran {
-    pub evaluation: Evaluation,
-    pub output: Output,
-}
-
-impl Ran {
-    /// A run that wrote nothing: a source that did not build, a session that failed.
-    fn silent(evaluation: Evaluation) -> Ran {
-        Ran { evaluation, output: Output::default() }
-    }
-}
-
-/// Run `call`, a Rust expression over the items `source` defines (`count("strawberry", 'r')`),
-/// through rustc's MIR interpreter, and return its value.
-///
-/// **One semantics.** The source is compiled as rustc compiles it (type check, borrow check,
-/// MIR building and optimization), with `call` as the body of a function appended to it, and
-/// that function is run by `rustc_const_eval::interpret`, the interpreter under CTFE and Miri.
-/// Every rule of what the program does is that interpreter's; the machine it runs on
-/// (`interpreter.rs`) only decides what is served. Heap allocation is served from the
-/// interpreter's own memory; so are writes to standard output and standard error (a program's
-/// printing is its output), the one thread's thread-local statics, and the OS's random bytes, as
-/// a fixed stream so a run reproduces. Any other foreign function (a syscall, a C library, file
-/// or network I/O) is refused by name. Overflow checks are on, as in a debug build, and a panic
-/// is returned as [`Evaluation::Panicked`] with its message, never a crash. Nothing unwinds out
-/// of this function: a compiler bug on the way is a [`Evaluation::Refused`] that says what it
-/// was.
-///
-/// **The value is rendered by its type's own `Debug`**, run on the same interpreter after the
-/// call returns (`{:?}` of it, through `core::fmt`), so the rendering is the library's and not a
-/// second implementation of it. A `no_core` source has no `Debug`; its primitive values
-/// (integers, `bool`, `char`, floats, `str`, references, arrays, slices, tuples) are read by
-/// layout instead.
-///
-/// **Library functions run from their MIR**, so every crate the call reaches has to have been
-/// read with its MIR written ([`CrateRead::all_mir`]); a function whose MIR is missing is refused
-/// by name. `loaded`, `edition` and the rest are what [`check_source_against`] takes: with no
-/// dependency the source is read `no_core`.
-///
-/// `budget` bounds the call's steps; `None` runs until the call returns, however long that is.
-/// Rendering the value and formatting a panic's message run to their ends outside it: the
-/// budget stops a call that runs away, and they only print what the call already built.
-///
-/// This is [`run_call`] with no standard input, what the call wrote left out.
-pub fn evaluate(
-    source: &str,
-    edition: Option<&str>,
-    loaded: Loaded<'_>,
-    call: &str,
-    budget: Option<u64>,
-) -> Evaluation {
-    run_call(source, edition, loaded, Call { call, budget, stdin: None }).evaluation
-}
-
-/// [`evaluate`], with the standard input the call reads and what it writes: a whole program is
-/// the call `main()` over its source, given its input.
-///
-/// **Its input is the caller's.** With `stdin`, reads of standard input are served from those
-/// bytes, in order, and read nothing once they are all read (end of file). Without it, a read of
-/// standard input is [`Evaluation::Unsupported`]. No other input is served.
-///
-/// **Its output comes back**, in [`Ran::output`]: every byte written to standard output and
-/// standard error, for any outcome that ran. When a call that reached `std::io::stdout` returns
-/// or panics, std's own end-of-program flush (`io::cleanup`, which a process runs after `main`)
-/// runs after it, outside the budget, so text printed with no newline is not lost; a call past
-/// its budget is not flushed, as a process stopped there prints nothing more. A call to
-/// `process::exit` ends the run as [`Evaluation::Exited`], std having flushed first.
-///
-/// What std's runtime does around `main` and not in it is not run: the panic hook's message on
-/// standard error (the message is the outcome's), and `Termination`'s report of a returned
-/// `Result` (the value is the call's value).
-pub fn run_call(source: &str, edition: Option<&str>, loaded: Loaded<'_>, asked: Call<'_>) -> Ran {
-    let call = asked.call;
-    assert!(
-        crate::unwind_janky::unwinding_is_enabled(),
-        "evaluate needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
-    );
-    let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
-    // A string input's text does not enter the options (only a file root is looked at, for a
-    // `no_core` it declares), so they are taken first: whether a library is loaded decides what
-    // is appended to the source.
-    let probe = Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
-    let mut opts = match setup.options(&probe) {
-        Ok(opts) => opts,
-        Err(errors) => return Ran::silent(Evaluation::Refused { why: errors.join("\n") }),
-    };
-    opts.cg.overflow_checks = Some(true);
-    opts.debug_assertions = true;
-    let library = !opts.unstable_opts.crate_attr.iter().any(|attr| attr == "no_core");
-    // Appended, so every span of the source is where it was. `impl Sized` lets the call's type
-    // be whatever it is; the interpreter sees it revealed. With a library, the value is rendered
-    // by its own `Debug`, which `interpreter::RENDER` runs.
-    let entry = interpreter::ENTRY;
-    let mut text =
-        format!("{source}\n#[allow(warnings)]\nfn {entry}() -> impl Sized {{\n{call}\n}}\n");
-    if library {
-        text.push_str(interpreter::RENDER);
-    }
-    let source = Arc::new(text);
-    let input = Input::Str { name: FileName::anon_source_code(&source), input: source };
-    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
-    let captured = text.clone();
-    let config = Config {
-        opts,
-        input,
-        psess_created: Some(capture_diagnostics(&text)),
-        using_internal_features: &USING_INTERNAL_FEATURES,
-        rustc_version: None,
-        crate_cfg: setup.loaded.cfg.to_vec(),
-    };
-    // Handed out rather than returned, as in `analyze_input`: a run with an error ends in an
-    // unwind, not a return.
-    let mut outcome: Option<Ran> = None;
-    // Nothing unwinds out of `evaluate`: a fatal error is caught by `catch_fatal_errors`, and
-    // any other panic (a compiler bug, a delayed bug flushed when the session ends) by this
-    // outer catch, and each becomes a refusal that says what it was.
-    let session = crate::unwind_janky::catch(|| {
-        catch_fatal_errors(|| {
-            run_compiler(config, |compiler| {
-                let krate = parse(&compiler.sess);
-                create_and_enter_global_ctxt(compiler, krate, |tcx| {
-                    // Only a program rustc accepts is run.
-                    tcx.analysis(());
-                    if tcx.dcx().has_errors().is_some() {
-                        return;
-                    }
-                    outcome = Some(evaluate_in(tcx, entry, library, asked, &captured, 0).0);
-                })
-            })
-        })
-    });
-    let errors = || {
-        let (mut errors, _) = split_diagnostics(&text.lock());
-        errors.retain(|error| !error.starts_with("error: aborting due to"));
-        errors
-    };
-    match (outcome, session) {
-        (Some(outcome), Ok(_)) => outcome,
-        // A compiler bug says nothing of the program: this interpreter could not answer. What
-        // the call wrote before it is still what it wrote.
-        (Some(Ran { evaluation, output }), Err(payload)) => Ran {
-            evaluation: Evaluation::Unsupported {
-                why: with_errors(
-                    format!(
-                        "the session panicked as it ended, after the call gave {evaluation:?}: {}",
-                        panic_text(&payload)
-                    ),
-                    &errors(),
-                ),
-            },
-            output,
-        },
-        (None, Ok(_)) => {
-            let errors = errors();
-            let why = if errors.is_empty() {
-                "the source did not compile".to_string()
-            } else {
-                errors.join("\n")
-            };
-            Ran::silent(Evaluation::Refused { why })
-        }
-        (None, Err(payload)) => Ran::silent(Evaluation::Unsupported {
-            why: with_errors(format!("the analyser panicked: {}", panic_text(&payload)), &errors()),
-        }),
-    }
-}
-
-/// The part of [`evaluate`] inside the compiled session: find the appended functions and run the
-/// call. A panic out of the interpreter is caught here, nearest to it, where its payload is still
-/// its own; any error rustc reported while the call ran (a constant that failed, a compiler bug)
-/// is added to a refusal, since that is what the refusal is about. Only what was reported from
-/// byte `since` of `captured` on is the call's: a session shared by several calls
-/// ([`evaluate_all`]) holds the others' too. The flag is whether the interpreter unwound, after
-/// which the session is not trusted for another call. `asked` gives the call's budget and its
-/// standard input; its expression is already `entry`'s body.
-fn evaluate_in(
-    tcx: TyCtxt<'_>,
-    entry: &str,
-    library: bool,
-    asked: Call<'_>,
-    captured: &alloc::sync::Arc<eko::thread::Mutex<String>>,
-    since: usize,
-) -> (Ran, bool) {
-    let function = |name: &str| {
-        tcx.hir_crate_items(()).free_items().map(|item| item.owner_id.def_id).find(|&id| {
-            tcx.def_kind(id) == DefKind::Fn && tcx.item_name(id.to_def_id()).as_str() == name
-        })
-    };
-    let Some(id) = function(entry) else {
-        return (
-            Ran::silent(Evaluation::Unsupported {
-                why: "the call's function was not found".to_string(),
-            }),
-            false,
-        );
-    };
-    let render = if library {
-        match (function(interpreter::DEBUG), function(interpreter::SINK)) {
-            (Some(debug), Some(sink)) => {
-                Some(interpreter::Render { debug: debug.to_def_id(), sink: sink.to_def_id() })
-            }
-            _ => {
-                return (
-                    Ran::silent(Evaluation::Unsupported {
-                        why: "the functions that render a value were not found".to_string(),
-                    }),
-                    false,
-                );
-            }
-        }
-    } else {
-        None
-    };
-    // What the call wrote before the interpreter panicked is lost with the machine.
-    let ((evaluation, output), unwound) = match crate::unwind_janky::catch(|| {
-        interpreter::run_entry(tcx, id, render, asked.budget, asked.stdin)
-    }) {
-        Ok(ran) => (ran, false),
-        Err(payload) => (
-            (
-                Evaluation::Unsupported {
-                    why: format!("the interpreter panicked: {}", panic_text(&payload)),
-                },
-                Output::default(),
-            ),
-            true,
-        ),
-    };
-    let reported = || {
-        let said = captured.lock();
-        split_diagnostics(said.get(since..).unwrap_or("")).0
-    };
-    let evaluation = match evaluation {
-        Evaluation::Refused { why } => Evaluation::Refused { why: with_errors(why, &reported()) },
-        Evaluation::Unsupported { why } => {
-            Evaluation::Unsupported { why: with_errors(why, &reported()) }
-        }
-        other => other,
-    };
-    (Ran { evaluation, output }, unwound)
-}
-
-/// What [`evaluate_all`] answered, and how many compiler sessions it took to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EvaluatedAll {
-    /// One per call, in the order given, each what [`evaluate`] answers for that call alone.
-    pub evaluations: Vec<Evaluation>,
-    /// The sessions run: one when every call built, one more for each round of calls whose
-    /// errors were taken out, and one for each call asked alone.
-    pub sessions: usize,
-}
-
-/// [`evaluate`] for every call of `calls` over the one `source`, sharing a compiler session: the
-/// source is compiled once with one function per call appended, and each call is run by the
-/// interpreter in that session, each on a machine of its own (its own memory, its own
-/// statics' copies), so no call sees another's values. Each call is `(call, budget)`: the most
-/// steps the call may take, its value's rendering not counted, as [`evaluate`]'s `budget`; one past it is
-/// [`Evaluation::Exhausted`] and cost no more than that.
-///
-/// **Each answer is what the call's own session would give.** That is the contract, and every
-/// way a shared session could blur it is taken out rather than approximated:
-///
-/// - An error is read by where rustc placed it. An error on a call's own lines is that call's:
-///   it is refused with it, and the rest are compiled again without it, since `analysis` stops
-///   at the first body with an error and the lints a clean call's own session would run have
-///   not run yet. Rounds repeat until the calls left build, so a call refused by a lint is
-///   refused by that lint, as alone.
-/// - An error on the source's own lines refuses every call, with the source's errors and its
-///   own, as each call's own session would.
-/// - An error placed anywhere else (a library's file, `RENDER`'s lines, nowhere), a session
-///   that stops before it has a context, a panic out of the interpreter, or a session that
-///   panics as it ends: whatever that session had not settled is asked alone, with
-///   [`evaluate`]. A shared session that cannot say whose a failure is, never guesses.
-///
-/// Nothing outlives the call: each session is dropped before the next.
-///
-/// This is [`run_calls`] with no standard input, what each call wrote left out.
-pub fn evaluate_all(
-    source: &str,
-    edition: Option<&str>,
-    loaded: Loaded<'_>,
-    calls: &[(&str, Option<u64>)],
-) -> EvaluatedAll {
-    let asked: Vec<Call<'_>> =
-        calls.iter().map(|&(call, budget)| Call { call, budget, stdin: None }).collect();
-    let RanAll { runs, sessions } = run_calls(source, edition, loaded, &asked);
-    EvaluatedAll { evaluations: runs.into_iter().map(|ran| ran.evaluation).collect(), sessions }
-}
-
-/// What [`run_calls`] answered, and how many compiler sessions it took to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RanAll {
-    /// One per call, in the order given, each what [`run_call`] answers for that call alone.
-    pub runs: Vec<Ran>,
-    /// As [`EvaluatedAll::sessions`].
-    pub sessions: usize,
-}
-
-/// [`evaluate_all`], each call with its own standard input and what it wrote: [`run_call`] for
-/// every call of `calls` over the one `source`, sharing sessions exactly as `evaluate_all`
-/// does. Each call runs on a machine of its own, so each reads its own input from the start and
-/// its output holds only what it wrote: a program run on several sample inputs is one call per
-/// input, compiled once.
-pub fn run_calls(
-    source: &str,
-    edition: Option<&str>,
-    loaded: Loaded<'_>,
-    calls: &[Call<'_>],
-) -> RanAll {
-    let mut answers: Vec<Option<Ran>> = calls.iter().map(|_| None).collect();
-    let mut sessions = 0;
-    // The calls still to answer, by their place in `calls`.
-    let mut open: Vec<usize> = (0..calls.len()).collect();
-    while open.len() > 1 {
-        let asked: Vec<Call<'_>> = open.iter().map(|&at| calls[at]).collect();
-        sessions += 1;
-        let Some(settled) = shared_session(source, edition, loaded, &asked) else {
-            break;
-        };
-        let mut left = Vec::new();
-        for (&at, outcome) in open.iter().zip(settled) {
-            match outcome {
-                Some(outcome) => answers[at] = Some(outcome),
-                None => left.push(at),
-            }
-        }
-        if left.len() == open.len() {
-            break;
-        }
-        open = left;
-    }
-    let runs = answers
-        .into_iter()
-        .zip(calls)
-        .map(|(answer, &asked)| {
-            answer.unwrap_or_else(|| {
-                sessions += 1;
-                run_call(source, edition, loaded, asked)
-            })
-        })
-        .collect();
-    RanAll { runs, sessions }
-}
-
-/// One session over `source` with one function per call of `calls`: each call's answer when
-/// the session could say it, `None` for a call to ask again, and `None` for the whole when the
-/// session settled nothing it could vouch for. See [`evaluate_all`] for which is which.
-fn shared_session(
-    source: &str,
-    edition: Option<&str>,
-    loaded: Loaded<'_>,
-    calls: &[Call<'_>],
-) -> Option<Vec<Option<Ran>>> {
-    let setup = Setup { edition, loaded, ..Setup::plain("evaluated") };
-    let probe = Input::Str { name: FileName::anon_source_code(""), input: Arc::new(String::new()) };
-    // Options that do not build refuse every call alike, as each call alone says.
-    let mut opts = setup.options(&probe).ok()?;
-    opts.cg.overflow_checks = Some(true);
-    opts.debug_assertions = true;
-    let library = !opts.unstable_opts.crate_attr.iter().any(|attr| attr == "no_core");
-    let newlines = |text: &str| text.bytes().filter(|&byte| byte == b'\n').count();
-    // The source, then each call's function on lines of its own, so a diagnostic is a call's
-    // exactly when rustc places it on the call's lines. The source's spans are where
-    // `evaluate` puts them.
-    let mut text = format!("{source}\n");
-    let source_lines = newlines(&text);
-    let mut entries: Vec<(String, core::ops::RangeInclusive<usize>, Call<'_>)> =
-        Vec::with_capacity(calls.len());
-    for (at, &asked) in calls.iter().enumerate() {
-        let name = format!("{}_{at}", interpreter::ENTRY);
-        let first = newlines(&text) + 1;
-        let call = asked.call;
-        text.push_str(&format!("#[allow(warnings)]\nfn {name}() -> impl Sized {{\n{call}\n}}\n"));
-        entries.push((name, first..=newlines(&text), asked));
-    }
-    if library {
-        text.push_str(interpreter::RENDER);
-    }
-    let source_text = Arc::new(text);
-    let input = Input::Str { name: FileName::anon_source_code(&source_text), input: source_text };
-    let said = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
-    let captured = said.clone();
-    let config = Config {
-        opts,
-        input,
-        psess_created: Some(capture_diagnostics(&said)),
-        using_internal_features: &USING_INTERNAL_FEATURES,
-        rustc_version: None,
-        crate_cfg: setup.loaded.cfg.to_vec(),
-    };
-    let mut settled: Option<Vec<Option<Ran>>> = None;
-    let session = crate::unwind_janky::catch(|| {
-        catch_fatal_errors(|| {
-            run_compiler(config, |compiler| {
-                let krate = parse(&compiler.sess);
-                create_and_enter_global_ctxt(compiler, krate, |tcx| {
-                    // `analysis` raises a fatal error once a body has one, after every body
-                    // was type and borrow checked: caught here, so the errors can be read by
-                    // where they are. Any other panic goes on out, and nothing is settled.
-                    let analysed = catch_fatal_errors(|| tcx.analysis(())).is_ok();
-                    if tcx.dcx().has_errors().is_none() {
-                        // Stopped with nothing said: each call alone says what that was.
-                        if !analysed {
-                            return;
-                        }
-                        let mut each: Vec<Option<Ran>> = entries.iter().map(|_| None).collect();
-                        for ((name, _, asked), slot) in entries.iter().zip(each.iter_mut()) {
-                            let since = captured.lock().len();
-                            let (ran, unwound) =
-                                evaluate_in(tcx, name, library, *asked, &captured, since);
-                            // An interpreter that unwound leaves this session untrusted: that
-                            // call and every one after it are asked again elsewhere.
-                            if unwound {
-                                break;
-                            }
-                            *slot = Some(ran);
-                        }
-                        settled = Some(each);
-                        return;
-                    }
-                    let (errors, _) = split_diagnostics(&captured.lock());
-                    let errors: Vec<String> = errors
-                        .into_iter()
-                        .filter(|error| !error.starts_with("error: aborting due to"))
-                        .collect();
-                    let mut own: Vec<Vec<usize>> = entries.iter().map(|_| Vec::new()).collect();
-                    let mut in_source: Vec<usize> = Vec::new();
-                    for (index, error) in errors.iter().enumerate() {
-                        let Some(line) = placed_line(error) else {
-                            return;
-                        };
-                        if line <= source_lines {
-                            in_source.push(index);
-                            continue;
-                        }
-                        let Some(at) =
-                            entries.iter().position(|(_, lines, _)| lines.contains(&line))
-                        else {
-                            return;
-                        };
-                        own[at].push(index);
-                    }
-                    if errors.is_empty() {
-                        return;
-                    }
-                    let refused = |mine: &[usize]| {
-                        Ran::silent(Evaluation::Refused {
-                            why: errors
-                                .iter()
-                                .enumerate()
-                                .filter(|(index, _)| {
-                                    in_source.contains(index) || mine.contains(index)
-                                })
-                                .map(|(_, error)| error.as_str())
-                                .collect::<Vec<&str>>()
-                                .join("\n"),
-                        })
-                    };
-                    settled = Some(if in_source.is_empty() {
-                        own.iter()
-                            .map(|mine| (!mine.is_empty()).then(|| refused(mine.as_slice())))
-                            .collect()
-                    } else {
-                        own.iter().map(|mine| Some(refused(mine.as_slice()))).collect()
-                    });
-                })
-            })
-        })
-    });
-    // A session that panicked as it ended would have refused each call alone, saying so; ask
-    // them alone rather than say it for them.
-    let _ended = session.ok()?;
-    settled
-}
-
-/// The line of the text as compiled that rustc placed `error` on, from its first `-->` location,
-/// when that is in the text (`<anon>`) and not in another file.
-fn placed_line(error: &str) -> Option<usize> {
-    let location = error.lines().map(str::trim).find_map(|line| line.strip_prefix("--> "))?;
-    let (from, _) = location.rsplit_once(": ")?;
-    let mut parts = from.rsplitn(3, ':');
-    let _column = parts.next()?;
-    let line = parts.next()?.parse().ok()?;
-    (parts.next()? == "<anon>").then_some(line)
-}
-
-/// `why`, then what rustc reported, one diagnostic a line, when it reported anything.
-fn with_errors(why: String, errors: &[String]) -> String {
-    if errors.is_empty() { why } else { format!("{why}\n{}", errors.join("\n")) }
-}
-
-/// What a caught panic said: its payload when that is text, or else what the panic handler
-/// recorded (`unwind_janky::record_panic`), which is also what survives `resume`'s re-raise. A
-/// compiler bug's payload is not text; its message is among the session's diagnostics.
-fn panic_text(payload: &crate::unwind_janky::Payload) -> String {
-    let said = payload
-        .downcast_ref::<&'static str>()
-        .map(|text| text.to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned());
-    let recorded = crate::unwind_janky::take_last_panic();
-    match said {
-        Some(said) if said != "resuming a caught panic" => said,
-        said => recorded.or(said).unwrap_or_else(|| {
-            "a panic whose payload is not text (a compiler bug; see the diagnostics)".to_string()
-        }),
-    }
-}
-
 /// `tcx.analysis(())` over one session, and what it said.
 fn check_input(opts: Options, input: Input, crate_cfg: Vec<String>) -> Checked {
-    let text = alloc::sync::Arc::new(eko::thread::Mutex::new(String::new()));
+    let captured = alloc::sync::Arc::new(eko::thread::Mutex::new(CapturedDiagnostics::default()));
     // Shared, not leaked per call; see `USING_INTERNAL_FEATURES`.
     let using_internal_features = &USING_INTERNAL_FEATURES;
     let config = Config {
         opts,
         input,
-        psess_created: Some(capture_diagnostics(&text)),
+        psess_created: Some(capture_diagnostics(&captured)),
         using_internal_features,
-        rustc_version: None,
         crate_cfg,
     };
+    let mut uncomputed_consts = Vec::new();
+    let mut analysis_fatal = false;
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
-            create_and_enter_global_ctxt(compiler, krate, |tcx| tcx.analysis(()))
+            create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                analysis_fatal = catch_fatal_errors(|| tcx.analysis(())).is_err();
+                // Keep the symbolic-constant shortfall even when analysis stops on it.
+                uncomputed_consts = compiler.sess.uncomputed_consts();
+            });
         })
     });
 
-    let (errors, warnings) = split_diagnostics(&text.lock());
-    Checked { errors, warnings, fatal: finished.is_err() }
-}
-
-fn host_rustc_version() -> Option<alloc::string::String> {
-    let out = eko::command::Command::new("rustc").arg("--version").output()?;
-    if !out.success() {
-        return None;
+    let captured = captured.lock();
+    let errors = captured_strings(&captured, Severity::Error);
+    let warnings = captured_strings(&captured, Severity::Warning);
+    Checked {
+        errors,
+        warnings,
+        typed: captured.typed.clone(),
+        uncomputed_consts,
+        fatal: finished.is_err() || analysis_fatal,
     }
-    let line = alloc::string::String::from_utf8(out.stdout).ok()?;
-    let line = line.trim();
-    let version = line.strip_prefix("rustc ").unwrap_or(line).trim();
-    (!version.is_empty()).then(|| version.to_string())
 }
 
 /// Collects one body's references as the `DefId` each resolved to, its kind and its span.
@@ -2799,6 +2559,8 @@ mod tests {
         assert!(facts.complete);
         assert!(facts.diagnostics.is_empty());
         assert!(facts.unanalyzed_bodies.is_empty());
+        assert!(facts.typed.is_empty());
+        assert!(facts.uncomputed_consts.is_empty());
     }
 
     // A definition serialized before the shape fields existed still reads, with them empty,
@@ -2826,8 +2588,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&receiver).unwrap(), r#"{"kind":"ref_mut","ty":null}"#);
     }
 
-    // Emitter output is written by hand here: producing it for real means running a session,
-    // which is exactly what these tests stay clear of. The shape is the `short_message` one.
+    // Rendered output is written by hand here so the splitting helper does not need a session.
     #[test]
     fn captured_output_splits_into_errors_and_warnings_with_their_locations() {
         let captured = "error[E0425]: cannot find value `x` in this scope\n  --> src/lib.rs:1:14\nwarning: unused variable: `y`\nnote: a note on its own\nFor more information about this error, try `rustc --explain E0425`.\nerror: aborting due to 1 previous error\n";

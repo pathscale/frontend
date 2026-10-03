@@ -37,6 +37,7 @@ use alloc::sync::Arc;
 use crate::rustc_expand::base::{MacroExpanderFn, ResolverExpand, SyntaxExtensionKind};
 use crate::rustc_expand::proc_macro::BangProcMacro;
 use crate::rustc_span::sym;
+use crate::rustc_span::Symbol;
 
 use crate::rustc_builtin_macros::deriving::*;
 
@@ -78,6 +79,36 @@ pub mod proc_macro_harness;
 pub mod standard_library_imports;
 pub mod test_harness;
 pub mod util;
+
+macro_rules! builtin_derive_registry {
+    ($consumer:ident) => {
+        $consumer! {
+            Clone: clone::expand_deriving_clone,
+            CoerceShared: reborrow::expand_deriving_coerce_shared,
+            Copy: bounds::expand_deriving_copy,
+            ConstParamTy: bounds::expand_deriving_const_param_ty,
+            Debug: debug::expand_deriving_debug,
+            Default: default::expand_deriving_default,
+            Eq: eq::expand_deriving_eq,
+            Hash: hash::expand_deriving_hash,
+            Ord: ord::expand_deriving_ord,
+            PartialEq: partial_eq::expand_deriving_partial_eq,
+            PartialOrd: partial_ord::expand_deriving_partial_ord,
+            CoercePointee: coerce_pointee::expand_deriving_coerce_pointee,
+            Reborrow: reborrow::expand_deriving_reborrow,
+            From: from::expand_deriving_from,
+        }
+    };
+}
+
+pub fn builtin_derive_names() -> Vec<Symbol> {
+    macro_rules! collect_names {
+        ($($name:ident: $expand:expr,)*) => {
+            vec![$(sym::$name),*]
+        };
+    }
+    builtin_derive_registry!(collect_names)
+}
 
 pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
     let mut register = |name, kind| resolver.register_builtin_macro(name, kind);
@@ -159,22 +190,7 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
         // tidy-alphabetical-end
     }
 
-    register_derive! {
-        Clone: clone::expand_deriving_clone,
-        CoerceShared: reborrow::expand_deriving_coerce_shared,
-        Copy: bounds::expand_deriving_copy,
-        ConstParamTy: bounds::expand_deriving_const_param_ty,
-        Debug: debug::expand_deriving_debug,
-        Default: default::expand_deriving_default,
-        Eq: eq::expand_deriving_eq,
-        Hash: hash::expand_deriving_hash,
-        Ord: ord::expand_deriving_ord,
-        PartialEq: partial_eq::expand_deriving_partial_eq,
-        PartialOrd: partial_ord::expand_deriving_partial_ord,
-        CoercePointee: coerce_pointee::expand_deriving_coerce_pointee,
-        Reborrow: reborrow::expand_deriving_reborrow,
-        From: from::expand_deriving_from,
-    }
+    builtin_derive_registry!(register_derive);
 
     let client = crate::rustc_proc_macro::bridge::client::Client::expand1(crate::rustc_proc_macro::quote);
     register(sym::quote, SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client })));

@@ -233,11 +233,14 @@ impl<'a> FileEncoder<'a> {
 #[cfg(debug_assertions)]
 impl Drop for FileEncoder<'_> {
     fn drop(&mut self) {
-        // Behaviour change: this was guarded by `std::thread::panicking()`, so that an encoder
-        // dropped while a panic unwound past it did not fire a second, misleading assertion.
-        // With `panic = "abort"` there is no unwinding, so a drop can never be running inside a
-        // panic and the guard is dead - `std::thread::panicking()` is always `false`.
-        assert!(self.finished);
+        // Upstream guarded this with `std::thread::panicking()`. Under `panic = "abort"` a drop
+        // never runs inside a panic, but a host that installs a catcher unwinds a caught fatal
+        // past an open encoder, and asserting there turns the caught fatal into an abort. With
+        // unwinding enabled the unfinished encoder is simply dropped; its partial output is never
+        // handed on, since only `finish()` returns the path.
+        if !crate::unwind_janky::unwinding_is_enabled() {
+            assert!(self.finished);
+        }
     }
 }
 

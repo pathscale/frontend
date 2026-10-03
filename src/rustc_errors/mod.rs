@@ -1638,6 +1638,18 @@ impl DiagCtxtInner {
         self.emit_diagnostic(DiagInner::new(Note, note2), None, None);
 
         for bug in bugs {
+            let message: String = bug
+                .inner
+                .messages
+                .iter()
+                .map(|(msg, _)| {
+                    try_format_diag_message(msg, &bug.inner.args)
+                        .unwrap_or_else(|| Cow::Borrowed(diag_message_source(msg)))
+                })
+                .collect();
+            let span = bug.inner.span.primary_span();
+            eko::eprintln!("delayed bug at {span:?}: {message}");
+
             if let Some(out) = &mut out {
                 // The second line was the delayed bug's captured `Backtrace`; there is no
                 // backtrace without std, so only the message is written to the ICE file.
@@ -1651,15 +1663,6 @@ impl DiagCtxtInner {
                 // nothing at all. `try_format_diag_message` does the substitution and
                 // `diag_message_source` hands back the raw template when it cannot, which is
                 // exactly what the two emitters do.
-                let message: String = bug
-                    .inner
-                    .messages
-                    .iter()
-                    .map(|(msg, _)| {
-                        try_format_diag_message(msg, &bug.inner.args)
-                            .unwrap_or_else(|| Cow::Borrowed(diag_message_source(msg)))
-                    })
-                    .collect();
                 _ = write!(out, "delayed bug: {message}\n");
             }
 

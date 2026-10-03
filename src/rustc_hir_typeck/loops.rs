@@ -231,7 +231,8 @@ impl<'hir> Visitor<'hir> for CheckLoopVisitor<'hir> {
                 if find_attr!(self.tcx, e.hir_id, ConstContinue(_)) {
                     let Some(label) = break_destination.label else {
                         let span = e.span;
-                        self.tcx.dcx().emit_fatal(ConstContinueBadLabel { span });
+                        self.tcx.dcx().emit_err(ConstContinueBadLabel { span });
+                        return;
                     };
 
                     let is_target_label = |cx: &Context| match cx {
@@ -247,7 +248,8 @@ impl<'hir> Visitor<'hir> for CheckLoopVisitor<'hir> {
 
                     if !self.cx_stack.iter().rev().any(is_target_label) {
                         let span = label.ident.span;
-                        self.tcx.dcx().emit_fatal(ConstContinueBadLabel { span });
+                        self.tcx.dcx().emit_err(ConstContinueBadLabel { span });
+                        return;
                     }
                 }
 

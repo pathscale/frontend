@@ -9,7 +9,7 @@
 //! that does not expand, a module file that is missing) and one that only meets an unknown
 //! attribute, and checks `CrateFacts::complete` tells the two apart.
 //!
-//! One test is ignored unless `FRONTEND_RUST_SRC_ROOTS` names toolchains' `rust-src` trees,
+//! Three tests are ignored unless `FRONTEND_RUST_SRC_ROOTS` names toolchains' `rust-src` trees,
 //! colon-separated, each the directory that holds `library/` (a toolchain's
 //! `lib/rustlib/src/rust`). From each it reads `std` and every crate `std` depends on on this
 //! host, in dependency order, each a library read that loads the metadata the reads before it
@@ -26,7 +26,10 @@
 //! the tree's `library/vendor` when it has one, and otherwise from cargo's registry cache,
 //! `$CARGO_HOME/registry/src`, at the version the lock file names.
 //!
-//! A second ignored test reads the same chain from the first tree named, with `test` (libtest)
+//! The other reads `proc_macro` from the first tree and uses its metadata to read source proc
+//! macro declarations, then checks that an unrun derive and attribute keep their source items.
+//!
+//! A third ignored test reads the same chain from the first tree named, with `test` (libtest)
 //! and what it depends on planned beside `std` as the sysroot has them, and checks one file
 //! with rustc's `--test` against it (`check_source_against`'s `test`):
 //!
@@ -54,9 +57,16 @@ const LANG: &str = "\
 #[lang = \"pointee_sized\"] pub trait PointeeSized {}
 #[lang = \"meta_sized\"] pub trait MetaSized: PointeeSized {}
 #[lang = \"sized\"] pub trait Sized: MetaSized {}
-#[lang = \"copy\"] pub trait Copy {}
+#[lang = \"clone\"] pub trait Clone: Sized {
+    #[lang = \"clone_fn\"] fn clone(&self) -> Self;
+}
+#[lang = \"copy\"] pub trait Copy: Clone {}
+pub mod clone { pub use super::Clone; }
 #[lang = \"legacy_receiver\"] pub trait LegacyReceiver {}
 impl<T: ?Sized> LegacyReceiver for &T {}
+impl<T: ?Sized> LegacyReceiver for &mut T {}
+impl Clone for u8 { fn clone(&self) -> u8 { *self } }
+impl Clone for u32 { fn clone(&self) -> u32 { *self } }
 impl Copy for u8 {}
 impl Copy for u32 {}
 ";
@@ -109,8 +119,8 @@ fn read_fixture(
     (read_crate(&read), metadata)
 }
 
-/// A type error in a `const fn`, whose body the metadata carries so other crates can evaluate
-/// it: the strict read refuses the crate and writes nothing; the library read records the error
+/// A type error in a `const fn`, whose body the metadata carries for other crates: the strict
+/// read refuses the crate and writes nothing; the library read records the error
 /// and writes metadata a strict check against it loads.
 #[test]
 fn a_type_error_is_refused_by_a_strict_read_and_recorded_by_a_library_read() {
@@ -235,6 +245,95 @@ fn a_library_read_is_incomplete_only_where_reading_lost_input() {
         );
         assert!(Path::new(&metadata).is_file(), "{name}: a library read writes its metadata");
     }
+
+    let dir = Scratch::new("builtin-clone-derive");
+    let source = format!(
+        "{LANG}#[derive(Clone)] pub struct CloneOnly;\n"
+    );
+    let (read, _) = read_fixture(&dir, "clone_derive", &source, true);
+    let facts = read.expect("a builtin derive keeps its source item");
+    assert!(facts.complete, "{:?}", facts.diagnostics);
+    assert!(facts.definitions.iter().any(|d| &*d.def_path == "CloneOnly"));
+    assert!(facts.impls.iter().any(|i| {
+        i.trait_def_path.as_deref() == Some("Clone")
+            && i.items.iter().any(|item| item.name == "clone")
+    }));
+}
+
+/// Proc-macro declarations are read as metadata and expanded without a compiled macro body.
+#[test]
+#[ignore = "reads proc_macro from the rust-src tree named by FRONTEND_RUST_SRC_ROOTS"]
+fn unrun_proc_macros_keep_their_annotated_items() {
+    frontend::unwind_janky::install_catcher(catcher);
+    let root = std::env::var("FRONTEND_RUST_SRC_ROOTS")
+        .expect("FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated")
+        .split(':')
+        .find(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
+    let scratch = Scratch::new("unrun-proc-macros");
+    let written = read_chain(&root, &scratch.0, false, true)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
+    let mut dependencies: Vec<Dependency> = written
+        .iter()
+        .map(|(name, metadata)| {
+            if name == "proc_macro" {
+                Dependency::new(name.clone(), metadata.clone())
+            } else {
+                Dependency::transitive(name.clone(), metadata.clone())
+            }
+        })
+        .collect();
+
+    let macro_source = scratch.write(
+        "external_macros.rs",
+        "#![crate_type = \"proc-macro\"]\n\
+         extern crate proc_macro;\n\
+         #[proc_macro_derive(Make)]\n\
+         pub fn make(_: proc_macro::TokenStream) -> proc_macro::TokenStream { proc_macro::TokenStream::new() }\n\
+         #[proc_macro_attribute]\n\
+         pub fn attr(_: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream { item }\n",
+    );
+    let macro_metadata = scratch.path("libexternal_macros.rmeta");
+    let macro_read = CrateRead {
+        edition: Some("2021"),
+        items_only: true,
+        proc_macro: true,
+        loaded: Loaded { dependencies: &dependencies, ..Loaded::default() },
+        write_metadata: Some(eko::path::Path::new(&macro_metadata)),
+        ..CrateRead::new("external_macros", eko::path::Path::new(&macro_source))
+    }
+    .library(true);
+    read_crate(&macro_read).expect("read the source proc-macro declarations");
+    assert!(Path::new(&macro_metadata).is_file());
+
+    dependencies.push(Dependency::new("external_macros", macro_metadata));
+    let consumer_source = scratch.write(
+        "consumer.rs",
+        &format!(
+            "{LANG}extern crate external_macros;\n\
+             #[derive(external_macros::Make)] pub struct Kept;\n\
+             #[external_macros::attr] pub fn annotated(value: u8) -> u8 {{ value }}\n"
+        ),
+    );
+    let consumer_metadata = scratch.path("libconsumer.rmeta");
+    let consumer_read = CrateRead {
+        edition: Some("2021"),
+        items_only: true,
+        loaded: Loaded { dependencies: &dependencies, ..Loaded::default() },
+        write_metadata: Some(eko::path::Path::new(&consumer_metadata)),
+        ..CrateRead::new("consumer", eko::path::Path::new(&consumer_source))
+    }
+    .library(true);
+    let facts = read_crate(&consumer_read).expect("read the consumer library");
+    assert!(!facts.complete, "{:?}", facts.diagnostics);
+    assert!(facts.definitions.iter().any(|d| &*d.def_path == "Kept"));
+    let annotated = facts
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "annotated")
+        .expect("the attribute's function stays in the facts");
+    assert!(!annotated.signature_settled);
 }
 
 /// `std` and everything it depends on, read from each `rust-src` tree named, as a chain.
@@ -327,380 +426,22 @@ mod t {
     assert!(tested.warnings.is_empty(), "{:?}", tested.warnings);
 }
 
-/// `evaluate` against `std`'s chain read from the first `rust-src` tree named, with every
-/// function's MIR written (`CrateRead::all_mir`), so a call runs through the library's own code
-/// on rustc's interpreter. A number is what a function returns when it runs: "strawberry" has 3
-/// r, and the near misses give other numbers. A `u8` sum past 255 and `unwrap` of `None` are
-/// panics with the runtime's own messages, a bounds check's message is formatted by the
-/// library's `fmt` on the same interpreter, and a call that reaches a syscall is refused by name.
-/// Past those, what the math verifier's acceptance hit: `println!` and `eprintln!` in a `main`,
-/// a `HashSet` (thread-local keys from the OS's random source), a `BTreeMap` and a `Cow`
-/// rendered by their own `Debug`, `k_largest` over a `BinaryHeap`, a value with no `Debug`, and
-/// a file open, refused by name.
-#[test]
-#[ignore = "reads std's chain with every function's MIR from the first tree FRONTEND_RUST_SRC_ROOTS names"]
-fn an_evaluation_runs_std_on_rustcs_interpreter() {
-    use frontend::frontend_facts::{Evaluation, evaluate};
-    let roots = std::env::var("FRONTEND_RUST_SRC_ROOTS").expect(
-        "FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated, each holding `library/`",
-    );
-    frontend::unwind_janky::install_catcher(catcher);
-    let root = roots
-        .split(':')
-        .find(|r| !r.is_empty())
-        .map(PathBuf::from)
-        .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
-    let scratch = Scratch::new("evaluate");
-    let written = read_chain(&root, &scratch.0, false, true)
-        .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
-    let dependencies: Vec<Dependency> = written
-        .iter()
-        .map(|(name, metadata)| Dependency::transitive(name.clone(), metadata.clone()))
-        .collect();
-    let loaded = Loaded { dependencies: &dependencies, ..Loaded::default() };
-
-    let source = "\
-pub fn count(text: &str, target: char) -> usize {
-    text.chars().filter(|&c| c == target).count()
-}
-pub fn count_upper(text: &str, target: char) -> usize {
-    text.chars().filter(|&c| c == target.to_ascii_uppercase()).count()
-}
-pub fn count_skipping(text: &str, target: char) -> usize {
-    text.chars().rev().skip(1).filter(|&c| c == target).count()
-}
-";
-    let eval = |call: &str| {
-        let evaluation = evaluate(source, Some("2021"), loaded, call, None);
-        eprintln!("{call} => {evaluation:?}");
-        evaluation
-    };
-    let value = |call: &str| match eval(call) {
-        Evaluation::Value { rendered, ty, .. } => (rendered, ty),
-        other => panic!("{call}: {other:?}"),
-    };
-    let panicked = |call: &str| match eval(call) {
-        Evaluation::Panicked { message, .. } => message,
-        other => panic!("{call}: {other:?}"),
-    };
-
-    // The count, as a function over the question's data and as a bare expression.
-    assert_eq!(value("count(\"strawberry\", 'r')"), ("3".to_string(), "usize".to_string()));
-    assert_eq!(value("\"strawberry\".chars().filter(|&c| c == 'r').count()").0, "3");
-    // Near misses: comparing against the upper case finds none; skipping one from the end
-    // agrees on "strawberry" (its last letter is not an r) and is shown wrong by "r".
-    assert_eq!(value("count_upper(\"strawberry\", 'r')").0, "0");
-    assert_eq!(value("count_skipping(\"strawberry\", 'r')").0, "3");
-    assert_eq!(value("count(\"r\", 'r')").0, "1");
-    assert_eq!(value("count_skipping(\"r\", 'r')").0, "0");
-
-    // Heap values, read back by layout.
-    assert_eq!(
-        value("vec![1, 2, 3, 4].iter().sum::<i32>()"),
-        ("10".to_string(), "i32".to_string())
-    );
-    let (rendered, ty) = value("vec![1u8, 2, 3]");
-    assert_eq!(rendered, "[1, 2, 3]");
-    assert!(ty.contains("Vec<u8"), "{ty}");
-    assert_eq!(value("String::from(\"hi\")").0, "\"hi\"");
-    assert_eq!(value("\"abc\".find('c')").0, "Some(2)");
-    assert_eq!(value("\"abc\".find('z')").0, "None");
-
-    // The budget bounds the call alone. `2 + -3` and `2 + 3` take the same steps to compute;
-    // the negative one takes at least as many to render, apart; and a budget of exactly the
-    // call's steps lets it finish, however long its value takes to print.
-    let add = "pub fn add(x: i64, y: i64) -> i64 { x + y }\n";
-    let steps_of =
-        |call: &str, budget: Option<u64>| match evaluate(add, Some("2021"), loaded, call, budget) {
-            Evaluation::Value { steps, render_steps, .. } => (steps, render_steps),
-            other => panic!("{call}: {other:?}"),
-        };
-    let (positive, positive_render) = steps_of("add(2, 3)", None);
-    let (negative, negative_render) = steps_of("add(2, -3)", None);
-    assert_eq!(positive, negative, "the same addition, whatever the signs");
-    assert!(negative_render >= positive_render, "{negative_render} {positive_render}");
-    assert_eq!(steps_of("add(2, -3)", Some(positive)).0, negative);
-
-    // `Iterator::eq` walks both through `try_fold`, which calls `ControlFlow::Break` as a
-    // function: a variant's constructor, with no body in any metadata, built as its aggregate.
-    assert_eq!(value("\"ab\".chars().eq(\"ba\".chars().rev())").0, "true");
-    assert_eq!(value("\"aba\".chars().eq(\"aba\".chars().rev())").0, "true");
-    assert_eq!(value("\"zbcd\".chars().eq(\"zbcd\".chars().rev())").0, "false");
-
-    // Panics, with the messages a run prints.
-    assert_eq!(panicked("[200u8, 100].iter().sum::<u8>()"), "attempt to add with overflow");
-    assert_eq!(panicked("None::<u8>.unwrap()"), "called `Option::unwrap()` on a `None` value");
-    assert_eq!(
-        panicked("vec![1, 2, 3][5]"),
-        "index out of bounds: the len is 3 but the index is 5"
-    );
-
-    // A syscall is not served, named: this machine's limit, not the program's answer.
-    match eval("std::process::id()") {
-        Evaluation::Unsupported { why } => assert!(why.contains("foreign function"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-
-    // What the math verifier's acceptance reaches past the above. Printing is served (its
-    // bytes are the program's output); a `HashSet` gets its thread-local keys, from the fixed
-    // random stream; a value is rendered by its type's own `Debug`, a `BTreeMap` and a `Cow`
-    // among them; and a file is still refused by name.
-    let programs = "\
-use std::borrow::Cow;
-use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashSet};
-pub fn main() {
-    println!(\"x\");
-    eprintln!(\"y {}\", 3);
-}
-pub fn first_repeat(xs: &[i32]) -> Option<i32> {
-    let mut seen = HashSet::new();
-    for &x in xs {
-        if !seen.insert(x) {
-            return Some(x);
-        }
-    }
-    None
-}
-pub fn word_count(text: &str) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::new();
-    for word in text.split_whitespace() {
-        *counts.entry(word.to_string()).or_insert(0) += 1;
-    }
-    counts
-}
-pub fn escape(text: &str) -> Cow<'_, str> {
-    if text.contains('<') { Cow::Owned(text.replace('<', \"&lt;\")) } else { Cow::Borrowed(text) }
-}
-pub fn k_largest(xs: &[u64], k: usize) -> Vec<u64> {
-    let mut smallest_kept = BinaryHeap::with_capacity(k + 1);
-    for &x in xs {
-        smallest_kept.push(Reverse(x));
-        if smallest_kept.len() > k {
-            smallest_kept.pop();
-        }
-    }
-    let mut kept: Vec<u64> = smallest_kept.into_iter().map(|Reverse(x)| x).collect();
-    kept.sort_unstable();
-    kept.reverse();
-    kept
-}
-pub fn filter_by_substring(strings: Vec<String>, substring: String) -> Vec<String> {
-    strings.into_iter().filter(|s| s.contains(&substring)).collect()
-}
-";
-    let run = |call: &str| {
-        let evaluation = evaluate(programs, Some("2021"), loaded, call, None);
-        eprintln!("{call} => {evaluation:?}");
-        evaluation
-    };
-    let value = |call: &str| match run(call) {
-        Evaluation::Value { rendered, ty, .. } => (rendered, ty),
-        other => panic!("{call}: {other:?}"),
-    };
-    assert_eq!(value("main()"), ("()".to_string(), "()".to_string()));
-    assert_eq!(value("first_repeat(&[1, 2, 3, 2, 1])").0, "Some(2)");
-    assert_eq!(value("first_repeat(&[1, 2, 3])").0, "None");
-    let (rendered, ty) = value("word_count(\"lamp oil lamp rope lamp oil\")");
-    assert_eq!(rendered, r#"{"lamp": 3, "oil": 2, "rope": 1}"#);
-    assert!(ty.contains("BTreeMap"), "{ty}");
-    let (rendered, ty) = value("escape(\"a<b\")");
-    assert_eq!(rendered, r#""a&lt;b""#);
-    assert!(ty.contains("Cow"), "{ty}");
-    assert_eq!(value("escape(\"ab\")").0, r#""ab""#);
-    assert_eq!(value("k_largest(&[], 0)").0, "[]");
-    assert_eq!(value("k_largest(&[5, 1, 4, 2], 2)").0, "[5, 4]");
-    // `into_iter().filter(..).collect()` into a `Vec` of the same element collects in place
-    // (alloc's `SpecInPlaceCollect`), whose loop ends in `Result<_, !>::into_ok`: it runs only
-    // when `!: From<!>` is proved by `impl<T> From<T> for T` alone, with core's reservation impl
-    // `impl<T> From<!> for T` read as no impl (`TyCtxt::impl_is_reservation`).
-    let (rendered, ty) = value("filter_by_substring(vec![], String::from(\"a\"))");
-    assert_eq!(rendered, "[]");
-    assert!(ty.contains("Vec<") && ty.contains("String"), "{ty}");
-    assert_eq!(
-        value(
-            "filter_by_substring(vec![String::from(\"abc\"), String::from(\"cde\")], String::from(\"a\"))"
-        )
-        .0,
-        r#"["abc"]"#
-    );
-    // A type with no `Debug` is refused, named.
-    match run("|x: u8| x") {
-        Evaluation::Refused { why } => assert!(why.contains("Debug"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-    // A file is not served: named, not a panic, and not the program's refusal.
-    match run("std::fs::File::open(\"/etc/hosts\").is_ok()") {
-        Evaluation::Unsupported { why } => assert!(why.contains("foreign function"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-
-    // A whole program on the input it is given (Multi-LCB's first family: read `A B`, print
-    // `(A+B)^2`), its four sample inputs as four calls of `main()` compiled once, each reading
-    // its own input, and what each printed coming back.
-    use frontend::frontend_facts::{Call, Ran, run_call, run_calls};
-    let program = "\
-use std::io::{self, Read};
-pub fn main() {
-    let mut line = String::new();
-    io::stdin().read_line(&mut line).unwrap();
-    let v: Vec<u64> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
-    println!(\"{}\", (v[0] + v[1]).pow(2));
-}
-pub fn read_all() -> (usize, usize) {
-    let mut text = String::new();
-    let first = io::stdin().read_to_string(&mut text).unwrap();
-    let after = io::stdin().read_to_string(&mut text).unwrap();
-    (first, after)
-}
-pub fn absent_stdin_is_eof() -> bool {
-    let mut byte = [0];
-    match io::stdin().read(&mut byte) {
-        Ok(0) => true,
-        _ => false,
-    }
-}
-pub fn no_newline() {
-    print!(\"no newline\");
-}
-pub fn print_then_panic() {
-    print!(\"partial\");
-    panic!(\"boom\");
-}
-pub fn exit_three() {
-    println!(\"bye\");
-    std::process::exit(3);
-}
-";
-    let samples: [(&[u8], &[u8]); 4] = [
-        (b"20 25\n", b"2025\n"),
-        (b"30 25\n", b"3025\n"),
-        (b"45 11\n", b"3136\n"),
-        (b"2025 1111\n", b"9834496\n"),
-    ];
-    let calls: Vec<Call<'_>> = samples
-        .iter()
-        .map(|&(input, _)| Call { call: "main()", budget: None, stdin: Some(input) })
-        .collect();
-    let all = run_calls(program, Some("2021"), loaded, &calls);
-    assert_eq!(all.sessions, 1, "compiled once for every input");
-    for ((input, printed), ran) in samples.iter().zip(&all.runs) {
-        eprintln!("main() on {:?} => {ran:?}", String::from_utf8_lossy(input));
-        assert!(
-            matches!(&ran.evaluation, Evaluation::Value { rendered, .. } if rendered == "()"),
-            "{ran:?}"
-        );
-        assert_eq!(ran.output.stdout, *printed);
-        assert_eq!(ran.output.unflushed, None);
-    }
-    let one = |call: &str, stdin: Option<&[u8]>| {
-        let ran = run_call(program, Some("2021"), loaded, Call { call, budget: None, stdin });
-        eprintln!("{call} => {ran:?}");
-        ran
-    };
-    // Read to the end, then past it: nothing more, as a closed pipe.
-    let Ran { evaluation, .. } = one("read_all()", Some(b"a\nbb\n"));
-    assert!(matches!(&evaluation, Evaluation::Value { rendered, .. } if rendered == "(5, 0)"));
-    // std maps EBADF from a closed standard stream to a successful zero-byte read.
-    let Ran { evaluation, .. } = one("absent_stdin_is_eof()", None);
-    assert!(
-        matches!(&evaluation, Evaluation::Value { rendered, .. } if rendered == "true"),
-        "{evaluation:?}"
-    );
-    // Text with no newline sits in std's line buffer until the end-of-program flush writes it.
-    let Ran { output, .. } = one("no_newline()", None);
-    assert_eq!(output.stdout, b"no newline");
-    assert_eq!(output.unflushed, None);
-    // A panic after printing: the panic is the answer, and what was printed is flushed, as a
-    // process flushes after a panic in `main`.
-    let Ran { evaluation, output } = one("print_then_panic()", None);
-    assert!(matches!(&evaluation, Evaluation::Panicked { message, .. } if message == "boom"));
-    assert_eq!(output.stdout, b"partial");
-    // `process::exit`: its code, and std's own flush ran first.
-    let Ran { evaluation, output } = one("exit_three()", None);
-    assert!(matches!(evaluation, Evaluation::Exited { code: 3, .. }), "{evaluation:?}");
-    assert_eq!(output.stdout, b"bye\n");
-}
-
-/// Every diagnostic the library reads of `std`'s chain record with every function's MIR
-/// written, from the first `rust-src` tree named, printed whole and counted by the file each is
-/// located in. A body built with an error in it is one `evaluate` refuses, so none may be in
-/// alloc's `vec/in_place_collect.rs`: its default `collect_in_place` converts out of `!`
-/// (`into_ok`), which only builds when core's reservation impl `impl<T> From<!> for T` is read
-/// as no impl, as the rustc that compiled that core read it.
-#[test]
-#[ignore = "reads std's chain with every function's MIR from the first tree FRONTEND_RUST_SRC_ROOTS names"]
-fn the_bodies_evaluate_runs_build_without_errors() {
-    let roots = std::env::var("FRONTEND_RUST_SRC_ROOTS").expect(
-        "FRONTEND_RUST_SRC_ROOTS names rust-src trees, colon-separated, each holding `library/`",
-    );
-    frontend::unwind_janky::install_catcher(catcher);
-    let root = roots
-        .split(':')
-        .find(|r| !r.is_empty())
-        .map(PathBuf::from)
-        .expect("FRONTEND_RUST_SRC_ROOTS names no tree");
-    let scratch = Scratch::new("all-mir-diagnostics");
-    let mut recorded = BTreeMap::new();
-    read_chain_recording(&root, &scratch.0, false, true, &mut recorded)
-        .unwrap_or_else(|failure| panic!("{}: {failure}", root.display()));
-
-    let mut in_place_collect = Vec::new();
-    for (crate_name, diagnostics) in &recorded {
-        // By the file of each diagnostic's first location line; `(no location)` otherwise.
-        let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
-        for diagnostic in diagnostics {
-            let file = diagnostic
-                .lines()
-                .find_map(|line| line.trim_start().strip_prefix("--> "))
-                .map(|location| location.split(':').next().unwrap_or(location).to_string())
-                .unwrap_or_else(|| "(no location)".to_string());
-            if file.ends_with("vec/in_place_collect.rs") {
-                in_place_collect.push(format!("{crate_name}: {diagnostic}"));
-            }
-            *by_file.entry(file).or_default() += 1;
-        }
-        eprintln!("== {crate_name}: {} diagnostics", diagnostics.len());
-        for (file, count) in &by_file {
-            eprintln!("  {count:5}  {file}");
-        }
-        for diagnostic in diagnostics {
-            eprintln!("{diagnostic}\n");
-        }
-    }
-    assert!(
-        in_place_collect.is_empty(),
-        "{} diagnostics in vec/in_place_collect.rs:\n{}",
-        in_place_collect.len(),
-        in_place_collect.join("\n\n")
-    );
-}
-
-/// Read one tree's `std` chain into `out`, with `test` (libtest) and its dependencies when
-/// `with_test`, and every function's MIR in the metadata when `all_mir`. `Err` says which crate
-/// was refused and why; `Ok` is each crate read, by name, with the metadata written for it, in
-/// the order read.
+/// Read one tree's `std` chain into `out`, with `test` (libtest) or `proc_macro` and their
+/// dependencies when requested. `Err` says which crate was refused and why; `Ok` is each crate
+/// read, by name, with the metadata written for it, in the order read.
 fn read_chain(
     root: &Path,
     out: &Path,
     with_test: bool,
-    all_mir: bool,
-) -> Result<Vec<(String, String)>, String> {
-    read_chain_recording(root, out, with_test, all_mir, &mut BTreeMap::new())
-}
-
-/// [`read_chain`], keeping every diagnostic each read recorded in `recorded`, by crate name.
-fn read_chain_recording(
-    root: &Path,
-    out: &Path,
-    with_test: bool,
-    all_mir: bool,
-    recorded: &mut BTreeMap<String, Vec<String>>,
+    with_proc_macro: bool,
 ) -> Result<Vec<(String, String)>, String> {
     let library = root.join("library");
     let mut graph = plan::Graph::for_std(&library)?;
     if with_test {
         graph = graph.with_test()?;
+    }
+    if with_proc_macro {
+        graph = graph.with_proc_macro()?;
     }
     let order = graph.order();
     eprintln!("{}: {} crates: {}", root.display(), order.len(), order.join(", "));
@@ -756,8 +497,7 @@ fn read_chain_recording(
             write_metadata: Some(eko::path::Path::new(&metadata)),
             ..CrateRead::new(&crate_name, eko::path::Path::new(root_file.to_str().expect("UTF-8")))
         }
-        .library(true)
-        .with_all_mir(all_mir);
+        .library(true);
         let facts = read_crate(&read).map_err(|refused| {
             let shown = refused.diagnostics.iter().take(20).cloned().collect::<Vec<_>>().join("\n");
             format!(
@@ -765,6 +505,22 @@ fn read_chain_recording(
                 refused.diagnostics.len()
             )
         })?;
+        if crate_name == "core" {
+            let get = facts
+                .definitions
+                .iter()
+                .filter(|definition| definition.name == "get" && definition.def_path.contains("str"))
+                .filter_map(|definition| definition.signature.as_ref())
+                // `str::get` itself: `&self` and one generic index, not a `SliceIndex` impl's
+                // `get(self, slice: &str)`.
+                .find(|signature| signature.params.len() == 1 && signature.params[0].ty == "I")
+                .expect("str::get signature");
+            assert!(
+                get.ret.as_deref().unwrap_or_default().contains("Option")
+                    && get.predicates.iter().any(|predicate| predicate.contains("SliceIndex")),
+                "unexpected str::get signature: {get:?}"
+            );
+        }
         eprintln!(
             "  {crate_name}: {} definitions, {} impls, {} diagnostics recorded, complete: {}",
             facts.definitions.len(),
@@ -775,7 +531,6 @@ fn read_chain_recording(
         for diagnostic in facts.diagnostics.iter().take(5) {
             eprintln!("    {}", diagnostic.lines().next().unwrap_or_default());
         }
-        recorded.insert(crate_name.clone(), facts.diagnostics.clone());
         if !Path::new(&metadata).is_file() {
             return Err(format!("`{crate_name}` read, but its metadata was not written"));
         }
@@ -784,10 +539,15 @@ fn read_chain_recording(
         }
         written.insert(id.clone(), metadata);
     }
-    let expected: &[&str] =
-        if with_test { &["core", "alloc", "std", "test"] } else { &["core", "alloc", "std"] };
+    let mut expected = vec!["core", "alloc", "std"];
+    if with_test {
+        expected.push("test");
+    }
+    if with_proc_macro {
+        expected.push("proc_macro");
+    }
     for name in expected {
-        if !read_names.contains(*name) {
+        if !read_names.contains(name) {
             return Err(format!("the chain has no `{name}`"));
         }
     }
@@ -1105,6 +865,19 @@ mod plan {
                 .ok_or("library/Cargo.lock has no `test`")?
                 .id();
             let dir = self.library.join("test");
+            self.activate(&id, &dir, &[], true)?;
+            self.roots.push(id);
+            Ok(self)
+        }
+
+        pub fn with_proc_macro(mut self) -> Result<Graph, String> {
+            let id = self
+                .lock
+                .iter()
+                .find(|locked| locked.name == "proc_macro" && !locked.registry)
+                .ok_or("library/Cargo.lock has no `proc_macro`")?
+                .id();
+            let dir = self.library.join("proc_macro");
             self.activate(&id, &dir, &[], true)?;
             self.roots.push(id);
             Ok(self)

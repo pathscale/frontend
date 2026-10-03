@@ -5,7 +5,13 @@
 //! `std::panic::catch_unwind` the same way. None of it needs a sysroot: parsing reads only the
 //! text it is handed.
 
-use frontend::frontend_facts::syntax::{Fragment, parses, parses_as};
+use frontend::frontend_facts::syntax::{
+    Fragment, parses as frontend_parses, parses_as as frontend_parses_as,
+};
+use frontend::rustc_expand::proc_macro_schema::{
+    ExactPart, ProcMacroSchema, SchemaHole, analyze_source,
+};
+use frontend::rustc_session::parse::ParseSess;
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
@@ -17,11 +23,35 @@ fn ready() {
     frontend::unwind_janky::install_catcher(catcher);
 }
 
+fn no_interp<T>(analyze: impl FnOnce() -> T) -> T {
+    let before = frontend::rustc_const_eval::interp_cx_new_count();
+    let result = analyze();
+    assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), before);
+    result
+}
+
+fn parses(source: &str) -> Result<(), Vec<String>> {
+    no_interp(|| frontend_parses(source))
+}
+
+fn parses_as(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
+    no_interp(|| frontend_parses_as(source, kind))
+}
+
 fn refused(source: &str, kind: Fragment) -> Vec<String> {
     match parses_as(source, kind) {
         Ok(()) => panic!("{source:?} parsed as {kind:?} and should not have"),
         Err(errors) => errors,
     }
+}
+
+fn schema(source: &str, parameters: &[String]) -> ProcMacroSchema {
+    no_interp(|| {
+        frontend::rustc_span::create_session_if_not_set_then(
+            frontend::rustc_span::edition::Edition::Edition2024,
+            |_| analyze_source(&ParseSess::new(), source, parameters, false),
+        )
+    })
 }
 
 #[test]
@@ -86,4 +116,66 @@ fn repeated_calls_on_one_thread_are_independent() {
         assert!(parses_as("1 +", Fragment::Expr).is_err());
         assert_eq!(parses_as("1 + 2", Fragment::Expr), Ok(()));
     }
+}
+
+#[test]
+fn a_quote_template_without_holes_is_exact() {
+    ready();
+    let source = "fn generated() -> TokenStream { quote! { struct Marker; } }";
+    assert_eq!(parses(source), Ok(()));
+    let ProcMacroSchema::Template { rules } = schema(source, &[]) else {
+        panic!("expected a quote template");
+    };
+    assert_eq!(rules.len(), 1);
+    assert!(rules[0].holes.is_empty());
+    assert!(rules[0].rhs.source.contains("struct Marker;"));
+}
+
+#[test]
+fn a_sole_input_parameter_is_an_exact_hole() {
+    ready();
+    let source = "fn generated(input: TokenStream) -> TokenStream { quote! { #input } }";
+    assert_eq!(parses(source), Ok(()));
+    let ProcMacroSchema::Template { rules } = schema(source, &["input".to_string()]) else {
+        panic!("expected a quote template");
+    };
+    assert_eq!(rules[0].holes.len(), 1);
+    assert!(matches!(
+        &rules[0].holes[0],
+        SchemaHole::Exact(ExactPart::InputTokens)
+    ));
+}
+
+#[test]
+fn a_plain_quote_loop_is_recorded_as_a_repetition() {
+    ready();
+    let source = "fn generated(fields: Fields) { for field in fields { generated.push(quote! { fn #field() {} }); } }";
+    assert_eq!(parses(source), Ok(()));
+    let ProcMacroSchema::Template { rules } = schema(source, &["fields".to_string()]) else {
+        panic!("expected a quote template");
+    };
+    assert!(rules[0].repetition);
+    assert!(matches!(rules[0].holes.as_slice(), [SchemaHole::Opaque { .. }]));
+}
+
+#[test]
+fn control_flow_in_a_quote_loop_keeps_its_holes_opaque() {
+    ready();
+    let source = "fn generated(fields: Fields) { for field in fields { if skip(field) { continue; } generated.push(quote! { fn #field() {} }); } }";
+    assert_eq!(parses(source), Ok(()));
+    let ProcMacroSchema::Template { rules } = schema(source, &["fields".to_string()]) else {
+        panic!("expected a quote template");
+    };
+    assert!(matches!(rules[0].holes.as_slice(), [SchemaHole::Opaque { .. }]));
+}
+
+#[test]
+fn a_match_in_a_quote_loop_keeps_its_holes_opaque() {
+    ready();
+    let source = "fn generated(fields: Fields) { for field in fields { match field { _ => {} } generated.push(quote! { fn #field() {} }); } }";
+    assert_eq!(parses(source), Ok(()));
+    let ProcMacroSchema::Template { rules } = schema(source, &["fields".to_string()]) else {
+        panic!("expected a quote template");
+    };
+    assert!(matches!(rules[0].holes.as_slice(), [SchemaHole::Opaque { .. }]));
 }

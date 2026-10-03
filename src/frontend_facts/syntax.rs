@@ -215,6 +215,21 @@ mod tests {
 /// analysis would report as the crate's own. An unreadable or unparsable root answers `false`:
 /// the session then reads it and reports whatever is wrong.
 pub(crate) fn declares_no_core(root: &eko::path::Path) -> bool {
+    no_core_declared(|psess| crate::rustc_parse::new_parser_from_file(psess, root, StripTokens::Shebang, None))
+}
+
+/// Whether crate source text declares `#![no_core]` itself.
+pub fn declares_no_core_source(source: &str) -> bool {
+    no_core_declared(|psess| {
+        new_parser_from_source_str(psess, FileName::anon_source_code(source), source.to_string(), StripTokens::Shebang)
+    })
+}
+
+fn no_core_declared(
+    open: impl for<'p> FnOnce(
+        &'p ParseSess,
+    ) -> Result<crate::rustc_parse::parser::Parser<'p>, Vec<crate::rustc_errors::Diag<'p>>>,
+) -> bool {
     create_session_if_not_set_then(Edition::Edition2024, |_| {
         let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
         let text = Arc::new(eko::thread::Mutex::new(String::new()));
@@ -225,8 +240,7 @@ pub(crate) fn declares_no_core(root: &eko::path::Path) -> bool {
         let psess = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), sm);
         let mut declared = false;
         let _ = catch_fatal_errors(|| {
-            let mut parser =
-                match crate::rustc_parse::new_parser_from_file(&psess, root, StripTokens::Shebang, None) {
+            let mut parser = match open(&psess) {
                     Ok(parser) => parser,
                     Err(diags) => {
                         for diag in diags {

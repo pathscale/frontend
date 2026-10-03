@@ -524,7 +524,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         code: traits::ObligationCauseCode<'tcx>,
     ) {
         if !ty.references_error() {
-            let lang_item = self.tcx.require_lang_item(LangItem::Sized, span);
+            let Some(lang_item) = self.tcx.lang_items().get(LangItem::Sized) else {
+                let _ = self.tcx.dcx().span_delayed_bug(
+                    span,
+                    "skipping a Sized obligation because the Sized lang item is missing",
+                );
+                return;
+            };
             self.require_type_meets(ty, span, code, lang_item);
         }
     }
@@ -554,9 +560,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             {
                 // Nothing else is required here.
             } else {
-                // We can't be sure, let's required full `Sized`.
-                let lang_item = self.tcx.require_lang_item(LangItem::Sized, span);
-                self.require_type_meets(ty, span, ObligationCauseCode::Misc, lang_item);
+                // We can't be sure, let's require full `Sized`.
+                self.require_type_is_sized(ty, span, ObligationCauseCode::Misc);
             }
         }
     }

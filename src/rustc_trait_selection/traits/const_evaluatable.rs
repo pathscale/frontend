@@ -80,12 +80,9 @@ pub fn is_const_evaluatable<'tcx>(
                 match crate::rustc_trait_selection::traits::try_evaluate_const(infcx, unexpanded_ct, param_env, |ty| {
                     Ok::<_, crate::Never>(ty.skip_norm_wip())
                 }) {
-                    Err(EvaluateConstErr::HasGenericsOrInfers) => {
-                        Err(NotConstEvaluatable::Error(infcx.dcx().span_delayed_bug(
-                            span,
-                            "Missing value for constant, but no error reported?",
-                        )))
-                    }
+                    // No interpreter: a concrete constant that was not computed is unknown, and
+                    // unknown counts as evaluatable rather than as an unreported error.
+                    Err(EvaluateConstErr::HasGenericsOrInfers) => Ok(()),
                     Err(
                         EvaluateConstErr::EvaluationFailure(e)
                         | EvaluateConstErr::InvalidConstParamTy(e),
@@ -142,19 +139,15 @@ pub fn is_const_evaluatable<'tcx>(
             }
 
             Err(EvaluateConstErr::HasGenericsOrInfers) => {
-                let err = if alias_const.has_non_region_infer() {
-                    NotConstEvaluatable::MentionsInfer
+                if alias_const.has_non_region_infer() {
+                    Err(NotConstEvaluatable::MentionsInfer)
                 } else if alias_const.has_non_region_param() {
-                    NotConstEvaluatable::MentionsParam
+                    Err(NotConstEvaluatable::MentionsParam)
                 } else {
-                    let guar = infcx.dcx().span_delayed_bug(
-                        span,
-                        "Missing value for constant, but no error reported?",
-                    );
-                    NotConstEvaluatable::Error(guar)
-                };
-
-                Err(err)
+                    // No interpreter: a concrete constant that was not computed is unknown,
+                    // which counts as evaluatable rather than as an unreported error.
+                    Ok(())
+                }
             }
             Err(
                 EvaluateConstErr::EvaluationFailure(e) | EvaluateConstErr::InvalidConstParamTy(e),

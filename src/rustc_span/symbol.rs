@@ -907,7 +907,7 @@ symbols! {
         end,
         entry_nops,
         env,
-        env_CFG_RELEASE: env!("CFG_RELEASE"),
+        env_CFG_RELEASE: "0.0.0",
         eq,
         ergonomic_clones,
         ermsb_target_feature,

@@ -1,7 +1,6 @@
 use core::fmt::{self, Display};
-use eko::thread::OnceLock;
 
-use rustc_macros::{BlobDecodable, Encodable, StableHash, current_rustc_version};
+use rustc_macros::{BlobDecodable, Encodable, StableHash};
 
 #[derive(Encodable, BlobDecodable, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[derive(StableHash)]
@@ -12,28 +11,6 @@ pub struct RustcVersion {
 }
 
 impl RustcVersion {
-    pub const CURRENT: Self = current_rustc_version!();
-    pub fn current_overridable() -> Self {
-        *CURRENT_OVERRIDABLE.get_or_init(|| {
-            if let Some(override_var) = eko::env::var("RUSTC_OVERRIDE_VERSION_STRING")
-                && let Some(override_) = Self::parse_str(&override_var)
-            {
-                override_
-            } else {
-                Self::CURRENT
-            }
-        })
-    }
-
-    /// Parse a [`RustcVersion`] with an optional patch version, ignoring suffixes such as `-dev` or `-nightly`.
-    fn parse_str(value: &str) -> Option<Self> {
-        let mut components = value.split('-').next().unwrap().splitn(3, '.');
-        let major = components.next()?.parse().ok()?;
-        let minor = components.next()?.parse().ok()?;
-        let patch = components.next().unwrap_or("0").parse().ok()?;
-        Some(RustcVersion { major, minor, patch })
-    }
-
     /// Parse a [`RustcVersion`] which is exactly `<major>.<minor>.<patch>`, with no suffix.
     pub fn parse_str_strict(value: &str) -> Option<Self> {
         let mut components = value.splitn(3, '.');
@@ -43,8 +20,6 @@ impl RustcVersion {
         Some(RustcVersion { major, minor, patch })
     }
 }
-
-static CURRENT_OVERRIDABLE: OnceLock<RustcVersion> = OnceLock::new();
 
 impl Display for RustcVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

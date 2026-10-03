@@ -16,7 +16,6 @@ use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, ReprOptions, VariantIdx};
 use crate::rustc_data_structures::fingerprint::Fingerprint;
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
-use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, DefKind, Res};
 use crate::rustc_hir::def_id::DefId;
@@ -26,7 +25,7 @@ use crate::rustc_span::sym;
 use crate::rustc_type_ir::FieldInfo;
 use crate::rustc_type_ir::solve::AdtDestructorKind;
 use rustc_macros::{StableHash, TyDecodable, TyEncodable};
-use tracing::{debug, info, trace};
+use tracing::debug;
 
 use super::{
     AsyncDestructor, Destructor, FieldDef, GenericClauses, Ty, TyCtxt, VariantDef, VariantDiscr,
@@ -649,38 +648,9 @@ impl<'tcx> AdtDef<'tcx> {
         self,
         tcx: TyCtxt<'tcx>,
         expr_did: DefId,
-    ) -> Result<Discr<'tcx>, ErrorGuaranteed> {
+    ) -> Result<Discr<'tcx>, ErrorHandled> {
         assert!(self.is_enum());
-
-        let repr_type = self.repr().discr_type();
-        match tcx.const_eval_poly(expr_did) {
-            Ok(val) => {
-                let typing_env = ty::TypingEnv::post_analysis(tcx, expr_did);
-                let ty = repr_type.to_ty(tcx);
-                if let Some(b) = val.try_to_bits_for_ty(tcx, typing_env, ty) {
-                    trace!("discriminants: {} ({:?})", b, repr_type);
-                    Ok(Discr { val: b, ty })
-                } else {
-                    info!("invalid enum discriminant: {:#?}", val);
-                    let guar = tcx.dcx().emit_err(
-                        crate::rustc_middle::diagnostics::ConstEvalNonIntError {
-                            span: tcx.def_span(expr_did),
-                        },
-                    );
-                    Err(guar)
-                }
-            }
-            Err(err) => {
-                let guar = match err {
-                    ErrorHandled::Reported(info, _) => info.into(),
-                    ErrorHandled::TooGeneric(..) => tcx.dcx().span_delayed_bug(
-                        tcx.def_span(expr_did),
-                        "enum discriminant depends on generics",
-                    ),
-                };
-                Err(guar)
-            }
-        }
+        Err(ErrorHandled::TooGeneric(tcx.def_span(expr_did)))
     }
 
     #[inline]
@@ -710,11 +680,6 @@ impl<'tcx> AdtDef<'tcx> {
         FIRST_VARIANT..self.variants().next_index()
     }
 
-    /// Computes the discriminant value used by a specific variant.
-    /// Unlike `discriminants`, this is (amortized) constant-time,
-    /// only doing at most one query for evaluating an explicit
-    /// discriminant (the last one before the requested variant),
-    /// assuming there are no constant-evaluation errors there.
     #[inline]
     pub fn discriminant_for_variant(
         self,

@@ -172,7 +172,7 @@ impl PeekCall {
             }
 
             let ty =
-                crate::rustc_const_eval::interpret::intrinsic_type_param(tcx, def_id, fn_args, 0)?;
+                crate::rustc_const_eval::util::intrinsic_type_param(tcx, def_id, fn_args, 0)?;
             let kind = PeekCallKind::from_arg_ty(ty);
             let arg = match &args[0].node {
                 Operand::Copy(place) | Operand::Move(place) => {
