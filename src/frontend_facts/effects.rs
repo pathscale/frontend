@@ -32,6 +32,20 @@ pub struct TextRange {
     pub end: u32,
 }
 
+/// Why the parser could not select one enclosing function body for a source range.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnclosingBodySpanError {
+    /// The range is empty, outside the source, or not on UTF-8 character boundaries.
+    InvalidRange,
+    /// Rust's parser could not produce a complete source tree.
+    ParseFailed { diagnostics: Vec<String> },
+    /// No function or associated-function body contains the whole requested range.
+    NoContainingFunctionBody,
+    /// Multiple innermost function bodies have the same smallest containing span.
+    AmbiguousInnermostBody,
+}
+
 /// A fact the parser cannot settle without resolved static information.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +193,70 @@ pub struct MarkdownHeading {
 /// Parse a source file and report the function bodies it contains.
 pub fn analyze_source(source: &str) -> Result<Vec<FunctionEffects>, Vec<String>> {
     analyze_source_with_evidence(source, &EffectEvidence::default())
+}
+
+/// Find the unique innermost `fn` or associated-function body containing all of `candidate`.
+///
+/// This is syntax-only: it parses the exact source, performs no expansion, name resolution,
+/// type checking, or sysroot lookup, and uses no function-name heuristic. The candidate range
+/// remains distinct from the returned full block range. A closure nested in a function is not a
+/// function item and therefore does not become a selector target.
+pub fn enclosing_function_body_span(
+    source: &str,
+    candidate: TextRange,
+) -> Result<TextRange, EnclosingBodySpanError> {
+    let (Ok(start), Ok(end)) = (usize::try_from(candidate.start), usize::try_from(candidate.end))
+    else {
+        return Err(EnclosingBodySpanError::InvalidRange);
+    };
+    if start >= end || source.get(start..end).is_none() {
+        return Err(EnclosingBodySpanError::InvalidRange);
+    }
+    let functions = analyze_source(source)
+        .map_err(|diagnostics| EnclosingBodySpanError::ParseFailed { diagnostics })?;
+    let spans: Vec<TextRange> = functions.into_iter().map(|function| function.body_span).collect();
+    select_innermost_containing_body(candidate, &spans)
+}
+
+fn select_innermost_containing_body(
+    candidate: TextRange,
+    bodies: &[TextRange],
+) -> Result<TextRange, EnclosingBodySpanError> {
+    let mut selected = None;
+    let mut smallest_len = u32::MAX;
+    let mut tied = false;
+    for body in bodies {
+        if candidate.start < body.start || candidate.end > body.end {
+            continue;
+        }
+        let len = body.end.saturating_sub(body.start);
+        if len < smallest_len {
+            selected = Some(*body);
+            smallest_len = len;
+            tied = false;
+        } else if len == smallest_len {
+            tied = true;
+        }
+    }
+    if tied {
+        Err(EnclosingBodySpanError::AmbiguousInnermostBody)
+    } else {
+        selected.ok_or(EnclosingBodySpanError::NoContainingFunctionBody)
+    }
+}
+#[cfg(test)]
+mod enclosing_body_span_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_tied_innermost_bodies() {
+        let candidate = TextRange { start: 4, end: 7 };
+        let body = TextRange { start: 0, end: 10 };
+        assert_eq!(
+            select_innermost_containing_body(candidate, &[body, body]),
+            Err(EnclosingBodySpanError::AmbiguousInnermostBody)
+        );
+    }
 }
 
 /// Parse a source file and combine its syntax with supplied resolution and type facts.

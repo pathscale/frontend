@@ -2647,3 +2647,468 @@ mod tests {
         assert_eq!(warnings, vec!["warning: w".to_string()]);
     }
 }
+
+/// Type facts for one exact, source-owned function body.
+///
+/// This is an extraction result, not a type-check verdict: diagnostics are observations, and
+/// fatal/coverage_gaps describe what this query did not finish. It says nothing about
+/// ownership, borrow checking, or a complete trait-obligation proof.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyTypeFacts {
+    /// The full source span selected for the body, normally including block braces.
+    /// None when the requested exact range matched zero or multiple body owners.
+    pub body_span: Option<ByteSpan>,
+    /// Source-mapped HIR expressions owned directly by this body's type-check result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expressions: Vec<BodyExpressionTypeFact>,
+    /// Explicit omissions or failures; separate from compiler diagnostics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage_gaps: Vec<BodyTypeCoverageGap>,
+    /// Diagnostics emitted while this source session was analyzed, including type errors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<TypeDiagnostic>,
+    /// True when the requested body query or the outer compiler session stopped fatally.
+    pub fatal: bool,
+    /// `Some(false)` only when rustc returned an untainted type-check result. This is a
+    /// compiler observation, not an acceptance verdict. None means the body query did not
+    /// return a type-check result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typeck_tainted_by_errors: Option<bool>,
+    /// Const definitions whose symbolic terms this frontend could not compare or evaluate
+    /// during the selected body's type checking.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uncomputed_consts: Vec<String>,
+}
+
+/// One HIR expression's pre-adjustment and adjusted type, with implicit adjustments rustc
+/// recorded for that expression.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyExpressionTypeFact {
+    pub span: ByteSpan,
+    pub ty: effects::StaticFact<String>,
+    pub adjusted_ty: effects::StaticFact<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adjustments: Vec<BodyAdjustmentTypeFact>,
+}
+
+/// One compiler-recorded expression adjustment. The debug spelling is the pinned frontend's
+/// Adjust variant and payload; target_ty is reported independently and may be unknown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyAdjustmentTypeFact {
+    pub kind: String,
+    pub target_ty: effects::StaticFact<String>,
+}
+
+/// Why a source range or type fact was not covered by this bounded visitor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyTypeCoverageGapKind {
+    BodyNotFound,
+    AmbiguousBodySpan,
+    FrontendFatal,
+    TypeckFatal,
+    MacroExpansion,
+    DesugaredExpression,
+    CompilerGeneratedExpression,
+    ExpressionSpanUnavailable,
+    DuplicateExpressionSpan,
+    ExpressionTypeMissing,
+    NestedBodyNotVisited,
+    NontrivialConstNotComputed,
+}
+
+/// A coverage gap and its best source-mapped location, when one exists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyTypeCoverageGap {
+    pub kind: BodyTypeCoverageGapKind,
+    pub span: Option<ByteSpan>,
+}
+
+/// Analyze exactly one function body in source with the public frontend's no-sysroot setup.
+///
+/// body_span must be the full source range of that function's HIR body value, normally the
+/// entire block. It is deliberately not the inserted candidate text range, which can omit
+/// braces. Zero or multiple exact Fn/AssocFn matches produce an explicit gap and no expression
+/// facts. Nested body owners and macro-expanded expression spans are gaps.
+///
+/// This runs tcx.typeck only for the uniquely selected body. It does not run whole-crate
+/// analysis, borrow checking, code generation, execution, or a compiler pass/fail check. No
+/// sysroot is required: minimal no-core lang-item declarations are appended when appropriate,
+/// and types that do not resolve remain unknown with their diagnostics preserved. Symbolic
+/// constants the frontend cannot compare or evaluate are retained by name with an explicit gap.
+/// The session
+/// is serial, creates no worker threads, and exports no HIR identities or acceptance verdict.
+///
+/// rustc type checking may request const evaluation while normalizing consts. This frontend's
+/// configured `eval_to_valtree` provider refuses those requests as `TooGeneric`; its raw-value
+/// provider accepts only the frontend's trivial literal/alias constants. Neither runs a const
+/// function body or creates an interpreter context. The public setup also supplies no
+/// proc-macro dylib paths: built-in derives can expand, external procedural macros stay
+/// unexpanded.
+pub fn analyze_body_type_facts(
+    crate_name: &str,
+    source: &str,
+    body_span: effects::TextRange,
+) -> BodyTypeFacts {
+    analyze_body_type_facts_with_loaded(crate_name, source, body_span, None, Loaded::default())
+}
+
+/// Analyze one exact source body using only dependencies and build configuration already
+/// loaded by the caller. This function does not search for or build dependencies. If a caller
+/// requested this context but cannot provide it, it must report that at its boundary instead
+/// of falling back to the no-core entry point.
+pub fn analyze_body_type_facts_with_loaded(
+    crate_name: &str,
+    source: &str,
+    body_span: effects::TextRange,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+) -> BodyTypeFacts {
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "analyze_body_type_facts needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+
+    let (Ok(start), Ok(end)) = (usize::try_from(body_span.start), usize::try_from(body_span.end))
+    else {
+        let mut facts = BodyTypeFacts::default();
+        push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::BodyNotFound, None);
+        return facts;
+    };
+    // A caller cannot select appended helper declarations as its candidate body.
+    if start >= end || source.get(start..end).is_none() {
+        let mut facts = BodyTypeFacts::default();
+        push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::BodyNotFound, None);
+        return facts;
+    }
+
+    let setup = Setup { edition, loaded, ..Setup::plain(crate_name) };
+    let original = Arc::new(source.to_string());
+    let input = Input::Str { name: FileName::anon_source_code(&original), input: original };
+    let (input, inject_stubs) = match input {
+        Input::Str { name, input: text }
+            if lang_item_stubs::should_inject(
+                &text,
+                setup.sysroot.is_none() && setup.loaded.dependencies.is_empty(),
+            ) =>
+        {
+            let appended = Arc::new(format!("{}\n{}", text, lang_item_stubs::MINIMAL_LANG_ITEMS));
+            (Input::Str { name, input: appended }, true)
+        }
+        other => (other, false),
+    };
+    let mut opts = match setup.options(&input) {
+        Ok(opts) => opts,
+        Err(_) => {
+            let mut facts = BodyTypeFacts { fatal: true, ..BodyTypeFacts::default() };
+            push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::FrontendFatal, None);
+            return facts;
+        }
+    };
+    if inject_stubs {
+        // The appended lang-item declarations contain const and auto traits. This is
+        // an explicitly synthetic no-core context, not the caller's crate feature
+        // policy or a project-validity verdict.
+        opts.unstable_opts.crate_attr.push(
+            "feature(lang_items, unboxed_closures, rustc_attrs, const_trait_impl, auto_traits, prelude_import)"
+                .to_string(),
+        );
+    }
+
+    let captured = Arc::new(eko::thread::Mutex::new(CapturedDiagnostics::default()));
+    let config = Config {
+        opts,
+        input,
+        psess_created: Some(capture_diagnostics(&captured)),
+        using_internal_features: &USING_INTERNAL_FEATURES,
+        crate_cfg: setup.loaded.cfg.to_vec(),
+    };
+    let mut facts = BodyTypeFacts::default();
+    let finished = catch_fatal_errors(|| {
+        run_compiler(config, |compiler| {
+            let krate = parse(&compiler.sess);
+            create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                facts = extract_body_type_facts(tcx, body_span);
+            });
+        })
+    });
+    if finished.is_err() {
+        facts.fatal = true;
+        let file = facts.body_span.as_ref().map(|span| span.file.clone());
+        push_body_type_gap(
+            &mut facts,
+            BodyTypeCoverageGapKind::FrontendFatal,
+            file.map(|file| ByteSpan { file, start: body_span.start, end: body_span.end }),
+        );
+    }
+    facts.diagnostics = captured.lock().typed.clone();
+    facts
+}
+
+fn extract_body_type_facts(tcx: TyCtxt<'_>, requested: effects::TextRange) -> BodyTypeFacts {
+    let input = input_file(tcx);
+    let mut candidates = Vec::new();
+    for owner in tcx.hir_body_owner_ids().iter().copied() {
+        if !matches!(tcx.def_kind(owner), DefKind::Fn | DefKind::AssocFn) {
+            continue;
+        }
+        let Some(body) = tcx.hir_maybe_body_owned_by(owner) else { continue };
+        let Some(span) = source_mapped_body_span(tcx, &input, body.value.span) else { continue };
+        candidates.push((owner, body, span));
+    }
+
+    let spans: Vec<ByteSpan> = candidates.iter().map(|(_, _, span)| span.clone()).collect();
+    let mut facts = BodyTypeFacts::default();
+    let index = match exact_body_span_index(requested, &spans) {
+        Ok(index) => index,
+        Err(kind) => {
+            push_body_type_gap(&mut facts, kind, Some(requested_body_span(&input, requested)));
+            return facts;
+        }
+    };
+    let (owner, body, exact_span) = candidates.remove(index);
+    facts.body_span = Some(exact_span.clone());
+
+    let typeck = match catch_fatal_errors(|| tcx.typeck(owner)) {
+        Ok(typeck) => typeck,
+        Err(_) => {
+            facts.fatal = true;
+            push_body_type_gap(
+                &mut facts,
+                BodyTypeCoverageGapKind::TypeckFatal,
+                Some(exact_span.clone()),
+            );
+            return facts;
+        }
+    };
+    facts.typeck_tainted_by_errors = Some(typeck.tainted_by_errors.is_some());
+    let mut visitor = BodyTypeVisitor { tcx, input: &input, typeck, facts: &mut facts };
+    visitor.visit_expr(body.value);
+    drop(visitor);
+    nested_body_gaps(tcx, owner, &input, &exact_span, &mut facts);
+    facts.uncomputed_consts = tcx.sess.uncomputed_consts();
+    if !facts.uncomputed_consts.is_empty() {
+        push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::NontrivialConstNotComputed, None);
+    }
+    facts
+}
+
+fn exact_body_span_index(
+    requested: effects::TextRange,
+    spans: &[ByteSpan],
+) -> Result<usize, BodyTypeCoverageGapKind> {
+    let mut found = None;
+    for (index, span) in spans.iter().enumerate() {
+        if span.start == requested.start && span.end == requested.end {
+            if found.is_some() {
+                return Err(BodyTypeCoverageGapKind::AmbiguousBodySpan);
+            }
+            found = Some(index);
+        }
+    }
+    found.ok_or(BodyTypeCoverageGapKind::BodyNotFound)
+}
+
+fn requested_body_span(
+    input: &(Arc<SourceFile>, Arc<str>),
+    requested: effects::TextRange,
+) -> ByteSpan {
+    ByteSpan { file: Arc::clone(&input.1), start: requested.start, end: requested.end }
+}
+
+/// Map only real spans in the source file back to original-relative byte positions.
+fn source_mapped_body_span(
+    tcx: TyCtxt<'_>,
+    input: &(Arc<SourceFile>, Arc<str>),
+    span: Span,
+) -> Option<ByteSpan> {
+    if span.is_dummy() || span.from_expansion() {
+        return None;
+    }
+    let source_map = tcx.sess.source_map();
+    let (lo_file, _) = source_map.lookup_byte_offset_in(span.lo());
+    let (hi_file, _) = source_map.lookup_byte_offset_in(span.hi());
+    if !core::ptr::eq(Arc::as_ptr(&input.0), lo_file)
+        || !core::ptr::eq(Arc::as_ptr(&input.0), hi_file)
+    {
+        return None;
+    }
+    Some(ByteSpan {
+        file: Arc::clone(&input.1),
+        start: input.0.original_relative_byte_pos(span.lo()).0,
+        end: input.0.original_relative_byte_pos(span.hi()).0,
+    })
+}
+
+fn source_callsite_span(
+    tcx: TyCtxt<'_>,
+    input: &(Arc<SourceFile>, Arc<str>),
+    span: Span,
+) -> Option<ByteSpan> {
+    source_mapped_body_span(tcx, input, span.source_callsite())
+}
+
+fn push_body_type_gap(
+    facts: &mut BodyTypeFacts,
+    kind: BodyTypeCoverageGapKind,
+    span: Option<ByteSpan>,
+) {
+    let gap = BodyTypeCoverageGap { kind, span };
+    if !facts.coverage_gaps.contains(&gap) {
+        facts.coverage_gaps.push(gap);
+    }
+}
+
+struct BodyTypeVisitor<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    input: &'a (Arc<SourceFile>, Arc<str>),
+    typeck: &'tcx crate::rustc_middle::ty::TypeckResults<'tcx>,
+    facts: &'a mut BodyTypeFacts,
+}
+
+impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
+    type NestedFilter = intravisit::IgnoreNested;
+    type Result = ();
+
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
+        if expr.span.from_expansion() {
+            let kind = match &expr.span.ctxt().outer_expn_data().kind {
+                ExpnKind::Macro(..) => BodyTypeCoverageGapKind::MacroExpansion,
+                ExpnKind::Desugaring(..) => BodyTypeCoverageGapKind::DesugaredExpression,
+                ExpnKind::AstPass(..) => BodyTypeCoverageGapKind::CompilerGeneratedExpression,
+                ExpnKind::Root => BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+            };
+            push_body_type_gap(
+                self.facts,
+                kind,
+                source_callsite_span(self.tcx, self.input, expr.span),
+            );
+        } else {
+            match source_mapped_body_span(self.tcx, self.input, expr.span) {
+                Some(span) if span.start < span.end => {
+                    if self.facts.expressions.iter().any(|fact| fact.span == span) {
+                        push_body_type_gap(
+                            self.facts,
+                            BodyTypeCoverageGapKind::DuplicateExpressionSpan,
+                            Some(span.clone()),
+                        );
+                    }
+                    let ty = self
+                        .typeck
+                        .expr_ty_opt(expr)
+                        .map_or_else(|| unknown_body_type("type_not_recorded"), body_type_fact);
+                    let adjusted_ty = self
+                        .typeck
+                        .expr_ty_adjusted_opt(expr)
+                        .map_or_else(|| unknown_body_type("type_not_recorded"), body_type_fact);
+                    let adjustments: Vec<BodyAdjustmentTypeFact> = self
+                        .typeck
+                        .expr_adjustments(expr)
+                        .iter()
+                        .map(|adjustment| BodyAdjustmentTypeFact {
+                            kind: format!("{:?}", adjustment.kind),
+                            target_ty: body_type_fact(adjustment.target),
+                        })
+                        .collect();
+                    if !body_type_is_known(&ty)
+                        || !body_type_is_known(&adjusted_ty)
+                        || adjustments
+                            .iter()
+                            .any(|adjustment| !body_type_is_known(&adjustment.target_ty))
+                    {
+                        push_body_type_gap(
+                            self.facts,
+                            BodyTypeCoverageGapKind::ExpressionTypeMissing,
+                            Some(span.clone()),
+                        );
+                    }
+                    self.facts.expressions.push(BodyExpressionTypeFact {
+                        span,
+                        ty,
+                        adjusted_ty,
+                        adjustments,
+                    });
+                }
+                Some(span) => push_body_type_gap(
+                    self.facts,
+                    BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+                    Some(span),
+                ),
+                None => push_body_type_gap(
+                    self.facts,
+                    BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+                    None,
+                ),
+            }
+        }
+        intravisit::walk_expr(self, expr);
+    }
+}
+
+fn body_type_fact(ty: ty::Ty<'_>) -> effects::StaticFact<String> {
+    if ty.references_error() {
+        unknown_body_type("type_error")
+    } else if ty.has_infer() {
+        unknown_body_type("unresolved_inference")
+    } else {
+        effects::StaticFact::Known {
+            value: crate::rustc_middle::ty::print::with_no_trimmed_paths!(ty.to_string()),
+        }
+    }
+}
+
+fn unknown_body_type(why: &str) -> effects::StaticFact<String> {
+    effects::StaticFact::Unknown { why: why.to_string() }
+}
+
+fn body_type_is_known(fact: &effects::StaticFact<String>) -> bool {
+    matches!(fact, effects::StaticFact::Known { .. })
+}
+
+/// The visitor ignores nested owners; list each source-contained owner as a coverage gap.
+fn nested_body_gaps(
+    tcx: TyCtxt<'_>,
+    owner: LocalDefId,
+    input: &(Arc<SourceFile>, Arc<str>),
+    outer: &ByteSpan,
+    facts: &mut BodyTypeFacts,
+) {
+    for nested_owner in tcx.hir_body_owner_ids().iter().copied() {
+        if nested_owner == owner {
+            continue;
+        }
+        let Some(body) = tcx.hir_maybe_body_owned_by(nested_owner) else { continue };
+        let span = source_mapped_body_span(tcx, input, body.value.span)
+            .or_else(|| source_callsite_span(tcx, input, body.value.span));
+        let Some(span) = span else { continue };
+        if span.start >= outer.start && span.end <= outer.end {
+            push_body_type_gap(facts, BodyTypeCoverageGapKind::NestedBodyNotVisited, Some(span));
+        }
+    }
+}
+
+#[cfg(test)]
+mod body_type_fact_tests {
+    use super::*;
+
+    fn source_span(start: u32, end: u32) -> ByteSpan {
+        ByteSpan { file: Arc::from("snippet.rs"), start, end }
+    }
+
+    #[test]
+    fn exact_body_selection_rejects_inner_expression_and_ambiguous_spans() {
+        let body = source_span(10, 30);
+        assert_eq!(
+            exact_body_span_index(effects::TextRange { start: 10, end: 30 }, &[body.clone()]),
+            Ok(0)
+        );
+        assert_eq!(
+            exact_body_span_index(effects::TextRange { start: 15, end: 20 }, &[body.clone()]),
+            Err(BodyTypeCoverageGapKind::BodyNotFound)
+        );
+        assert_eq!(
+            exact_body_span_index(effects::TextRange { start: 10, end: 30 }, &[body.clone(), body]),
+            Err(BodyTypeCoverageGapKind::AmbiguousBodySpan)
+        );
+    }
+}
