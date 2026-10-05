@@ -2794,7 +2794,13 @@ pub fn analyze_body_type_facts(
     source: &str,
     body_span: effects::TextRange,
 ) -> BodyTypeFacts {
-    analyze_body_type_facts_with_loaded(crate_name, source, body_span, Some("2024"), Loaded::default())
+    analyze_body_type_facts_with_loaded(
+        crate_name,
+        source,
+        body_span,
+        Some("2024"),
+        Loaded::default(),
+    )
 }
 
 /// Analyze one exact source body using only dependencies and build configuration already

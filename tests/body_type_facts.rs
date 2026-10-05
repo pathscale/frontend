@@ -192,9 +192,12 @@ fn for_lowering_exports_callsite_bound_typed_facts() {
             && matches!(&fact.ty, StaticFact::Known { .. })
             && matches!(&fact.adjusted_ty, StaticFact::Known { .. })
     }));
-    assert!(facts.projection_gaps.iter().any(|gap| {
-        gap.kind == BodyTypeCoverageGapKind::DesugaredExpression
-    }));
+    assert!(
+        facts
+            .projection_gaps
+            .iter()
+            .any(|gap| { gap.kind == BodyTypeCoverageGapKind::DesugaredExpression })
+    );
 }
 
 #[test]
@@ -238,16 +241,20 @@ fn plain_match_is_source_owned_and_macro_mixed_with_loop_lowering_is_incomplete(
     let expanded_body = range(source, "{ generated_loop!() }");
     let expanded = analyze_body_type_facts("body_type_facts_macro_loop", source, expanded_body);
     assert!(!expanded.type_extraction_complete, "{expanded:?}");
-    assert!(expanded.coverage_gaps.iter().any(|gap| {
-        gap.kind == BodyTypeCoverageGapKind::MacroExpansion
-    }));
+    assert!(
+        expanded
+            .coverage_gaps
+            .iter()
+            .any(|gap| { gap.kind == BodyTypeCoverageGapKind::MacroExpansion })
+    );
 }
 
 #[test]
 fn call_item_resolution_distinguishes_direct_method_and_indirect_calls() {
     ready();
     let source = "struct Thing; impl Thing { fn method(&self) -> bool { true } } fn target() -> bool { true } fn direct() -> bool { target() } fn indirect() -> bool { let call: fn() -> bool = target; call() } fn method_call() -> bool { Thing.method() }";
-    let direct = analyze_body_type_facts("body_type_facts_calls", source, range(source, "{ target() }"));
+    let direct =
+        analyze_body_type_facts("body_type_facts_calls", source, range(source, "{ target() }"));
     assert!(direct.expressions.iter().any(|fact| matches!(
         fact.call_resolution.as_ref(),
         Some(frontend::frontend_facts::BodyCallResolutionFact::ResolvedDirectItem { .. })
