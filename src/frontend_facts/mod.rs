@@ -2933,16 +2933,17 @@ fn extract_body_type_facts(tcx: TyCtxt<'_>, requested: effects::TextRange) -> Bo
         }
     };
     facts.typeck_tainted_by_errors = Some(typeck.tainted_by_errors.is_some());
-    let mut visitor = BodyTypeVisitor {
-        tcx,
-        input: &input,
-        body_span: &exact_span,
-        typeck,
-        facts: &mut facts,
-        generated_visit_order: 0,
-    };
-    visitor.visit_expr(body.value);
-    drop(visitor);
+    {
+        let mut visitor = BodyTypeVisitor {
+            tcx,
+            input: &input,
+            body_span: &exact_span,
+            typeck,
+            facts: &mut facts,
+            generated_visit_order: 0,
+        };
+        visitor.visit_expr(body.value);
+    }
     nested_body_gaps(tcx, owner, &input, &exact_span, &mut facts);
     facts.uncomputed_consts = tcx.sess.uncomputed_consts();
     if !facts.uncomputed_consts.is_empty() {
