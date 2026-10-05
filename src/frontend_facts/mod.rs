@@ -2724,6 +2724,8 @@ pub struct GeneratedBodyExpressionTypeFact {
 pub enum BodyTypeDesugaringKind {
     ForLoop,
     WhileLoop,
+    /// A source-written range expression lowered by the compiler.
+    RangeExpr,
 }
 
 /// A typeck-selected call item, not proof of trait obligations or runtime dispatch.
@@ -3134,7 +3136,7 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
     }
 }
 
-/// Require every hygiene mark to be an allowed Rust loop lowering and the full callsite to be
+/// Require every hygiene mark to be an allowed source syntax lowering and the full callsite to be
 /// inside the exact selected body. Macro, mixed, unknown, and unmapped chains remain gaps.
 fn supported_body_desugaring(
     tcx: TyCtxt<'_>,
@@ -3157,6 +3159,9 @@ fn supported_body_desugaring(
             }
             ExpnKind::Desugaring(crate::rustc_span::hygiene::DesugaringKind::WhileLoop) => {
                 BodyTypeDesugaringKind::WhileLoop
+            }
+            ExpnKind::Desugaring(crate::rustc_span::hygiene::DesugaringKind::RangeExpr) => {
+                BodyTypeDesugaringKind::RangeExpr
             }
             ExpnKind::Macro(..) => return Err(BodyTypeCoverageGapKind::MacroExpansion),
             ExpnKind::AstPass(..) => {
