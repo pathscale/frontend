@@ -67,20 +67,23 @@ dependents, and dependents do not need it.
 `frontend_facts::effects::enclosing_function_body_span(source, candidate_range)`
 selects the unique innermost function body containing the entire candidate byte
 range. The range must be nonempty and lie on UTF-8 boundaries in the original
-source. Selection is structural, not a function-name lookup.
+source. Selection is structural, not a function-name lookup, and parses Rust 2024.
 
 Pass that full body span to `frontend_facts::analyze_body_type_facts`, or to
 `analyze_body_type_facts_with_loaded` with an explicit edition and metadata,
 cfg and environment already loaded by the caller. The loaded variant does not
 search for dependencies. The default uses a synthetic no-core lang-item context
 with the feature gates required by those declarations; it is not the original
-crate's feature policy.
+crate's feature policy. The default type query also uses Rust 2024. For another
+edition, supply an exact full body range directly to the loaded-context variant;
+the structural selector currently has no edition parameter.
 
 The result contains actual expression types and adjustments, type-check taint,
 diagnostics, uncomputed symbolic constants and explicit coverage gaps. Nested
 bodies, macro/desugared expressions and unavailable types remain gaps. These are
 bounded observations, not ownership or trait-obligation proof and not a compiler
-pass/fail verdict. Nothing is executed. As with the other entry points, install
+pass/fail verdict. No supplied function body or external procedural macro is
+executed. As with the other entry points, install
 the panic catcher first and use `panic = "unwind"`.
 
 ## Performance: before and after
