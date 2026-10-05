@@ -58,6 +58,8 @@ fn primitive_expression_has_a_computed_type_and_full_body_span() {
     assert!(!facts.fatal, "{facts:?}");
     assert_eq!(facts.typeck_tainted_by_errors, Some(false));
     assert!(facts.coverage_gaps.is_empty(), "{facts:?}");
+    assert!(facts.type_extraction_complete, "{facts:?}");
+    assert!(facts.projection_gaps.is_empty(), "{facts:?}");
     assert!(facts.uncomputed_consts.is_empty(), "{facts:?}");
     assert_eq!(
         facts.body_span.as_ref().map(|span| (span.start, span.end)),
@@ -81,6 +83,7 @@ fn ill_typed_body_keeps_diagnostics_and_marks_unavailable_expression_types() {
 
     assert!(facts.body_span.is_some());
     assert_eq!(facts.typeck_tainted_by_errors, Some(true));
+    assert!(!facts.type_extraction_complete, "{facts:?}");
     assert!(facts.diagnostics.iter().any(|diag| diag.severity == Severity::Error));
     assert!(
         facts
@@ -171,4 +174,100 @@ fn symbolic_const_terms_are_preserved_as_an_explicit_gap_without_interpretation(
             .iter()
             .any(|gap| { gap.kind == BodyTypeCoverageGapKind::NontrivialConstNotComputed })
     );
+}
+
+#[test]
+fn for_lowering_exports_callsite_bound_typed_facts() {
+    ready();
+    let source = "struct One; struct OneIter; impl IntoIterator for One { type Item = i32; type IntoIter = OneIter; fn into_iter(self) -> OneIter { OneIter } } impl Iterator for OneIter { type Item = i32; fn next(&mut self) -> Option<i32> { None } } fn body() { for item in One { let typed: i32 = item; } }";
+    let body = range(source, "{ for item in One { let typed: i32 = item; } }");
+    let facts = analyze_body_type_facts("body_type_facts_for", source, body);
+    assert!(facts.type_extraction_complete, "{facts:?}");
+    assert!(facts.coverage_gaps.is_empty(), "{facts:?}");
+    assert!(!facts.generated_expressions.is_empty(), "{facts:?}");
+    assert!(facts.generated_expressions.iter().all(|fact| {
+        fact.desugaring_chain.contains(&frontend::frontend_facts::BodyTypeDesugaringKind::ForLoop)
+            && fact.callsite.start >= body.start
+            && fact.callsite.end <= body.end
+            && matches!(&fact.ty, StaticFact::Known { .. })
+            && matches!(&fact.adjusted_ty, StaticFact::Known { .. })
+    }));
+    assert!(facts.projection_gaps.iter().any(|gap| {
+        gap.kind == BodyTypeCoverageGapKind::DesugaredExpression
+    }));
+}
+
+#[test]
+fn while_lowering_exports_callsite_bound_typed_facts() {
+    ready();
+    let source = "fn body() { while false { let typed: i32 = 1; } }";
+    let body = range(source, "{ while false { let typed: i32 = 1; } }");
+    let facts = analyze_body_type_facts("body_type_facts_while", source, body);
+    assert!(facts.type_extraction_complete, "{facts:?}");
+    assert!(facts.coverage_gaps.is_empty(), "{facts:?}");
+    assert!(facts.generated_expressions.iter().any(|fact| {
+        fact.desugaring_chain.contains(&frontend::frontend_facts::BodyTypeDesugaringKind::WhileLoop)
+    }));
+}
+
+#[test]
+fn nested_loop_lowerings_are_both_observed_in_one_exact_body() {
+    ready();
+    let source = "struct One; struct OneIter; impl IntoIterator for One { type Item = i32; type IntoIter = OneIter; fn into_iter(self) -> OneIter { OneIter } } impl Iterator for OneIter { type Item = i32; fn next(&mut self) -> Option<i32> { None } } fn body() { while false { for item in One { let typed: i32 = item; } } }";
+    let body = range(source, "{ while false { for item in One { let typed: i32 = item; } } }");
+    let facts = analyze_body_type_facts("body_type_facts_nested_loops", source, body);
+    assert!(facts.type_extraction_complete, "{facts:?}");
+    assert!(facts.coverage_gaps.is_empty(), "{facts:?}");
+    assert!(facts.generated_expressions.iter().any(|fact| {
+        fact.desugaring_chain.contains(&frontend::frontend_facts::BodyTypeDesugaringKind::WhileLoop)
+    }));
+    assert!(facts.generated_expressions.iter().any(|fact| {
+        fact.desugaring_chain.contains(&frontend::frontend_facts::BodyTypeDesugaringKind::ForLoop)
+    }));
+}
+
+#[test]
+fn plain_match_is_source_owned_and_macro_mixed_with_loop_lowering_is_incomplete() {
+    ready();
+    let source = "macro_rules! generated_loop { () => { while false { let value: i32 = 1; } } } fn matched(flag: bool) -> i32 { match flag { true => 1, false => 2 } } fn expanded() { generated_loop!() }";
+    let match_body = range(source, "{ match flag { true => 1, false => 2 } }");
+    let matched = analyze_body_type_facts("body_type_facts_match", source, match_body);
+    assert!(matched.type_extraction_complete, "{matched:?}");
+    assert!(matched.generated_expressions.is_empty(), "{matched:?}");
+    assert!(matched.projection_gaps.is_empty(), "{matched:?}");
+    let expanded_body = range(source, "{ generated_loop!() }");
+    let expanded = analyze_body_type_facts("body_type_facts_macro_loop", source, expanded_body);
+    assert!(!expanded.type_extraction_complete, "{expanded:?}");
+    assert!(expanded.coverage_gaps.iter().any(|gap| {
+        gap.kind == BodyTypeCoverageGapKind::MacroExpansion
+    }));
+}
+
+#[test]
+fn call_item_resolution_distinguishes_direct_method_and_indirect_calls() {
+    ready();
+    let source = "struct Thing; impl Thing { fn method(&self) -> bool { true } } fn target() -> bool { true } fn direct() -> bool { target() } fn indirect() -> bool { let call: fn() -> bool = target; call() } fn method_call() -> bool { Thing.method() }";
+    let direct = analyze_body_type_facts("body_type_facts_calls", source, range(source, "{ target() }"));
+    assert!(direct.expressions.iter().any(|fact| matches!(
+        fact.call_resolution.as_ref(),
+        Some(frontend::frontend_facts::BodyCallResolutionFact::ResolvedDirectItem { .. })
+    )));
+    let indirect = analyze_body_type_facts(
+        "body_type_facts_calls",
+        source,
+        range(source, "{ let call: fn() -> bool = target; call() }"),
+    );
+    assert!(indirect.expressions.iter().any(|fact| matches!(
+        fact.call_resolution.as_ref(),
+        Some(frontend::frontend_facts::BodyCallResolutionFact::Unknown { .. })
+    )));
+    let method = analyze_body_type_facts(
+        "body_type_facts_calls",
+        source,
+        range(source, "{ Thing.method() }"),
+    );
+    assert!(method.expressions.iter().any(|fact| matches!(
+        fact.call_resolution.as_ref(),
+        Some(frontend::frontend_facts::BodyCallResolutionFact::SelectedMethodItem { .. })
+    )));
 }
