@@ -80,8 +80,9 @@ the structural selector currently has no edition parameter.
 
 The result contains actual expression types and adjustments, type-check taint,
 diagnostics, uncomputed symbolic constants and explicit coverage gaps. Supported
-`for` and `while` lowerings retain generated HIR types separately, with their full
-desugaring chain and source callsite. `type_extraction_complete` describes HIR
+`for`, `while` and source-written range lowerings retain generated HIR types
+separately, with their full desugaring chain and source callsite.
+`type_extraction_complete` describes HIR
 type extraction; `projection_gaps` records where one source range cannot select
 one expression uniquely. Nested bodies, macros, unsupported lowerings and
 unavailable types remain extraction gaps. Call facts name a type-check-selected

@@ -2,8 +2,8 @@ use frontend::frontend_facts::effects::{
     EnclosingBodySpanError, StaticFact, TextRange, enclosing_function_body_span,
 };
 use frontend::frontend_facts::{
-    BodyTypeCoverageGapKind, Loaded, Severity, analyze_body_type_facts,
-    analyze_body_type_facts_with_loaded,
+    BodyTypeCoverageGapKind, BodyTypeDesugaringKind, BodyTypeFacts, Loaded, Severity,
+    analyze_body_type_facts, analyze_body_type_facts_with_loaded,
 };
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
@@ -17,6 +17,28 @@ fn ready() {
 fn range(source: &str, text: &str) -> TextRange {
     let start = source.find(text).expect("source range") as u32;
     TextRange { start, end: start + text.len() as u32 }
+}
+
+fn assert_generated_range_fact(
+    facts: &BodyTypeFacts,
+    source: &str,
+    statement: &str,
+    expression: &str,
+) {
+    let statement_start = source.find(statement).expect("range statement") as u32;
+    let expression_start =
+        statement_start + statement.find(expression).expect("range expression") as u32;
+    let expression_end = expression_start + expression.len() as u32;
+    assert!(
+        facts.generated_expressions.iter().any(|fact| {
+            fact.desugaring_chain.contains(&BodyTypeDesugaringKind::RangeExpr)
+                && fact.callsite.start <= expression_start
+                && fact.callsite.end >= expression_end
+                && matches!(&fact.ty, StaticFact::Known { .. })
+                && matches!(&fact.adjusted_ty, StaticFact::Known { .. })
+        }),
+        "no known RangeExpr fact covers `{expression}`: {facts:?}"
+    );
 }
 
 #[test]
@@ -277,4 +299,127 @@ fn call_item_resolution_distinguishes_direct_method_and_indirect_calls() {
         fact.call_resolution.as_ref(),
         Some(frontend::frontend_facts::BodyCallResolutionFact::SelectedMethodItem { .. })
     )));
+}
+
+#[test]
+fn generic_range_forms_export_known_range_facts_without_type_name_claims() {
+    ready();
+    let source = "struct Indexed<T> { value: T } impl<T, I> Index<I> for Indexed<T> { type Output = T; fn index(&self, _index: I) -> &T { &self.value } } fn generic<T>(items: &Indexed<T>, start: usize, end: usize) { let from = &items[start..]; let bounded = &items[start..end]; let to = &items[..end]; let to_inclusive = &items[..=end]; let inclusive = &items[start..=end]; let full = &items[..]; let _ = (from, bounded, to, to_inclusive, inclusive, full); }";
+    let body = range(
+        source,
+        "{ let from = &items[start..]; let bounded = &items[start..end]; let to = &items[..end]; let to_inclusive = &items[..=end]; let inclusive = &items[start..=end]; let full = &items[..]; let _ = (from, bounded, to, to_inclusive, inclusive, full); }",
+    );
+    let facts = analyze_body_type_facts("body_type_facts_generic_ranges", source, body);
+
+    assert!(facts.type_extraction_complete, "{facts:?}");
+    assert!(facts.coverage_gaps.is_empty(), "{facts:?}");
+    assert!(
+        facts
+            .generated_expressions
+            .iter()
+            .all(|fact| { fact.callsite.start >= body.start && fact.callsite.end <= body.end })
+    );
+    for (statement, expression) in [
+        ("let from = &items[start..];", "start.."),
+        ("let bounded = &items[start..end];", "start..end"),
+        ("let to = &items[..end];", "..end"),
+        ("let to_inclusive = &items[..=end];", "..=end"),
+        ("let inclusive = &items[start..=end];", "start..=end"),
+        ("let full = &items[..];", ".."),
+    ] {
+        assert_generated_range_fact(&facts, source, statement, expression);
+    }
+}
+
+#[test]
+fn nested_for_loops_keep_generic_range_attribution_inside_the_selected_body() {
+    ready();
+    let source = "struct Indexed<T> { value: T } impl<T, I> Index<I> for Indexed<T> { type Output = T; fn index(&self, _index: I) -> &T { &self.value } } struct Outer; struct OuterIter; impl IntoIterator for Outer { type Item = Outer; type IntoIter = OuterIter; fn into_iter(self) -> OuterIter { OuterIter } } impl Iterator for OuterIter { type Item = Outer; fn next(&mut self) -> Option<Outer> { None } } fn nested<T>(items: &Indexed<T>, start: usize, end: usize) { for _outer in Outer { for _inner in Outer { let from = &items[start..]; let bounded = &items[start..end]; let to = &items[..end]; let to_inclusive = &items[..=end]; let inclusive = &items[start..=end]; let full = &items[..]; let _ = (from, bounded, to, to_inclusive, inclusive, full); } } }";
+    let body = range(
+        source,
+        "{ for _outer in Outer { for _inner in Outer { let from = &items[start..]; let bounded = &items[start..end]; let to = &items[..end]; let to_inclusive = &items[..=end]; let inclusive = &items[start..=end]; let full = &items[..]; let _ = (from, bounded, to, to_inclusive, inclusive, full); } } }",
+    );
+    let facts = analyze_body_type_facts("body_type_facts_nested_generic_ranges", source, body);
+
+    assert!(facts.type_extraction_complete, "{facts:?}");
+    assert!(facts.coverage_gaps.is_empty(), "{facts:?}");
+    assert!(
+        facts
+            .generated_expressions
+            .iter()
+            .filter(|fact| { fact.desugaring_chain.contains(&BodyTypeDesugaringKind::ForLoop) })
+            .count()
+            >= 2,
+        "{facts:?}"
+    );
+    for (statement, expression) in [
+        ("let from = &items[start..];", "start.."),
+        ("let bounded = &items[start..end];", "start..end"),
+        ("let to = &items[..end];", "..end"),
+        ("let to_inclusive = &items[..=end];", "..=end"),
+        ("let inclusive = &items[start..=end];", "start..=end"),
+        ("let full = &items[..];", ".."),
+    ] {
+        assert_generated_range_fact(&facts, source, statement, expression);
+    }
+}
+
+#[test]
+fn unsupported_async_desugaring_remains_an_explicit_coverage_refusal() {
+    ready();
+    let source = "fn unsupported() { let future = async { 1 }; let _ = future; }";
+    let body = range(source, "{ let future = async { 1 }; let _ = future; }");
+    let facts = analyze_body_type_facts("body_type_facts_unsupported_desugaring", source, body);
+
+    assert!(!facts.type_extraction_complete, "{facts:?}");
+    assert!(
+        facts
+            .coverage_gaps
+            .iter()
+            .any(|gap| { gap.kind == BodyTypeCoverageGapKind::NestedBodyNotVisited }),
+        "{facts:?}"
+    );
+}
+
+#[test]
+fn macro_generated_range_is_refused_with_a_macro_expansion_gap() {
+    ready();
+    let source = "struct Indexed<T> { value: T } impl<T, I> Index<I> for Indexed<T> { type Output = T; fn index(&self, _index: I) -> &T { &self.value } } macro_rules! generated_range { ($start:expr) => { $start.. }; } fn body<T>(items: &Indexed<T>, start: usize) { let _ = &items[generated_range!(start)]; }";
+    let body = range(source, "{ let _ = &items[generated_range!(start)]; }");
+    let facts = analyze_body_type_facts("body_type_facts_macro_generated_range", source, body);
+
+    assert!(!facts.type_extraction_complete, "{facts:?}");
+    assert!(
+        facts
+            .coverage_gaps
+            .iter()
+            .any(|gap| { gap.kind == BodyTypeCoverageGapKind::MacroExpansion }),
+        "{facts:?}"
+    );
+    assert!(
+        facts
+            .generated_expressions
+            .iter()
+            .all(|fact| { !fact.desugaring_chain.contains(&BodyTypeDesugaringKind::RangeExpr) }),
+        "macro-generated range was admitted: {facts:?}"
+    );
+}
+
+#[test]
+fn macro_produced_range_bound_is_refused_with_a_macro_expansion_gap() {
+    ready();
+    let source = "struct Indexed<T> { value: T } impl<T, I> Index<I> for Indexed<T> { type Output = T; fn index(&self, _index: I) -> &T { &self.value } } macro_rules! generated_bound { () => { 7usize }; } fn body<T>(items: &Indexed<T>, start: usize) { let _ = &items[start..generated_bound!()]; }";
+    let body = range(source, "{ let _ = &items[start..generated_bound!()]; }");
+    let facts = analyze_body_type_facts("body_type_facts_macro_range_bound", source, body);
+
+    assert!(!facts.type_extraction_complete, "{facts:?}");
+    assert!(
+        facts
+            .coverage_gaps
+            .iter()
+            .any(|gap| { gap.kind == BodyTypeCoverageGapKind::MacroExpansion }),
+        "{facts:?}"
+    );
+    assert_eq!(facts.typeck_tainted_by_errors, Some(false), "{facts:?}");
+    assert!(!facts.fatal, "{facts:?}");
 }
