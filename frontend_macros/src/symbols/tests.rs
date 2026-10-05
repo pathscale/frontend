@@ -27,7 +27,23 @@ fn test_symbols() {
 
     let body_tokens = m.mac.tokens.clone();
 
-    test_symbols_macro(body_tokens, &["proc_macro::tracked_env is not available in unit test"]);
+    // The current symbols table contains no `env!(...)` entries. Keep this smoke test
+    // focused on parsing and expansion of the tracked-in source file.
+    test_symbols_macro(body_tokens, &[]);
+}
+
+#[test]
+fn tracked_env_is_rejected_in_unit_test() {
+    // Exercise the proc-macro-only environment lookup guard with an explicit fixture,
+    // independent of the current symbol table and the test runner's environment.
+    let input = quote! {
+        Keywords {}
+        Symbols {
+            TrackedEnv: env!("FRONTEND_MACROS_TEST_TRACKED_ENV"),
+        }
+    };
+
+    test_symbols_macro(input, &["proc_macro::tracked_env is not available in unit test"]);
 }
 
 fn test_symbols_macro(input: TokenStream, expected_errors: &[&str]) {
