@@ -79,9 +79,14 @@ edition, supply an exact full body range directly to the loaded-context variant;
 the structural selector currently has no edition parameter.
 
 The result contains actual expression types and adjustments, type-check taint,
-diagnostics, uncomputed symbolic constants and explicit coverage gaps. Nested
-bodies, macro/desugared expressions and unavailable types remain gaps. These are
-bounded observations, not ownership or trait-obligation proof and not a compiler
+diagnostics, uncomputed symbolic constants and explicit coverage gaps. Supported
+`for` and `while` lowerings retain generated HIR types separately, with their full
+desugaring chain and source callsite. `type_extraction_complete` describes HIR
+type extraction; `projection_gaps` records where one source range cannot select
+one expression uniquely. Nested bodies, macros, unsupported lowerings and
+unavailable types remain extraction gaps. Call facts name a type-check-selected
+item or report an unknown target; they do not identify a runtime implementation.
+These are bounded observations, not ownership or trait-obligation proof or a compiler
 pass/fail verdict. No supplied function body or external procedural macro is
 executed. As with the other entry points, install
 the panic catcher first and use `panic = "unwind"`.
