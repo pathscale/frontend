@@ -101,6 +101,7 @@ mod outlives;
 mod variance;
 
 use crate::rustc_abi::{CVariadicStatus, ExternAbi};
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_middle::mir::interpret::GlobalId;
@@ -174,15 +175,36 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
 
         let _: R = tcx.ensure_result().check_type_wf(());
 
-        for &trait_def_id in tcx.all_local_trait_impls(()).keys() {
-            let _: R = tcx.ensure_result().coherent_trait(trait_def_id);
-        }
+        // One stage over the traits with local impls, read in place from the frozen map. Each
+        // trait's coherence is its own query and reads nothing another trait's check writes.
+        // A trait weighs its local impls' source: what its coherence check reads.
+        let trait_impls = tcx.all_local_trait_impls(());
+        run_stage_weighted(
+            trait_impls,
+            trait_impls.len(),
+            |trait_impls, index| {
+                let (_, impls) = trait_impls.get_index(index).expect("index below len");
+                impls.iter().fold(0u32, |weight, &impl_def_id| {
+                    weight.saturating_add(tcx.stage_weight(impl_def_id, cost::TYPECK))
+                })
+            },
+            |trait_impls, index| {
+                let (&trait_def_id, _) = trait_impls.get_index(index).expect("index below len");
+                let _: R = tcx.ensure_result().coherent_trait(trait_def_id);
+            },
+        );
         // these queries are executed for side-effects (error reporting):
         let _: R = tcx.ensure_result().crate_inherent_impls_validity_check(());
         let _: R = tcx.ensure_result().crate_inherent_impls_overlap_check(());
     });
 
-    tcx.par_hir_body_owners(|item_def_id| {
+    // One stage over the body owners, each item read in place from the crate's frozen list, and
+    // weighing its source at type checking's rate.
+    let owners = tcx.hir_body_owner_ids();
+    run_stage_weighted(owners, owners.len(), |owners, index| {
+        tcx.stage_weight(owners[index], cost::TYPECK)
+    }, |owners, index| {
+        let item_def_id = owners[index];
         let def_kind = tcx.def_kind(item_def_id);
         // Make sure we evaluate all static and (non-associated) const items, even if unused.
         // If any of these fail to evaluate, we do not want this crate to pass compilation.
@@ -222,7 +244,11 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
     // while the enclosing body is type-checked. Doing this in the pass above lets the parallel
     // front end reach the nested body owner first, computing (and caching) an error type for
     // the anon const that then conflicts with the type fed later on.
-    tcx.par_hir_body_owners(|item_def_id| {
+    //
+    // Each item is a lookup or two, not a walk of the body: one nanosecond an item, so only a
+    // crate of a quarter of a million bodies fans it out.
+    run_stage_weighted(owners, owners.len(), |_, _| 1, |owners, index| {
+        let item_def_id = owners[index];
         // Ensure we generate the new `DefId` before finishing `check_crate`.
         // Afterwards we freeze the list of `DefId`s.
         if tcx.needs_coroutine_by_move_body_def_id(item_def_id.to_def_id()) {

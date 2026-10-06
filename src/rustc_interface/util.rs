@@ -9,10 +9,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::num::NonZero;
-use alloc::sync::Arc;
+use eko::env;
 use eko::path::Path;
 use eko::thread::OnceLock;
-use eko::{env, thread};
 
 use crate::frontend_semantics::TargetConfig;
 use crate::frontend_semantics::target_features::internal_target_features;
@@ -21,7 +20,6 @@ use crate::rustc_attr_parsing::ShouldEmit;
 use crate::rustc_data_structures::base_n::{CASE_INSENSITIVE, ToBaseN};
 use crate::rustc_data_structures::sync;
 use crate::rustc_middle::ty::CurrentGcx;
-use crate::rustc_query_impl::{CollectActiveJobsKind, collect_active_query_jobs};
 use crate::rustc_session::config::{Cfg, Jobs, OutFileName, OutputFilenames, OutputTypes};
 use crate::rustc_session::{EarlyDiagCtxt, Session};
 use crate::rustc_span::edition::Edition;
@@ -156,6 +154,19 @@ fn run_on_current_thread_with_globals<F: FnOnce(CurrentGcx) -> R + Send, R: Send
     })
 }
 
+/// How many threads a session runs on: `jobs.frontend` when it is two or more and the
+/// `parallel` feature is built, else one, which is the serial compiler.
+///
+/// One asked-for thread is serial, not "parallel on one worker": a width of one has no helper to
+/// hand anything to, and running the thread-safe locks and the query system's latch waits with
+/// nobody to wait for would only cost.
+pub fn session_width(jobs: Jobs) -> usize {
+    match jobs.frontend {
+        Some(threads) if cfg!(feature = "parallel") && threads.get() > 1 => threads.get(),
+        _ => 1,
+    }
+}
+
 pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send, R: Send>(
     thread_builder_diag: &EarlyDiagCtxt,
     edition: Edition,
@@ -164,38 +175,40 @@ pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send,
     sm_inputs: SourceMapInputs,
     f: F,
 ) -> R {
-    use crate::rustc_data_structures::defer;
-    use crate::rustc_middle::ty::tls;
-    use crate::rustc_query_impl::break_query_cycle;
+    // Still read, because it still validates: a malformed value is refused here, as before. This
+    // crate starts no thread to give the size to; the pool's workers get theirs from
+    // `sync::pool`, which asks nagoya for 16 MiB stacks.
+    let _ = init_stack_size(thread_builder_diag);
 
-    let thread_stack_size = init_stack_size(thread_builder_diag);
+    let width = NonZero::new(session_width(jobs)).expect("a session runs on at least one thread");
 
-    let jobs_frontend = jobs.frontend.or(NonZero::new(1)).unwrap();
-
-    // **One thread, and no pool.**
+    // **The session's thread, plus nagoya's pool when the session is parallel.**
     //
-    // This had two paths: a `rustc_thread_pool` (rayon-core) pool of `jobs_frontend` workers with
-    // a deadlock handler, and this one. The pool is gone, so this is the function.
+    // This had two paths: a `rustc_thread_pool` (rayon-core) pool of `jobs.frontend` workers that
+    // this function built, with a deadlock handler, and a single-thread one. The rustc-owned pool
+    // is gone for good. What replaced it builds no pool at all: the session runs on the caller's
+    // thread, and when it is parallel each stage (`sync::stages`) hands items to helpers on
+    // nagoya's pool, which nagoya owns and which serves every session in the process.
     //
-    // The deadlock handler is why, and it is worth keeping the shape of what it did: on detecting
-    // that every worker was blocked, it spawned *another* thread, forwarded thread-locals into it,
-    // and ran `break_query_cycle` there. That is the cost of letting pool workers block on each
-    // other's queries, and it is machinery that only exists to survive a design we are removing.
-    //
-    // Parallelism moves to owned whole-file and whole-request jobs, where nothing is borrowed
-    // across a task boundary and no compiler context has to be installed on a worker.
+    // The deadlock handler went with the pool, and nothing here replaces it. It existed because
+    // rayon workers blocked on each other's queries with nothing to detect a cycle; the query
+    // system now detects a cycle at the moment a wait would close one (`QueryWaitGraph`), and a
+    // stage's waits only ever wait for running items (see `stage.rs`).
     run_on_current_thread_with_globals(
         edition,
         sm_inputs,
         extra_symbols,
         |current_gcx| {
-            // This frontend runs one compiler invocation at a time. Its registry
-            // identifies the thread rather than an invocation, so keep it across requests;
-            // every `WorkerLocal` value remains request-owned and is still dropped with the
-            // compiler context.
-            if sync::Registry::try_current().is_none() {
-                sync::Registry::new(jobs_frontend).register();
-            }
+            // One registry per session, with one slot per thread the session may use. This
+            // thread holds slot 0 for the whole session; pool helpers lease the others while they
+            // run this session's items. Every `WorkerLocal` the session creates is sized by it.
+            //
+            // It replaced a registry kept on the thread across requests, sized by whichever
+            // session came first: a cache of the first request's shape, and wrong once sessions
+            // with different widths share threads.
+            let registry = sync::Registry::new(width);
+            let slot = registry.lease().expect("a new registry has a free slot");
+            let _in_registry = slot.enter();
 
             f(current_gcx)
         },

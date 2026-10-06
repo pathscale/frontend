@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use alloc::collections::VecDeque;
 use core::fmt;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 
 use crate::rustc_data_structures::frozen::Frozen;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
@@ -346,7 +346,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         infcx: &BorrowckInferCtxt<'tcx>,
         lowered_constraints: LoweredConstraints<'tcx>,
         universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
-        location_map: Rc<DenseLocationMap>,
+        location_map: Arc<DenseLocationMap>,
     ) -> Self {
         let universal_regions = &universal_region_relations.universal_regions;
 

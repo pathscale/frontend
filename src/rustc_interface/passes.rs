@@ -26,7 +26,7 @@ use crate::rustc_crate_store::Untracked;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::sync::{
-    AppendOnlyIndexVec, FreezeLock, WorkerLocal, par_fns,
+    AppendOnlyIndexVec, FreezeLock, WorkerLocal, cost, run_stage_weighted,
 };
 use crate::rustc_data_structures::thousands;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
@@ -35,7 +35,7 @@ use crate::rustc_feature::Features;
 use crate::rustc_fs_util::try_canonicalize;
 use crate::rustc_hir::Attribute;
 use crate::rustc_hir::attrs::AttributeKind;
-use crate::rustc_hir::def_id::{LOCAL_CRATE, StableCrateId, StableCrateIdMap};
+use crate::rustc_hir::def_id::{LOCAL_CRATE, LocalModId, StableCrateId, StableCrateIdMap};
 use crate::rustc_hir::definitions::Definitions;
 use crate::rustc_lint::{BufferedEarlyLint, EarlyCheckNode, LintStore, unerased_lint_store};
 use crate::rustc_metadata::creader::CStore;
@@ -75,7 +75,7 @@ pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
                 Input::Str { input, name } => new_parser_from_source_str(
                     &sess.psess,
                     name.clone(),
-                    input.clone(),
+                    Arc::clone(input),
                     StripTokens::ShebangAndFrontmatter,
                 ),
             });
@@ -925,6 +925,23 @@ pub fn write_interface<'tcx>(tcx: TyCtxt<'tcx>) {
     }
 }
 
+/// Every item in the crate, with every HIR owner lowered first, as one stage.
+///
+/// `hir_crate_items` is the query every HIR consumer passes through before it reads an owner:
+/// `analysis` forces it before its first stage, and the facts extractor forces it first thing.
+/// Its walk (`rustc_middle::hir::map::hir_crate_items`) visits every owner from the crate root
+/// and used to lower each one, serially, the first time it touched it. Lowering is per owner
+/// (`lower_to_hir` is a query per `LocalDefId`) and one owner's lowering writes nothing another
+/// reads except through queries, so it is done up front instead, as a stage over the AST index
+/// (`rustc_ast_lowering::lower_every_owner`, whose header has the checks), and the walk then
+/// reads finished results. In a serial session the stage is a loop in index order on this
+/// thread, which is the same lowering in a slightly different order: index order is the def
+/// collector's pre-order walk, the old order was the HIR walk's.
+fn hir_crate_items(tcx: TyCtxt<'_>, (): ()) -> crate::rustc_middle::hir::ModuleItems {
+    crate::rustc_ast_lowering::lower_every_owner(tcx);
+    crate::rustc_middle::hir::map::hir_crate_items(tcx, ())
+}
+
 pub static DEFAULT_QUERY_PROVIDERS: LazyLock<Providers> = LazyLock::new(|| {
     let providers = &mut Providers::default();
     providers.queries.analysis = analysis;
@@ -939,6 +956,8 @@ pub static DEFAULT_QUERY_PROVIDERS: LazyLock<Providers> = LazyLock::new(|| {
     crate::rustc_expand::provide(&mut providers.queries);
     crate::rustc_const_eval::provide(providers);
     crate::rustc_middle::hir::provide(&mut providers.queries);
+    // After `rustc_middle::hir::provide`, which sets the plain one. See `hir_crate_items` below.
+    providers.queries.hir_crate_items = hir_crate_items;
     crate::rustc_borrowck::provide(&mut providers.queries);
     // The dependency graph is disabled, so there is nothing to serialise at session teardown.
     // Saving it would write an empty graph and then read it back as a cache miss on every query.
@@ -974,12 +993,13 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     let pre_configured_attrs = crate::rustc_expand::config::pre_configure_attrs(sess, &krate.attrs);
 
     let crate_name = get_crate_name(sess, &pre_configured_attrs);
-    // The two crate shapes this frontend accepts: a library to analyse, and a program to analyse.
-    // Nothing here writes an object or runs a linker, so `cdylib`, `staticlib`, `dylib` and
-    // `proc-macro` have no meaning to give them and are not offered.
+    // The crate shapes this frontend accepts: a library to analyse, a program to analyse, and a
+    // `proc-macro` crate, whose metadata declares its macros to the crates that load it (they
+    // resolve there, and are never run). Nothing here writes an object or runs a linker, so
+    // `cdylib`, `staticlib` and `dylib` have no meaning to give them and are not offered.
     let crate_types = collect_crate_types(
         sess,
-        &[CrateType::Rlib, CrateType::Executable],
+        &[CrateType::Rlib, CrateType::Executable, CrateType::ProcMacro],
         // The `supported_by` label, which appears verbatim in "dropping unsupported crate type"
         // diagnostics. It names whatever is driving this frontend, and the frontend itself is the
         // honest answer here.
@@ -1004,11 +1024,19 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     // already, in memory, and paying for the on-disk graph as well would be paying twice for it.
     let dep_graph = crate::rustc_middle::dep_graph::DepGraph::new_disabled();
     let cstore = FreezeLock::new(Box::new(CStore::new(Box::new(DefaultMetadataLoader))) as _);
-    let definitions = FreezeLock::new(Definitions::new(stable_crate_id));
+    let definitions = Definitions::new(stable_crate_id);
+    let def_table = Arc::clone(definitions.table());
+    let definitions = FreezeLock::new(definitions);
 
     let stable_crate_ids = FreezeLock::new(StableCrateIdMap::default());
     let untracked =
-        Untracked { cstore, source_span: AppendOnlyIndexVec::new(), definitions, stable_crate_ids };
+        Untracked {
+            cstore,
+            source_span: AppendOnlyIndexVec::new(),
+            definitions,
+            def_table,
+            stable_crate_ids,
+        };
 
     // We're constructing the HIR here; we don't care what we will
     // read, since we haven't even constructed the *input* to
@@ -1166,8 +1194,10 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
     let sess = tcx.sess;
     sess.time("misc_checking_1", || {
-        par_fns(&mut [
-            &mut || {
+        // Three independent checks, as one stage whose input is the checks themselves: item `i`
+        // runs `checks[i]`. Serially they run in this order, as the `par_fns` they replaced did.
+        let checks: [&dyn Fn(); 3] = [
+            &|| {
                 sess.time("looking_for_entry_point", || tcx.ensure_ok().entry_fn(()));
                 sess.time("check_externally_implementable_items", || {
                     tcx.ensure_ok().check_externally_implementable_items(())
@@ -1179,22 +1209,45 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
                 CStore::from_tcx(tcx).report_unused_deps(tcx);
             },
-            &mut || {
+            &|| {
                 tcx.ensure_ok().exportable_items(LOCAL_CRATE);
                 tcx.ensure_ok().stable_order_of_exportable_impls(LOCAL_CRATE);
-                tcx.par_hir_for_each_module(|module| {
-                    tcx.ensure_ok().check_mod_attrs(module);
-                    tcx.ensure_ok().check_mod_unstable_api_usage(module);
-                });
+                // Both per-module queries are themselves stages over the module's item-likes
+                // (`rustc_passes::item_likes`), so a crate of one module still spreads.
+                let modules = tcx.hir_module_ids();
+                run_stage_weighted(
+                    modules,
+                    modules.len(),
+                    // A module's source counts the modules inside it too: an overestimate, for
+                    // the rare crate of several, that errs towards fanning out.
+                    |modules, index| {
+                        tcx.stage_weight(modules[index].to_local_def_id(), 2 * cost::WALK)
+                    },
+                    |modules, index| {
+                        let module = modules[index];
+                        tcx.ensure_ok().check_mod_attrs(module);
+                        tcx.ensure_ok().check_mod_unstable_api_usage(module);
+                    },
+                );
             },
-            &mut || {
+            &|| {
                 // We force these queries to run,
                 // since they might not otherwise get called.
                 // This marks the corresponding crate-level attributes
                 // as used, and ensures that their values are valid.
                 tcx.ensure_ok().limits(());
             },
-        ]);
+        ];
+        // The second check walks every item (two walks, `cost::WALK` each); the first and third
+        // are crate-level lookups. So the stage fans out only for a crate whose walks pay for a
+        // helper, and even then the walks' own per-item stages are where the parallel work is.
+        let crate_walks = tcx.crate_stage_weight(2 * cost::WALK);
+        run_stage_weighted(
+            &checks,
+            checks.len(),
+            |_, index| if index == 1 { crate_walks } else { 1 },
+            |checks, index| checks[index](),
+        );
     });
 
     sess.time("emit_ast_lowering_delayed_lints", || {
@@ -1210,7 +1263,11 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
     tcx.untracked().definitions.freeze();
 
     sess.time("MIR_borrow_checking", || {
-        tcx.par_hir_body_owners(|def_id| {
+        let owners = tcx.hir_body_owner_ids();
+        run_stage_weighted(owners, owners.len(), |owners, index| {
+            tcx.stage_weight(owners[index], cost::TYPECK)
+        }, |owners, index| {
+            let def_id = owners[index];
             let not_typeck_child = !tcx.is_typeck_child(def_id.to_def_id());
             if not_typeck_child {
                 // Child unsafety and borrowck happens together with the parent
@@ -1273,22 +1330,46 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     }
 
     sess.time("misc_checking_3", || {
-        par_fns(&mut [
-            &mut || {
+        // Two independent groups as one stage over the groups themselves, the first holding a
+        // nested stage of four checks, each of the module-wide ones a stage over the crate's
+        // modules. Serially they run in exactly this order, as the nested `par_fns` they replaced
+        // did; in parallel a group's inner stages run their own items rather than waiting on the
+        // pool. Every per-module query below is in turn a stage over the module's owners (its
+        // item-likes, or for the late lints its top-level items), so a crate of one module still
+        // spreads; see `research/per-owner-passes.md`.
+        //
+        // Every stage here weighs what its items walk: a module its source, a whole-crate check
+        // the crate's, at `cost::WALK` a walk; so a small crate runs each serially, as width one
+        // does, and only the per-item stages under them fan out, where the work is.
+        let per_module = |check: &dyn Fn(LocalModId)| {
+            let modules = tcx.hir_module_ids();
+            run_stage_weighted(
+                modules,
+                modules.len(),
+                |modules, index| tcx.stage_weight(modules[index].to_local_def_id(), cost::WALK),
+                |modules, index| check(modules[index]),
+            );
+        };
+        let crate_walk = tcx.crate_stage_weight(cost::WALK);
+        let lints_run = sess.opts.lint_cap != Some(crate::rustc_lint_defs::Level::Allow);
+        // The four checks of the first group, in order: private-in-public, liveness, the lints
+        // (a walk when they run, nothing when every lint is capped), clashing externs (a lookup
+        // over the foreign items).
+        let check_weights: [u32; 4] =
+            [crate_walk, crate_walk, if lints_run { crate_walk } else { 1 }, 1];
+        // The first group is its four checks; the second, privacy, walks names and then types.
+        let group_weights: [u32; 2] = [
+            check_weights.iter().fold(0u32, |sum, &weight| sum.saturating_add(weight)),
+            crate_walk.saturating_mul(2),
+        ];
+        let groups: [&dyn Fn(); 2] = [
+            &|| {
                 tcx.ensure_ok().effective_visibilities(());
 
-                par_fns(&mut [
-                    &mut || {
-                        tcx.par_hir_for_each_module(|module| {
-                            tcx.ensure_ok().check_private_in_public(module)
-                        })
-                    },
-                    &mut || {
-                        tcx.par_hir_for_each_module(|module| {
-                            tcx.ensure_ok().check_mod_deathness(module)
-                        });
-                    },
-                    &mut || {
+                let checks: [&dyn Fn(); 4] = [
+                    &|| per_module(&|module| tcx.ensure_ok().check_private_in_public(module)),
+                    &|| per_module(&|module| tcx.ensure_ok().check_mod_deathness(module)),
+                    &|| {
                         // **Skipped when every lint is capped to `Allow`, which is the consumer's
                         // default.** `check_crate` walks the whole HIR and runs every late and
                         // per-module lint pass, and it never consults the cap: capping changes
@@ -1311,19 +1392,29 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
                             });
                         }
                     },
-                    &mut || {
+                    &|| {
                         tcx.ensure_ok().clashing_extern_declarations(());
                     },
-                ]);
+                ];
+                run_stage_weighted(
+                    &checks,
+                    checks.len(),
+                    |_, index| check_weights[index],
+                    |checks, index| checks[index](),
+                );
             },
-            &mut || {
+            &|| {
                 sess.time("privacy_checking_modules", || {
-                    tcx.par_hir_for_each_module(|module| {
-                        tcx.ensure_ok().check_mod_privacy(module);
-                    });
+                    per_module(&|module| tcx.ensure_ok().check_mod_privacy(module));
                 });
             },
-        ]);
+        ];
+        run_stage_weighted(
+            &groups,
+            groups.len(),
+            |_, index| group_weights[index],
+            |groups, index| groups[index](),
+        );
 
         // This check has to be run after all lints are done processing. We don't
         // define a lint filter, as all lint checks should have finished at this point.
@@ -1348,7 +1439,11 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     // type-check is very prone to ICEs.
     if tcx.sess.opts.unstable_opts.validate_mir {
         sess.time("ensuring_final_MIR_is_computable", || {
-            tcx.par_hir_body_owners(|def_id| {
+            let owners = tcx.hir_body_owner_ids();
+            run_stage_weighted(owners, owners.len(), |owners, index| {
+                tcx.stage_weight(owners[index], cost::TYPECK)
+            }, |owners, index| {
+                let def_id = owners[index];
                 if !tcx.is_trivial_const(def_id) {
                     tcx.instance_mir(ty::InstanceKind::Item(def_id.into()));
                 }

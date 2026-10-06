@@ -190,7 +190,7 @@ impl<'tcx> MirPatch<'tcx> {
     ) -> Local {
         let index = self.next_local + self.new_locals.len();
         let mut new_decl = LocalDecl::new(ty, span);
-        **new_decl.local_info.as_mut().unwrap_crate_local() = local_info;
+        *new_decl.local_info_mut() = local_info;
         self.new_locals.push(new_decl);
         Local::new(index)
     }

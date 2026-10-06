@@ -408,6 +408,36 @@ impl Span {
         }
     }
 
+    /// `self.to(end)` when both spans are in the inline-context format with the
+    /// same context, else `None`. In that case neither span has a parent (so no
+    /// `SPAN_TRACK` call is skipped) and `prepare_to_combine` returns its first
+    /// `Ok`, so `to` computes exactly `Span::new(min lo, max hi, ctxt, None)`,
+    /// which is what this returns without decoding either span into `SpanData`.
+    #[inline]
+    pub(crate) fn to_same_inline_ctxt(self, end: Span) -> Option<Span> {
+        // `BASE_LEN_INTERNED_MARKER` has `PARENT_TAG` set, so a clear tag bit on
+        // both rules out the inline-parent and both interned formats.
+        if (self.len_with_tag_or_marker | end.len_with_tag_or_marker) & PARENT_TAG != 0
+            || self.ctxt_or_parent_or_marker != end.ctxt_or_parent_or_marker
+        {
+            return None;
+        }
+        let (a, b) = (InlineCtxt::from_span(self), InlineCtxt::from_span(end));
+        let lo = core::cmp::min(a.lo, b.lo);
+        let hi = core::cmp::max(
+            a.lo.debug_strict_add(a.len as u32),
+            b.lo.debug_strict_add(b.len as u32),
+        );
+        let len = hi - lo;
+        Some(if len <= MAX_LEN {
+            // `a.ctxt` came from an inline-context span, so it is `<= MAX_CTXT`,
+            // and `Span::new` would pick this same format.
+            InlineCtxt::span(lo, len as u16, a.ctxt)
+        } else {
+            Span::new(BytePos(lo), BytePos(hi), SyntaxContext::from_u16(a.ctxt), None)
+        })
+    }
+
     #[inline]
     pub fn with_parent(self, parent: Option<LocalDefId>) -> Span {
         let data = match_span_kind! {

@@ -29,7 +29,9 @@ use crate::rustc_data_structures::owned_slice::OwnedSlice;
 use crate::rustc_data_structures::sync::Lock;
 use crate::rustc_data_structures::unhash::UnhashMap;
 use crate::rustc_expand::base::{SyntaxExtension, SyntaxExtensionKind};
-use crate::rustc_expand::proc_macro::{AttrProcMacro, BangProcMacro, DeriveProcMacro};
+use crate::rustc_expand::proc_macro::{
+    AttrProcMacro, BangProcMacro, DeriveProcMacro, UnrunProcMacro,
+};
 use crate::rustc_hir::Safety;
 use crate::rustc_hir::attrs::CanonicalSymbols;
 use crate::rustc_hir::attrs::diagnostic_items::DiagnosticItems;
@@ -1023,7 +1025,11 @@ impl CrateMetadata {
         bug!("missing `{descr}` for {:?}", self.local_def_id(id))
     }
 
-    fn raw_proc_macro(&self, tcx: TyCtxt<'_>, id: DefIndex) -> (ProcMacroClient, ProcMacroKind) {
+    fn raw_proc_macro(
+        &self,
+        tcx: TyCtxt<'_>,
+        id: DefIndex,
+    ) -> (Option<ProcMacroClient>, ProcMacroKind) {
         // DefIndex's in root.proc_macro_data have a one-to-one correspondence
         // with items in 'raw_proc_macros'.
         let (pos, (_id, kind)) = self
@@ -1036,7 +1042,7 @@ impl CrateMetadata {
             .enumerate()
             .find(|(_pos, (i, _))| *i == id)
             .unwrap();
-        (self.raw_proc_macros.unwrap()[pos], kind.decode((self, tcx)))
+        (self.raw_proc_macros.map(|clients| clients[pos]), kind.decode((self, tcx)))
     }
 
     fn opt_item_name(&self, item_index: DefIndex) -> Option<Symbol> {
@@ -1094,21 +1100,34 @@ impl CrateMetadata {
     }
 
     fn load_proc_macro<'tcx>(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> SyntaxExtension {
+        // No client is a proc-macro crate this frontend read from source and wrote metadata for,
+        // with no compiled code to run: its macros resolve, and expanding one is an error.
+        let unrun = |name: &str| Arc::new(UnrunProcMacro { name: Symbol::intern(name) });
         let (name, kind, helper_attrs) = match self.raw_proc_macro(tcx, id) {
             (client, ProcMacroKind::CustomDerive { trait_name, attributes }) => {
                 let helper_attrs =
                     attributes.into_iter().map(|attr| Symbol::intern(&attr)).collect();
-                (
-                    trait_name,
-                    SyntaxExtensionKind::Derive(Arc::new(DeriveProcMacro { client })),
-                    helper_attrs,
-                )
+                let kind = match client {
+                    Some(client) => {
+                        SyntaxExtensionKind::Derive(Arc::new(DeriveProcMacro { client }))
+                    }
+                    None => SyntaxExtensionKind::Derive(unrun(&trait_name)),
+                };
+                (trait_name, kind, helper_attrs)
             }
             (client, ProcMacroKind::Attr { name }) => {
-                (name, SyntaxExtensionKind::Attr(Arc::new(AttrProcMacro { client })), Vec::new())
+                let kind = match client {
+                    Some(client) => SyntaxExtensionKind::Attr(Arc::new(AttrProcMacro { client })),
+                    None => SyntaxExtensionKind::Attr(unrun(&name)),
+                };
+                (name, kind, Vec::new())
             }
             (client, ProcMacroKind::Bang { name }) => {
-                (name, SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client })), Vec::new())
+                let kind = match client {
+                    Some(client) => SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client })),
+                    None => SyntaxExtensionKind::Bang(unrun(&name)),
+                };
+                (name, kind, Vec::new())
             }
         };
 

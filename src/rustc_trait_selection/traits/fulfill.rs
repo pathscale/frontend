@@ -629,9 +629,10 @@ impl<'a, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'tcx> {
                         obligation.cause.span,
                     ) {
                         None => {
-                            pending_obligation.stalled_on = vec![
+                            // `stalled_on` was cleared on entry; refill it in place.
+                            pending_obligation.stalled_on.push(
                                 TyOrConstInferVar::maybe_from_term::<TyCtxt<'tcx>>(term).unwrap(),
-                            ];
+                            );
                             ProcessResult::Unchanged
                         }
                         Some(os) => ProcessResult::Changed(mk_pending(obligation, os)),
@@ -646,8 +647,9 @@ impl<'a, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'tcx> {
                     ) {
                         Err((a, b)) => {
                             // None means that both are unresolved.
-                            pending_obligation.stalled_on =
-                                vec![TyOrConstInferVar::Ty(a), TyOrConstInferVar::Ty(b)];
+                            pending_obligation
+                                .stalled_on
+                                .extend([TyOrConstInferVar::Ty(a), TyOrConstInferVar::Ty(b)]);
                             ProcessResult::Unchanged
                         }
                         Ok(Ok(ok)) => {
@@ -672,8 +674,9 @@ impl<'a, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'tcx> {
                     ) {
                         Err((a, b)) => {
                             // None means that both are unresolved.
-                            pending_obligation.stalled_on =
-                                vec![TyOrConstInferVar::Ty(a), TyOrConstInferVar::Ty(b)];
+                            pending_obligation
+                                .stalled_on
+                                .extend([TyOrConstInferVar::Ty(a), TyOrConstInferVar::Ty(b)]);
                             ProcessResult::Unchanged
                         }
                         Ok(Ok(ok)) => {

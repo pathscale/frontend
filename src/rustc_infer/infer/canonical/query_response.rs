@@ -11,11 +11,12 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::iter;
 
-use crate::rustc_index::{Idx, IndexVec};
+use crate::rustc_index::Idx;
 use crate::rustc_middle::arena::ArenaAllocatable;
 use crate::bug;
 use crate::rustc_middle::infer::canonical::{CanonicalVarKind, QueryRegionConstraint};
 use crate::rustc_middle::ty::{self, BoundVar, GenericArg, GenericArgKind, Ty, TyCtxt, TypeFoldable};
+use smallvec::{SmallVec, smallvec};
 use tracing::{debug, instrument};
 
 use crate::rustc_infer::infer::canonical::instantiate::{CanonicalExt, instantiate_value};
@@ -446,8 +447,10 @@ impl<'tcx> InferCtxt<'tcx> {
         // is directly equal to one of the canonical variables in the
         // result, then we can type the corresponding value from the
         // input. See the example above.
-        let mut opt_values: IndexVec<BoundVar, Option<GenericArg<'tcx>>> =
-            IndexVec::from_elem_n(None, query_response.var_kinds.len());
+        // Indexed by `BoundVar`. A response rarely has more than a few variables, so this
+        // stays inline.
+        let mut opt_values: SmallVec<[Option<GenericArg<'tcx>>; 8]> =
+            smallvec![None; query_response.var_kinds.len()];
 
         for (original_value, result_value) in iter::zip(&original_values.var_values, result_values)
         {
@@ -465,21 +468,21 @@ impl<'tcx> InferCtxt<'tcx> {
                     {
                         // We only allow a `Canonical` index in generic parameters.
                         assert!(matches!(index_kind, ty::BoundVarIndexKind::Canonical));
-                        opt_values[b.var] = Some(*original_value);
+                        opt_values[b.var.as_usize()] = Some(*original_value);
                     }
                 }
                 GenericArgKind::Lifetime(result_value) => {
                     if let ty::ReBound(index_kind, b) = result_value.kind() {
                         // We only allow a `Canonical` index in generic parameters.
                         assert!(matches!(index_kind, ty::BoundVarIndexKind::Canonical));
-                        opt_values[b.var] = Some(*original_value);
+                        opt_values[b.var.as_usize()] = Some(*original_value);
                     }
                 }
                 GenericArgKind::Const(result_value) => {
                     if let ty::ConstKind::Bound(index_kind, b) = result_value.kind() {
                         // We only allow a `Canonical` index in generic parameters.
                         assert!(matches!(index_kind, ty::BoundVarIndexKind::Canonical));
-                        opt_values[b.var] = Some(*original_value);
+                        opt_values[b.var.as_usize()] = Some(*original_value);
                     }
                 }
             }
@@ -498,7 +501,7 @@ impl<'tcx> InferCtxt<'tcx> {
                     universe_map[u.as_usize()]
                 })
             } else if kind.is_existential() {
-                match opt_values[BoundVar::new(var_values.len())] {
+                match opt_values[var_values.len()] {
                     Some(k) => k,
                     None => self.instantiate_canonical_var(cause.span, kind, &var_values, |u| {
                         universe_map[u.as_usize()]
@@ -507,7 +510,7 @@ impl<'tcx> InferCtxt<'tcx> {
             } else {
                 // For placeholders which were already part of the input, we simply map this
                 // universal bound variable back the placeholder of the input.
-                opt_values[BoundVar::new(var_values.len())]
+                opt_values[var_values.len()]
                     .expect("expected placeholder to be unified with itself during response")
             }
         });

@@ -245,7 +245,7 @@ fn locate(
     // assertion in `create_session_globals_then`.
     create_session_if_not_set_then(Edition::Edition2024, |_| {
         let found = {
-            let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
+            let sm = Arc::new(SourceMap::for_text(FilePathMapping::empty()));
             let emitter = PlainEmitter::new()
                 .sm(Some(Arc::clone(&sm)))
                 .short_message(true)

@@ -105,7 +105,7 @@ fn split_block_comment_into_lines(text: &str, col: CharPos) -> Vec<String> {
 }
 
 fn gather_comments(sm: &SourceMap, path: FileName, src: String) -> Vec<Comment> {
-    let sm = SourceMap::new(sm.path_mapping().clone());
+    let sm = SourceMap::for_text(sm.path_mapping().clone());
     let source_file = sm.new_source_file(path, src);
     let text = Arc::clone(&(*source_file.src.as_ref().unwrap()));
 

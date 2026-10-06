@@ -6,13 +6,14 @@
 
 use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::sync::Arc;
 use core::fmt::{self, Write};
 use core::hash::Hash;
 
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::stable_hash::StableHasher;
+use crate::rustc_data_structures::sync::AppendOnlyIndexVec;
 use crate::rustc_hashes::Hash64;
-use crate::rustc_index::IndexVec;
 use rustc_macros::{BlobDecodable, Decodable, Encodable, extension};
 pub use crate::rustc_span::def_id::DefPathHash;
 use crate::rustc_span::def_id::{
@@ -48,12 +49,103 @@ impl LocalDefIdMap<PerParentDisambiguatorState> {
     }
 }
 
+/// The key and the path hash of every local definition, readable with no lock at any time.
+///
+/// Both tables are append-only (`AppendOnlyIndexVec`): a slot, once written, never moves and
+/// is never written again, and the published length is stored with `Release` after the slot
+/// and loaded with `Acquire` before it. The only writer is `Definitions::allocate`, which needs
+/// `&mut Definitions` and so runs under the `FreezeLock` write guard (or at construction); it
+/// pushes the key first and the hash second, so the hash table is never longer than the key
+/// table as any thread sees them, and `num_definitions` (the hash length) bounds both.
+///
+/// A reader that holds a `LocalDefId` holds one whose two pushes happen-before its read: the id
+/// is returned by `create_def` only after both pushes, and it reaches another thread only through
+/// something that synchronises (the `FreezeLock` guard's release, a query cache's lock, a stage's
+/// hand-off), so the reader's `Acquire` load of the length sees a length past the id. An id made
+/// from an integer below `num_definitions`, as `iter_local_def_id` does, is covered by the same
+/// Release/Acquire pair on the hash table and the key push that precedes it.
+///
+/// Shared with `Untracked::def_table` by `Arc`, so `TyCtxt::def_key`, `def_path_hash` and
+/// `def_path` read it without going through the `FreezeLock` around `Definitions`.
+pub struct DefTable {
+    stable_crate_id: StableCrateId,
+    def_id_to_key: AppendOnlyIndexVec<LocalDefId, DefKey>,
+    // We do only store the local hash, as all the definitions are from the current crate.
+    def_path_hashes: AppendOnlyIndexVec<LocalDefId, Hash64>,
+}
+
+impl fmt::Debug for DefTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DefTable")
+            .field("stable_crate_id", &self.stable_crate_id)
+            .field("num_definitions", &self.num_definitions())
+            .finish()
+    }
+}
+
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn no_such_definition(id: LocalDefId) -> ! {
+    panic!("no local definition with index {}", id.local_def_index.as_u32())
+}
+
+impl DefTable {
+    fn new(stable_crate_id: StableCrateId) -> DefTable {
+        DefTable {
+            stable_crate_id,
+            def_id_to_key: AppendOnlyIndexVec::new(),
+            def_path_hashes: AppendOnlyIndexVec::new(),
+        }
+    }
+
+    #[inline(always)]
+    #[track_caller]
+    pub fn def_key(&self, id: LocalDefId) -> DefKey {
+        match self.def_id_to_key.get(id) {
+            Some(key) => key,
+            None => no_such_definition(id),
+        }
+    }
+
+    // Log debug version of `local_def_index` (just a number), as tracing of this function
+    // is called too early and cause errors if `LocalDefId` is logged (#157238).
+    #[instrument(level = "trace", skip(self, id), fields(def_index=?id.local_def_index), ret)]
+    #[inline(always)]
+    pub fn def_path_hash(&self, id: LocalDefId) -> DefPathHash {
+        match self.def_path_hashes.get(id) {
+            Some(local_hash) => DefPathHash::new(self.stable_crate_id, local_hash),
+            None => no_such_definition(id),
+        }
+    }
+
+    /// See `Definitions::def_path`.
+    #[inline]
+    pub fn def_path(&self, id: LocalDefId) -> DefPath {
+        DefPath::make(LOCAL_CRATE, id.local_def_index, |index| {
+            self.def_key(LocalDefId { local_def_index: index })
+        })
+    }
+
+    /// Definitions published so far. Every index below it has both its key and its hash.
+    #[inline]
+    pub fn num_definitions(&self) -> usize {
+        self.def_path_hashes.len()
+    }
+
+    /// Only `Definitions::allocate` calls this, holding `&mut Definitions`, so pushes never
+    /// interleave and the two tables stay index for index.
+    fn push(&self, key: DefKey, local_hash: Hash64) -> LocalDefId {
+        let def_id = self.def_id_to_key.push(key);
+        let hash_id: LocalDefId = self.def_path_hashes.push(local_hash);
+        debug_assert!(def_id == hash_id);
+        def_id
+    }
+}
+
 #[derive(Debug)]
 pub struct Definitions {
-    stable_crate_id: StableCrateId,
-    def_id_to_key: IndexVec<LocalDefId, DefKey>,
-    // We do only store the local hash, as all the definitions are from the current crate.
-    def_path_hashes: IndexVec<LocalDefId, Hash64>,
+    table: Arc<DefTable>,
     def_path_hash_to_index: DefPathHashMap,
 }
 
@@ -251,17 +343,21 @@ pub enum DefPathData {
 }
 
 impl Definitions {
-    #[inline(always)]
-    pub fn def_key(&self, id: LocalDefId) -> DefKey {
-        self.def_id_to_key[id]
+    /// The lock-free key and hash tables, for a holder that must read them without the
+    /// `FreezeLock` around these `Definitions` (`Untracked::def_table`).
+    #[inline]
+    pub fn table(&self) -> &Arc<DefTable> {
+        &self.table
     }
 
-    // Log debug version of `local_def_index` (just a number), as tracing of this function
-    // is called too early and cause errors if `LocalDefId` is logged (#157238).
-    #[instrument(level = "trace", skip(self, id), fields(def_index=?id.local_def_index), ret)]
+    #[inline(always)]
+    pub fn def_key(&self, id: LocalDefId) -> DefKey {
+        self.table.def_key(id)
+    }
+
     #[inline(always)]
     pub fn def_path_hash(&self, id: LocalDefId) -> DefPathHash {
-        DefPathHash::new(self.stable_crate_id, self.def_path_hashes[id])
+        self.table.def_path_hash(id)
     }
 
     /// Returns the path from the crate root to `index`. The root
@@ -271,9 +367,7 @@ impl Definitions {
     /// path will begin with the path to the external crate).
     #[inline]
     pub fn def_path(&self, id: LocalDefId) -> DefPath {
-        DefPath::make(LOCAL_CRATE, id.local_def_index, |index| {
-            self.def_key(LocalDefId { local_def_index: index })
-        })
+        self.table.def_path(id)
     }
 
     /// Adds a root definition (no parent) and a few other reserved definitions.
@@ -298,9 +392,7 @@ impl Definitions {
             DefPathHash::new(stable_crate_id, Hash64::new(stable_crate_id.as_u64()));
 
         let mut defs = Definitions {
-            stable_crate_id,
-            def_path_hashes: Default::default(),
-            def_id_to_key: Default::default(),
+            table: Arc::new(DefTable::new(stable_crate_id)),
             def_path_hash_to_index: Default::default(),
         };
 
@@ -313,14 +405,12 @@ impl Definitions {
 
     fn allocate(&mut self, key: DefKey, def_path_hash: DefPathHash) -> LocalDefId {
         // Assert that all DefPathHashes correctly contain the local crate's StableCrateId.
-        debug_assert_eq!(self.stable_crate_id, def_path_hash.stable_crate_id());
+        debug_assert_eq!(self.table.stable_crate_id, def_path_hash.stable_crate_id());
         let local_hash = def_path_hash.local_hash();
 
-        let def_id = self.def_id_to_key.push(key);
+        // `&mut self` makes this the only push in flight, which `DefTable::push` relies on.
+        let def_id = self.table.push(key, local_hash);
         debug!("def_id_to_key.push() - {key:?} <-> {:?}", def_id.local_def_index);
-
-        self.def_path_hashes.push(local_hash);
-        debug_assert!(self.def_path_hashes.len() == self.def_id_to_key.len());
 
         // Check for hash collisions of DefPathHashes. These should be
         // exceedingly rare.
@@ -349,10 +439,12 @@ impl Definitions {
 
     pub fn enumerated_keys_and_path_hashes(
         &self,
-    ) -> impl Iterator<Item = (DefIndex, &DefKey, DefPathHash)> + ExactSizeIterator {
-        self.def_id_to_key
-            .iter_enumerated()
-            .map(move |(def_id, key)| (def_id.local_def_index, key, self.def_path_hash(def_id)))
+    ) -> impl Iterator<Item = (DefIndex, DefKey, DefPathHash)> + ExactSizeIterator {
+        let table = &*self.table;
+        (0..table.num_definitions()).map(move |i| {
+            let def_id = LocalDefId { local_def_index: DefIndex::from_usize(i) };
+            (def_id.local_def_index, table.def_key(def_id), table.def_path_hash(def_id))
+        })
     }
 
     /// Creates a definition with a parent definition.
@@ -411,7 +503,7 @@ impl Definitions {
     /// if the `DefPathHash` is from a previous compilation session and
     /// the def-path does not exist anymore.
     pub fn local_def_path_hash_to_def_id(&self, hash: DefPathHash) -> Option<LocalDefId> {
-        debug_assert!(hash.stable_crate_id() == self.stable_crate_id);
+        debug_assert!(hash.stable_crate_id() == self.table.stable_crate_id);
         self.def_path_hash_to_index
             .get(&hash.local_hash())
             .map(|local_def_index| LocalDefId { local_def_index })
@@ -422,7 +514,7 @@ impl Definitions {
     }
 
     pub fn num_definitions(&self) -> usize {
-        self.def_path_hashes.len()
+        self.table.num_definitions()
     }
 }
 

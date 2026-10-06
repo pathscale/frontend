@@ -35,7 +35,8 @@ use crate::rustc_ast::token::{
     self, IdentIsRaw, InvisibleOrigin, MetaVarKind, NtExprKind, NtPatKind, Token, TokenKind,
 };
 use crate::rustc_ast::tokenstream::{
-    ParserRange, ParserReplacement, Spacing, TokenCursor, TokenStream, TokenTree, WithTokens,
+    FrameSpare, ParserRange, ParserReplacement, Spacing, TokenCursor, TokenStream, TokenTree,
+    WithTokens,
 };
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast::util::classify;
@@ -201,6 +202,9 @@ pub struct Parser<'a> {
     restrictions: Restrictions,
     expected_token_types: TokenTypeSet,
     token_cursor: TokenCursor,
+    // The token cursor's spare frame, reused for each delimited group the parser enters (see
+    // `FrameSpare`). A cloned parser starts without one.
+    frame_spare: FrameSpare,
     // The number of calls to `bump`, i.e. the position in the token stream.
     num_bump_calls: u32,
     // During parsing we may sometimes need to "unglue" a glued token into two
@@ -252,7 +256,7 @@ pub struct Parser<'a> {
 // nonterminals. Make sure it doesn't unintentionally get bigger. We only check a few arches
 // though, because `TokenTypeSet(u128)` alignment varies on others, changing the total size.
 #[cfg(all(target_pointer_width = "64", any(target_arch = "aarch64", target_arch = "x86_64")))]
-crate::static_assert_size!(Parser<'_>, 304);
+crate::static_assert_size!(Parser<'_>, 288);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -353,6 +357,7 @@ impl<'a> Parser<'a> {
         let mut parser = Parser {
             psess,
             token_cursor: TokenCursor::new(stream),
+            frame_spare: FrameSpare::default(),
             subparser_name,
             capture_state: CaptureState {
                 capturing: Capturing::No,
@@ -504,9 +509,7 @@ impl<'a> Parser<'a> {
     #[inline]
     pub fn check(&mut self, exp: ExpTokenPair) -> bool {
         let is_present = self.token == exp.tok;
-        if !is_present {
-            self.expected_token_types.insert(exp.token_type);
-        }
+        self.expected_token_types.insert_unless(is_present, exp.token_type);
         is_present
     }
 
@@ -560,9 +563,7 @@ impl<'a> Parser<'a> {
     #[must_use]
     fn check_keyword(&mut self, exp: ExpKeywordPair) -> bool {
         let is_keyword = self.token.is_keyword(exp.kw);
-        if !is_keyword {
-            self.expected_token_types.insert(exp.token_type);
-        }
+        self.expected_token_types.insert_unless(is_keyword, exp.token_type);
         is_keyword
     }
 
@@ -710,16 +711,16 @@ impl<'a> Parser<'a> {
 
     #[inline]
     fn check_or_expected(&mut self, ok: bool, token_type: TokenType) -> bool {
-        if !ok {
-            self.expected_token_types.insert(token_type);
-        }
+        self.expected_token_types.insert_unless(ok, token_type);
         ok
     }
 
+    #[inline]
     fn check_ident(&mut self) -> bool {
         self.check_or_expected(self.token.is_ident(), TokenType::Ident)
     }
 
+    #[inline]
     fn check_path(&mut self) -> bool {
         self.check_or_expected(self.token.is_path_start(), TokenType::Path)
     }
@@ -1142,24 +1143,35 @@ impl<'a> Parser<'a> {
     }
 
     /// Advance the parser by one token.
+    ///
+    /// Inlined: the common step is a plain token in the current stream (see
+    /// `TokenCursor::inlined_next_and_bump`), and the rare work (delimiters,
+    /// dummy spans) is out of line.
+    #[inline]
     pub fn bump(&mut self) {
         // Note: destructuring here would give nicer code, but it was found in #96210 to be slower
         // than `.0`/`.1` access.
-        let mut next = self.token_cursor.inlined_next_and_bump();
+        let mut next = self.token_cursor.inlined_next_and_bump_reusing(&mut self.frame_spare);
         self.num_bump_calls += 1;
         // We got a token from the underlying cursor and no longer need to
         // worry about an unglued token. See `break_and_eat` for more details.
         self.break_last_token = 0;
         if next.0.span.is_dummy() {
-            // Tweak the location for better diagnostics, but keep syntactic context intact.
-            let fallback_span = self.token.span;
-            next.0.span = fallback_span.with_ctxt(next.0.span.ctxt());
+            next.0.span = self.dummy_span_fallback(next.0.span);
         }
         debug_assert!(!matches!(
             next.0.kind,
             token::OpenInvisible(origin) | token::CloseInvisible(origin) if origin.skip()
         ));
         self.inlined_bump_with(next)
+    }
+
+    /// Tweak the location of a token with a dummy span for better diagnostics: the
+    /// current token's span, keeping the syntactic context of `span` intact.
+    #[cold]
+    #[inline(never)]
+    fn dummy_span_fallback(&self, span: Span) -> Span {
+        self.token.span.with_ctxt(span.ctxt())
     }
 
     /// Look-ahead `dist` tokens of `self.token` and get access to that token there.
@@ -1200,8 +1212,14 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Just clone the token cursor and use `next_and_bump`, skipping delimiters as
-        // necessary. Slow but simple.
+        // Walk the borrowed token streams; this gives the same token as the clone
+        // below and allocates nothing.
+        if let Some(token) = self.token_cursor.look_ahead_token(dist) {
+            return looker(&token);
+        }
+
+        // Deeply nested lookahead: clone the token cursor and use `next_and_bump`,
+        // skipping delimiters as necessary. Slow but simple.
         let mut cursor = self.token_cursor.clone();
         let mut i = 0;
         let mut token = Token::dummy();
@@ -1679,11 +1697,18 @@ impl<'a> Parser<'a> {
     /// Checks for `::` or, potentially, `:::` and then look ahead after it.
     fn check_path_sep_and_look_ahead(&mut self, looker: impl Fn(&Token) -> bool) -> bool {
         if self.check(exp!(PathSep)) {
-            if self.may_recover() && self.look_ahead(1, |t| t.kind == token::Colon) {
-                debug_assert!(!self.look_ahead(1, &looker), "Looker must not match on colon");
-                self.look_ahead(2, looker)
-            } else {
-                self.look_ahead(1, looker)
+            // One look at the next token answers both questions: a `:` after `::` (when
+            // recovering) defers to the token after it, anything else goes to `looker`.
+            let recover = self.may_recover();
+            let next = self.look_ahead(1, |t| {
+                if recover && t.kind == token::Colon { None } else { Some(looker(t)) }
+            });
+            match next {
+                Some(found) => found,
+                None => {
+                    debug_assert!(!self.look_ahead(1, &looker), "Looker must not match on colon");
+                    self.look_ahead(2, looker)
+                }
             }
         } else {
             false

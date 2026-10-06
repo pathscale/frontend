@@ -38,7 +38,9 @@ use crate::rustc_hir::{MissingLifetimeKind, PrimTy, find_attr};
 use crate::rustc_lint_defs::builtin::{SINGLE_USE_LIFETIMES, UNUSED_LIFETIMES};
 use crate::rustc_middle::ty;
 use crate::rustc_session::Session;
-use crate::rustc_span::edit_distance::{edit_distance, find_best_match_for_name};
+use crate::rustc_span::edit_distance::{
+    edit_distance, find_best_match_for_name, find_best_match_index_as_if_sorted,
+};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{DUMMY_SP, DesugaringKind, Ident, Span, Symbol, kw, sym};
 use thin_vec::{ThinVec, thin_vec};
@@ -206,7 +208,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             if key.ident.name != assoc_name {
                 return None;
             }
-            let resolution = resolution.borrow(self.r);
+            let resolution = resolution.borrow_checked(self.r);
             let binding = resolution.best_decl()?;
             match binding.res() {
                 Res::Def(DefKind::AssocTy, def_id) => Some(def_id),
@@ -260,7 +262,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             let Some(trait_seg) = poly_trait_ref.trait_ref.path.segments.last() else {
                 return;
             };
-            let Some(partial_res) = this.r.partial_res_map.get(&trait_seg.id) else {
+            let Some(partial_res) = this.partial_res(trait_seg.id) else {
                 return;
             };
             let Some(trait_def_id) = partial_res.full_res().and_then(|res| res.opt_def_id()) else {
@@ -308,7 +310,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 };
 
                 // Only suggest for bounds that are explicitly on an in-scope type parameter.
-                let Some(partial_res) = this.r.partial_res_map.get(&where_bound.bounded_ty.id)
+                let Some(partial_res) = this.partial_res(where_bound.bounded_ty.id)
                 else {
                     continue;
                 };
@@ -1174,10 +1176,12 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
     }
 
     fn lookup_doc_alias_name(&mut self, path: &[Segment], ns: Namespace) -> Option<(DefId, Ident)> {
-        let find_doc_alias_name = |r: &mut Resolver<'ra, '_>, m: Module<'ra>, item_name: Symbol| {
+        let find_doc_alias_name = |r: &Resolver<'ra, '_>, m: Module<'ra>, item_name: Symbol| {
             for resolution in r.resolutions(m).values() {
-                let Some(did) =
-                    resolution.borrow(r).best_decl().and_then(|binding| binding.res().opt_def_id())
+                let Some(did) = resolution
+                    .borrow_checked(r)
+                    .best_decl()
+                    .and_then(|binding| binding.res().opt_def_id())
                 else {
                     continue;
                 };
@@ -1218,7 +1222,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 let Some(id) = seg.id else {
                     continue;
                 };
-                let Some(res) = self.r.partial_res_map.get(&id) else {
+                let Some(res) = self.partial_res(id) else {
                     continue;
                 };
                 if let Res::Def(DefKind::Mod, module) = res.expect_full_res()
@@ -1924,7 +1928,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                     .resolutions(module)
                     .iter()
                     .filter_map(|(key, resolution)| {
-                        let resolution = resolution.borrow(self.r);
+                        let resolution = resolution.borrow_checked(self.r);
                         resolution.best_decl().map(|binding| binding.res()).and_then(|res| {
                             if filter_fn(res) {
                                 Some((key.ident.name, resolution.orig_ident_span, res))
@@ -1965,7 +1969,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         // Confirm that the target is an associated type.
         let ast::TyKind::Path(Some(qself), path) = &bounded_ty.kind else { return false };
         // use this to verify that ident is a type param.
-        let Some(partial_res) = self.r.partial_res_map.get(&bounded_ty.id) else { return false };
+        let Some(partial_res) = self.partial_res(bounded_ty.id) else { return false };
         if !matches!(partial_res.full_res(), Some(Res::Def(DefKind::AssocTy, _))) {
             return false;
         }
@@ -1973,7 +1977,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         let peeled_ty = qself.ty.peel_refs();
         let ast::TyKind::Path(None, type_param_path) = &peeled_ty.kind else { return false };
         // Confirm that the `SelfTy` is a type parameter.
-        let Some(partial_res) = self.r.partial_res_map.get(&peeled_ty.id) else {
+        let Some(partial_res) = self.partial_res(peeled_ty.id) else {
             return false;
         };
         if !matches!(partial_res.full_res(), Some(Res::Def(DefKind::TyParam, _))) {
@@ -1993,7 +1997,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             return false;
         }
         if ident.span == span {
-            let Some(partial_res) = self.r.partial_res_map.get(&id) else {
+            let Some(partial_res) = self.partial_res(*id) else {
                 return false;
             };
             if !matches!(partial_res.full_res(), Some(Res::Def(..))) {
@@ -2786,7 +2790,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             .resolutions(*module)
             .iter()
             .filter_map(|(key, res)| {
-                res.borrow(self.r).best_decl().map(|binding| (key, binding.res()))
+                res.borrow_checked(self.r).best_decl().map(|binding| (key, binding.res()))
             })
             .filter(|(_, res)| match (kind, res) {
                 (AssocItemKind::Const(..), Res::Def(DefKind::AssocConst { .. }, _)) => true,
@@ -2824,7 +2828,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         // Fields are generally expected in the same contexts as locals.
         if filter_fn(Res::Local(ast::DUMMY_NODE_ID)) {
             if let Some(node_id) = self.diag_metadata.current_self_type.and_then(extract_node_id)
-                && let Some(resolution) = self.r.partial_res_map.get(&node_id)
+                && let Some(resolution) = self.partial_res(node_id)
                 && let Some(Res::Def(DefKind::Struct | DefKind::Union, did)) = resolution.full_res()
                 && let Some(fields) = self.r.field_idents(did)
                 && let Some(field) = fields.iter().find(|id| ident.name == id.name)
@@ -2848,9 +2852,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                         ast::AssocItemKind::Type(..) => AssocSuggestion::AssocType,
                         ast::AssocItemKind::Delegation(..)
                             if self
-                                .r
-                                .owners
-                                .get(&assoc_item.id)
+                                .open_owner_tables(assoc_item.id)
                                 .and_then(|o| self.r.delegation_fn_sigs.get(&o.def_id))
                                 .is_some_and(|sig| sig.has_self) =>
                         {
@@ -2995,26 +2997,18 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             });
         }
         let name = path[path.len() - 1].ident.name;
-        // Make sure error reporting is deterministic.
-        names.sort_by(|a, b| a.candidate.as_str().cmp(b.candidate.as_str()));
-
-        match find_best_match_for_name(
-            &names.iter().map(|suggestion| suggestion.candidate).collect::<Vec<Symbol>>(),
-            name,
-            None,
-        ) {
-            Some(found) => {
-                let Some(sugg) = names.into_iter().find(|suggestion| suggestion.candidate == found)
-                else {
-                    return TypoCandidate::None;
-                };
-                if found == name {
-                    TypoCandidate::Shadowed(sugg.res, sugg.span)
-                } else {
-                    TypoCandidate::Typo(sugg)
-                }
-            }
-            _ => TypoCandidate::None,
+        // Deterministic: the same suggestion sorting every candidate by its text would pick,
+        // found in one pass over the candidates as collected, each text read once.
+        let texts: Vec<&str> = names.iter().map(|suggestion| suggestion.candidate.as_str()).collect();
+        let Some(index) = find_best_match_index_as_if_sorted(&texts, name.as_str()) else {
+            return TypoCandidate::None;
+        };
+        drop(texts);
+        let sugg = names.swap_remove(index);
+        if sugg.candidate == name {
+            TypoCandidate::Shadowed(sugg.res, sugg.span)
+        } else {
+            TypoCandidate::Typo(sugg)
         }
     }
 
@@ -3656,7 +3650,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         for (param_index, param) in params.iter().enumerate() {
             let GenericParamKind::Lifetime = param.kind else { continue };
 
-            let def_id = self.r.local_def_id(param.id);
+            let def_id = self.local_def_id(param.id);
 
             let use_set = self.lifetime_uses.remove(&def_id);
             debug!(
@@ -3703,7 +3697,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                     let param_ident = param.ident;
                     let deletion_span =
                         if param.bounds.is_empty() { deletion_span() } else { None };
-                    self.r.lint_buffer.dyn_buffer_lint_any(
+                    self.sink.lint_buffer.dyn_buffer_lint_any(
                         SINGLE_USE_LIFETIMES,
                         param.id,
                         param_ident.span,
@@ -3755,7 +3749,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
 
                     // if the lifetime originates from expanded code, we won't be able to remove it #104432
                     if deletion_span.is_some_and(|sp| !sp.in_derive_expansion()) {
-                        self.r.lint_buffer.buffer_lint(
+                        self.sink.lint_buffer.buffer_lint(
                             UNUSED_LIFETIMES,
                             param.id,
                             param.ident.span,

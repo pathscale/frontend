@@ -9,17 +9,18 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::hash::{BuildHasher, Hash, Hasher};
+use core::hash::{Hash, Hasher};
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::{fmt, str};
 
 use crate::rustc_arena::DroplessArena;
-use crate::rustc_data_structures::fx::FxBuildHasher;
-use crate::rustc_data_structures::hash_table::{Entry, HashTable};
 use crate::rustc_data_structures::stable_hash::{StableCompare, StableHash, StableHashCtxt, StableHasher};
-use crate::rustc_data_structures::sync::Lock;
+use crate::rustc_data_structures::sync::{AtomicU64, Lock};
 use rustc_macros::{Decodable, Encodable, StableHash, symbols};
 
 use crate::rustc_span::edit_distance::find_best_match_for_name;
@@ -2520,8 +2521,8 @@ impl Ident {
         Ident::new(self.name, self.span.normalize_to_macro_rules())
     }
 
-    /// Access the underlying string. This is a slowish operation because it
-    /// requires locking the symbol interner.
+    /// Access the underlying string. Takes no lock: the interner's index to string table is
+    /// read without it (see `SymbolStrs`).
     ///
     /// Note that the lifetime of the return value is a lie. See
     /// `Symbol::as_str()` for details.
@@ -2703,8 +2704,31 @@ impl Symbol {
         with_session_globals(|session_globals| session_globals.symbol_interner.intern_str(str))
     }
 
-    /// Access the underlying string. This is a slowish operation because it
-    /// requires locking the symbol interner.
+    /// `intern(str)` for a `str` that is a slice of `owner`, a session source text: when the
+    /// session has not seen the string, its bytes stay where they are in `owner` instead of
+    /// being copied, and the interner keeps a clone of `owner` for as long as it lives. The
+    /// symbol is the one `intern` returns, and a later `intern` of equal text from anywhere
+    /// finds it. A `str` outside `owner` is copied, as `intern` does.
+    #[inline]
+    pub fn intern_from_source(str: &str, owner: &Arc<String>) -> Self {
+        with_session_globals(|session_globals| {
+            Symbol::new(session_globals.symbol_interner.intern_inner(str.as_bytes(), Some(owner)))
+        })
+    }
+
+    /// When `str` is ASCII, `intern_from_source(str, owner)` (or `intern(str)` with no owner);
+    /// otherwise `None`, having interned nothing. The ASCII test is made in the same pass over
+    /// the bytes as the interner's hash, for a caller (the lexer's NFC normalization) that
+    /// treats ASCII text differently from the rest.
+    #[inline]
+    pub fn intern_if_ascii(str: &str, owner: Option<&Arc<String>>) -> Option<Self> {
+        with_session_globals(|session_globals| {
+            session_globals.symbol_interner.intern_if_ascii(str.as_bytes(), owner).map(Symbol::new)
+        })
+    }
+
+    /// Access the underlying string. Takes no lock: the interner's index to string table is
+    /// read without it (see `SymbolStrs`).
     ///
     /// Note that the lifetime of the return value is a lie. It's not the same
     /// as `&self`, but actually tied to the lifetime of the underlying
@@ -2832,40 +2856,618 @@ impl StableHash for ByteSymbol {
 // string with identical contents (e.g. "foo" and b"foo") are both interned,
 // only one copy will be stored and the resulting `Symbol` and `ByteSymbol`
 // will have the same index.
-pub(crate) struct Interner(Lock<InternerInner>);
+//
+// Interning a string the session has not seen takes the lock; interning one it has (the common
+// case: every identifier of a file is interned at every occurrence) does not, through
+// `SymbolIndices`. Reading a symbol's string (`Symbol::as_str`) never does. A parallel
+// session's stage items call `as_str` for every candidate of every typo suggestion, and with
+// the read behind the same lock as the write, every worker took one mutex, on one cache line,
+// per candidate name: the items ran one at a time and the line moved between cores on every
+// call. Reads now go to `SymbolStrs`, an append-only table the lock's holder publishes into.
+//
+// The predefined symbols (the `symbols!` list) are not in the per-session tables at all. They
+// are `PREDEFINED_SYMBOLS`, a static built at compile time and shared by every session: a
+// session's interner starts empty and holds only what its source adds. Every session used to
+// hash and insert the whole list into a fresh table on creation, which with one session per
+// file was a measurable share of parsing. Indices are unchanged: predefined symbols are
+// `0..PREDEFINED_SYMBOLS_COUNT` in list order, then the session's extra symbols, then the
+// dynamic ones, in the order they are interned.
+pub(crate) struct Interner {
+    /// The predefined symbols, indices `0..predefined.strs.len()`. `&PREDEFINED_SYMBOLS` for
+    /// every real session; a test builds its own.
+    predefined: &'static PredefinedSymbols,
+    /// The write side: the arena the session's own strings (the extras aside, which are
+    /// `'static`) live in. Held by whoever writes `strs` and `indices`.
+    inner: Lock<InternerInner>,
+    /// The read side of the session's own symbols: entry `i` is the string of index
+    /// `predefined.strs.len() + i`, read without the lock.
+    strs: SymbolStrs,
+    /// String to `strs` index of the session's own symbols, read without the lock and written
+    /// under it, so interning a string the session has already seen takes no lock.
+    indices: SymbolIndices,
+}
 
-// The `&'static [u8]`s in this type actually point into the arena.
+/// One past the largest predefined symbol index: a predefined index fits in the low 16 bits of
+/// a [`PredefinedSymbols::slots`] entry and is never `u16::MAX`.
+const EMPTY_SLOT: u16 = u16::MAX;
+
+/// Marks an empty entry of [`PredefinedSymbols::slots`]. A full entry is
+/// `predefined_tag(hash) << 16 | index` with `index < EMPTY_SLOT`, so its low half is never
+/// `0xFFFF` and it never equals this.
+const EMPTY_PREDEFINED_SLOT: u32 = u32::MAX;
+
+/// The 16-bit tag a [`PredefinedSymbols::slots`] entry keeps of its string's `symbol_hash`: the
+/// top bits, which the slot index (`hash & mask`, a mask far below 48 bits) does not use. Equal
+/// strings have equal hashes and so equal tags; a lookup compares strings only when the tags
+/// agree, so almost every occupied slot of a miss is passed over without reading its string.
+#[inline]
+const fn predefined_tag(hash: u64) -> u32 {
+    (hash >> 48) as u32
+}
+
+/// The hash of an interned string, for both the static table of predefined symbols and a
+/// session's own table. A `const fn`, so the static table is hashed at compile time by the same
+/// function a lookup runs; one hash per `intern` serves both tables.
+///
+/// FxHash's word step (`rustc-hash`'s multiplier) over little-endian 8-byte words, the tail
+/// packed into one more word, the length mixed in first. The final rotate moves the
+/// multiplication's well-mixed high bits down to where a table takes its slot index from.
+#[inline]
+const fn symbol_hash(bytes: &[u8]) -> u64 {
+    symbol_hash_and_bits(bytes).0
+}
+
+/// `(symbol_hash(bytes), bits)`, where `bits` is the OR of every word the hash reads. Each byte
+/// of `bytes` lands in exactly one of those words and the tail word's padding is zero, so `bits`
+/// has a byte's high bit set exactly when some byte of `bytes` does: `bits & 0x8080..80 == 0`
+/// is `bytes.is_ascii()`, found in the same pass as the hash.
+#[inline]
+const fn symbol_hash_and_bits(bytes: &[u8]) -> (u64, u64) {
+    const K: u64 = 0xf1357aea2e62a9c5;
+    let mut h = (bytes.len() as u64).wrapping_mul(K);
+    let mut bits = 0u64;
+    let mut rest = bytes;
+    while let Some((word, tail)) = rest.split_first_chunk::<8>() {
+        let word = u64::from_le_bytes(*word);
+        bits |= word;
+        h = (h.rotate_left(5) ^ word).wrapping_mul(K);
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        let mut word = 0u64;
+        let mut shift = 0u32;
+        if let Some((part, tail)) = rest.split_first_chunk::<4>() {
+            word = u32::from_le_bytes(*part) as u64;
+            shift = 32;
+            rest = tail;
+        }
+        if let Some((part, tail)) = rest.split_first_chunk::<2>() {
+            word |= (u16::from_le_bytes(*part) as u64) << shift;
+            shift += 16;
+            rest = tail;
+        }
+        if let Some((part, _)) = rest.split_first_chunk::<1>() {
+            word |= (part[0] as u64) << shift;
+        }
+        // Every part is shifted by a whole number of bytes, so each byte keeps a lane of its own.
+        bits |= word;
+        h = (h.rotate_left(5) ^ word).wrapping_mul(K);
+    }
+    (h.rotate_left(26), bits)
+}
+
+/// The number of slots for `n` predefined symbols: a power of two, at least twice `n`, so the
+/// open-addressed table is at most half full and every probe sequence reaches an empty slot.
+const fn predefined_slot_count(n: usize) -> usize {
+    let want = if n * 2 < 16 { 16 } else { n * 2 };
+    want.next_power_of_two()
+}
+
+/// Byte equality usable in a `const fn`, where slice `==` is not.
+const fn const_bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Fill `slots` (all [`EMPTY_PREDEFINED_SLOT`], length a power of two at least twice
+/// `strs.len()`) with `predefined_tag(hash) << 16 | index` for every string of `strs`, by linear
+/// probing from `hash & mask`, `hash` being `symbol_hash(s)`. Panics on a duplicate string - at
+/// compile time for the static table.
+const fn fill_predefined_slots(strs: &[&str], slots: &mut [u32]) {
+    assert!(strs.len() < EMPTY_SLOT as usize, "too many predefined symbols for a u16 slot");
+    assert!(slots.len().is_power_of_two() && slots.len() >= strs.len() * 2);
+    let mask = slots.len() - 1;
+    let mut index = 0;
+    while index < strs.len() {
+        let bytes = strs[index].as_bytes();
+        let hash = symbol_hash(bytes);
+        let mut slot = hash as usize & mask;
+        loop {
+            let entry = slots[slot];
+            if entry == EMPTY_PREDEFINED_SLOT {
+                slots[slot] = predefined_tag(hash) << 16 | index as u32;
+                break;
+            }
+            let occupant = (entry & 0xFFFF) as usize;
+            if const_bytes_eq(strs[occupant].as_bytes(), bytes) {
+                panic!("duplicate symbol in the predefined symbol list");
+            }
+            slot = (slot + 1) & mask;
+        }
+        index += 1;
+    }
+}
+
+const PREDEFINED_SLOT_COUNT: usize = predefined_slot_count(PREDEFINED_SYMBOLS_COUNT as usize);
+
+const fn predefined_slots() -> [u32; PREDEFINED_SLOT_COUNT] {
+    let mut slots = [EMPTY_PREDEFINED_SLOT; PREDEFINED_SLOT_COUNT];
+    fill_predefined_slots(&PREDEFINED_SYMBOL_LIST, &mut slots);
+    slots
+}
+
+/// Index to string for the predefined symbols, one copy for the process.
+static PREDEFINED_SYMBOL_STRS: [&str; PREDEFINED_SYMBOLS_COUNT as usize] = PREDEFINED_SYMBOL_LIST;
+
+/// String to index for the predefined symbols, built at compile time.
+static PREDEFINED_SYMBOL_SLOTS: [u32; PREDEFINED_SLOT_COUNT] = predefined_slots();
+
+/// The predefined symbols of every session: immutable, compile-time data.
+static PREDEFINED_SYMBOLS: PredefinedSymbols =
+    PredefinedSymbols { strs: &PREDEFINED_SYMBOL_STRS, slots: &PREDEFINED_SYMBOL_SLOTS };
+
+/// A fixed set of symbols at indices `0..strs.len()`: `strs` maps index to string, and `slots`
+/// is an open-addressed table (built by [`fill_predefined_slots`]) mapping string to index, each
+/// full entry carrying a tag of its string's hash beside the index.
+pub(crate) struct PredefinedSymbols {
+    strs: &'static [&'static str],
+    slots: &'static [u32],
+}
+
+impl PredefinedSymbols {
+    /// The index of `bytes` if it is one of these symbols; `hash` is `symbol_hash(bytes)`.
+    ///
+    /// Most identifiers of a source are not predefined, so most lookups miss and walk the whole
+    /// probe sequence. An entry whose tag differs from `bytes`'s cannot hold `bytes` (equal
+    /// strings hash equally), so it is passed over on the entry alone: the string table, a
+    /// separate array of fat pointers, and the string's bytes are only read on a tag match.
+    #[inline]
+    fn find(&self, bytes: &[u8], hash: u64) -> Option<u32> {
+        let mask = self.slots.len() - 1;
+        let tag = predefined_tag(hash);
+        let mut slot = hash as usize & mask;
+        loop {
+            let entry = self.slots[slot];
+            if entry == EMPTY_PREDEFINED_SLOT {
+                return None;
+            }
+            if entry >> 16 == tag {
+                let occupant = entry & 0xFFFF;
+                if self.strs[occupant as usize].as_bytes() == bytes {
+                    return Some(occupant);
+                }
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+}
+
+// The `&'static [u8]`s `SymbolStrs` holds for dynamic symbols actually point into this arena,
+// or into one of the `sources`.
 //
 // This type is private to prevent accidentally constructing more than one
 // `Interner` on the same thread, which makes it easy to mix up `Symbol`s
 // between `Interner`s.
 struct InternerInner {
     arena: DroplessArena,
-    indices: HashTable<(&'static [u8], u32)>,
-    byte_strs: Vec<&'static [u8]>,
+    /// The source texts some session symbol's bytes live in (see `Symbol::intern_from_source`),
+    /// one clone per text, told apart by pointer. Never removed: a symbol's bytes must outlive
+    /// every `as_str` of it, which is as long as the interner, so these drop with it. Holding a
+    /// clone also means no `Arc::get_mut` of the text can succeed while the interner lives, so
+    /// its bytes never change or move.
+    sources: Vec<Arc<String>>,
+}
+
+impl InternerInner {
+    /// The `'static` bytes of a new symbol `byte_str`: taken from `owner` in place when
+    /// `byte_str` lies inside it (holding `owner` from now on), else copied into the arena.
+    fn store(&mut self, byte_str: &[u8], owner: Option<&Arc<String>>) -> &'static [u8] {
+        // The arena refuses an empty slice, and an empty string needs no bytes.
+        if byte_str.is_empty() {
+            return &[][..];
+        }
+        if let Some(owner) = owner {
+            let text = owner.as_bytes();
+            let base = text.as_ptr() as usize;
+            let start = byte_str.as_ptr() as usize;
+            let inside = byte_str.len() <= text.len()
+                && start >= base
+                && start - base <= text.len() - byte_str.len();
+            if inside {
+                // Sources are few and a lexer interns from one at a time: look from the end.
+                if !self.sources.iter().rev().any(|held| Arc::ptr_eq(held, owner)) {
+                    self.sources.push(Arc::clone(owner));
+                }
+                // SAFETY: `byte_str` lies inside the heap buffer of `owner`'s `String`, which
+                // `self.sources` now holds a clone of until the interner drops. The buffer is
+                // never freed, moved or written while that clone lives: the `String` is behind an
+                // `Arc` with more than one strong count, so it is only ever reached shared.
+                return unsafe { &*(byte_str as *const [u8]) };
+            }
+        }
+        let byte_str: &[u8] = self.arena.alloc_slice(byte_str);
+        // SAFETY: we can extend the arena allocation to `'static` because we
+        // only access these while the arena is still alive.
+        unsafe { &*(byte_str as *const [u8]) }
+    }
+}
+
+/// The first table of a session's [`SymbolIndices`]: 2 KiB, enough for a typical file's
+/// identifiers without growing, and a power of two as the probing needs.
+const SYMBOL_INDICES_FIRST_SLOTS: usize = 256;
+
+/// One open-addressed table of [`SymbolIndices`]. A slot is `0` when empty, else
+/// `(hash >> 32) << 32 | (local + 1)` for the session symbol `local` (its `SymbolStrs` index)
+/// whose string has `symbol_hash` `hash`; the slot a string starts probing from is
+/// `hash & mask`. A slot goes from empty to full once and never changes again.
+struct SymbolSlotTable {
+    mask: usize,
+    slots: Box<[AtomicU64]>,
+    /// The table this one replaced, kept alive (a reader may still be probing it) and freed
+    /// with the whole chain when the interner drops.
+    prev: *mut SymbolSlotTable,
+}
+
+impl SymbolSlotTable {
+    /// An empty table of `len` slots, a power of two.
+    fn empty(len: usize, prev: *mut SymbolSlotTable) -> SymbolSlotTable {
+        debug_assert!(len.is_power_of_two());
+        // SAFETY: an all-zero `AtomicU64` is `0`, the empty slot.
+        let slots = unsafe { Box::<[AtomicU64]>::new_zeroed_slice(len).assume_init() };
+        SymbolSlotTable { mask: len - 1, slots, prev }
+    }
+
+    #[inline]
+    fn tag(hash: u64) -> u64 {
+        hash >> 32
+    }
+}
+
+/// Where a lookup in [`SymbolIndices`] stopped without finding its string: the table it probed
+/// and the empty slot it reached. Under the lock, the insert resumes there when that table is
+/// still the current one. Only compared, never dereferenced.
+#[derive(Clone, Copy)]
+struct SymbolMiss {
+    table: *const SymbolSlotTable,
+    slot: usize,
+}
+
+/// String to index of a session's own symbols, read without the interner's lock and written
+/// only by its holder.
+///
+/// Open addressing with linear probing over [`SymbolSlotTable`]s of `AtomicU64` slots, at most
+/// half full, so every probe sequence reaches an empty slot. A slot holds the high half of the
+/// string's hash (a tag that rules out almost every non-matching slot without reading its
+/// string) and the symbol's `SymbolStrs` index; the string itself is read from `SymbolStrs`.
+///
+/// Publication, the same discipline as `SymbolStrs`:
+/// - An insert pushes the string into `SymbolStrs` (whose `len` store is `Release`) and then
+///   stores the slot with `Release`. A reader that loads the slot with `Acquire` and sees it full
+///   therefore sees the `SymbolStrs` entry it names.
+/// - Growth builds a whole new table from the current one, then publishes its pointer with
+///   `Release`; a reader loads the pointer with `Acquire` and sees every slot the builder wrote.
+///   The old table is never written again and stays allocated until the interner drops, so a
+///   reader still probing it reads valid, frozen memory. It can only miss strings inserted after
+///   the switch, and a miss goes to the locked path, which probes the current table.
+/// - Writers are serialised by the interner's lock, whose acquire makes every earlier writer's
+///   stores visible, so the probe under the lock sees every symbol interned so far and a string
+///   is never inserted twice.
+/// - A slot is written once and never cleared, so if the table a lock-free lookup missed in is
+///   still current, every slot before the empty one it stopped at is unchanged, and the string,
+///   if another writer has inserted it since, is at or after that slot. The locked insert
+///   resumes there instead of probing the sequence again.
+struct SymbolIndices {
+    current: AtomicPtr<SymbolSlotTable>,
+}
+
+impl SymbolIndices {
+    fn new() -> SymbolIndices {
+        SymbolIndices { current: AtomicPtr::new(core::ptr::null_mut()) }
+    }
+
+    /// The session index of `bytes` (hash `hash`), without any lock.
+    #[inline]
+    fn find(&self, bytes: &[u8], hash: u64, strs: &SymbolStrs) -> Result<u32, SymbolMiss> {
+        let table = self.current.load(Ordering::Acquire);
+        if table.is_null() {
+            return Err(SymbolMiss { table, slot: 0 });
+        }
+        // SAFETY: a published table is fully built (the `Acquire` above pairs with the
+        // `Release` that published it) and lives until `self` drops.
+        let t = unsafe { &*table };
+        Self::probe(t, bytes, hash, hash as usize & t.mask, strs)
+            .map_err(|slot| SymbolMiss { table, slot })
+    }
+
+    /// Probe `table` from `slot` for `bytes`: its index, or the empty slot that ends the
+    /// sequence.
+    #[inline]
+    fn probe(
+        table: &SymbolSlotTable,
+        bytes: &[u8],
+        hash: u64,
+        mut slot: usize,
+        strs: &SymbolStrs,
+    ) -> Result<u32, usize> {
+        let tag = SymbolSlotTable::tag(hash);
+        loop {
+            let entry = table.slots[slot].load(Ordering::Acquire);
+            if entry == 0 {
+                return Err(slot);
+            }
+            if entry >> 32 == tag {
+                let local = (entry as u32) - 1;
+                if strs.get(local as usize) == bytes {
+                    return Ok(local);
+                }
+            }
+            slot = (slot + 1) & table.mask;
+        }
+    }
+
+    /// The session index of `bytes`, inserting it if it is absent: `store` makes the string's
+    /// permanent copy, which is pushed into `strs`. `miss` is what the lock-free [`Self::find`]
+    /// returned.
+    ///
+    /// # Safety
+    ///
+    /// The caller is the only writer of `self` and `strs` for the duration of the call: it
+    /// holds the interner's lock, or owns the interner outright.
+    unsafe fn find_or_insert(
+        &self,
+        bytes: &[u8],
+        hash: u64,
+        strs: &SymbolStrs,
+        miss: SymbolMiss,
+        store: impl FnOnce() -> &'static [u8],
+    ) -> u32 {
+        let mut table = self.current.load(Ordering::Acquire);
+        let mut slot = if table.is_null() {
+            None
+        } else {
+            // SAFETY: published, alive until `self` drops (see `find`).
+            let t = unsafe { &*table };
+            let from =
+                if core::ptr::eq(table, miss.table) { miss.slot } else { hash as usize & t.mask };
+            match Self::probe(t, bytes, hash, from, strs) {
+                Ok(local) => return local,
+                Err(slot) => Some(slot),
+            }
+        };
+
+        // Absent. Every session symbol is in the current table, so it holds `strs.len()`
+        // entries; keep it at most half full after this insert.
+        let count = strs.len.load(Ordering::Relaxed);
+        // SAFETY: a non-null current table is published and alive until `self` drops.
+        let len = if table.is_null() { 0 } else { unsafe { (&*table).slots.len() } };
+        if (count + 1) * 2 > len {
+            table = self.grow(table, len, strs);
+            // The new table holds exactly the old one's entries, so `bytes` is absent from it
+            // too: find its empty slot.
+            // SAFETY: just built and published by this writer.
+            let t = unsafe { &*table };
+            slot = Some(Self::probe(t, bytes, hash, hash as usize & t.mask, strs).unwrap_err());
+        }
+        let slot = slot.expect("a table was built above");
+
+        let local = strs.push(store());
+        let entry = (SymbolSlotTable::tag(hash) << 32)
+            | u64::from(local.checked_add(1).expect("symbol table overflowed a u32 index"));
+        // SAFETY: `table` is the current table (published, alive until `self` drops).
+        // `Release`: the `SymbolStrs` entry of `local`, pushed above, is visible to whoever sees
+        // this slot full.
+        unsafe { (*table).slots[slot].store(entry, Ordering::Release) };
+        local
+    }
+
+    /// Replace the current table `old` (of `old_len` slots, or null) with one twice as large
+    /// holding the same entries, publish it, and return it. Writer only.
+    #[cold]
+    #[inline(never)]
+    fn grow(
+        &self,
+        old: *mut SymbolSlotTable,
+        old_len: usize,
+        strs: &SymbolStrs,
+    ) -> *mut SymbolSlotTable {
+        let len = if old_len == 0 { SYMBOL_INDICES_FIRST_SLOTS } else { old_len * 2 };
+        let fresh = SymbolSlotTable::empty(len, old);
+        if !old.is_null() {
+            // SAFETY: the current table, alive until `self` drops.
+            let old = unsafe { &*old };
+            for entry in old.slots.iter() {
+                let entry = entry.load(Ordering::Relaxed);
+                if entry == 0 {
+                    continue;
+                }
+                // The slot keeps only the hash's high half; the low half picks the start slot,
+                // so rehash from the string. Amortised: each growth doubles the table.
+                let local = (entry as u32) - 1;
+                let hash = symbol_hash(strs.get(local as usize));
+                let mut slot = hash as usize & fresh.mask;
+                while fresh.slots[slot].load(Ordering::Relaxed) != 0 {
+                    slot = (slot + 1) & fresh.mask;
+                }
+                // Unpublished: plain stores, made visible by the `Release` below.
+                fresh.slots[slot].store(entry, Ordering::Relaxed);
+            }
+        }
+        let fresh = Box::into_raw(Box::new(fresh));
+        self.current.store(fresh, Ordering::Release);
+        fresh
+    }
+}
+
+impl Drop for SymbolIndices {
+    fn drop(&mut self) {
+        let mut table = *self.current.get_mut();
+        while !table.is_null() {
+            // SAFETY: every table was made by `Box::into_raw` in `grow`, and is reachable once:
+            // the current one from `current`, each older one from its successor's `prev`.
+            let owned = unsafe { Box::from_raw(table) };
+            table = owned.prev;
+        }
+    }
+}
+
+/// log2 of the first bucket's length in [`SymbolStrs`]. Bucket `b` holds `1 << (b + this)`
+/// entries. The predefined symbols are not here (see `PREDEFINED_SYMBOLS`), so a session's
+/// first bucket is allocated by its first extra or dynamic symbol.
+const SYMBOL_STRS_FIRST_BITS: u32 = 10;
+
+/// Enough buckets for every `u32` index: index `i` is in bucket
+/// `log2(i + (1 << SYMBOL_STRS_FIRST_BITS)) - SYMBOL_STRS_FIRST_BITS`, at most
+/// `32 - SYMBOL_STRS_FIRST_BITS`.
+const SYMBOL_STRS_BUCKETS: usize = (u32::BITS - SYMBOL_STRS_FIRST_BITS + 1) as usize;
+
+/// Every interned string by index: append-only, written only by the holder of the interner's
+/// lock, read by anyone without it.
+///
+/// Buckets of doubling size, so an entry never moves once written and a reader never sees a
+/// reallocation. Publication: the writer writes the entry (and, first, the bucket pointer), then
+/// stores `len` with `Release`; a reader loads `len` with `Acquire` and reads only below it. A
+/// reader that loads a length `n` sees every entry below `n`: the writer that stored `n` wrote
+/// its own entry before the store, and each writer before it released the lock after its own
+/// store, which the next writer acquired. A `Symbol` of this interner is below `len` by
+/// construction; any other index panics, as indexing the `Vec` this replaced did.
+struct SymbolStrs {
+    len: AtomicUsize,
+    buckets: [AtomicPtr<&'static [u8]>; SYMBOL_STRS_BUCKETS],
+}
+
+impl SymbolStrs {
+    fn new() -> SymbolStrs {
+        SymbolStrs {
+            len: AtomicUsize::new(0),
+            buckets: core::array::from_fn(|_| AtomicPtr::new(core::ptr::null_mut())),
+        }
+    }
+
+    /// The bucket and the offset in it of entry `index`.
+    #[inline]
+    fn locate(index: usize) -> (usize, usize) {
+        let biased = index as u64 + (1u64 << SYMBOL_STRS_FIRST_BITS);
+        let log = u64::BITS - 1 - biased.leading_zeros();
+        let bucket = (log - SYMBOL_STRS_FIRST_BITS) as usize;
+        let offset = (biased - (1u64 << log)) as usize;
+        (bucket, offset)
+    }
+
+    #[inline]
+    fn bucket_len(bucket: usize) -> usize {
+        1usize << (bucket as u32 + SYMBOL_STRS_FIRST_BITS)
+    }
+
+    /// Append `byte_str` and return its index. Only the lock's holder calls this (or the
+    /// interner's constructor, before anyone else can see it), so there is one writer.
+    fn push(&self, byte_str: &'static [u8]) -> u32 {
+        let index = self.len.load(Ordering::Relaxed);
+        let index32 = u32::try_from(index).expect("symbol table overflowed a u32 index");
+        let (bucket, offset) = Self::locate(index);
+        let mut entries = self.buckets[bucket].load(Ordering::Relaxed);
+        if entries.is_null() {
+            let fresh: Box<[MaybeUninit<&'static [u8]>]> =
+                Box::new_uninit_slice(Self::bucket_len(bucket));
+            entries = Box::into_raw(fresh).cast::<&'static [u8]>();
+            self.buckets[bucket].store(entries, Ordering::Release);
+        }
+        // SAFETY: `offset < bucket_len(bucket)` by `locate`; the slot is past `len`, so no
+        // reader looks at it, and this is the one writer.
+        unsafe { entries.add(offset).write(byte_str) };
+        self.len.store(index + 1, Ordering::Release);
+        index32
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> &'static [u8] {
+        let len = self.len.load(Ordering::Acquire);
+        assert!(index < len, "symbol index {index} out of range for an interner of {len}");
+        let (bucket, offset) = Self::locate(index);
+        let entries = self.buckets[bucket].load(Ordering::Acquire);
+        // SAFETY: `index < len`, and the `Acquire` load of `len` makes the bucket pointer and the
+        // entry, both written before `len` passed `index`, visible (see the type's comment).
+        unsafe { *entries.add(offset) }
+    }
+}
+
+impl Drop for SymbolStrs {
+    fn drop(&mut self) {
+        for (bucket, entries) in self.buckets.iter_mut().enumerate() {
+            let entries = *entries.get_mut();
+            if !entries.is_null() {
+                // SAFETY: allocated by `push` as a boxed slice of exactly this length, and
+                // dropped once; the entries are references, with nothing to drop.
+                drop(unsafe {
+                    Box::from_raw(core::ptr::slice_from_raw_parts_mut(
+                        entries.cast::<MaybeUninit<&'static [u8]>>(),
+                        Self::bucket_len(bucket),
+                    ))
+                });
+            }
+        }
+    }
 }
 
 impl Interner {
-    // These arguments are `&str`, but because of the sharing, we are
-    // effectively pre-interning all these strings for both `Symbol` and
-    // `ByteSymbol`.
+    /// Creates an `Interner` with the predefined symbols from the `symbols!` macro and
+    /// any extra symbols provided by external drivers such as Clippy.
+    pub(crate) fn with_extra_symbols(extra_symbols: &[&'static str]) -> Self {
+        Interner::new(&PREDEFINED_SYMBOLS, extra_symbols)
+    }
+
+    /// An interner over the predefined symbols `init` (indices from 0, in order) and then the
+    /// extras, for the unit tests, which want a small list of their own. The tables are leaked:
+    /// an interner's predefined set is `'static`.
+    #[cfg(test)]
     fn prefill(init: &[&'static str], extra: &[&'static str]) -> Self {
-        let values = init.iter().copied().chain(extra.iter().copied()).map(|str| str.as_bytes());
-        let (size_hint, _) = values.size_hint();
+        let strs: &'static [&'static str] = init.to_vec().leak();
+        let slots: &'static mut [u32] =
+            vec![EMPTY_PREDEFINED_SLOT; predefined_slot_count(init.len())].leak();
+        fill_predefined_slots(strs, slots);
+        let predefined: &'static PredefinedSymbols =
+            Box::leak(Box::new(PredefinedSymbols { strs, slots }));
+        Interner::new(predefined, extra)
+    }
+
+    // The extras are `&str`, but because of the sharing, we are effectively pre-interning them
+    // for both `Symbol` and `ByteSymbol`.
+    fn new(predefined: &'static PredefinedSymbols, extra: &[&'static str]) -> Self {
         let mut conflicting_values: Vec<&[u8]> = Vec::new();
 
-        let mut indices: HashTable<(&'static [u8], u32)> = HashTable::with_capacity(size_hint);
-        let hasher = FxBuildHasher::default();
+        let strs = SymbolStrs::new();
+        let indices = SymbolIndices::new();
 
-        let mut byte_strs: Vec<&'static [u8]> = Vec::with_capacity(size_hint);
-
-        for v in values {
-            match indices.entry(hasher.hash_one(&v), |&(s, _)| s == v, |&(s, _)| hasher.hash_one(s))
-            {
-                Entry::Occupied(v) => conflicting_values.push(v.get().0),
-                Entry::Vacant(view) => {
-                    view.insert((v, byte_strs.len() as u32));
-                    byte_strs.push(v);
+        for v in extra.iter().map(|str| str.as_bytes()) {
+            let hash = symbol_hash(v);
+            if predefined.find(v, hash).is_some() {
+                conflicting_values.push(v);
+                continue;
+            }
+            match indices.find(v, hash, &strs) {
+                Ok(_) => conflicting_values.push(v),
+                Err(miss) => {
+                    // SAFETY: nothing else can see `indices` or `strs` yet.
+                    let local = unsafe { indices.find_or_insert(v, hash, &strs, miss, || v) };
+                    global_index(predefined_base(predefined), local);
                 }
             }
         }
@@ -2877,41 +3479,73 @@ impl Interner {
             )
         }
 
-        Interner(Lock::new(InternerInner { arena: Default::default(), indices, byte_strs }))
+        Interner {
+            predefined,
+            inner: Lock::new(InternerInner { arena: Default::default(), sources: Vec::new() }),
+            strs,
+            indices,
+        }
     }
 
     fn intern_str(&self, str: &str) -> Symbol {
-        Symbol::new(self.intern_inner(str.as_bytes()))
+        Symbol::new(self.intern_inner(str.as_bytes(), None))
     }
 
     fn intern_byte_str(&self, byte_str: &[u8]) -> ByteSymbol {
-        ByteSymbol::new(self.intern_inner(byte_str))
+        ByteSymbol::new(self.intern_inner(byte_str, None))
     }
 
+    /// One hash, then two lock-free lookups: the static table of predefined symbols, then the
+    /// session's own. Only a string the session has never seen goes on to the lock. `owner`,
+    /// when given, is a source text `byte_str` may be a slice of (see
+    /// `Symbol::intern_from_source`); it only decides where a new string's bytes live.
     #[inline]
-    fn intern_inner(&self, byte_str: &[u8]) -> u32 {
-        let hasher = FxBuildHasher::default();
-        let hash_of_byte_str = hasher.hash_one(byte_str);
+    fn intern_inner(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> u32 {
+        self.intern_hashed(byte_str, symbol_hash(byte_str), owner)
+    }
 
-        self.0.with_lock(|inner| {
-            match inner.indices.entry(
-                hash_of_byte_str,
-                |&(s, _)| s == byte_str,
-                |&(s, _)| hasher.hash_one(s),
-            ) {
-                Entry::Occupied(v) => v.get().1,
-                Entry::Vacant(view) => {
-                    let byte_str: &[u8] = inner.arena.alloc_slice(byte_str);
+    /// `intern_inner(byte_str, owner)` when `byte_str` is ASCII, else `None`, with the ASCII test
+    /// made in the hash's own pass over the bytes.
+    #[inline]
+    fn intern_if_ascii(&self, byte_str: &[u8], owner: Option<&Arc<String>>) -> Option<u32> {
+        let (hash, bits) = symbol_hash_and_bits(byte_str);
+        if bits & 0x8080_8080_8080_8080 != 0 {
+            return None;
+        }
+        Some(self.intern_hashed(byte_str, hash, owner))
+    }
 
-                    // SAFETY: we can extend the arena allocation to `'static` because we
-                    // only access these while the arena is still alive.
-                    let byte_str: &'static [u8] = unsafe { &*(byte_str as *const [u8]) };
-                    let idx = inner.byte_strs.len() as u32;
-                    view.insert((byte_str, idx));
-                    inner.byte_strs.push(byte_str);
-                    idx
-                }
-            }
+    /// `intern_inner` given `hash`, which is `symbol_hash(byte_str)`.
+    #[inline]
+    fn intern_hashed(&self, byte_str: &[u8], hash: u64, owner: Option<&Arc<String>>) -> u32 {
+        if let Some(index) = self.predefined.find(byte_str, hash) {
+            return index;
+        }
+
+        match self.indices.find(byte_str, hash, &self.strs) {
+            // Checked against overflow when it was inserted.
+            Ok(local) => predefined_base(self.predefined) + local,
+            Err(miss) => self.intern_new(byte_str, hash, miss, owner),
+        }
+    }
+
+    /// The locked path of [`Self::intern_inner`]: probe again under the lock (another writer
+    /// may have inserted `byte_str` since the lock-free miss) and insert it if it is still
+    /// absent, storing its bytes once (in place in `owner`, or copied into the arena).
+    #[inline(never)]
+    fn intern_new(
+        &self,
+        byte_str: &[u8],
+        hash: u64,
+        miss: SymbolMiss,
+        owner: Option<&Arc<String>>,
+    ) -> u32 {
+        self.inner.with_lock(|inner| {
+            let store = || inner.store(byte_str, owner);
+            // SAFETY: under the lock, so this is the one writer of `indices` and `strs`.
+            let local =
+                unsafe { self.indices.find_or_insert(byte_str, hash, &self.strs, miss, store) };
+            global_index(predefined_base(self.predefined), local)
         })
     }
 
@@ -2931,9 +3565,29 @@ impl Interner {
         self.get_inner(symbol.0.as_usize())
     }
 
+    /// Without the lock: a predefined index reads the static table, any other `SymbolStrs`.
+    #[inline]
     fn get_inner(&self, index: usize) -> &[u8] {
-        self.0.with_lock(|inner| inner.byte_strs[index])
+        let predefined = self.predefined.strs;
+        if index < predefined.len() {
+            predefined[index].as_bytes()
+        } else {
+            self.strs.get(index - predefined.len())
+        }
     }
+}
+
+/// The first index after the predefined symbols.
+#[inline]
+fn predefined_base(predefined: &PredefinedSymbols) -> u32 {
+    // Below `EMPTY_SLOT` by `fill_predefined_slots`, so this cannot fail.
+    predefined.strs.len() as u32
+}
+
+/// The index of entry `local` of a session's `SymbolStrs`.
+#[inline]
+fn global_index(base: u32, local: u32) -> u32 {
+    base.checked_add(local).expect("symbol table overflowed a u32 index")
 }
 
 // This module has a very short name because it's used a lot.
@@ -3003,6 +3657,17 @@ pub mod sym {
     }
 }
 
+// `Symbol::is_reserved` returns `false` for any symbol above `kw::Try` without asking the
+// predicates, which is only right while each of their ranges ends at or below `kw::Try`.
+const _: () = {
+    let try_ = kw::Try.0.as_u32();
+    assert!(kw::Underscore.0.as_u32() <= try_);
+    assert!(kw::While.0.as_u32() <= try_);
+    assert!(kw::Yield.0.as_u32() <= try_);
+    assert!(kw::Dyn.0.as_u32() <= try_);
+    assert!(kw::Gen.0.as_u32() <= try_);
+};
+
 impl Symbol {
     fn is_special(self) -> bool {
         self <= kw::Underscore
@@ -3025,7 +3690,14 @@ impl Symbol {
             || self == kw::Try && edition().at_least_rust_2018()
     }
 
+    #[inline]
     pub fn is_reserved(self, edition: impl Copy + FnOnce() -> Edition) -> bool {
+        // Every symbol the predicates below accept is at most `kw::Try` (the assertion under
+        // this impl), so any later symbol, which is almost every identifier the parser asks
+        // about, is answered by one comparison.
+        if self > kw::Try {
+            return false;
+        }
         self.is_special()
             || self.is_used_keyword_always()
             || self.is_unused_keyword_always()
@@ -3087,6 +3759,7 @@ impl Ident {
     }
 
     /// Returns `true` if the token is either a special identifier or a keyword.
+    #[inline]
     pub fn is_reserved(self) -> bool {
         // Note: `span.edition()` is relatively expensive, don't call it unless necessary.
         self.name.is_reserved(|| self.span.edition())

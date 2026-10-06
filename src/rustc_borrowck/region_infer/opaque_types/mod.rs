@@ -9,7 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use core::iter;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 
 use crate::rustc_data_structures::frozen::Frozen;
 use crate::rustc_data_structures::fx::FxIndexMap;
@@ -215,7 +215,7 @@ pub(crate) fn compute_definition_site_hidden_types<'tcx>(
     infcx: &BorrowckInferCtxt<'tcx>,
     universal_region_relations: &Frozen<UniversalRegionRelations<'tcx>>,
     constraints: &MirTypeckRegionConstraints<'tcx>,
-    location_map: Rc<DenseLocationMap>,
+    location_map: Arc<DenseLocationMap>,
     hidden_types: &mut FxIndexMap<LocalDefId, ty::DefinitionSiteHiddenType<'tcx>>,
     unconstrained_hidden_type_errors: &mut Vec<UnexpectedHiddenRegion<'tcx>>,
     opaque_types: &[(OpaqueTypeKey<'tcx>, ProvisionalHiddenType<'tcx>)],

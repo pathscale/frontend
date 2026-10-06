@@ -125,6 +125,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         match def_id.as_local() {
             Some(local_def_id) => self.local_module_map.get(&local_def_id).map(|m| m.to_module()),
             None => {
+                // External modules are materialised here on first use, a lazy write; late
+                // resolution never runs frozen when any external crate is loaded.
+                debug_assert!(!self.frozen_flag.is_frozen(), "external module read while frozen");
                 if let module @ Some(..) = self.extern_module_map.borrow().get(&def_id) {
                     return module.map(|m| m.to_module());
                 }
@@ -211,6 +214,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     pub(crate) fn get_macro_by_def_id(&self, def_id: DefId) -> &'ra Arc<SyntaxExtension> {
         // Local macros are always compiled.
+        // External macros are loaded here on first use, a lazy write; late resolution never runs
+        // frozen when any external crate is loaded.
+        debug_assert!(
+            def_id.is_local() || !self.frozen_flag.is_frozen(),
+            "external macro read while frozen"
+        );
         match def_id.as_local() {
             Some(local_def_id) => self.local_macro_map[&local_def_id],
             None => self.extern_macro_map.borrow_mut().entry(def_id).or_insert_with(|| {
@@ -829,7 +838,14 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
     }
 
     /// Constructs the reduced graph for one item.
-    fn build_reduced_graph_for_item(&mut self, item: &'a Item, feed: TyCtxtFeed<'tcx, LocalDefId>) {
+    ///
+    /// `def_kind` is the kind `feed`'s def was created with (what `def_kind` would return).
+    fn build_reduced_graph_for_item(
+        &mut self,
+        item: &'a Item,
+        feed: TyCtxtFeed<'tcx, LocalDefId>,
+        def_kind: DefKind,
+    ) {
         let parent_scope = &self.parent_scope;
         let parent = parent_scope.module.expect_local();
         let expansion = parent_scope.expansion;
@@ -837,7 +853,6 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         let vis = self.resolve_visibility(&item.vis);
         let local_def_id = feed.key();
         let def_id = local_def_id.to_def_id();
-        let def_kind = self.r.tcx.def_kind(def_id);
         let res = Res::Def(def_kind, def_id);
 
         self.r.feed_visibility(feed, vis);
@@ -974,15 +989,12 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
                         field_visibilities.push(field_vis.to_mod_id());
                     }
                     // If this is a unit or tuple-like struct, register the constructor.
-                    let feed = self.create_def(
-                        ctor_node_id,
-                        None,
-                        DefKind::Ctor(CtorOf::Struct, ctor_kind),
-                        item.span,
-                    );
+                    let ctor_def_kind = DefKind::Ctor(CtorOf::Struct, ctor_kind);
+                    let feed = self.create_def(ctor_node_id, None, ctor_def_kind, item.span);
 
                     let ctor_def_id = feed.key();
-                    let ctor_res = self.res(ctor_def_id);
+                    // The kind just fed by `create_def`, without asking `def_kind` for it.
+                    let ctor_res = Res::Def(ctor_def_kind, ctor_def_id.to_def_id());
                     self.r.define_local(parent, ident, ValueNS, ctor_res, ctor_vis, sp, expansion);
                     self.r.feed_visibility(feed, ctor_vis);
                     // We need the field visibility spans also for the constructor for E0603.
@@ -1429,7 +1441,13 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 }
 
 impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
-    pub(crate) fn brg_visit_item(&mut self, item: &'a Item, feed: TyCtxtFeed<'tcx, LocalDefId>) {
+    /// `def_kind` is the kind `feed`'s def was created with.
+    pub(crate) fn brg_visit_item(
+        &mut self,
+        item: &'a Item,
+        feed: TyCtxtFeed<'tcx, LocalDefId>,
+        def_kind: DefKind,
+    ) {
         let orig_module_scope = self.parent_scope.module;
         self.parent_scope.macro_rules = match item.kind {
             ItemKind::MacroDef(..) => {
@@ -1439,7 +1457,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             }
             _ => {
                 let orig_macro_rules_scope = self.parent_scope.macro_rules;
-                self.build_reduced_graph_for_item(item, feed);
+                self.build_reduced_graph_for_item(item, feed, def_kind);
                 match item.kind {
                     ItemKind::Mod(..) => {
                         // Visit attributes after items for backward compatibility.
@@ -1560,7 +1578,9 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         // Define a name in the type namespace.
         let def_id = feed.key();
         let vis = self.resolve_visibility(&variant.vis);
-        self.r.define_local(parent, ident, TypeNS, self.res(def_id), vis, variant.span, expn_id);
+        // `visit_variant` created the def as a `DefKind::Variant`.
+        let res = Res::Def(DefKind::Variant, def_id.to_def_id());
+        self.r.define_local(parent, ident, TypeNS, res, vis, variant.span, expn_id);
         self.r.feed_visibility(feed, vis);
 
         // If the variant is marked as non_exhaustive then lower the visibility to within the crate.
@@ -1573,14 +1593,11 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 
         // Define a constructor name in the value namespace.
         if let Some((ctor_kind, ctor_node_id)) = CtorKind::from_ast(&variant.data) {
-            let feed = self.create_def(
-                ctor_node_id,
-                None,
-                DefKind::Ctor(CtorOf::Variant, ctor_kind),
-                variant.span,
-            );
+            let ctor_def_kind = DefKind::Ctor(CtorOf::Variant, ctor_kind);
+            let feed = self.create_def(ctor_node_id, None, ctor_def_kind, variant.span);
             let ctor_def_id = feed.key();
-            let ctor_res = self.res(ctor_def_id);
+            // The kind just fed by `create_def`, without asking `def_kind` for it.
+            let ctor_res = Res::Def(ctor_def_kind, ctor_def_id.to_def_id());
             self.r.define_local(parent, ident, ValueNS, ctor_res, ctor_vis, variant.span, expn_id);
             self.r.feed_visibility(feed, ctor_vis);
         }

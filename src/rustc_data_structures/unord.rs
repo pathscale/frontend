@@ -504,6 +504,12 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
         Self { inner: FxHashMap::with_capacity_and_hasher(capacity, Default::default()) }
     }
 
+    /// Capacity is never observable through an `UnordMap`, which exposes no iteration order.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional)
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()

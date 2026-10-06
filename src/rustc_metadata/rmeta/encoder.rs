@@ -20,7 +20,6 @@ use alloc::sync::Arc;
 
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::memmap::{Mmap, MmapMut};
-use crate::rustc_data_structures::sync::{par_for_each_in, par_join};
 use crate::rustc_data_structures::temp_dir::MaybeTempDir;
 use crate::rustc_data_structures::thousands::usize_with_underscores;
 use crate::rustc_hir as hir;
@@ -2350,10 +2349,12 @@ fn prefetch_mir(tcx: TyCtxt<'_>) {
         return;
     }
 
+    // A plain loop: metadata encoding is not on this crate's analysis path, so it is not worth a
+    // stage. It was a `par_for_each_in` over the MIR keys.
     let reachable_set = tcx.reachable_set(());
-    par_for_each_in(tcx.mir_keys(()), |&&def_id| {
+    for &def_id in tcx.mir_keys(()) {
         if tcx.is_trivial_const(def_id) {
-            return;
+            continue;
         }
         let (encode_const, encode_opt) = should_encode_mir(tcx, reachable_set, def_id);
 
@@ -2366,7 +2367,7 @@ fn prefetch_mir(tcx: TyCtxt<'_>) {
         if encode_opt || encode_const {
             tcx.ensure_done().promoted_mir(def_id);
         }
-    })
+    }
 }
 
 // NOTE(eddyb) The following comment was preserved for posterity, even
@@ -2529,13 +2530,11 @@ pub fn encode_metadata(tcx: TyCtxt<'_>, path: &Path, ref_path: Option<&Path>) {
         // Prefetch some queries used by metadata encoding.
         // This is not necessary for correctness, but is only done for performance reasons.
         // It can be removed if it turns out to cause trouble or be detrimental to performance.
-        par_join(
-            || prefetch_mir(tcx),
-            || {
-                let _ = tcx.exported_non_generic_symbols(LOCAL_CRATE);
-                let _ = tcx.exported_generic_symbols(LOCAL_CRATE);
-            },
-        );
+        //
+        // Serial now, in the order the `par_join` it replaced ran its sides.
+        prefetch_mir(tcx);
+        let _ = tcx.exported_non_generic_symbols(LOCAL_CRATE);
+        let _ = tcx.exported_generic_symbols(LOCAL_CRATE);
     }
 
     // Perform metadata encoding inside a task, so the dep-graph can check if any encoded

@@ -600,18 +600,29 @@ impl TokenTypeSet {
         TokenTypeSet(0)
     }
 
+    #[inline]
     pub(super) fn is_empty(&self) -> bool {
         self.0 == 0
     }
 
+    #[inline]
     pub(super) fn insert(&mut self, token_type: TokenType) {
         self.0 = self.0 | (1u128 << token_type as u32)
     }
 
+    /// `if !present { self.insert(token_type) }`, without a branch: every failed
+    /// `check`/`eat` on the parser's hot path records one bit.
+    #[inline(always)]
+    pub(super) fn insert_unless(&mut self, present: bool, token_type: TokenType) {
+        self.0 |= ((!present) as u128) << token_type as u32
+    }
+
+    #[inline]
     pub(super) fn clear(&mut self) {
         self.0 = 0
     }
 
+    #[inline]
     pub(super) fn contains(&self, token_type: TokenType) -> bool {
         self.0 & (1u128 << token_type as u32) != 0
     }

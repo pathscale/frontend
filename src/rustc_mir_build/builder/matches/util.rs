@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_middle::mir::*;
@@ -93,7 +94,7 @@ pub(super) fn collect_fake_borrows<'tcx>(
             let fake_borrow_ty =
                 Ty::new_imm_ref(tcx, tcx.lifetimes.re_erased, fake_borrow_deref_ty);
             let mut fake_borrow_temp = LocalDecl::new(fake_borrow_ty, temp_span);
-            fake_borrow_temp.local_info = ClearCrossCrate::Set(Box::new(LocalInfo::FakeBorrow));
+            fake_borrow_temp.local_info = ClearCrossCrate::Set(Arc::new(LocalInfo::FakeBorrow));
             let fake_borrow_temp = cx.local_decls.push(fake_borrow_temp);
             (*matched_place, fake_borrow_temp, *borrow_kind)
         })

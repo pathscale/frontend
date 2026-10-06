@@ -91,12 +91,12 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
                      current_dep_node_owner={} ({:?}), hir_id.owner={} ({:?})",
                     self.tcx.sess.source_map().span_to_diagnostic_string(span),
                     self.tcx
-                        .definitions_untracked()
+                        .def_table_untracked()
                         .def_path(self.owner.def_id)
                         .to_string_no_crate_verbose(),
                     self.owner,
                     self.tcx
-                        .definitions_untracked()
+                        .def_table_untracked()
                         .def_path(hir_id.owner.def_id)
                         .to_string_no_crate_verbose(),
                     hir_id.owner,

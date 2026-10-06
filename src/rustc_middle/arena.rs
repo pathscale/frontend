@@ -47,14 +47,10 @@ crate::rustc_arena::declare_arena! {
             crate::rustc_middle::ty::DefinitionSiteHiddenType<'tcx>,
         >,
     resolver: crate::rustc_data_structures::steal::Steal<crate::rustc_middle::ty::ResolverAstLowering<'tcx>>,
-    index_ast:
-        crate::rustc_index::IndexVec<
-            crate::rustc_span::def_id::LocalDefId,
-            crate::rustc_data_structures::steal::Steal<(
-                alloc::sync::Arc<crate::rustc_middle::ty::ResolverAstLowering<'tcx>>,
-                crate::rustc_ast::AstOwner
-            )>
-        >,
+    index_ast: (
+        crate::rustc_middle::ty::ResolverAstLowering<'tcx>,
+        crate::rustc_index::IndexVec<crate::rustc_span::def_id::LocalDefId, crate::rustc_ast::AstOwner>
+    ),
     crate_alone: crate::rustc_data_structures::steal::Steal<crate::rustc_ast::Crate>,
     crate_for_resolver: crate::rustc_data_structures::steal::Steal<(crate::rustc_ast::Crate, crate::rustc_ast::AttrVec)>,
     resolutions: crate::rustc_middle::ty::ResolverGlobalCtxt,

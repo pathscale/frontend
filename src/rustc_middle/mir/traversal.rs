@@ -5,8 +5,8 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
+use smallvec::{SmallVec, smallvec};
 
 use super::*;
 
@@ -32,12 +32,14 @@ use super::*;
 pub struct Preorder<'a, 'tcx> {
     body: &'a Body<'tcx>,
     visited: DenseBitSet<BasicBlock>,
-    worklist: Vec<BasicBlock>,
+    /// Pending blocks. The depth-first frontier of a body is almost always shallow, so
+    /// this stays inline and a traversal allocates nothing for it.
+    worklist: SmallVec<[BasicBlock; 16]>,
 }
 
 impl<'a, 'tcx> Preorder<'a, 'tcx> {
     pub fn new(body: &'a Body<'tcx>, root: BasicBlock) -> Preorder<'a, 'tcx> {
-        let worklist = vec![root];
+        let worklist = smallvec![root];
 
         Preorder { body, visited: DenseBitSet::new_empty(body.basic_blocks.len()), worklist }
     }

@@ -31,9 +31,7 @@
 //! variable only once, and it does so as soon as it can, so it is reasonable to ask what the type
 //! inferencer knows "so far".
 
-use hashbrown::hash_map::Entry;
-
-use crate::rustc_data_structures::fx::FxHashMap;
+use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::bug;
 use crate::rustc_middle::ty::{
     self, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt,
@@ -45,8 +43,10 @@ pub struct TypeFreshener<'a, 'tcx> {
     infcx: &'a InferCtxt<'tcx>,
     ty_freshen_count: u32,
     const_freshen_count: u32,
-    ty_freshen_map: FxHashMap<ty::InferTy, Ty<'tcx>>,
-    const_freshen_map: FxHashMap<ty::InferConst, ty::Const<'tcx>>,
+    // A freshener usually meets a handful of inference variables, so these stay inline and
+    // a freshening allocates nothing for them. They are only probed, never iterated.
+    ty_freshen_map: SsoHashMap<ty::InferTy, Ty<'tcx>>,
+    const_freshen_map: SsoHashMap<ty::InferConst, ty::Const<'tcx>>,
 }
 
 impl<'a, 'tcx> TypeFreshener<'a, 'tcx> {
@@ -64,32 +64,28 @@ impl<'a, 'tcx> TypeFreshener<'a, 'tcx> {
     where
         F: FnOnce(u32) -> Ty<'tcx>,
     {
-        match self.ty_freshen_map.entry(input) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                let index = self.ty_freshen_count;
-                self.ty_freshen_count += 1;
-                let t = mk_fresh(index);
-                entry.insert(t);
-                t
-            }
+        if let Some(&t) = self.ty_freshen_map.get(&input) {
+            return t;
         }
+        let index = self.ty_freshen_count;
+        self.ty_freshen_count += 1;
+        let t = mk_fresh(index);
+        self.ty_freshen_map.insert(input, t);
+        t
     }
 
     fn freshen_const<F>(&mut self, input: ty::InferConst, freshener: F) -> ty::Const<'tcx>
     where
         F: FnOnce(u32) -> ty::InferConst,
     {
-        match self.const_freshen_map.entry(input) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                let index = self.const_freshen_count;
-                self.const_freshen_count += 1;
-                let ct = ty::Const::new_infer(self.infcx.tcx, freshener(index));
-                entry.insert(ct);
-                ct
-            }
+        if let Some(&ct) = self.const_freshen_map.get(&input) {
+            return ct;
         }
+        let index = self.const_freshen_count;
+        self.const_freshen_count += 1;
+        let ct = ty::Const::new_infer(self.infcx.tcx, freshener(index));
+        self.const_freshen_map.insert(input, ct);
+        ct
     }
 }
 

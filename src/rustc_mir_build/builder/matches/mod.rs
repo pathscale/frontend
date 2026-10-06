@@ -683,7 +683,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     if let LocalInfo::User(BindingForm::Var(VarBindingForm {
                         opt_match_place: Some((ref mut match_place, _)),
                         ..
-                    })) = **self.local_decls[local].local_info.as_mut().unwrap_crate_local()
+                    })) = *self.local_decls[local].local_info_mut()
                     {
                         *match_place = Some(place);
                     } else {
@@ -797,8 +797,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         {
             self.schedule_drop_storage(span, region_scope, local_id);
         }
-        let local_info = self.local_decls[local_id].local_info.as_mut().unwrap_crate_local();
-        if let LocalInfo::User(BindingForm::Var(var_info)) = &mut **local_info {
+        let local_info = self.local_decls[local_id].local_info_mut();
+        if let LocalInfo::User(BindingForm::Var(var_info)) = local_info {
             var_info.introductions.push(VarBindingIntroduction { span, is_shorthand });
         }
         Place::from(local_id)
@@ -2814,7 +2814,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             ty: var_ty,
             user_ty,
             source_info,
-            local_info: ClearCrossCrate::Set(Box::new(LocalInfo::User(BindingForm::Var(
+            local_info: ClearCrossCrate::Set(Arc::new(LocalInfo::User(BindingForm::Var(
                 VarBindingForm {
                     binding_mode: mode,
                     // hypothetically, `visit_primary_bindings` could try to unzip
@@ -2846,7 +2846,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 ty: Ty::new_imm_ref(tcx, tcx.lifetimes.re_erased, var_ty),
                 user_ty: None,
                 source_info,
-                local_info: ClearCrossCrate::Set(Box::new(LocalInfo::User(
+                local_info: ClearCrossCrate::Set(Arc::new(LocalInfo::User(
                     BindingForm::RefForGuard(for_arm_body),
                 ))),
             });

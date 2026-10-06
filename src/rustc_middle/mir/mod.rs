@@ -13,6 +13,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
+use alloc::sync::Arc;
 use core::fmt::{self, Debug, Formatter};
 use core::iter;
 use core::ops::{Index, IndexMut};
@@ -976,7 +977,11 @@ pub struct LocalDecl<'tcx> {
     /// Temporaries and the return place are always mutable.
     pub mutability: Mutability,
 
-    pub local_info: ClearCrossCrate<Box<LocalInfo<'tcx>>>,
+    /// Written only while the body is built (and by `EraseDerefTemps` on runtime MIR), read
+    /// everywhere else, so it is shared frozen data: cloning a body (borrowck clones every body
+    /// it checks) bumps a count instead of allocating a copy per local. Write through
+    /// [`LocalDecl::local_info_mut`], which copies only if the value is shared.
+    pub local_info: ClearCrossCrate<Arc<LocalInfo<'tcx>>>,
 
     /// The type of this local.
     pub ty: Ty<'tcx>,
@@ -1114,6 +1119,12 @@ impl<'tcx> LocalDecl<'tcx> {
         self.local_info.as_ref().unwrap_crate_local()
     }
 
+    /// The local's info for writing. Copy-on-write: a decl whose info is still shared with a
+    /// clone of its body gets its own copy first, so the clone never sees the write.
+    pub fn local_info_mut(&mut self) -> &mut LocalInfo<'tcx> {
+        Arc::make_mut(self.local_info.as_mut().unwrap_crate_local())
+    }
+
     /// Returns `true` only if local is a binding that can itself be
     /// made mutable via the addition of the `mut` keyword, namely
     /// something like the occurrences of `x` in:
@@ -1198,7 +1209,7 @@ impl<'tcx> LocalDecl<'tcx> {
     pub fn with_source_info(ty: Ty<'tcx>, source_info: SourceInfo) -> Self {
         LocalDecl {
             mutability: Mutability::Mut,
-            local_info: ClearCrossCrate::Set(Box::new(LocalInfo::Boring)),
+            local_info: ClearCrossCrate::Set(Arc::new(LocalInfo::Boring)),
             ty,
             user_ty: None,
             source_info,

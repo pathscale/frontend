@@ -1,10 +1,14 @@
+use alloc::sync::Arc;
+
 use core::hash::Hash;
 use core::mem::ManuallyDrop;
 use core::num::NonZero;
 
+use eko::thread::ThreadLocal;
+
 use crate::rustc_data_structures::hash_table::Entry;
 use crate::rustc_data_structures::{defer, outline, sharded, sync};
-use crate::rustc_errors::FatalError;
+use crate::rustc_errors::{FatalError, QueryDiagnostics, QueryFrame, consume_query_diagnostics};
 use crate::rustc_middle::dep_graph::{
     DepGraphData, DepNode, DepNodeIndex, DepNodeKey, SerializedDepNodeIndex,
 };
@@ -23,13 +27,23 @@ use crate::rustc_query_impl::diagnostics::{QueryOverflow, QueryOverflowNote};
 use crate::rustc_query_impl::handle_cycle_error;
 use crate::rustc_query_impl::incremental::should_verify_loaded_value;
 use crate::rustc_query_impl::job::{
-    CollectActiveJobsKind, collect_active_query_jobs, find_cycle_in_stack, find_dep_kind_root,
+    CollectActiveJobsKind, collect_active_query_jobs, find_cycle_closed_by_wait,
+    find_cycle_in_stack, find_dep_kind_root,
 };
 
 #[inline]
 fn equivalent_key<K: Eq, V>(k: K) -> impl Fn(&(K, V)) -> bool {
     move |x| x.0 == k
 }
+
+/// How many cycle handlers are running on this thread's stack.
+///
+/// Was `QuerySystem::cycle_handler_nesting`, one `Lock<u8>` per session. Nesting is a fact
+/// about a stack (a cycle handler that itself ran into a cycle), and with `par_*` pieces on
+/// nagoya workers several stacks share one session, so the count lives with the thread. A
+/// thread moves between sessions only between requests, when the count is back at zero because
+/// the guard in `handle_cycle` restores it on every exit, unwinding included.
+static CYCLE_HANDLER_NESTING: ThreadLocal<u8> = ThreadLocal::new();
 
 #[cold]
 #[inline(never)]
@@ -39,20 +53,23 @@ fn handle_cycle<'tcx, C: QueryCache>(
     key: C::Key,
     cycle: QueryCycle<'tcx>,
 ) -> C::Value {
-    let nested;
-    {
-        let mut nesting = tcx.query_system.cycle_handler_nesting.lock();
-        nested = match *nesting {
-            0 => false,
-            1 => true,
-            _ => {
-                // Don't print further nested errors to avoid cases of infinite recursion
-                tcx.dcx().delayed_bug("doubly nested cycle error").raise_fatal()
-            }
-        };
-        *nesting += 1;
-    }
-    let _guard = defer(|| *tcx.query_system.cycle_handler_nesting.lock() -= 1);
+    // Per thread, not per session: see `QuerySystem::wait_graph` for why the shared count this
+    // replaced was wrong once two threads can handle cycles at the same moment.
+    let nesting = CYCLE_HANDLER_NESTING
+        .with(|| 0, |nesting| *nesting)
+        .expect("out of thread-local keys: cannot track cycle handler nesting");
+    let nested = match nesting {
+        0 => false,
+        1 => true,
+        _ => {
+            // Don't print further nested errors to avoid cases of infinite recursion
+            tcx.dcx().delayed_bug("doubly nested cycle error").raise_fatal()
+        }
+    };
+    CYCLE_HANDLER_NESTING.with(|| 0, |nesting| *nesting += 1);
+    let _guard = defer(|| {
+        CYCLE_HANDLER_NESTING.with(|| 0, |nesting| *nesting -= 1);
+    });
 
     let error = handle_cycle_error::create_cycle_error(tcx, &cycle, nested);
 
@@ -76,6 +93,22 @@ where
     state: &'tcx QueryState<'tcx, K>,
     key: K,
     key_hash: u64,
+    /// For `QueryJob::signal_complete`, which sets the latch (if anyone waited) under the
+    /// session's wait-graph lock.
+    tcx: TyCtxt<'tcx>,
+    /// The job's diagnostics stream, when it runs inside a par item of a parallel session.
+    /// Held here so both ends close it: `complete` with the value, and the drop on the way out
+    /// of a raise, which keeps what the query emitted before failing in its poisoned state.
+    /// See `rustc_errors::item_scope`.
+    frame: Option<QueryFrame>,
+}
+
+/// How a job ends, for [`ActiveJobGuard::end`].
+enum JobEnd {
+    /// The value is in the cache.
+    Completed,
+    /// The query unwound. With its partial diagnostics, if it has any.
+    Poisoned(Option<Arc<QueryDiagnostics>>),
 }
 
 impl<'tcx, K> ActiveJobGuard<'tcx, K>
@@ -88,17 +121,24 @@ where
     where
         C: QueryCache<Key = K>,
     {
-        // Mark as complete before we remove the job from the active state
-        // so no other thread can re-execute this query.
-        cache.complete(self.key, value, dep_node_index);
-
         let mut this = ManuallyDrop::new(self);
 
+        // The query's diagnostics are frozen into its record, which the frame also references
+        // from whatever ran the query. The record is stored under the value's index *before*
+        // the value is published, so every thread that finds the value finds the record too.
+        if let Some(record) = this.frame.take().and_then(QueryFrame::close) {
+            this.tcx.query_system.diagnostics.insert(dep_node_index, record);
+        }
+
+        // Mark as complete before we remove the job from the active state
+        // so no other thread can re-execute this query.
+        cache.complete(this.key, value, dep_node_index);
+
         // Drop everything without poisoning the query.
-        this.drop_and_maybe_poison(/* poison */ false);
+        this.end(JobEnd::Completed);
     }
 
-    fn drop_and_maybe_poison(&mut self, poison: bool) {
+    fn end(&mut self, end: JobEnd) {
         let status = {
             let mut shard = self.state.active.lock_shard_by_hash(self.key_hash);
             match shard.find_entry(self.key_hash, equivalent_key(self.key)) {
@@ -110,8 +150,8 @@ where
                 }
                 Ok(occupied) => {
                     let ((key, status), vacant) = occupied.remove();
-                    if poison {
-                        vacant.insert((key, ActiveKeyStatus::Poisoned));
+                    if let JobEnd::Poisoned(record) = end {
+                        vacant.insert((key, ActiveKeyStatus::Poisoned(record)));
                     }
                     status
                 }
@@ -119,9 +159,15 @@ where
         };
 
         // Also signal the completion of the job, so waiters will continue execution.
+        //
+        // On the poison path (the `Drop` below, running while this thread unwinds) this is what
+        // keeps a waiter on another thread from hanging: it wakes, misses the cache, finds
+        // `Poisoned` and raises `FatalError` in `wait_for_query`. The shard lock was released
+        // above, before this takes the wait-graph lock, which is the lock order
+        // `QueryWaitGraph` documents.
         match status {
-            ActiveKeyStatus::Started(job) => job.signal_complete(),
-            ActiveKeyStatus::Poisoned => panic!(),
+            ActiveKeyStatus::Started(job) => job.signal_complete(&self.tcx.query_system.wait_graph),
+            ActiveKeyStatus::Poisoned(_) => panic!(),
         }
     }
 }
@@ -133,8 +179,12 @@ where
     #[inline(never)]
     #[cold]
     fn drop(&mut self) {
+        // Close the frame first: what the query emitted before it raised becomes its record,
+        // referenced from whatever ran it (which the unwind reaches next) and kept in the
+        // poisoned state for anyone who asks for the query later.
+        let record = self.frame.take().and_then(QueryFrame::close);
         // Poison the query so jobs waiting on it panic.
-        self.drop_and_maybe_poison(/* poison */ true);
+        self.end(JobEnd::Poisoned(record));
     }
 }
 
@@ -163,6 +213,8 @@ fn wait_for_query<'tcx, C: QueryCache>(
     key: C::Key,
     key_hash: u64,
     latch: QueryLatch<'tcx>,
+    waitee: QueryJobId,
+    waitee_thread: usize,
     current: Option<QueryJobId>,
 ) -> (C::Value, Option<DepNodeIndex>) {
     // For parallel queries, we'll block and wait until the query running
@@ -171,7 +223,17 @@ fn wait_for_query<'tcx, C: QueryCache>(
     let query_blocked_prof_timer = tcx.prof.query_blocked();
 
     // With parallel queries we might just have to wait on some other thread.
-    let result = latch.wait_on(current, span);
+    //
+    // **Unless waiting would never end.** `waitee` is the job this thread is about to sleep on.
+    // If it (transitively) waits for `current` - on this thread's own stack, or through other
+    // threads that are asleep on latches of their own - then sleeping closes a cycle and every
+    // thread on it sleeps forever. Upstream's deadlock handler found such cycles after the
+    // fact; with that handler gone the check runs here, before sleeping, under the wait-graph
+    // lock (`QueryWaitGraph` says why that makes it exact). A cycle comes back as `Err` and is
+    // handled exactly as the serial path handles one it finds on its own stack.
+    let result = latch.wait_on(&tcx.query_system.wait_graph, current, span, waitee_thread, || {
+        find_cycle_closed_by_wait(tcx, waitee)
+    });
 
     match result {
         Ok(()) => {
@@ -180,19 +242,24 @@ fn wait_for_query<'tcx, C: QueryCache>(
                     // We didn't find the query result in the query cache. Check if it was
                     // poisoned due to a panic instead.
                     let shard = query.state.active.lock_shard_by_hash(key_hash);
-                    match shard.find(key_hash, equivalent_key(key)) {
+                    let record = match shard.find(key_hash, equivalent_key(key)) {
                         // The query we waited on panicked. Continue unwinding here.
-                        Some((_, ActiveKeyStatus::Poisoned)) => FatalError.raise(),
+                        Some((_, ActiveKeyStatus::Poisoned(record))) => record.clone(),
                         _ => panic!(
                             "query '{}' result must be in the cache or the query must be poisoned after a wait",
                             query.name
                         ),
-                    }
+                    };
+                    drop(shard);
+                    raise_poisoned(record)
                 })
             };
 
             tcx.prof.query_cache_hit(index.into());
             query_blocked_prof_timer.finish_with_query_invocation_id(index.into());
+            // The wait ended with the value another thread computed: this thread consumes it,
+            // and its diagnostics with it.
+            tcx.query_system.diagnostics.consume(index);
 
             (v, Some(index))
         }
@@ -202,10 +269,33 @@ fn wait_for_query<'tcx, C: QueryCache>(
 
 #[inline]
 fn next_job_id<'tcx>(tcx: TyCtxt<'tcx>) -> QueryJobId {
-    QueryJobId(
-        NonZero::new(tcx.query_system.jobs.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
-            .unwrap(),
-    )
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    if !sync::is_dyn_thread_safe() {
+        return QueryJobId(NonZero::new(tcx.query_system.jobs.fetch_add(1, Relaxed)).unwrap());
+    }
+    // A parallel session's jobs take their ids in blocks, one block per thread at a time, so the
+    // counter is written once per `BLOCK` jobs rather than by every job on every worker: one
+    // shared line per query executed was what every worker wrote. An id only has to differ from
+    // every other live job's, and the blocks come from one counter for the whole process, so a
+    // block a thread still holds from an earlier session cannot meet the ids of a later one.
+    const BLOCK: u64 = 256;
+    static NEXT_BLOCK: AtomicU64 = AtomicU64::new(1);
+    static BLOCKS: eko::thread::ThreadLocal<(u64, u64)> = eko::thread::ThreadLocal::new();
+    let id = BLOCKS
+        .with(
+            || (0, 0),
+            |(next, end)| {
+                if *next == *end {
+                    *next = NEXT_BLOCK.fetch_add(BLOCK, Relaxed);
+                    *end = *next + BLOCK;
+                }
+                let id = *next;
+                *next += 1;
+                id
+            },
+        )
+        .unwrap_or_else(|| NEXT_BLOCK.fetch_add(1, Relaxed));
+    QueryJobId(NonZero::new(id).unwrap())
 }
 
 #[inline]
@@ -234,9 +324,19 @@ where
     // re-executing the query since `try_start` only checks that the query is not currently
     // executing, but another thread may have already completed the query and stores it result
     // in the query cache.
-    if tcx.sess.opts.jobs.frontend.is_some() {
+    //
+    // Keyed on the synchronization mode rather than on `opts.jobs.frontend` as it was: the
+    // mode is what decides whether another thread can be completing this key right now, and
+    // the two could disagree (a session with `jobs.frontend` unset running in a process whose
+    // mode is parallel would skip the re-check and could run the query twice, and the second
+    // `cache.complete` would then find the key already present).
+    if sync::is_dyn_thread_safe() {
         if let Some((value, index)) = query.cache.lookup(&key) {
             tcx.prof.query_cache_hit(index.into());
+            // A cache hit after all, so a consumption like any other. The shard lock is let go
+            // first: consuming outside every item can print.
+            drop(state_lock);
+            tcx.query_system.diagnostics.consume(index);
             return (value, Some(index));
         }
     }
@@ -256,7 +356,18 @@ where
 
             // Set up a guard object that will automatically poison the query if a
             // panic occurs while executing the query (or any intermediate plumbing).
-            let job_guard = ActiveJobGuard { state: &query.state, key, key_hash };
+            //
+            // Inside a par item of a parallel session the job also gets a diagnostics stream of
+            // its own, so what it emits is part of its output rather than of whichever item
+            // happened to run it first; `None`, after one mode check, everywhere else. The guard
+            // closes it on both ways out.
+            let job_guard = ActiveJobGuard {
+                state: &query.state,
+                key,
+                key_hash,
+                tcx,
+                frame: QueryFrame::open(),
+            };
 
             // Delegate to another function to actually execute the query job.
             let (value, dep_node_index) = if INCR {
@@ -279,13 +390,29 @@ where
             match &mut entry.get_mut().1 {
                 ActiveKeyStatus::Started(job) => {
                     if sync::is_dyn_thread_safe() {
-                        // Get the latch out
+                        // Get the latch out. It is created here, under the shard lock, the
+                        // first time anyone waits on this job - which is before the waiter
+                        // takes the wait-graph lock, so any cycle check that can see the
+                        // waiter's edge also sees the latch in its snapshot of this job.
                         let latch = job.latch();
+                        let waitee = job.id;
+                        let waitee_thread = job.thread;
                         drop(state_lock);
 
-                        // Only call `wait_for_query` if we're using a Rayon thread pool
-                        // as it will attempt to mark the worker thread as blocked.
-                        wait_for_query(query, tcx, span, key, key_hash, latch, current_job_id)
+                        // Only call `wait_for_query` in parallel mode: it blocks this thread
+                        // on another thread's job, and in serial mode there is no other
+                        // thread, so a started job is always a cycle on this stack.
+                        wait_for_query(
+                            query,
+                            tcx,
+                            span,
+                            key,
+                            key_hash,
+                            latch,
+                            waitee,
+                            waitee_thread,
+                            current_job_id,
+                        )
                     } else {
                         let id = job.id;
                         drop(state_lock);
@@ -295,10 +422,29 @@ where
                         find_and_handle_cycle(query, tcx, key, id, span)
                     }
                 }
-                ActiveKeyStatus::Poisoned => FatalError.raise(),
+                ActiveKeyStatus::Poisoned(record) => {
+                    let record = record.clone();
+                    drop(state_lock);
+                    raise_poisoned(record)
+                }
             }
         }
     }
+}
+
+/// Raise for a query found poisoned, after consuming what it emitted before it failed.
+///
+/// Serially, a query that raised printed its diagnostics and then its `FatalError` unwound
+/// through its consumer. Here the consumer that observes the poison is the one that raises, so
+/// it is the one that consumes the partial record: whichever consumer comes first in serial
+/// order prints it, once.
+#[cold]
+#[inline(never)]
+fn raise_poisoned(record: Option<Arc<QueryDiagnostics>>) -> ! {
+    if let Some(record) = record {
+        consume_query_diagnostics(record);
+    }
+    FatalError.raise()
 }
 
 #[inline(always)]

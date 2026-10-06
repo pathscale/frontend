@@ -18,7 +18,6 @@ use crate::rustc_data_structures::fingerprint::Fingerprint;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::svh::Svh;
-use crate::rustc_data_structures::sync::{DynSend, DynSync, par_for_each_in, try_par_for_each_in};
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LOCAL_CRATE, LocalDefId, LocalModId};
 use crate::rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
@@ -26,7 +25,7 @@ use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::lints::DelayedLints;
 use crate::rustc_hir::*;
 use crate::rustc_span::def_id::{CRATE_MOD_ID, StableCrateId};
-use crate::rustc_span::{ErrorGuaranteed, Ident, Span, Symbol, kw, with_metavar_spans};
+use crate::rustc_span::{Ident, Span, Symbol, kw, with_metavar_spans};
 
 use crate::rustc_middle::hir::{ModuleItems, ProjectedMaybeOwner, nested_filter};
 use crate::rustc_middle::middle::debugger_visualizer::DebuggerVisualizerFile;
@@ -222,18 +221,18 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn hir_def_key(self, def_id: LocalDefId) -> DefKey {
         // Accessing the DefKey is ok, since it is part of DefPathHash.
-        self.definitions_untracked().def_key(def_id)
+        self.def_table_untracked().def_key(def_id)
     }
 
     pub fn hir_def_path(self, def_id: LocalDefId) -> DefPath {
         // Accessing the DefPath is ok, since it is part of DefPathHash.
-        self.definitions_untracked().def_path(def_id)
+        self.def_table_untracked().def_path(def_id)
     }
 
     #[inline]
     pub fn hir_def_path_hash(self, def_id: LocalDefId) -> DefPathHash {
         // Accessing the DefPathHash is ok, it is incr. comp. stable.
-        self.definitions_untracked().def_path_hash(def_id)
+        self.def_table_untracked().def_path_hash(def_id)
     }
 
     pub fn hir_get_if_local(self, id: DefId) -> Option<Node<'tcx>> {
@@ -383,9 +382,14 @@ impl<'tcx> TyCtxt<'tcx> {
         self.hir_crate_items(()).body_owners.iter().copied()
     }
 
+    /// The body owners of this crate, as the frozen slice the crate's item collection holds.
+    ///
+    /// The input of a stage over bodies: `sync::run_stage(owners, owners.len(), |owners, i| ..)`
+    /// reads `owners[i]` in place. This replaced `par_hir_body_owners`, which ran a closure per
+    /// owner through a `par_for_each_in` shim.
     #[inline]
-    pub fn par_hir_body_owners(self, f: impl Fn(LocalDefId) + DynSend + DynSync) {
-        par_for_each_in(&self.hir_crate_items(()).body_owners[..], |&&def_id| f(def_id));
+    pub fn hir_body_owner_ids(self) -> &'tcx [LocalDefId] {
+        &self.hir_crate_items(()).body_owners
     }
 
     pub fn hir_ty_param_owner(self, def_id: LocalDefId) -> LocalDefId {
@@ -513,19 +517,12 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
+    /// The crate's modules, as the frozen slice the crate's item collection holds: the input of a
+    /// per-module stage. This replaced `par_hir_for_each_module` and
+    /// `try_par_hir_for_each_module`, which ran a closure per module through the `par_*` shims.
     #[inline]
-    pub fn par_hir_for_each_module(self, f: impl Fn(LocalModId) + DynSend + DynSync) {
-        let crate_items = self.hir_crate_items(());
-        par_for_each_in(&crate_items.submodules[..], |&&module| f(module));
-    }
-
-    #[inline]
-    pub fn try_par_hir_for_each_module(
-        self,
-        f: impl Fn(LocalModId) -> Result<(), ErrorGuaranteed> + DynSend + DynSync,
-    ) -> Result<(), ErrorGuaranteed> {
-        let crate_items = self.hir_crate_items(());
-        try_par_for_each_in(&crate_items.submodules[..], |&&module| f(module))
+    pub fn hir_module_ids(self) -> &'tcx [LocalModId] {
+        &self.hir_crate_items(()).submodules
     }
 
     /// Returns an iterator for the nodes in the ancestor tree of the `current_id`

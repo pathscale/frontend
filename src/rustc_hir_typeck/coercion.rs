@@ -1564,20 +1564,22 @@ pub fn can_coerce<'tcx>(
 pub(crate) struct CoerceMany<'tcx> {
     expected_ty: Ty<'tcx>,
     final_ty: Option<Ty<'tcx>>,
-    expressions: Vec<&'tcx hir::Expr<'tcx>>,
+    /// Most coercion sites (a block's tail, an `if`, a function's returns) see one or two
+    /// expressions, so they are held inline.
+    expressions: SmallVec<[&'tcx hir::Expr<'tcx>; 2]>,
 }
 
 impl<'tcx> CoerceMany<'tcx> {
-    /// Creates a `CoerceMany` with a default capacity of 1. If the full set of
+    /// Creates a `CoerceMany` with inline room for two sites. If the full set of
     /// coercion sites is known before hand, consider `with_capacity()` instead
-    /// to avoid allocation.
+    /// to avoid reallocation.
     pub(crate) fn new(expected_ty: Ty<'tcx>) -> Self {
-        Self::with_capacity(expected_ty, 1)
+        Self::with_capacity(expected_ty, 0)
     }
 
     /// Creates a `CoerceMany` with a given capacity.
     pub(crate) fn with_capacity(expected_ty: Ty<'tcx>, capacity: usize) -> Self {
-        CoerceMany { expected_ty, final_ty: None, expressions: Vec::with_capacity(capacity) }
+        CoerceMany { expected_ty, final_ty: None, expressions: SmallVec::with_capacity(capacity) }
     }
 
     /// Returns the "expected type" with which this coercion was

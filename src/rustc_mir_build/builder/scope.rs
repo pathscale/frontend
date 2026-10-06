@@ -109,6 +109,16 @@ use crate::rustc_mir_build::diagnostics::{
 pub(crate) struct Scopes<'tcx> {
     scopes: Vec<Scope>,
 
+    /// Emptied `Scope::drops` vectors of popped scopes, handed to the next pushed scope so a
+    /// body's scopes reuse a few buffers instead of allocating one each. Only capacity is
+    /// carried over; every vector here is empty.
+    free_drops: Vec<Vec<DropData>>,
+
+    /// Emptied node vectors of exit drop trees already built by `build_exit_tree`, reused by
+    /// the next breakable, if-then or const-continuable scope's tree. Every vector here is
+    /// empty; only capacity is carried over.
+    free_drop_nodes: Vec<IndexVec<DropIdx, DropNode>>,
+
     /// The current set of breakable scopes. See module comment for more details.
     breakable_scopes: Vec<BreakableScope<'tcx>>,
 
@@ -294,13 +304,20 @@ trait DropTreeBuilder<'tcx> {
 
 impl DropTree {
     fn new() -> Self {
+        Self::in_nodes(IndexVec::new())
+    }
+
+    /// A new tree whose nodes live in `drop_nodes`, an empty vector (possibly one recycled
+    /// through `Scopes::free_drop_nodes`, so the root push below allocates nothing).
+    fn in_nodes(mut drop_nodes: IndexVec<DropIdx, DropNode>) -> Self {
+        debug_assert!(drop_nodes.is_empty());
         // The root node of the tree doesn't represent a drop, but instead
         // represents the block in the tree that should be jumped to once all
         // of the required drops have been performed.
         let fake_source_info = SourceInfo::outermost(DUMMY_SP);
         let fake_data =
             DropData { source_info: fake_source_info, local: Local::MAX, kind: DropKind::Storage };
-        let drop_nodes = IndexVec::from_raw(vec![DropNode { data: fake_data, next: DropIdx::MAX }]);
+        drop_nodes.push(DropNode { data: fake_data, next: DropIdx::MAX });
         Self { drop_nodes, entry_points: Vec::new(), existing_drops_map: FxHashMap::default() }
     }
 
@@ -482,6 +499,8 @@ impl<'tcx> Scopes<'tcx> {
     pub(crate) fn new() -> Self {
         Self {
             scopes: Vec::new(),
+            free_drops: Vec::new(),
+            free_drop_nodes: Vec::new(),
             breakable_scopes: Vec::new(),
             const_continuable_scopes: Vec::new(),
             if_then_scope: None,
@@ -495,16 +514,23 @@ impl<'tcx> Scopes<'tcx> {
         self.scopes.push(Scope {
             source_scope: vis_scope,
             region_scope,
-            drops: vec![],
+            drops: self.free_drops.pop().unwrap_or_default(),
             moved_locals: vec![],
             cached_unwind_block: None,
             cached_coroutine_drop_block: None,
         });
     }
 
+    /// A new exit drop tree, reusing the node vector of one already built if there is one.
+    fn new_drop_tree(&mut self) -> DropTree {
+        DropTree::in_nodes(self.free_drop_nodes.pop().unwrap_or_default())
+    }
+
     fn pop_scope(&mut self, region_scope: region::Scope) {
-        let scope = self.scopes.pop().unwrap();
+        let mut scope = self.scopes.pop().unwrap();
         assert_eq!(scope.region_scope, region_scope);
+        scope.drops.clear();
+        self.free_drops.push(scope.drops);
     }
 
     /// Returns the position in the scope stack of `region_scope`.
@@ -550,8 +576,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let scope = BreakableScope {
             region_scope,
             break_destination,
-            break_drops: DropTree::new(),
-            continue_drops: loop_block.map(|_| DropTree::new()),
+            break_drops: self.scopes.new_drop_tree(),
+            continue_drops: loop_block.map(|_| self.scopes.new_drop_tree()),
         };
         self.scopes.breakable_scopes.push(scope);
         let normal_exit_block = f(self);
@@ -600,7 +626,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let scope = ConstContinuableScope {
             region_scope,
             state_place,
-            const_continue_drops: DropTree::new(),
+            const_continue_drops: self.scopes.new_drop_tree(),
             arms,
             built_match_tree,
         };
@@ -661,7 +687,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     where
         F: FnOnce(&mut Builder<'a, 'tcx>) -> BlockAnd<()>,
     {
-        let scope = IfThenScope { region_scope, else_drops: DropTree::new() };
+        let scope = IfThenScope { region_scope, else_drops: self.scopes.new_drop_tree() };
         let previous_scope = mem::replace(&mut self.scopes.if_then_scope, Some(scope));
 
         let then_block = f(self).into_block();
@@ -2041,6 +2067,10 @@ impl<'a, 'tcx: 'a> Builder<'a, 'tcx> {
                 dropline_indices.push(coroutine_drop);
             }
         }
+        // The tree is spent; its node vector serves the next exit tree.
+        let mut drop_nodes = drops.drop_nodes;
+        drop_nodes.raw.clear();
+        self.scopes.free_drop_nodes.push(drop_nodes);
         blocks[ROOT_NODE].map(BasicBlock::unit)
     }
 

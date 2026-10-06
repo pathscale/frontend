@@ -1017,7 +1017,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 } => {
                     self.local_decls[local].mutability = mutability;
                     self.local_decls[local].source_info.scope = self.source_scope;
-                    **self.local_decls[local].local_info.as_mut().unwrap_crate_local() =
+                    *self.local_decls[local].local_info_mut() =
                         if let Some(kind) = param.self_kind {
                             LocalInfo::User(BindingForm::ImplicitSelf(kind))
                         } else {

@@ -60,7 +60,7 @@ use crate::rustc_data_structures::fingerprint::{Fingerprint, PackedFingerprint};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::outline;
 use crate::rustc_data_structures::profiling::SelfProfilerRef;
-use crate::rustc_data_structures::sync::{AtomicU64, Lock, WorkerLocal, broadcast};
+use crate::rustc_data_structures::sync::{AtomicU64, Lock, Registry, WorkerLocal};
 use crate::rustc_data_structures::unhash::UnhashMap;
 use crate::rustc_index::{IndexSlice, IndexVec};
 use crate::rustc_serialize::opaque::mem_encoder::MemEncoder;
@@ -784,7 +784,12 @@ impl EncoderState {
         // Prevent more indices from being allocated.
         self.next_node_index.store(u32::MAX as u64 + 1, Ordering::SeqCst);
 
-        let results = broadcast(|_| {
+        // Every worker slot's local state, visited from this thread one slot at a time, in slot
+        // order: a plain serial loop, since the dep graph is not on this crate's analysis path.
+        // It was `broadcast`, which ran this on every pool thread so each could reach its own
+        // slot; the slots belong to the session's registry here, not to threads, so this thread
+        // can visit each in turn (see `Registry::each_slot`).
+        let results = Registry::current().each_slot(|_| {
             let mut local = self.local.borrow_mut();
 
             // Prevent more indices from being allocated on this thread.

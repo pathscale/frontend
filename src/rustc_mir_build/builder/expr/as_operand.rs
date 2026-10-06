@@ -136,10 +136,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let operand = unpack!(block = this.as_temp(block, scope, expr_id, Mutability::Mut));
                 // Overwrite temp local info if we have something more interesting to record.
                 if !matches!(local_info, LocalInfo::Boring) {
-                    let decl_info =
-                        this.local_decls[operand].local_info.as_mut().unwrap_crate_local();
-                    if let LocalInfo::Boring | LocalInfo::BlockTailTemp(_) = **decl_info {
-                        **decl_info = local_info;
+                    let decl_info = this.local_decls[operand].local_info_mut();
+                    if let LocalInfo::Boring | LocalInfo::BlockTailTemp(_) = *decl_info {
+                        *decl_info = local_info;
                     }
                 }
                 block.and(Operand::Move(Place::from(operand)))

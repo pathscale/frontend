@@ -14,6 +14,7 @@ use crate::rustc_data_structures::sync;
 use super::{GlobalCtxt, TyCtxt};
 use crate::rustc_middle::dep_graph::TaskDepsRef;
 use crate::rustc_middle::query::QueryJobId;
+use crate::rustc_span::SessionGlobals;
 
 /// This is the implicit state of rustc. It contains the current
 /// `TyCtxt` and query. It is updated when creating a local interner or
@@ -139,4 +140,116 @@ where
     with_context_opt(
         |opt_context| f(opt_context.map(|context| context.tcx)),
     )
+}
+
+// ---- what a parallel stage's item runs in --------------------------------------------------
+
+/// The thread-local context a parallel stage's items run in: the session's `SessionGlobals` and
+/// the `ImplicitCtxt` of the code that opened the stage scope, as typed references.
+///
+/// **Captured where the scope opens, installed around the items, on whichever thread runs
+/// them.** An item reads both through thread-locals (`with_session_globals`, [`with`]), and a
+/// pool thread has neither, or has whatever it was doing before. The stage
+/// (`rustc_data_structures::sync::stages`) captures this once, on the thread that opens the
+/// scope, copies it into every stage the scope starts, and [`enter`](ItemContext::enter)s it
+/// around each run of items.
+///
+/// **Typed, and borrowed for exactly as long as the scope.** [`capture`](ItemContext::capture)
+/// hands the context to a closure rather than returning it, so `'c` is a lifetime inside the
+/// frames that installed the two values, and the stage opens its whole scope inside that
+/// closure: a `StageScope<'scope, _>` holds an `ItemContext<'scope>`, and the borrow checker
+/// sees that the scope ends before the frames do. Nothing is erased here. The one place the
+/// stage lets go of `'scope` is `sync::stage::parallel::detach`, which says why that is sound.
+///
+/// This lives here, in `rustc_middle`, because this is the lowest module that sees both halves:
+/// `SessionGlobals` is `rustc_span`'s, `ImplicitCtxt` is this module's. It was a registry of
+/// function pointers in `rustc_data_structures` over `*const ()`, filled at run time by
+/// `rustc_interface`, which is the shape upstream needed because its crates could not name each
+/// other; these are modules of one crate, and the stage names this type.
+#[derive(Clone, Copy)]
+pub struct ItemContext<'c> {
+    /// `None` on a thread with no session: a caller that runs stages outside one.
+    globals: Option<&'c SessionGlobals>,
+    /// `None` outside every `ImplicitCtxt`: a stage run before the `TyCtxt` exists.
+    icx: Option<&'c (dyn EnterImplicitCtxt + 'c)>,
+}
+
+/// An `ImplicitCtxt`, whatever its two lifetimes, as something that can be entered.
+///
+/// `ImplicitCtxt<'a, 'tcx>` is invariant in `'tcx` (it holds a `TyCtxt`), so a reference to one
+/// cannot be shortened to the scope's lifetime; a reference to it as this trait can, since `'a`
+/// and `'tcx` both outlive the reference. The one method is [`enter_context`] itself.
+trait EnterImplicitCtxt {
+    fn enter(&self, run: &mut dyn FnMut());
+}
+
+impl EnterImplicitCtxt for ImplicitCtxt<'_, '_> {
+    fn enter(&self, run: &mut dyn FnMut()) {
+        enter_context(self, run)
+    }
+}
+
+/// `icx` as the trait object an [`ItemContext`] holds. A function, not a closure, so the
+/// outlives bounds its argument implies (`'a: 'r`, `'tcx: 'r`) are what the coercion checks.
+fn as_enterable<'r, 'a, 'tcx>(icx: &'r ImplicitCtxt<'a, 'tcx>) -> &'r (dyn EnterImplicitCtxt + 'r) {
+    icx
+}
+
+impl ItemContext<'_> {
+    /// Call `f` with this thread's context. Everything that uses the context has to happen
+    /// inside `f`: that is what ties `'c` to the frames that installed it.
+    pub fn capture<R>(f: impl for<'c> FnOnce(ItemContext<'c>) -> R) -> R {
+        with_context_opt(|icx| {
+            let icx = icx.map(as_enterable);
+            if crate::rustc_span::session_globals_are_set() {
+                crate::rustc_span::with_session_globals(|globals| {
+                    f(ItemContext { globals: Some(globals), icx })
+                })
+            } else {
+                f(ItemContext { globals: None, icx })
+            }
+        })
+    }
+
+    /// Run `run` with the captured values installed, the session's globals outermost, and put
+    /// back whatever was there.
+    ///
+    /// Once per *run* of items, not once per item: a thread taking a stage's work installs the
+    /// context when it starts and runs item after item inside it (`stage.rs`, "How items get
+    /// run"). Every item of a scope wants exactly these values, and an item puts back what it
+    /// changed on its way out, so they stay right between items. A single item gets its own
+    /// install only when a thread waits for it and runs it there (`Slots::wait`).
+    pub fn enter(&self, run: &mut dyn FnMut()) {
+        match self.globals {
+            Some(globals) => enter_session_globals(globals, &mut || self.enter_icx(run)),
+            None => self.enter_icx(run),
+        }
+    }
+
+    /// The `ImplicitCtxt` is installed even on a thread that already has one: the item's
+    /// queries must see the context the stage was started in, whose `query` is the parent the
+    /// query system's cycle check walks (`QueryWaitGraph`), not whatever context a waiting
+    /// thread happens to be inside.
+    fn enter_icx(&self, run: &mut dyn FnMut()) {
+        match self.icx {
+            Some(icx) => icx.enter(run),
+            None => run(),
+        }
+    }
+}
+
+/// Install `globals` around `run`, unless this thread already has them.
+///
+/// The thread already has them when it is the session's own, or a pool thread running this item
+/// while it waits inside another item of the same session. Anything else installed would mean
+/// two sessions on one thread.
+fn enter_session_globals(globals: &SessionGlobals, run: &mut dyn FnMut()) {
+    if crate::rustc_span::session_globals_are_set() {
+        let same =
+            crate::rustc_span::with_session_globals(|current| core::ptr::eq(current, globals));
+        assert!(same, "a parallel item ran on a thread that is inside another session");
+        run()
+    } else {
+        crate::rustc_span::set_session_globals_then(globals, run)
+    }
 }

@@ -36,8 +36,7 @@ impl<'tcx> MutVisitor<'tcx> for EraseDerefTempsVisitor<'tcx> {
 
     fn visit_local_decl(&mut self, _: Local, local_decl: &mut LocalDecl<'tcx>) {
         if local_decl.is_deref_temp() {
-            let info = local_decl.local_info.as_mut().unwrap_crate_local();
-            **info = LocalInfo::Boring;
+            *local_decl.local_info_mut() = LocalInfo::Boring;
         }
     }
 }

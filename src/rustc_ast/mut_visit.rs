@@ -348,19 +348,52 @@ pub fn walk_flat_map_stmt<T: MutVisitor>(
     Stmt { kind, span, mut id }: Stmt,
 ) -> SmallVec<[Stmt; 1]> {
     vis.visit_id(&mut id);
-    let mut stmts: SmallVec<[Stmt; 1]> = walk_flat_map_stmt_kind(vis, kind)
-        .into_iter()
-        .map(|kind| Stmt { id, kind, span })
-        .collect();
-    match &mut stmts[..] {
-        [] => {}
-        [stmt] => vis.visit_span(&mut stmt.span),
-        _ => panic!(
-            "cloning statement `NodeId`s is prohibited by default, \
-             the visitor should implement custom statement visiting"
-        ),
-    }
-    stmts
+    // The same steps as `walk_flat_map_stmt_kind` followed by wrapping each kind in a `Stmt`,
+    // without collecting the kinds into one `SmallVec` and then the statements into another:
+    // every kind but an item yields at most one statement.
+    let kind = match kind {
+        StmtKind::Item(item) => {
+            let mut items = vis.flat_map_item(item).into_iter();
+            let Some(item) = items.next() else { return SmallVec::new() };
+            if items.next().is_some() {
+                panic_cloned_stmt_ids();
+            }
+            StmtKind::Item(item)
+        }
+        StmtKind::Expr(expr) => match vis.filter_map_expr(expr) {
+            Some(expr) => StmtKind::Expr(expr),
+            None => return SmallVec::new(),
+        },
+        StmtKind::Semi(expr) => match vis.filter_map_expr(expr) {
+            Some(expr) => StmtKind::Semi(expr),
+            None => return SmallVec::new(),
+        },
+        StmtKind::Let(mut local) => {
+            vis.visit_local(&mut local);
+            StmtKind::Let(local)
+        }
+        StmtKind::Empty => StmtKind::Empty,
+        StmtKind::MacCall(mut mac) => {
+            let MacCallStmt { mac: mac_, style: _, attrs, tokens: _ } = mac.deref_mut();
+            for attr in attrs {
+                vis.visit_attribute(attr);
+            }
+            vis.visit_mac_call(mac_);
+            StmtKind::MacCall(mac)
+        }
+    };
+    let mut stmt = Stmt { id, kind, span };
+    vis.visit_span(&mut stmt.span);
+    smallvec![stmt]
+}
+
+#[cold]
+#[inline(never)]
+fn panic_cloned_stmt_ids() -> ! {
+    panic!(
+        "cloning statement `NodeId`s is prohibited by default, \
+         the visitor should implement custom statement visiting"
+    )
 }
 
 pub fn walk_flat_map_stmt_kind<T: MutVisitor>(

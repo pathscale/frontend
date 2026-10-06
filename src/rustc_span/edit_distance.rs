@@ -21,6 +21,8 @@ use alloc::vec::Vec;
 
 use core::{cmp, mem};
 
+use smallvec::{SmallVec, smallvec};
+
 use crate::rustc_span::Symbol;
 
 #[cfg(test)]
@@ -32,8 +34,24 @@ mod tests;
 ///
 /// [edit distance]: https://en.wikipedia.org/wiki/Edit_distance
 pub fn edit_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
-    let mut a = &a.chars().collect::<Vec<_>>()[..];
-    let mut b = &b.chars().collect::<Vec<_>>()[..];
+    // Read in place: an ASCII string's bytes are its chars, so the byte slices give the same
+    // distance with nothing copied. Identifiers, which is what this compares nearly every time,
+    // are ASCII. Anything else is decoded into chars first.
+    if a.is_ascii() && b.is_ascii() {
+        return distance(a.as_bytes(), b.as_bytes(), limit);
+    }
+    // Most candidates fail on length alone, before anything is decoded.
+    if a.chars().count().abs_diff(b.chars().count()) > limit {
+        return None;
+    }
+    let a = a.chars().collect::<Vec<_>>();
+    let b = b.chars().collect::<Vec<_>>();
+    distance(&a, &b, limit)
+}
+
+/// [`edit_distance`] over any two sequences of comparable units.
+fn distance<T: PartialEq>(a: &[T], b: &[T], limit: usize) -> Option<usize> {
+    let (mut a, mut b) = (a, b);
 
     // Ensure that `b` is the shorter string, minimizing memory use.
     if a.len() < b.len() {
@@ -67,13 +85,18 @@ pub fn edit_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
         return Some(min_dist);
     }
 
-    let mut prev_prev = vec![usize::MAX; b.len() + 1];
-    let mut prev = (0..=b.len()).collect::<Vec<_>>();
-    let mut current = vec![0; b.len() + 1];
+    // The rows live on the stack for any identifier-sized string.
+    let mut prev_prev: SmallVec<[usize; 32]> = smallvec![usize::MAX; b.len() + 1];
+    let mut prev: SmallVec<[usize; 32]> = (0..=b.len()).collect();
+    let mut current: SmallVec<[usize; 32]> = smallvec![0; b.len() + 1];
+
+    // The smallest value in the row before `prev`, for the early stop below.
+    let mut prev_min = 0;
 
     // row by row
     for i in 1..=a.len() {
         current[0] = i;
+        let mut current_min = i;
         let a_idx = i - 1;
 
         // column by column
@@ -98,7 +121,17 @@ pub fn edit_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
                 // transposition
                 current[j] = cmp::min(current[j], prev_prev[j - 2] + 1);
             }
+            current_min = cmp::min(current_min, current[j]);
         }
+
+        // Every cell is built from the two rows above it and the cell to its left, each plus a
+        // cost of at least zero, so once two consecutive rows are both entirely over the limit
+        // no later cell can come back under it. The answer is `None` either way; this stops at
+        // the row that decides it instead of filling the rest of the table.
+        if current_min > limit && prev_min > limit {
+            return None;
+        }
+        prev_min = current_min;
 
         // Rotate the buffers, reusing the memory.
         [prev_prev, prev, current] = [prev, current, prev_prev];
@@ -181,6 +214,65 @@ pub fn find_best_match_for_name(
     find_best_match_for_name_impl(false, candidates, lookup, dist)
 }
 
+/// The index [`find_best_match_for_name`] would lead to if `texts` were first stable-sorted by
+/// text, without sorting.
+///
+/// Callers that want a deterministic suggestion used to sort every candidate by its text, run
+/// [`find_best_match_for_name`] over the sorted names, and take the first sorted entry with the
+/// name it returned. That is `O(n log n)` string comparisons per unresolved name, over every
+/// name in scope, plus two copies of the list. This computes the same entry in one pass:
+///
+/// - a case-insensitive exact match: the smallest such text;
+/// - otherwise the smallest edit distance within the default limit, ties to the smallest text;
+/// - otherwise a match by sorted words: the largest such text, as the sorted fold kept the last;
+///
+/// and among entries with the chosen text, the lowest index, which is where a stable sort left
+/// the first of them. `texts` are the candidates' texts, read once by the caller.
+pub fn find_best_match_index_as_if_sorted(texts: &[&str], lookup: &str) -> Option<usize> {
+    let lookup_is_ascii = lookup.is_ascii();
+    let lookup_uppercase = lookup.to_uppercase();
+    let mut best: Option<usize> = None;
+    for (i, text) in texts.iter().enumerate() {
+        let same = if lookup_is_ascii && text.is_ascii() {
+            text.eq_ignore_ascii_case(lookup)
+        } else {
+            text.chars().flat_map(char::to_uppercase).eq(lookup_uppercase.chars())
+        };
+        if same && best.is_none_or(|b| *text < texts[b]) {
+            best = Some(i);
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+
+    let limit = cmp::max(lookup.chars().count(), 3) / 3;
+    let mut closest: Option<(usize, usize)> = None;
+    for (i, text) in texts.iter().enumerate() {
+        let within = closest.map_or(limit, |(d, _)| d);
+        if let Some(d) = edit_distance(lookup, text, within)
+            && closest.is_none_or(|(bd, b)| d < bd || (d == bd && *text < texts[b]))
+        {
+            closest = Some((d, i));
+        }
+    }
+    if let Some((_, i)) = closest {
+        return Some(i);
+    }
+
+    let lookup_sorted_by_words = sort_by_words(lookup);
+    let mut words: Option<usize> = None;
+    for (i, text) in texts.iter().enumerate() {
+        if text.len() == lookup.len()
+            && sort_by_words(text) == lookup_sorted_by_words
+            && words.is_none_or(|b| *text > texts[b])
+        {
+            words = Some(i);
+        }
+    }
+    words
+}
+
 /// Find the best match for multiple words
 ///
 /// This function is intended for use when the desired match would never be
@@ -223,7 +315,20 @@ fn find_best_match_for_name_impl(
     // 1. Exact case insensitive match
     // 2. Edit distance match
     // 3. Sorted word match
-    if let Some(c) = candidates.iter().find(|c| c.as_str().to_uppercase() == lookup_uppercase) {
+    // `str::to_uppercase` is each char's `to_uppercase`, joined, so comparing the two char
+    // streams is the same test without allocating an uppercase copy of every candidate.
+    // For two ASCII strings, uppercasing each char is exactly an ASCII case-insensitive compare.
+    let lookup_is_ascii = lookup.is_ascii();
+    // Every candidate's text, read out of the interner once for all three passes below.
+    let texts: Vec<&str> = candidates.iter().map(|c| c.as_str()).collect();
+    if let Some((c, _)) = candidates.iter().zip(&texts).find(|(_, c)| {
+        let c: &str = c;
+        if lookup_is_ascii && c.is_ascii() {
+            c.eq_ignore_ascii_case(lookup)
+        } else {
+            c.chars().flat_map(char::to_uppercase).eq(lookup_uppercase.chars())
+        }
+    }) {
         return Some(*c);
     }
 
@@ -235,11 +340,11 @@ fn find_best_match_for_name_impl(
     let mut best = None;
     // store the candidates with the same distance, only for `use_substring_score` current.
     let mut next_candidates = vec![];
-    for c in candidates {
+    for (c, text) in candidates.iter().zip(&texts) {
         match if use_substring_score {
-            edit_distance_with_substrings(lookup, c.as_str(), dist)
+            edit_distance_with_substrings(lookup, text, dist)
         } else {
-            edit_distance(lookup, c.as_str(), dist)
+            edit_distance(lookup, text, dist)
         } {
             Some(0) => return Some(*c),
             Some(d) => {
@@ -277,13 +382,17 @@ fn find_best_match_for_name_impl(
         return best;
     }
 
-    find_match_by_sorted_words(candidates, lookup)
+    find_match_by_sorted_words(candidates, &texts, lookup)
 }
 
-fn find_match_by_sorted_words(iter_names: &[Symbol], lookup: &str) -> Option<Symbol> {
+fn find_match_by_sorted_words(iter_names: &[Symbol], texts: &[&str], lookup: &str) -> Option<Symbol> {
     let lookup_sorted_by_words = sort_by_words(lookup);
-    iter_names.iter().fold(None, |result, candidate| {
-        if sort_by_words(candidate.as_str()) == lookup_sorted_by_words {
+    iter_names.iter().zip(texts).fold(None, |result, (candidate, text)| {
+        // Equal sorted words means the same words with the same separators, so the same length.
+        // Checked first, so a candidate that cannot match is not split and sorted.
+        if text.len() == lookup.len()
+            && sort_by_words(text) == lookup_sorted_by_words
+        {
             Some(*candidate)
         } else {
             result

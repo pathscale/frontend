@@ -25,7 +25,6 @@ use crate::rustc_pattern_analysis::constructor::{
     IntRange, MaybeInfiniteInt, OpaqueId, RangeEnd, Slice, SliceKind, VariantVisibility,
 };
 use crate::rustc_pattern_analysis::lints::lint_nonexhaustive_missing_variants;
-use crate::rustc_pattern_analysis::pat_column::PatternColumn;
 use crate::rustc_pattern_analysis::rustc::print::EnumInfo;
 use crate::rustc_pattern_analysis::usefulness::{PlaceValidity, compute_match_usefulness};
 use crate::rustc_pattern_analysis::{PatCx, PrivateUninhabitedField, diagnostics};
@@ -1082,8 +1081,7 @@ pub fn analyze_match<'p, 'tcx>(
     // Run the non_exhaustive_omitted_patterns lint. Only run on refutable patterns to avoid hitting
     // `if let`s. Only run if the match is exhaustive otherwise the error is redundant.
     if tycx.refutable && report.non_exhaustiveness_witnesses.is_empty() {
-        let pat_column = PatternColumn::new(arms);
-        lint_nonexhaustive_missing_variants(tycx, arms, &pat_column, scrut_ty)?;
+        lint_nonexhaustive_missing_variants(tycx, arms, scrut_ty)?;
     }
 
     Ok(report)

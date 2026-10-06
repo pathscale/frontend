@@ -68,13 +68,16 @@ pub(crate) fn create<'tcx>(
     universal_regions: UniversalRegions<'tcx>,
     constraints: &mut MirTypeckRegionConstraints<'tcx>,
 ) -> CreateResult<'tcx> {
+    // Every universal region is related to itself, so each relation holds exactly
+    // `universal_regions.len()` elements.
+    let num_universals = universal_regions.len();
     UniversalRegionRelationsBuilder {
         infcx,
         constraints,
         universal_regions,
         region_bound_pairs: Default::default(),
-        outlives: Default::default(),
-        inverse_outlives: Default::default(),
+        outlives: TransitiveRelationBuilder::with_element_capacity(num_universals),
+        inverse_outlives: TransitiveRelationBuilder::with_element_capacity(num_universals),
     }
     .create()
 }

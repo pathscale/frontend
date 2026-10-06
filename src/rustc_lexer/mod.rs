@@ -441,6 +441,44 @@ pub struct Cursor<'a> {
 
 const EOF_CHAR: char = '\0';
 
+/// Every byte of a `u64` holding `0x01`.
+const SWAR_ONES: u64 = 0x0101_0101_0101_0101;
+/// Every byte of a `u64` holding `0x80`.
+const SWAR_HIGH: u64 = 0x8080_8080_8080_8080;
+
+/// For each byte of `x`, the high bit of that byte of the result is set when the byte's low
+/// seven bits are `>= lo`; every other bit is clear. `lo <= 0x80`, so `x | SWAR_HIGH` is at
+/// least `lo` in every byte and no borrow crosses a byte.
+#[inline(always)]
+const fn swar_ge(x: u64, lo: u8) -> u64 {
+    ((x | SWAR_HIGH) - SWAR_ONES * lo as u64) & SWAR_HIGH
+}
+
+/// The high bit of each byte is set when the byte's low seven bits are in `lo..=hi`
+/// (`hi < 0x7F`).
+#[inline(always)]
+const fn swar_in(x: u64, lo: u8, hi: u8) -> u64 {
+    swar_ge(x, lo) & !swar_ge(x, hi + 1)
+}
+
+/// The high bit of each byte is set exactly when that byte is an ASCII `[0-9A-Za-z_]`, the
+/// ASCII part of XID_Continue.
+#[inline(always)]
+const fn swar_id_continue(x: u64) -> u64 {
+    // Setting bit 5 folds `A-Z` onto `a-z` and moves no other ASCII byte into `a-z`.
+    let folded = x | (SWAR_ONES * 0x20);
+    let ok = swar_in(x, b'0', b'9') | swar_in(folded, b'a', b'z') | swar_in(x, b'_', b'_');
+    // A byte with its high bit set is not ASCII; its low bits said nothing.
+    ok & !x
+}
+
+/// The high bit of each byte is set exactly when that byte is ASCII Pattern_White_Space:
+/// `\t`, `\n`, `\x0B`, `\x0C`, `\r` or ` `.
+#[inline(always)]
+const fn swar_whitespace(x: u64) -> u64 {
+    (swar_in(x, b'\t', b'\r') | swar_in(x, b' ', b' ')) & !x
+}
+
 impl<'a> Cursor<'a> {
     pub fn new(input: &'a str, frontmatter_allowed: FrontmatterAllowed) -> Cursor<'a> {
         Cursor {
@@ -452,6 +490,7 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    #[inline]
     pub fn as_str(&self) -> &'a str {
         self.chars.as_str()
     }
@@ -474,12 +513,14 @@ impl<'a> Cursor<'a> {
     /// If requested position doesn't exist, `EOF_CHAR` is returned.
     /// However, getting `EOF_CHAR` doesn't always mean actual end of file,
     /// it should be checked with `is_eof` method.
+    #[inline]
     pub fn first(&self) -> char {
         // `.next()` optimizes better than `.nth(0)`
         self.chars.clone().next().unwrap_or(EOF_CHAR)
     }
 
     /// Peeks the second symbol from the input stream without consuming it.
+    #[inline]
     pub(crate) fn second(&self) -> char {
         // `.next()` optimizes better than `.nth(1)`
         let mut iter = self.chars.clone();
@@ -488,6 +529,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Peeks the third symbol from the input stream without consuming it.
+    #[inline]
     pub fn third(&self) -> char {
         // `.next()` optimizes better than `.nth(2)`
         let mut iter = self.chars.clone();
@@ -497,21 +539,25 @@ impl<'a> Cursor<'a> {
     }
 
     /// Checks if there is nothing more to consume.
+    #[inline]
     pub(crate) fn is_eof(&self) -> bool {
         self.chars.as_str().is_empty()
     }
 
     /// Returns amount of already consumed symbols.
+    #[inline]
     pub(crate) fn pos_within_token(&self) -> u32 {
         (self.len_remaining - self.chars.as_str().len()) as u32
     }
 
     /// Resets the number of bytes consumed to 0.
+    #[inline]
     pub(crate) fn reset_pos_within_token(&mut self) {
         self.len_remaining = self.chars.as_str().len();
     }
 
     /// Moves to the next character.
+    #[inline]
     pub(crate) fn bump(&mut self) -> Option<char> {
         let c = self.chars.next()?;
 
@@ -537,6 +583,82 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Consumes the next `n` bytes, which must end on a char boundary, keeping `prev` (debug
+    /// builds) as if each char had been bumped.
+    #[inline]
+    fn advance_bytes(&mut self, n: usize) {
+        let rest = self.as_str();
+        #[cfg(debug_assertions)]
+        if let Some(c) = rest[..n].chars().next_back() {
+            self.prev = c;
+        }
+        self.chars = rest[n..].chars();
+    }
+
+    /// `eat_while(predicate)` for a predicate whose answer on an ASCII char is `ascii` of its
+    /// byte, and where `block(x)` sets the high bit of exactly those bytes of `x` that are
+    /// ASCII and pass `ascii`. Eight bytes are tested at a time while all of them pass; at the
+    /// first byte that does not, an ASCII byte is tested alone and any other char is decoded
+    /// and handed to `predicate`, so the stopping point is the one `eat_while` reaches.
+    #[inline(always)]
+    fn eat_while_ascii(
+        &mut self,
+        block: impl Fn(u64) -> u64,
+        ascii: impl Fn(u8) -> bool,
+        predicate: impl Fn(char) -> bool,
+    ) {
+        let rest = self.as_str();
+        let bytes = rest.as_bytes();
+        let mut i = 0;
+        loop {
+            while let Some(chunk) = bytes.get(i..i + 8) {
+                let x = u64::from_le_bytes(<[u8; 8]>::try_from(chunk).unwrap());
+                let stop = !block(x) & SWAR_HIGH;
+                if stop != 0 {
+                    // Little endian: byte `k` of the chunk is bits `8k..8k + 8`.
+                    i += (stop.trailing_zeros() / 8) as usize;
+                    break;
+                }
+                i += 8;
+            }
+            let Some(&b) = bytes.get(i) else { break };
+            if b < 0x80 {
+                if !ascii(b) {
+                    break;
+                }
+                i += 1;
+            } else {
+                // `i` is on a char boundary: only whole chars are stepped over.
+                let c = rest[i..].chars().next().unwrap();
+                if !predicate(c) {
+                    break;
+                }
+                i += c.len_utf8();
+            }
+        }
+        self.advance_bytes(i);
+    }
+
+    /// `eat_while(is_whitespace)`.
+    #[inline]
+    fn eat_whitespace(&mut self) {
+        self.eat_while_ascii(
+            swar_whitespace,
+            |b| matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' '),
+            is_whitespace,
+        );
+    }
+
+    /// `eat_while(is_id_continue)`. The ASCII XID_Continue set is `[0-9A-Za-z_]`.
+    #[inline]
+    fn eat_id_continue(&mut self) {
+        self.eat_while_ascii(
+            swar_id_continue,
+            |b| b.is_ascii_alphanumeric() || b == b'_',
+            is_id_continue,
+        );
+    }
+
     pub(crate) fn eat_until(&mut self, byte: u8) {
         self.chars = match memchr::memchr(byte, self.as_str().as_bytes()) {
             Some(index) => self.as_str()[index..].chars(),
@@ -545,7 +667,150 @@ impl<'a> Cursor<'a> {
     }
 
     /// Parses a token from the input string.
+    #[inline]
     pub fn advance_token(&mut self) -> Token {
+        // Once a frontmatter can no longer start, a token with an ASCII first byte is
+        // dispatched on that byte. The arms of `advance_token_general` that an ASCII char can
+        // reach, less the two guarded by `FrontmatterAllowed::Yes`, are disjoint, so the byte
+        // match picks the arm the char match picks. Everything else takes the general path.
+        if matches!(self.frontmatter_allowed, FrontmatterAllowed::No)
+            && let Some(&b) = self.as_str().as_bytes().first()
+            && b < 0x80
+        {
+            self.bump();
+            let token_kind = self.ascii_token(b);
+            let res = Token::new(token_kind, self.pos_within_token());
+            self.reset_pos_within_token();
+            return res;
+        }
+        self.advance_token_general()
+    }
+
+    /// The token whose first char, the ASCII byte `b`, has just been bumped, with frontmatter
+    /// no longer allowed. A dense match on a byte compiles to one jump table indexed by it.
+    #[inline(always)]
+    fn ascii_token(&mut self, b: u8) -> TokenKind {
+        match b {
+            // Slash, comment or block comment.
+            b'/' => match self.first() {
+                '/' => self.line_comment(),
+                '*' => self.block_comment(),
+                _ => Slash,
+            },
+
+            // Whitespace sequence: the ASCII part of `is_whitespace`.
+            b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ' => self.whitespace(),
+
+            // Raw identifier, raw string literal or identifier.
+            b'r' => self.r_prefixed(),
+
+            // Byte literal, byte string literal, raw byte string literal or identifier.
+            b'b' => self.c_or_byte_string(
+                |terminated| ByteStr { terminated },
+                |n_hashes| RawByteStr { n_hashes },
+                Some(|terminated| Byte { terminated }),
+            ),
+
+            // c-string literal, raw c-string literal or identifier.
+            b'c' => self.c_or_byte_string(
+                |terminated| CStr { terminated },
+                |n_hashes| RawCStr { n_hashes },
+                None,
+            ),
+
+            // Identifier: the ASCII part of `is_id_start`.
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.ident_or_unknown_prefix(),
+
+            // Numeric literal.
+            b'0'..=b'9' => self.number_literal(b as char),
+
+            // Guarded string literal prefix: `#"` or `##`
+            b'#' if matches!(self.first(), '"' | '#') => {
+                self.bump();
+                TokenKind::GuardedStrPrefix
+            }
+
+            // One-symbol tokens.
+            b';' => Semi,
+            b',' => Comma,
+            b'.' => Dot,
+            b'(' => OpenParen,
+            b')' => CloseParen,
+            b'{' => OpenBrace,
+            b'}' => CloseBrace,
+            b'[' => OpenBracket,
+            b']' => CloseBracket,
+            b'@' => At,
+            b'#' => Pound,
+            b'~' => Tilde,
+            b'?' => Question,
+            b':' => Colon,
+            b'$' => Dollar,
+            b'=' => Eq,
+            b'!' => Bang,
+            b'<' => Lt,
+            b'>' => Gt,
+            b'-' => Minus,
+            b'&' => And,
+            b'|' => Or,
+            b'+' => Plus,
+            b'*' => Star,
+            b'^' => Caret,
+            b'%' => Percent,
+
+            // Lifetime or character literal.
+            b'\'' => self.lifetime_or_char(),
+
+            // String literal.
+            b'"' => self.str_literal(),
+
+            // No ASCII char is an emoji identifier start (that arm requires `!c.is_ascii()`).
+            _ => Unknown,
+        }
+    }
+
+    /// After `r`: a raw identifier, a raw string literal or an identifier.
+    #[inline]
+    fn r_prefixed(&mut self) -> TokenKind {
+        match (self.first(), self.second()) {
+            ('#', c1) if is_id_start(c1) => self.raw_ident(),
+            ('#', _) | ('"', _) => {
+                let res = self.raw_double_quoted_string(1);
+                let suffix_start = self.pos_within_token();
+                if res.is_ok() {
+                    self.eat_literal_suffix();
+                }
+                let kind = RawStr { n_hashes: res.ok() };
+                Literal { kind, suffix_start }
+            }
+            _ => self.ident_or_unknown_prefix(),
+        }
+    }
+
+    /// After the first digit `c`: a numeric literal and its suffix.
+    #[inline]
+    fn number_literal(&mut self, c: char) -> TokenKind {
+        let literal_kind = self.number(c);
+        let suffix_start = self.pos_within_token();
+        self.eat_literal_suffix();
+        TokenKind::Literal { kind: literal_kind, suffix_start }
+    }
+
+    /// After `"`: a string literal and, when terminated, its suffix.
+    #[inline]
+    fn str_literal(&mut self) -> TokenKind {
+        let terminated = self.double_quoted_string();
+        let suffix_start = self.pos_within_token();
+        if terminated {
+            self.eat_literal_suffix();
+        }
+        let kind = Str { terminated };
+        Literal { kind, suffix_start }
+    }
+
+    /// `advance_token` for any first char: the one path while a frontmatter may still start,
+    /// and for non-ASCII first chars.
+    fn advance_token_general(&mut self) -> Token {
         let Some(first_char) = self.bump() else {
             return Token::new(TokenKind::Eof, 0);
         };
@@ -588,19 +853,7 @@ impl<'a> Cursor<'a> {
             c if is_whitespace(c) => self.whitespace(),
 
             // Raw identifier, raw string literal or identifier.
-            'r' => match (self.first(), self.second()) {
-                ('#', c1) if is_id_start(c1) => self.raw_ident(),
-                ('#', _) | ('"', _) => {
-                    let res = self.raw_double_quoted_string(1);
-                    let suffix_start = self.pos_within_token();
-                    if res.is_ok() {
-                        self.eat_literal_suffix();
-                    }
-                    let kind = RawStr { n_hashes: res.ok() };
-                    Literal { kind, suffix_start }
-                }
-                _ => self.ident_or_unknown_prefix(),
-            },
+            'r' => self.r_prefixed(),
 
             // Byte literal, byte string literal, raw byte string literal or identifier.
             'b' => self.c_or_byte_string(
@@ -621,12 +874,7 @@ impl<'a> Cursor<'a> {
             c if is_id_start(c) => self.ident_or_unknown_prefix(),
 
             // Numeric literal.
-            c @ '0'..='9' => {
-                let literal_kind = self.number(c);
-                let suffix_start = self.pos_within_token();
-                self.eat_literal_suffix();
-                TokenKind::Literal { kind: literal_kind, suffix_start }
-            }
+            c @ '0'..='9' => self.number_literal(c),
 
             // Guarded string literal prefix: `#"` or `##`
             '#' if matches!(self.first(), '"' | '#') => {
@@ -666,15 +914,7 @@ impl<'a> Cursor<'a> {
             '\'' => self.lifetime_or_char(),
 
             // String literal.
-            '"' => {
-                let terminated = self.double_quoted_string();
-                let suffix_start = self.pos_within_token();
-                if terminated {
-                    self.eat_literal_suffix();
-                }
-                let kind = Str { terminated };
-                Literal { kind, suffix_start }
-            }
+            '"' => self.str_literal(),
             // Identifier starting with an emoji. Only lexed for graceful error recovery.
             c if !c.is_ascii() && c.is_emoji_char() => self.invalid_ident(),
             _ => Unknown,
@@ -808,14 +1048,22 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
+        // Only `/` and `*` can change the depth, and both are ASCII, so no multi-byte char
+        // holds either byte: jump from one to the next and treat it as the bumped char.
         let mut depth = 1usize;
-        while let Some(c) = self.bump() {
-            match c {
-                '/' if self.first() == '*' => {
+        loop {
+            let rest = self.as_str().as_bytes();
+            let Some(i) = memchr::memchr2(b'/', b'*', rest) else {
+                self.advance_bytes(rest.len());
+                break;
+            };
+            self.advance_bytes(i + 1);
+            match rest[i] {
+                b'/' if self.first() == '*' => {
                     self.bump();
                     depth += 1;
                 }
-                '*' if self.first() == '/' => {
+                b'*' if self.first() == '/' => {
                     self.bump();
                     depth -= 1;
                     if depth == 0 {
@@ -832,9 +1080,10 @@ impl<'a> Cursor<'a> {
         BlockComment { doc_style, terminated: depth == 0 }
     }
 
+    #[inline]
     fn whitespace(&mut self) -> TokenKind {
         debug_assert!(is_whitespace(self.prev()));
-        self.eat_while(is_whitespace);
+        self.eat_whitespace();
         Whitespace
     }
 
@@ -847,10 +1096,11 @@ impl<'a> Cursor<'a> {
         RawIdent
     }
 
+    #[inline]
     fn ident_or_unknown_prefix(&mut self) -> TokenKind {
         debug_assert!(is_id_start(self.prev()));
         // Start is already eaten, eat the rest of identifier.
-        self.eat_while(is_id_continue);
+        self.eat_id_continue();
         // Known prefixes must have been handled earlier. So if
         // we see a prefix here, it is definitely an unknown prefix.
         match self.first() {
@@ -1015,7 +1265,7 @@ impl<'a> Cursor<'a> {
             self.bump();
             self.bump();
             self.bump();
-            self.eat_while(is_id_continue);
+            self.eat_id_continue();
             return RawLifetime;
         }
 
@@ -1027,7 +1277,7 @@ impl<'a> Cursor<'a> {
         // First symbol can be a number (which isn't a valid identifier start),
         // so skip it without any checks.
         self.bump();
-        self.eat_while(is_id_continue);
+        self.eat_id_continue();
 
         match self.first() {
             // Check if after skipping literal contents we've met a closing
@@ -1088,20 +1338,24 @@ impl<'a> Cursor<'a> {
     /// if string is terminated.
     fn double_quoted_string(&mut self) -> bool {
         debug_assert!(self.prev() == '"');
-        while let Some(c) = self.bump() {
-            match c {
-                '"' => {
-                    return true;
-                }
-                '\\' if self.first() == '\\' || self.first() == '"' => {
-                    // Bump again to skip escaped character.
-                    self.bump();
-                }
-                _ => (),
+        // Only `"` and `\` change the outcome, and both are ASCII, so no multi-byte char
+        // holds either byte: jump from one to the next and treat it as the bumped char.
+        loop {
+            let rest = self.as_str().as_bytes();
+            let Some(i) = memchr::memchr2(b'"', b'\\', rest) else {
+                // End of file reached.
+                self.advance_bytes(rest.len());
+                return false;
+            };
+            self.advance_bytes(i + 1);
+            if rest[i] == b'"' {
+                return true;
+            }
+            if self.first() == '\\' || self.first() == '"' {
+                // Bump again to skip escaped character.
+                self.bump();
             }
         }
-        // End of file reached.
-        false
     }
 
     /// Attempt to lex for a guarded string literal.
@@ -1232,37 +1486,37 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    // Digits and `_` are ASCII, and `first()` is one of them exactly when the next byte is,
+    // so the digit scans test bytes and step over the run at once.
     fn eat_decimal_digits(&mut self) -> bool {
+        let bytes = self.as_str().as_bytes();
         let mut has_digits = false;
-        loop {
-            match self.first() {
-                '_' => {
-                    self.bump();
-                }
-                '0'..='9' => {
-                    has_digits = true;
-                    self.bump();
-                }
+        let mut i = 0;
+        while let Some(&b) = bytes.get(i) {
+            match b {
+                b'_' => {}
+                b'0'..=b'9' => has_digits = true,
                 _ => break,
             }
+            i += 1;
         }
+        self.advance_bytes(i);
         has_digits
     }
 
     fn eat_hexadecimal_digits(&mut self) -> bool {
+        let bytes = self.as_str().as_bytes();
         let mut has_digits = false;
-        loop {
-            match self.first() {
-                '_' => {
-                    self.bump();
-                }
-                '0'..='9' | 'a'..='f' | 'A'..='F' => {
-                    has_digits = true;
-                    self.bump();
-                }
+        let mut i = 0;
+        while let Some(&b) = bytes.get(i) {
+            match b {
+                b'_' => {}
+                b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' => has_digits = true,
                 _ => break,
             }
+            i += 1;
         }
+        self.advance_bytes(i);
         has_digits
     }
 
@@ -1289,6 +1543,6 @@ impl<'a> Cursor<'a> {
         }
         self.bump();
 
-        self.eat_while(is_id_continue);
+        self.eat_id_continue();
     }
 }

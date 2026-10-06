@@ -513,6 +513,19 @@ struct PlaceSet<'tcx> {
 impl<'tcx> PlaceSet<'tcx> {
     fn insert_locals(&mut self, decls: &IndexVec<Local, LocalDecl<'tcx>>) {
         self.locals = IndexVec::from_elem(None, &decls);
+        // Size the place tables once for the user locals below (called on an empty set).
+        debug_assert!(self.places.is_empty());
+        let user_locals = decls
+            .iter()
+            .filter(|decl| {
+                matches!(
+                    decl.local_info(),
+                    LocalInfo::User(BindingForm::Var(_) | BindingForm::RefForGuard(_))
+                )
+            })
+            .count();
+        self.places = IndexVec::with_capacity(user_locals);
+        self.names = IndexVec::with_capacity(user_locals);
         for (local, decl) in decls.iter_enumerated() {
             // Record all user-written locals for the analysis.
             // We also keep the `RefForGuard` locals (more on that below).

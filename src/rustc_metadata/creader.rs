@@ -654,8 +654,15 @@ impl CStore {
                 }),
                 None => (&source, &crate_root),
             };
-            let dlsym_dylib = dlsym_source.dylib.as_ref().expect("no dylib for a proc-macro crate");
-            Some(self.dlsym_proc_macros(dlsym_dylib, dlsym_root.stable_crate_id())?)
+            // No dylib is a proc-macro crate known by its metadata alone, as frontend writes it
+            // for one it read from source: its macros are declared and none of them runs (see
+            // `UnrunProcMacro`).
+            match dlsym_source.dylib.as_ref() {
+                Some(dlsym_dylib) => {
+                    Some(self.dlsym_proc_macros(dlsym_dylib, dlsym_root.stable_crate_id())?)
+                }
+                None => None,
+            }
         } else {
             None
         };

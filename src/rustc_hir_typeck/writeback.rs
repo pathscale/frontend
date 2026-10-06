@@ -131,6 +131,20 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             rustc_dump_user_args,
         };
 
+        // Writeback moves one entry per node into these tables, so size them once from the
+        // inference tables. They are `UnordMap`s, so capacity changes no answer.
+        {
+            let fcx_results = fcx.typeck_results.borrow();
+            let node_types = fcx_results.node_types().len();
+            let type_dependent_defs = fcx_results.type_dependent_defs().len();
+            let pat_binding_modes = fcx_results.pat_binding_modes().len();
+            let liberated_fn_sigs = fcx_results.liberated_fn_sigs().len();
+            wbcx.typeck_results.node_types_mut().reserve(node_types);
+            wbcx.typeck_results.type_dependent_defs_mut().reserve(type_dependent_defs);
+            wbcx.typeck_results.pat_binding_modes_mut().reserve(pat_binding_modes);
+            wbcx.typeck_results.liberated_fn_sigs_mut().reserve(liberated_fn_sigs);
+        }
+
         // HACK: We specifically don't want the (opaque) error from tainting our
         // inference context. That'll prevent us from doing opaque type inference
         // later on in borrowck, which affects diagnostic spans pretty negatively.

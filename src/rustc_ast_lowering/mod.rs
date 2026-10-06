@@ -83,7 +83,9 @@ use crate::rustc_index::{Idx, IndexVec};
 use rustc_macros::extension;
 use crate::rustc_middle::queries::Providers;
 use crate::span_bug;
-use crate::rustc_middle::ty::{PerOwnerResolverData, ResolverAstLowering, TyCtxt};
+use crate::rustc_middle::ty::{
+    DesugaringAllowLists, PerOwnerResolverData, ResolverAstLowering, TyCtxt,
+};
 use crate::rustc_session::diagnostics::add_feature_diagnostics;
 use crate::rustc_span::symbol::{Ident, Symbol, kw, sym};
 use crate::rustc_span::{DUMMY_SP, DesugaringKind, Span};
@@ -218,14 +220,9 @@ struct LoweringContext<'a, 'hir> {
     /// so we only store `self_param_id`.
     partial_res_overrides: NodeMap<NodeId>,
 
-    allow_contracts: Arc<[Symbol]>,
-    allow_try_trait: Arc<[Symbol]>,
-    allow_gen_future: Arc<[Symbol]>,
-    allow_pattern_type: Arc<[Symbol]>,
-    allow_async_gen: Arc<[Symbol]>,
-    allow_async_iterator: Arc<[Symbol]>,
-    allow_for_await: Arc<[Symbol]>,
-    allow_async_fn_traits: Arc<[Symbol]>,
+    /// The `allow_internal_unstable` lists of the desugarings, built once per session
+    /// (`resolver.desugaring_allow`) and shared by every owner.
+    allow: &'a DesugaringAllowLists,
 
     delayed_lints: Vec<DelayedLint>,
 
@@ -284,25 +281,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             current_item: None,
             impl_trait_defs: Vec::new(),
             impl_trait_bounds: Vec::new(),
-            allow_contracts: [sym::contracts_internals].into(),
-            allow_try_trait: [
-                sym::try_trait_v2,
-                sym::try_trait_v2_residual,
-                sym::yeet_desugar_details,
-            ]
-            .into(),
-            allow_pattern_type: [sym::pattern_types, sym::pattern_type_range_trait].into(),
-            allow_gen_future: if tcx.features().async_fn_track_caller() {
-                [sym::gen_future, sym::closure_track_caller].into()
-            } else {
-                [sym::gen_future].into()
-            },
-            allow_for_await: [sym::async_gen_internals, sym::async_iterator].into(),
-            allow_async_fn_traits: [sym::async_fn_traits].into(),
-            allow_async_gen: [sym::async_gen_internals].into(),
-            // FIXME(gen_blocks): how does `closure_track_caller`/`async_fn_track_caller`
-            // interact with `gen`/`async gen` blocks
-            allow_async_iterator: [sym::gen_future, sym::async_iterator].into(),
+            allow: &resolver.desugaring_allow,
 
             move_expr_bindings: Vec::new(),
             attribute_parser: AttributeParser::new(
@@ -514,7 +493,7 @@ enum TryBlockScope {
 fn index_ast<'tcx>(
     tcx: TyCtxt<'tcx>,
     (): (),
-) -> IndexVec<LocalDefId, Steal<(Arc<ResolverAstLowering<'tcx>>, AstOwner)>> {
+) -> (ResolverAstLowering<'tcx>, IndexVec<LocalDefId, AstOwner>) {
     // Queries that borrow `resolver_for_lowering`.
     tcx.ensure_done().output_filenames(());
     tcx.ensure_done().early_lint_checks(());
@@ -529,20 +508,23 @@ fn index_ast<'tcx>(
         owners: &resolver.owners,
         index: IndexVec::new(),
         next_node_id: resolver.next_node_id,
+        empty_tokens: crate::rustc_ast::tokenstream::TokenStream::default(),
     };
     indexer.visit_crate(&mut krate);
     indexer.insert(CRATE_NODE_ID, AstOwner::Crate(Box::new(krate)));
-    resolver.next_node_id = indexer.next_node_id;
+    let Indexer { index, next_node_id, .. } = indexer;
+    resolver.next_node_id = next_node_id;
 
-    let index = indexer.index;
-    let resolver = Arc::new(resolver);
-    let index = index.into_iter().map(|owner| Steal::new((Arc::clone(&resolver), owner))).collect();
-    return index;
+    return (resolver, index);
 
     struct Indexer<'s, 'hir> {
         owners: &'s NodeMap<PerOwnerResolverData<'hir>>,
         index: IndexVec<LocalDefId, AstOwner>,
         next_node_id: NodeId,
+        /// The one empty stream every dummy's `DelimArgs` shares (a reference count each),
+        /// instead of one allocation per indexed owner. Built, cloned and freed on this
+        /// thread with the index.
+        empty_tokens: crate::rustc_ast::tokenstream::TokenStream,
     }
 
     impl Indexer<'_, '_> {
@@ -557,12 +539,12 @@ fn index_ast<'tcx>(
             id: NodeId,
             span: Span,
             dummy: impl FnOnce(Box<MacCall>) -> K,
-        ) -> Box<Item<K>> {
+        ) -> Item<K> {
             use crate::rustc_ast::token::Delimiter;
-            use crate::rustc_ast::tokenstream::{DelimSpan, TokenStream};
+            use crate::rustc_ast::tokenstream::DelimSpan;
             use thin_vec::thin_vec;
 
-            Box::new(Item {
+            Item {
                 attrs: AttrVec::default(),
                 id,
                 span,
@@ -574,13 +556,14 @@ fn index_ast<'tcx>(
                     args: Box::new(DelimArgs {
                         dspan: DelimSpan::from_single(span),
                         delim: Delimiter::Parenthesis,
-                        tokens: TokenStream::new(Vec::new()),
+                        tokens: self.empty_tokens.clone(),
                     }),
                 })),
                 tokens: None,
-            })
+            }
         }
 
+        /// Replaces an item reached in place (not through its parent's list) with a dummy.
         fn replace_with_dummy<K>(
             &mut self,
             item: &mut ast::Item<K>,
@@ -588,8 +571,22 @@ fn index_ast<'tcx>(
             node: impl FnOnce(Box<Item<K>>) -> AstOwner,
         ) {
             let dummy = self.make_dummy(item.id, item.span, dummy);
-            let item = mem::replace(item, *dummy);
+            let item = mem::replace(item, dummy);
             self.insert(item.id, node(Box::new(item)));
+        }
+
+        /// Moves a boxed item, box and all, into the index and returns a boxed dummy in its
+        /// place: one allocation (the dummy's box), where `replace_with_dummy` needs two.
+        fn take_boxed<K>(
+            &mut self,
+            item: Box<Item<K>>,
+            dummy: impl FnOnce(Box<MacCall>) -> K,
+            node: impl FnOnce(Box<Item<K>>) -> AstOwner,
+        ) -> Box<Item<K>> {
+            let (id, span) = (item.id, item.span);
+            let dummy = Box::new(self.make_dummy(id, span, dummy));
+            self.insert(id, node(item));
+            dummy
         }
 
         #[tracing::instrument(level = "trace", skip(self))]
@@ -604,7 +601,7 @@ fn index_ast<'tcx>(
                 UseTreeKind::Nested { items: ref nested_vec, span } => {
                     for &(ref nested, id) in nested_vec {
                         self.insert(id, AstOwner::NestedUseTree(parent));
-                        items.push(self.make_dummy(id, span, ItemKind::MacCall));
+                        items.push(Box::new(self.make_dummy(id, span, ItemKind::MacCall)));
 
                         let def_id = self.owners[&id].def_id;
                         self.visit_item_id_use_tree(nested, def_id, items);
@@ -623,7 +620,7 @@ fn index_ast<'tcx>(
         fn flat_map_item(&mut self, mut item: Box<Item>) -> SmallVec<[Box<Item>; 1]> {
             let def_id = self.owners[&item.id].def_id;
             mut_visit::walk_item(self, &mut *item);
-            let dummy = self.make_dummy(item.id, item.span, ItemKind::MacCall);
+            let dummy = Box::new(self.make_dummy(item.id, item.span, ItemKind::MacCall));
             let mut items = smallvec![dummy];
             if let ItemKind::Use(ref use_tree) = item.kind {
                 self.visit_item_id_use_tree(use_tree, def_id, &mut items);
@@ -652,6 +649,32 @@ fn index_ast<'tcx>(
                 .collect()
         }
 
+        // Items in their parent's list arrive boxed: the box moves into the index as it is.
+        fn flat_map_assoc_item(
+            &mut self,
+            mut item: Box<AssocItem>,
+            ctxt: visit::AssocCtxt,
+        ) -> SmallVec<[Box<AssocItem>; 1]> {
+            mut_visit::walk_assoc_item(self, &mut *item, ctxt);
+            let dummy = match ctxt {
+                visit::AssocCtxt::Trait => {
+                    self.take_boxed(item, AssocItemKind::MacCall, AstOwner::TraitItem)
+                }
+                visit::AssocCtxt::Impl { .. } => {
+                    self.take_boxed(item, AssocItemKind::MacCall, AstOwner::ImplItem)
+                }
+            };
+            smallvec![dummy]
+        }
+
+        fn flat_map_foreign_item(
+            &mut self,
+            mut item: Box<ForeignItem>,
+        ) -> SmallVec<[Box<ForeignItem>; 1]> {
+            mut_visit::walk_item(self, &mut *item);
+            smallvec![self.take_boxed(item, ForeignItemKind::MacCall, AstOwner::ForeignItem)]
+        }
+
         fn visit_assoc_item(&mut self, item: &mut AssocItem, ctxt: visit::AssocCtxt) {
             mut_visit::walk_assoc_item(self, item, ctxt);
             match ctxt {
@@ -673,8 +696,17 @@ fn index_ast<'tcx>(
 
 #[instrument(level = "trace", skip(tcx))]
 fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
-    let ast_index = tcx.index_ast(());
-    let resolver_and_node = ast_index.get(def_id).map(Steal::steal);
+    // The owner's AST is read in place, not stolen, and so not freed here. It was allocated on
+    // the session's thread (parse, expansion, the indexer), and freeing it here, inside a stage
+    // item, freed it on whichever pool worker ran the item: every worker freeing into the
+    // allocator's free lists of the one thread that allocated, and all of them decrementing the
+    // one shared resolver `Arc`, which cost five times the serial free at width 12. The index
+    // and the resolver now live in the query arena and are freed with it when the session ends,
+    // on the thread that built them, in index order, the order they were allocated in. Nothing
+    // reads an entry after its owner is lowered, so answers do not change; only the time the
+    // memory is returned does.
+    let (resolver, ast_index) = tcx.index_ast(());
+    let node = ast_index.get(def_id);
 
     let fallback_to_ancestor = |parent_id| {
         // The item did not exist in the AST, it was created while lowering another item.
@@ -700,31 +732,117 @@ fn lower_to_hir(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::MaybeOwner<'_> {
         })
     };
 
-    let Some((resolver, node)) = resolver_and_node else {
+    let Some(node) = node else {
         // `ast_index` does not contain all definitions, only up-to the highest
         // `LocalDefId` which has a non-trivial `AstOwner`. Gracefully handle
         // other definitions, in particular those nested inside this highest definition.
         return fallback_to_ancestor(tcx.local_parent(def_id));
     };
 
-    let mut item_lowerer = item::ItemLowerer { tcx, resolver: &*resolver };
+    let mut item_lowerer = item::ItemLowerer { tcx, resolver };
 
-    let item = match &node {
+    match node {
         // The item existed in the AST.
-        AstOwner::Crate(c) => item_lowerer.lower_crate(&c),
-        AstOwner::Item(item) => item_lowerer.lower_item(&item),
-        AstOwner::TraitItem(item) => item_lowerer.lower_trait_item(&item),
-        AstOwner::ImplItem(item) => item_lowerer.lower_impl_item(&item),
-        AstOwner::ForeignItem(item) => item_lowerer.lower_foreign_item(&item),
+        AstOwner::Crate(c) => item_lowerer.lower_crate(c),
+        AstOwner::Item(item) => item_lowerer.lower_item(item),
+        AstOwner::TraitItem(item) => item_lowerer.lower_trait_item(item),
+        AstOwner::ImplItem(item) => item_lowerer.lower_impl_item(item),
+        AstOwner::ForeignItem(item) => item_lowerer.lower_foreign_item(item),
         AstOwner::NestedUseTree(owner_id) => fallback_to_ancestor(*owner_id),
         // The item existed in the AST, but is not a HIR owner.
         // Fetch the correct information from its parent.
         AstOwner::NonOwner => fallback_to_ancestor(tcx.local_parent(def_id)),
+    }
+}
+
+/// Lower every HIR owner in the AST index, as one stage, so that the reads which follow find
+/// finished results instead of lowering one owner at a time as they first touch it.
+///
+/// **Where it runs.** `rustc_interface::passes` calls this at the top of the `hir_crate_items`
+/// provider, which is the gateway every HIR consumer passes: `analysis` reaches it through
+/// `hir_module_ids` (the HIR id validator) or its own `ensure_done`, and the facts extractor
+/// forces it first thing. Before this, lowering happened inside that same query, serially, in
+/// the order its walk from the crate root first touched each owner. It still happens inside
+/// that query; it has only moved to the front of it and spread out.
+///
+/// **The input is the index itself, read by position.** Item `i` is `LocalDefId` `i`. Nothing
+/// is copied out of the index and no list of owners is built: the stage's input is `()` and
+/// its length is the index's, the same shape `frontend_facts::extract` uses over the
+/// definitions table.
+///
+/// **Which items lower, decided without touching the index.** The entry's `AstOwner` is not
+/// read here. (Entries were once `Steal`s and could not be read race-free; they are plain,
+/// frozen values now, but the filter stays on `def_kind` so the set of owners the stage lowers
+/// is unchanged.) The item asks `def_kind`, which the resolver fed when
+/// it created the definition (`TyCtxt::create_def`), before this query could run, and which any
+/// thread may read. Definitions whose kind is never a HIR owner (fields, variants, constructors,
+/// generic parameters, anonymous constants, closures, opaque types, synthetic coroutine bodies)
+/// are skipped: `lower_to_hir` on one of those only falls back to its parent owner, which has
+/// an item of its own. What is left is exactly the index's `Crate`, `Item`, `TraitItem`,
+/// `ImplItem` and `ForeignItem` entries, plus the `NestedUseTree` entries, which are `use`
+/// definitions like their parent and are lowered by it (see below). One kind of definition is
+/// in neither group: an item written inside an attribute's value expression. The def collector
+/// walks attributes and gives it a definition, the indexer does not (`visit_attribute`), so its
+/// entry is `NonOwner` and its query falls back to a parent whose HIR does not list it, and
+/// panics. The serial walk never asks for it; this stage does. The parser has already refused
+/// such an attribute with an error ("attribute value must be a literal"), and the facts
+/// extractor, which reads `def_span` for every definition, asked for it before this stage
+/// existed, so it is not a new failure for that entry point, but it is one for `check_source`.
+///
+/// **Owners do not depend on each other's lowering, with two exceptions, and neither forces an
+/// order.** Each owner's query reads only its own index entry, takes only its own disambiguator
+/// (`LoweringContext::new`), builds its HIR in a context of its own (`next_node_id`,
+/// `node_id_to_def_id`, `children`, `delayed_lints`, `bodies`, `attrs` are all fields of that
+/// context), allocates in the thread's own `hir_arena` (a `WorkerLocal`), and reads the resolver
+/// only through `&`. The exceptions are ordinary query dependencies, which the query system
+/// already orders: a nested `use` tree's query waits for its parent `use` item's
+/// (`fallback_to_ancestor`), and a delegation (`reuse`) item reads the signature and generics of
+/// the item it delegates to, which lowers that item. A thread that needs an owner another
+/// thread is lowering waits for that query; one that needs an owner nobody has started lowers
+/// it itself.
+///
+/// **Diagnostics come out in index order.** What an owner's lowering emits is its item's
+/// output, forwarded in item order by the stage's replay. The one way an owner's lowering can
+/// land in another item's slot is the dependency above: a nested `use` tree's item, run before
+/// its parent's, lowers the parent. The only definitions between a `use` item and its nested
+/// trees are its other nested trees, which emit nothing of their own, so the order printed is
+/// the same. A delegation lowering its target out of order can move the target's lowering
+/// diagnostics to the delegation's slot; that needs the unstable `fn_delegation` feature and a
+/// target with a lowering error.
+pub fn lower_every_owner(tcx: TyCtxt<'_>) {
+    // Resolution, early lints and the index itself, on this thread, before any item runs: every
+    // item needs them, and the first item to ask would otherwise compute them inside its own
+    // slot. `registered_attr_tools` is read by every `LoweringContext::new`; asked for here so
+    // that whatever it emits is emitted before the stage, not by whichever item gets there first.
+    let len = tcx.index_ast(()).1.len();
+    let _ = tcx.registered_attr_tools(());
+    // A definition weighs its source (`sync::cost::TYPECK`, lowering's assumed rate), read from
+    // the resolver's span table with no query. The crate root weighs one: its own lowering is its
+    // item list, and its span is the whole file. A definition nested in another (a field, a
+    // closure, a parameter) lowers nothing of its own yet weighs its source again, which
+    // overestimates by at most the nesting, and errs towards fanning out.
+    use crate::rustc_data_structures::sync::cost;
+    let weight = |_: &(), index: usize| {
+        if index == 0 { 1 } else { tcx.stage_weight(LocalDefId::new(index), cost::TYPECK) }
     };
-
-    tcx.sess.time("drop_ast", || mem::drop(node));
-
-    item
+    crate::rustc_data_structures::sync::run_stage_weighted((), len, weight, |_, index| {
+        let def_id = LocalDefId::new(index);
+        match tcx.def_kind(def_id) {
+            DefKind::Variant
+            | DefKind::Field
+            | DefKind::Ctor(..)
+            | DefKind::TyParam
+            | DefKind::ConstParam
+            | DefKind::LifetimeParam
+            | DefKind::AnonConst
+            | DefKind::OpaqueTy
+            | DefKind::Closure
+            | DefKind::SyntheticCoroutineBody => {}
+            _ => {
+                let _ = tcx.lower_to_hir(def_id);
+            }
+        }
+    });
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -2107,7 +2225,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let (opaque_ty_node_id, allowed_features) = match coro.kind {
             CoroutineKind::Async | CoroutineKind::Gen => (coro.return_impl_trait_id, None),
             CoroutineKind::AsyncGen => {
-                (coro.return_impl_trait_id, Some(Arc::clone(&self.allow_async_iterator)))
+                (coro.return_impl_trait_id, Some(Arc::clone(&self.allow.async_iterator)))
             }
         };
 

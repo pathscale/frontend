@@ -11,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use eko::path::PathBuf;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::str::FromStr;
 
 use crate::polonius_engine::{Algorithm, AllFacts, Output};
@@ -94,7 +94,7 @@ pub(crate) fn replace_regions_in_mir<'tcx>(
 pub(crate) fn compute_closure_requirements_modulo_opaques<'tcx>(
     infcx: &BorrowckInferCtxt<'tcx>,
     body: &Body<'tcx>,
-    location_map: Rc<DenseLocationMap>,
+    location_map: Arc<DenseLocationMap>,
     universal_region_relations: &Frozen<UniversalRegionRelations<'tcx>>,
     constraints: &MirTypeckRegionConstraints<'tcx>,
 ) -> Option<ClosureRegionRequirements<'tcx>> {
@@ -126,7 +126,7 @@ pub(crate) fn compute_regions<'tcx>(
     location_table: &PoloniusLocationTable,
     move_data: &MoveData<'tcx>,
     borrow_set: &BorrowSet<'tcx>,
-    location_map: Rc<DenseLocationMap>,
+    location_map: Arc<DenseLocationMap>,
     universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
     constraints: MirTypeckRegionConstraints<'tcx>,
     mut polonius_facts: Option<AllFacts<RustcFacts>>,

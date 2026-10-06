@@ -129,6 +129,16 @@ impl<T: Copy> LockFreeAppendOnlyVec<T> {
         len
     }
 
+    /// Elements published so far. Grows only; a reader may see a length a concurrent push
+    /// has just passed, never one it has not reached.
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, index: usize) -> Option<T> {
         // The length only grows, so reading it once and independently of the element is
         // sound: the worst case is a stale value and a spurious `None` for an element some
@@ -188,6 +198,16 @@ impl<I: Idx, T: Copy> AppendOnlyIndexVec<I, T> {
     pub fn get(&self, i: I) -> Option<T> {
         let i = i.index();
         self.vec.get(i)
+    }
+
+    /// Elements published so far; see `LockFreeAppendOnlyVec::len`. Every index below it
+    /// reads back `Some` from `get` on this thread.
+    pub fn len(&self) -> usize {
+        self.vec.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vec.is_empty()
     }
 }
 

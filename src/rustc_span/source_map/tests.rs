@@ -222,7 +222,12 @@ fn span_merging_fail() {
 /// Tests loading an external source file that requires normalization.
 #[test]
 fn t10() {
-    let sm = SourceMap::new(FilePathMapping::empty());
+    let sm = SourceMap::with_inputs(SourceMapInputs {
+        file_loader: Box::new(RealFileLoader),
+        path_mapping: FilePathMapping::empty(),
+        hash_kind: Some(SourceFileHashAlgorithm::Md5),
+        checksum_hash_kind: None,
+    });
     let unnormalized = "first line.\r\nsecond line";
     let normalized = "first line.\nsecond line";
 
@@ -230,7 +235,7 @@ fn t10() {
 
     assert_eq!(src_file.src.as_ref().unwrap().as_ref(), normalized);
     assert!(
-        src_file.src_hash.matches(unnormalized),
+        src_file.src_hash.is_some_and(|hash| hash.matches(unnormalized)),
         "src_hash should use the source before normalization"
     );
 

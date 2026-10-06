@@ -73,6 +73,18 @@ struct Edge {
     target: Index,
 }
 
+impl<T: Eq + Hash> TransitiveRelationBuilder<T> {
+    /// A builder with room for `elements` distinct elements. Only the element set is
+    /// pre-sized: it keeps insertion order, so its capacity is unobservable. The edge set is
+    /// left alone, because its iteration order depends on its capacity.
+    pub fn with_element_capacity(elements: usize) -> Self {
+        TransitiveRelationBuilder {
+            elements: FxIndexSet::with_capacity_and_hasher(elements, Default::default()),
+            edges: Default::default(),
+        }
+    }
+}
+
 impl<T: Eq + Hash + Copy> TransitiveRelationBuilder<T> {
     pub fn is_empty(&self) -> bool {
         self.edges.is_empty()

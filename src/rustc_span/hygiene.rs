@@ -774,12 +774,22 @@ impl SyntaxContext {
     /// or `None` if we privacy check as usual (i.e., not w.r.t. a macro definition scope).
     #[inline]
     pub fn adjust(&mut self, expn_id: ExpnId) -> Option<ExpnId> {
+        // Fast path, no lock: the root context's outer expansion is the root, which every
+        // expansion descends from, so `HygieneData::adjust` removes no mark and returns `None`.
+        if self.is_root() {
+            return None;
+        }
         HygieneData::with(|data| data.adjust(self, expn_id))
     }
 
     /// Like `SyntaxContext::adjust`, but also normalizes `self` to macros 2.0.
     #[inline]
     pub fn normalize_to_macros_2_0_and_adjust(&mut self, expn_id: ExpnId) -> Option<ExpnId> {
+        // Fast path, no lock: the root context normalizes to itself and adjusts to itself
+        // (see `adjust`).
+        if self.is_root() {
+            return None;
+        }
         HygieneData::with(|data| {
             *self = data.normalize_to_macros_2_0(*self);
             data.adjust(self, expn_id)
@@ -861,6 +871,10 @@ impl SyntaxContext {
     }
 
     pub fn hygienic_eq(self, other: SyntaxContext, expn_id: ExpnId) -> bool {
+        // Fast path, no lock: both roots normalize and adjust to the root.
+        if self.is_root() && other.is_root() {
+            return true;
+        }
         HygieneData::with(|data| {
             let mut self_normalized = data.normalize_to_macros_2_0(self);
             data.adjust(&mut self_normalized, expn_id);
@@ -889,6 +903,11 @@ impl SyntaxContext {
     /// See [`SyntaxContextData::outer_expn`]
     #[inline]
     pub fn outer_expn(self) -> ExpnId {
+        // Fast path, no lock: the root context's data is never mutated but for
+        // `dollar_crate_name` (see `HygieneData::new`), and its outer expansion is the root.
+        if self.is_root() {
+            return ExpnId::root();
+        }
         HygieneData::with(|data| data.outer_expn(self))
     }
 
@@ -912,6 +931,13 @@ impl SyntaxContext {
 
     #[inline]
     pub fn edition(self) -> Edition {
+        // Fast path, no lock: the root context's outer expansion is the root expansion, whose
+        // data is set once in `HygieneData::new` from the session's edition and never reset
+        // (`LocalExpnId::set_expn_data` asserts it is unset), and `SessionGlobals` keeps a copy
+        // of that edition beside the lock.
+        if self.is_root() {
+            return with_session_globals(|session_globals| session_globals.root_edition);
+        }
         HygieneData::with(|data| data.expn_data(data.outer_expn(self)).edition)
     }
 

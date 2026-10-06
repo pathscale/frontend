@@ -177,7 +177,7 @@ pub fn provide(providers: &mut Providers) {
 }
 
 fn lint_mod(tcx: TyCtxt<'_>, mod_id: LocalModId) {
-    late_lint_mod(tcx, mod_id, BuiltinCombinedLateLintModPass::new());
+    late_lint_mod(tcx, mod_id, BuiltinCombinedLateLintModPass::new);
 }
 
 early_lint_methods!(

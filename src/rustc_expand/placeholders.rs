@@ -224,10 +224,22 @@ impl PlaceholderExpander {
     fn remove(&mut self, id: ast::NodeId) -> AstFragment {
         self.expanded_fragments.remove(&id).unwrap()
     }
+
+    /// Every fragment has been put in place (or none was ever added). A walk from here can
+    /// only find nodes it leaves unchanged: a placeholder would have no fragment and `remove`
+    /// would panic. So each hook returns its node as it is instead of walking the rest of
+    /// the tree, which after the last macro of a crate is usually most of it.
+    #[inline]
+    fn exhausted(&self) -> bool {
+        self.expanded_fragments.is_empty()
+    }
 }
 
 impl MutVisitor for PlaceholderExpander {
     fn flat_map_arm(&mut self, arm: ast::Arm) -> SmallVec<[ast::Arm; 1]> {
+        if self.exhausted() {
+            return smallvec![arm];
+        }
         if arm.is_placeholder {
             self.remove(arm.id).make_arms()
         } else {
@@ -236,6 +248,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_expr_field(&mut self, field: ast::ExprField) -> SmallVec<[ast::ExprField; 1]> {
+        if self.exhausted() {
+            return smallvec![field];
+        }
         if field.is_placeholder {
             self.remove(field.id).make_expr_fields()
         } else {
@@ -244,6 +259,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_pat_field(&mut self, fp: ast::PatField) -> SmallVec<[ast::PatField; 1]> {
+        if self.exhausted() {
+            return smallvec![fp];
+        }
         if fp.is_placeholder {
             self.remove(fp.id).make_pat_fields()
         } else {
@@ -255,6 +273,9 @@ impl MutVisitor for PlaceholderExpander {
         &mut self,
         param: ast::GenericParam,
     ) -> SmallVec<[ast::GenericParam; 1]> {
+        if self.exhausted() {
+            return smallvec![param];
+        }
         if param.is_placeholder {
             self.remove(param.id).make_generic_params()
         } else {
@@ -263,6 +284,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_param(&mut self, p: ast::Param) -> SmallVec<[ast::Param; 1]> {
+        if self.exhausted() {
+            return smallvec![p];
+        }
         if p.is_placeholder {
             self.remove(p.id).make_params()
         } else {
@@ -271,6 +295,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_field_def(&mut self, sf: ast::FieldDef) -> SmallVec<[ast::FieldDef; 1]> {
+        if self.exhausted() {
+            return smallvec![sf];
+        }
         if sf.is_placeholder {
             self.remove(sf.id).make_field_defs()
         } else {
@@ -279,6 +306,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_variant(&mut self, variant: ast::Variant) -> SmallVec<[ast::Variant; 1]> {
+        if self.exhausted() {
+            return smallvec![variant];
+        }
         if variant.is_placeholder {
             self.remove(variant.id).make_variants()
         } else {
@@ -290,6 +320,9 @@ impl MutVisitor for PlaceholderExpander {
         &mut self,
         predicate: ast::WherePredicate,
     ) -> SmallVec<[ast::WherePredicate; 1]> {
+        if self.exhausted() {
+            return smallvec![predicate];
+        }
         if predicate.is_placeholder {
             self.remove(predicate.id).make_where_predicates()
         } else {
@@ -298,6 +331,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_item(&mut self, item: Box<ast::Item>) -> SmallVec<[Box<ast::Item>; 1]> {
+        if self.exhausted() {
+            return smallvec![item];
+        }
         match item.kind {
             ast::ItemKind::MacCall(_) => self.remove(item.id).make_items(),
             _ => walk_flat_map_item(self, item),
@@ -309,6 +345,9 @@ impl MutVisitor for PlaceholderExpander {
         item: Box<ast::AssocItem>,
         ctxt: AssocCtxt,
     ) -> SmallVec<[Box<ast::AssocItem>; 1]> {
+        if self.exhausted() {
+            return smallvec![item];
+        }
         match item.kind {
             ast::AssocItemKind::MacCall(_) => {
                 let it = self.remove(item.id);
@@ -326,6 +365,9 @@ impl MutVisitor for PlaceholderExpander {
         &mut self,
         item: Box<ast::ForeignItem>,
     ) -> SmallVec<[Box<ast::ForeignItem>; 1]> {
+        if self.exhausted() {
+            return smallvec![item];
+        }
         match item.kind {
             ast::ForeignItemKind::MacCall(_) => self.remove(item.id).make_foreign_items(),
             _ => walk_flat_map_foreign_item(self, item),
@@ -333,6 +375,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn visit_expr(&mut self, expr: &mut ast::Expr) {
+        if self.exhausted() {
+            return;
+        }
         match expr.kind {
             ast::ExprKind::MacCall(_) => *expr = *self.remove(expr.id).make_expr(),
             _ => walk_expr(self, expr),
@@ -340,6 +385,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn visit_method_receiver_expr(&mut self, expr: &mut ast::Expr) {
+        if self.exhausted() {
+            return;
+        }
         match expr.kind {
             ast::ExprKind::MacCall(_) => *expr = *self.remove(expr.id).make_method_receiver_expr(),
             _ => walk_expr(self, expr),
@@ -347,6 +395,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn filter_map_expr(&mut self, expr: Box<ast::Expr>) -> Option<Box<ast::Expr>> {
+        if self.exhausted() {
+            return Some(expr);
+        }
         match expr.kind {
             ast::ExprKind::MacCall(_) => self.remove(expr.id).make_opt_expr(),
             _ => walk_filter_map_expr(self, expr),
@@ -354,6 +405,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn flat_map_stmt(&mut self, stmt: ast::Stmt) -> SmallVec<[ast::Stmt; 1]> {
+        if self.exhausted() {
+            return smallvec![stmt];
+        }
         let (style, mut stmts) = match stmt.kind {
             ast::StmtKind::MacCall(mac) => (mac.style, self.remove(stmt.id).make_stmts()),
             _ => return walk_flat_map_stmt(self, stmt),
@@ -400,6 +454,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn visit_pat(&mut self, pat: &mut ast::Pat) {
+        if self.exhausted() {
+            return;
+        }
         match pat.kind {
             ast::PatKind::MacCall(_) => *pat = *self.remove(pat.id).make_pat(),
             _ => walk_pat(self, pat),
@@ -407,6 +464,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn visit_ty(&mut self, ty: &mut ast::Ty) {
+        if self.exhausted() {
+            return;
+        }
         match ty.kind {
             ast::TyKind::MacCall(_) => *ty = *self.remove(ty.id).make_ty(),
             _ => walk_ty(self, ty),
@@ -414,6 +474,9 @@ impl MutVisitor for PlaceholderExpander {
     }
 
     fn visit_crate(&mut self, krate: &mut ast::Crate) {
+        if self.exhausted() {
+            return;
+        }
         if krate.is_placeholder {
             *krate = self.remove(krate.id).make_crate();
         } else {

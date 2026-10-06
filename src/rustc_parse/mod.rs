@@ -110,7 +110,7 @@ pub fn unwrap_or_emit_fatal<T>(expr: Result<T, Vec<Diag<'_>>>) -> T {
 pub fn new_parser_from_source_str(
     psess: &ParseSess,
     name: FileName,
-    source: String,
+    source: impl Into<Arc<String>>,
     strip_tokens: StripTokens,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let source_file = psess.source_map().new_source_file(name, source);
@@ -206,7 +206,7 @@ pub fn utf8_error<E: EmissionGuarantee>(
     } else {
         note.clone()
     };
-    let contents = String::from_utf8_lossy(contents).to_string();
+    let contents = String::from_utf8_lossy(contents).into_owned();
 
     // We only emit this error for files in the current session
     // so the working directory can only be the current working directory
@@ -259,7 +259,7 @@ fn new_parser_from_source_file(
 pub fn source_str_to_stream(
     psess: &ParseSess,
     name: FileName,
-    source: String,
+    source: impl Into<Arc<String>>,
     override_span: Option<Span>,
 ) -> Result<TokenStream, Vec<Diag<'_>>> {
     let source_file = psess.source_map().new_source_file(name, source);
@@ -286,7 +286,14 @@ fn source_file_to_stream<'psess>(
         ));
     });
 
-    lexer::lex_token_trees(psess, src.as_str(), source_file.start_pos, override_span, strip_tokens)
+    lexer::lex_token_trees(
+        psess,
+        src.as_str(),
+        Some(src),
+        source_file.start_pos,
+        override_span,
+        strip_tokens,
+    )
 }
 
 /// Runs the given subparser `f` on the tokens of the given `attr`'s item.
@@ -365,7 +372,7 @@ fn lex_token_trees_for_span(
     span: Span,
 ) -> Option<impl Iterator<Item = TokenTree>> {
     let src = psess.source_map().span_to_snippet(span).ok()?;
-    let stream = match lexer::lex_token_trees(psess, &src, span.lo(), None, StripTokens::Nothing) {
+    let stream = match lexer::lex_token_trees(psess, &src, None, span.lo(), None, StripTokens::Nothing) {
         Ok(stream) => stream,
         Err(errs) => {
             errs.into_iter().for_each(|err| err.cancel());

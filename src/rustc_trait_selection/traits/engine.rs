@@ -422,9 +422,12 @@ where
         def_id: LocalDefId,
     ) -> Result<FxIndexSet<Ty<'tcx>>, ThinVec<E>> {
         let tcx = self.infcx.tcx;
-        let mut implied_bounds = FxIndexSet::default();
+        let assumed_wf_types = tcx.assumed_wf_types(def_id);
+        // At most one entry per assumed type; an index set's capacity is unobservable.
+        let mut implied_bounds =
+            FxIndexSet::with_capacity_and_hasher(assumed_wf_types.len(), Default::default());
         let mut errors = ThinVec::new();
-        for &(ty, span) in tcx.assumed_wf_types(def_id) {
+        for &(ty, span) in assumed_wf_types {
             // FIXME(@lcnr): rustc currently does not check wf for types
             // pre-normalization, meaning that implied bounds are sometimes
             // incorrect. See #100910 for more details.

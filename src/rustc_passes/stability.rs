@@ -9,6 +9,7 @@ use core::num::NonZero;
 use crate::rustc_ast_lowering::stability::extern_abi_stability;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::unord::{ExtendUnord, UnordMap, UnordSet};
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_feature::{EnabledLangFeature, EnabledLibFeature, UNSTABLE_LANG_FEATURES};
 use crate::rustc_hir::attrs::{AttributeKind, DeprecatedSince};
 use crate::rustc_hir::def::{DefKind, Res};
@@ -34,6 +35,7 @@ use crate::rustc_span::{Span, Symbol, sym};
 use tracing::instrument;
 
 use crate::rustc_passes::diagnostics;
+use crate::rustc_passes::item_likes::{item_like_count, item_like_weight, visit_item_like};
 
 #[derive(PartialEq)]
 enum AnnotationKind {
@@ -526,18 +528,42 @@ impl<'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'tcx> {
 
 /// Cross-references the feature names of unstable APIs with enabled
 /// features and possibly prints errors.
+///
+/// Each walk is a stage over the module's item-likes, in the order
+/// `hir_visit_item_likes_in_module` walks them, each item-like with a visitor of its own.
+///
+/// Neither visitor has state: `Checker` is a `TyCtxt` and `MissingStabilityAnnotations` a
+/// `TyCtxt` and a frozen `&EffectiveVisibilities`, and with `OnlyBodies` a nested item is not
+/// walked from its parent but visited as an item-like of its own. So an item-like's checks read
+/// nothing another item-like wrote, and the stages' item order is the walk's order. The two
+/// walks and the crate-root checks keep their serial order: the `Checker` stage, then the
+/// crate's own missing-stability check, then the `MissingStabilityAnnotations` stage.
 fn check_mod_unstable_api_usage(tcx: TyCtxt<'_>, mod_id: LocalModId) {
-    tcx.hir_visit_item_likes_in_module(mod_id, &mut Checker { tcx });
+    let module = tcx.hir_module_items(mod_id);
+    run_stage_weighted(
+        module,
+        item_like_count(module),
+        |module, index| item_like_weight(tcx, module, index, cost::WALK),
+        |module, index| visit_item_like(tcx, module, index, &mut Checker { tcx }),
+    );
 
     let is_staged_api =
         tcx.sess.opts.unstable_opts.force_unstable_if_unmarked || tcx.features().staged_api();
     if is_staged_api {
-        let effective_visibilities = &tcx.effective_visibilities(());
-        let mut missing = MissingStabilityAnnotations { tcx, effective_visibilities };
+        let effective_visibilities = tcx.effective_visibilities(());
         if mod_id.is_top_level_module() {
-            missing.check_missing_stability(CRATE_DEF_ID);
+            MissingStabilityAnnotations { tcx, effective_visibilities }
+                .check_missing_stability(CRATE_DEF_ID);
         }
-        tcx.hir_visit_item_likes_in_module(mod_id, &mut missing);
+        run_stage_weighted(
+            module,
+            item_like_count(module),
+            |module, index| item_like_weight(tcx, module, index, cost::WALK),
+            |module, index| {
+                let mut missing = MissingStabilityAnnotations { tcx, effective_visibilities };
+                visit_item_like(tcx, module, index, &mut missing)
+            },
+        );
     }
 
     if mod_id.is_top_level_module() {
