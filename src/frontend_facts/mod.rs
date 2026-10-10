@@ -688,6 +688,15 @@ pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
     extract_with(tcx, false, None)
 }
 
+/// [`extract_items`] when the compiler input has an analyzer-appended source suffix.
+/// `original_end` is the exact byte boundary where that suffix begins in the input file.
+pub fn extract_items_with_synthetic_suffix(
+    tcx: TyCtxt<'_>,
+    original_end: usize,
+) -> CrateFacts {
+    extract_with(tcx, false, Some(original_end))
+}
+
 fn extract_with(
     tcx: TyCtxt<'_>,
     bodies: bool,
