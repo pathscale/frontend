@@ -142,8 +142,17 @@ pub enum FactKind {
 /// kinds it describes and is empty for every other kind.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Definition {
-    /// Printed once; every other fact that names this definition shares it.
+    /// The compiler's identity key, printed once and shared by every fact that names this
+    /// definition. It is not source spelling. `identity_complete` tracks only whether this key
+    /// is tainted by an analyzer-injected lang-item placeholder; `true` does not establish a
+    /// Cargo package, target or globally canonical identity. When false, this key is valid only
+    /// for joins within this result.
     pub def_path: Arc<str>,
+    /// Whether `def_path` is free of analyzer-injected lang-item placeholder taint. `true` does
+    /// not establish a Cargo package, target or globally canonical identity. The compiler key
+    /// is retained when false so response-local joins still work.
+    #[serde(default)]
+    pub identity_complete: bool,
     pub name: String,
     pub kind: FactKind,
     pub span: ByteSpan,
@@ -251,6 +260,10 @@ pub enum VariantKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModuleNames {
     pub module_def_path: Arc<str>,
+    /// Whether the module path is free of analyzer-injected lang-item placeholder taint. `true`
+    /// does not establish a Cargo package, target or globally canonical identity.
+    #[serde(default)]
+    pub module_identity_complete: bool,
     pub names: Vec<ModuleName>,
 }
 
@@ -261,6 +274,10 @@ pub struct ModuleName {
     pub namespace: Namespace,
     /// What the name resolves to, printed as a def path.
     pub target_def_path: Arc<str>,
+    /// Whether the target path is free of analyzer-injected lang-item placeholder taint. `true`
+    /// does not establish a Cargo package, target or globally canonical identity.
+    #[serde(default)]
+    pub target_identity_complete: bool,
     /// Visible outside the crate, as `pub` makes it.
     pub public: bool,
 }
@@ -279,6 +296,10 @@ pub enum Namespace {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MacroFacts {
     pub def_path: Arc<str>,
+    /// Whether the macro path is free of analyzer-injected lang-item placeholder taint. `true`
+    /// does not establish a Cargo package, target or globally canonical identity.
+    #[serde(default)]
+    pub identity_complete: bool,
     pub name: String,
     /// `#[macro_export]`: callable from other crates as `crate_name::name!`.
     pub exported: bool,
@@ -371,6 +392,10 @@ pub struct FieldSignature {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub module_def_path: Arc<str>,
+    /// Whether the containing module path is free of analyzer-injected lang-item placeholder
+    /// taint. `true` does not establish a Cargo package, target or globally canonical identity.
+    #[serde(default)]
+    pub module_identity_complete: bool,
     pub path: String,
     pub span: ByteSpan,
     pub reexport: bool,
@@ -383,8 +408,21 @@ pub struct Import {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Impl {
     pub def_path: Arc<str>,
+    /// Whether `def_path` is free of analyzer-injected lang-item placeholder taint. `true` does
+    /// not establish a Cargo package, target or globally canonical identity. The compiler key
+    /// is retained when false so response-local joins still work.
+    #[serde(default)]
+    pub identity_complete: bool,
     pub self_type: String,
+    /// Resolved trait identity, omitted when resolution only reached an analyzer-injected
+    /// placeholder. `trait_ref` keeps the spelling written by the source.
     pub trait_def_path: Option<Arc<str>>,
+    /// Whether the resolved trait path is free of analyzer-injected lang-item placeholder
+    /// taint. False when that placeholder target was omitted or the retained trait path inherits
+    /// a tainted source context. `true` does not establish a Cargo package, target or globally
+    /// canonical identity.
+    #[serde(default)]
+    pub trait_identity_complete: bool,
     /// The trait as written, generic arguments included: `SliceIndex<str>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trait_ref: Option<String>,
@@ -425,6 +463,11 @@ pub struct ImplItem {
     pub name: String,
     pub kind: FactKind,
     pub def_path: Arc<str>,
+    /// Whether this compiler identity is free of analyzer-injected lang-item placeholder taint.
+    /// `true` does not establish a Cargo package, target or globally canonical identity. The
+    /// raw key remains shared with the corresponding definition.
+    #[serde(default)]
+    pub identity_complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
 }
@@ -442,9 +485,18 @@ pub enum RefKind {
 pub struct Reference {
     /// Shared by every reference out of the same body.
     pub from_def_path: Arc<str>,
+    /// Whether the source item's compiler identity is free of analyzer-injected lang-item
+    /// placeholder taint. `true` does not establish a Cargo package, target or globally
+    /// canonical identity.
+    #[serde(default)]
+    pub from_identity_complete: bool,
     /// Shared by every reference to the same definition out of the same body, and with the
     /// definition's own fact when it is local.
     pub to_def_path: Arc<str>,
+    /// Whether the target's compiler identity is free of analyzer-injected lang-item placeholder
+    /// taint. `true` does not establish a Cargo package, target or globally canonical identity.
+    #[serde(default)]
+    pub to_identity_complete: bool,
     pub kind: RefKind,
     pub span: ByteSpan,
 }
@@ -478,19 +530,28 @@ pub struct CrateFacts {
     /// Def paths of bodies whose type check stopped on a fatal error or was skipped because an
     /// unresolved trait impl left its compiler queries unavailable, so none of their references
     /// are listed. A body whose type check merely reported errors is not here: its references
-    /// that did resolve are kept.
+    /// that did resolve are kept. These keys correlate omitted work within this result; they do
+    /// not establish source/dependency identity.
     #[serde(default)]
     pub unanalyzed_bodies: Vec<Arc<str>>,
-    /// Def paths whose const values were requested but left uncomputed as too generic.
+    /// Def paths whose const values were requested but left uncomputed as too generic. These
+    /// keys correlate omitted work within this result; they do not establish source/dependency
+    /// identity.
     #[serde(default)]
     pub uncomputed_consts: Vec<String>,
     /// The facts are whole: reading lost nothing. What that is measured by depends on the read.
     ///
     /// **A strict read** is complete when no error was emitted, every body was type checked,
     /// and visibility was established for every associated item.
-    /// When false, `references` may be a lower bound. Definitions, imports and impls remain
-    /// present, but an unresolved trait impl can leave `public` and `exported` as conservative
-    /// lower bounds, called out in `diagnostics`.
+    /// When false, `references` may be a lower bound. Source-authored definitions, imports and
+    /// impls remain present, but an unresolved trait impl can leave `public` and `exported` as
+    /// conservative lower bounds. If analyzer-injected lang-item placeholders were needed,
+    /// their definitions and imports are omitted; namespace names, references or impl trait
+    /// targets resolved through them are called out as incomplete in `diagnostics`. Any
+    /// source-authored definition, impl item, macro, module name or import context, and each
+    /// reference endpoint, whose compiler identity depends on a placeholder keeps its compiler
+    /// key for joins, with its identity flag false; it is not a proven source spelling or
+    /// dependency identity.
     ///
     /// **A library read** (the `library` field of [`CrateRead`]) judges nothing, and most of
     /// what it still emits is bookkeeping about source it does not know: an ABI, an attribute,
@@ -615,7 +676,7 @@ fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
 /// Two workers that want the same result either find it done or wait for the one computing it.
 /// A query that unwound is poisoned for both, which is how the serial walk already behaved.
 pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
-    extract_with(tcx, true)
+    extract_with(tcx, true, None)
 }
 
 /// [`extract`] without the bodies: definitions, imports, impls, module names and macros, and
@@ -624,10 +685,14 @@ pub fn extract(tcx: TyCtxt<'_>) -> CrateFacts {
 /// `unanalyzed_bodies` stay empty, and `complete` says only that no error was emitted, or in a
 /// library read that reading lost nothing (see [`CrateFacts::complete`]).
 pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
-    extract_with(tcx, false)
+    extract_with(tcx, false, None)
 }
 
-fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
+fn extract_with(
+    tcx: TyCtxt<'_>,
+    bodies: bool,
+    synthetic_start: Option<usize>,
+) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
     facts.enabled_features = tcx
@@ -696,7 +761,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // keeping their own sequence.
     //
     // No definition's path is printed yet when this stage runs, so each item prints its own.
-    let printing = Names { tcx, exported, local: &[], input: input.clone() };
+    let printing = Names { tcx, exported, local: &[], input: input.clone(), synthetic_start };
     let def_facts: Vec<DefFact> = run_stage((), count, |_, i| {
         let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
         def_fact(tcx, &printing, LocalDefId { local_def_index })
@@ -707,6 +772,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
             DefFact::Definition {
                 fact,
                 visibility_known: false,
+                ..
             } => {
                 Some(fact.def_path.to_string())
             }
@@ -714,10 +780,33 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
         })
         .collect();
     visibility_gaps.sort();
+    let synthetic_impl_gap = def_facts.iter().any(|fact| {
+        matches!(fact, DefFact::Impl(pending) if pending.synthetic_trait)
+    });
 
     // From here on a local definition's path is the one the stage above printed, handed
     // forward: `def_facts` is frozen, indexed by `DefIndex`, and read in place.
-    let names = Names { tcx, exported, local: &def_facts, input };
+    let names = Names { tcx, exported, local: &def_facts, input, synthetic_start };
+    let mut synthetic_identity_paths = Vec::new();
+    for fact in &def_facts {
+        match fact {
+            DefFact::Definition { fact, .. } if !fact.identity_complete => {
+                synthetic_identity_paths.push(fact.def_path.to_string());
+            }
+            DefFact::Impl(pending) if !pending.fact.identity_complete => {
+                synthetic_identity_paths.push(pending.fact.def_path.to_string());
+                synthetic_identity_paths.extend(
+                    pending
+                        .items
+                        .iter()
+                        .map(|(_, _, item_id, _)| names.path(item_id.to_def_id()).to_string()),
+                );
+            }
+            DefFact::Impl(_) | DefFact::Definition { .. } | DefFact::Skipped => {}
+        }
+    }
+    synthetic_identity_paths.sort();
+    synthetic_identity_paths.dedup();
 
     // An impl's trait and items are local definitions the stage above may have reached after
     // the impl, so their paths are taken now, in impl order.
@@ -791,9 +880,13 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     for (i, fact) in bodies_first.into_iter().zip(first).chain(consts.into_iter().zip(second)) {
         bodies[i] = fact;
     }
+    let mut synthetic_reference_gap = false;
     for body in bodies.into_iter().flatten() {
         match body {
-            BodyFact::Checked(references) => facts.references.extend(references),
+            BodyFact::Checked { references, omitted_synthetic_targets } => {
+                facts.references.extend(references);
+                synthetic_reference_gap |= omitted_synthetic_targets;
+            }
             BodyFact::Unanalyzed(from) => facts.unanalyzed_bodies.push(from),
         }
     }
@@ -801,11 +894,19 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     // **Module names and macro definitions**, after the stages above so each target's path is
     // the one they printed. Serial: one pass over the definition table, and what each module
     // makes visible is the resolver's own answer, already computed, only read here.
+    let mut synthetic_namespace_gap = false;
     for i in 0..count {
         let local =
             LocalDefId { local_def_index: crate::rustc_span::def_id::DefIndex::from_usize(i) };
+        if names.synthetic_def(local.to_def_id()) {
+            continue;
+        }
         match tcx.def_kind(local) {
-            DefKind::Mod => facts.modules.push(module_names(tcx, &names, local)),
+            DefKind::Mod => {
+                let (module, omitted_synthetic_names) = module_names(tcx, &names, local);
+                facts.modules.push(module);
+                synthetic_namespace_gap |= omitted_synthetic_names;
+            }
             DefKind::Macro(_) => facts.macros.extend(macro_facts(tcx, &names, local)),
             _ => {}
         }
@@ -824,6 +925,34 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
             DefFact::Skipped => {}
         }
     }
+    for module in &facts.modules {
+        if !module.module_identity_complete {
+            synthetic_identity_paths.push(module.module_def_path.to_string());
+        }
+        synthetic_identity_paths.extend(
+            module
+                .names
+                .iter()
+                .filter(|name| !name.target_identity_complete)
+                .map(|name| name.target_def_path.to_string()),
+        );
+    }
+    synthetic_identity_paths.extend(
+        facts
+            .imports
+            .iter()
+            .filter(|import| !import.module_identity_complete)
+            .map(|import| import.module_def_path.to_string()),
+    );
+    synthetic_identity_paths.extend(
+        facts
+            .macros
+            .iter()
+            .filter(|macro_facts| !macro_facts.identity_complete)
+            .map(|macro_facts| macro_facts.def_path.to_string()),
+    );
+    synthetic_identity_paths.sort();
+    synthetic_identity_paths.dedup();
     // What `complete` measures depends on the read; see its doc. A strict read is whole when
     // nothing was emitted. A library read emits what it no longer judges and loses nothing by it,
     // so it counts what reading lost where that happened (`Session::record_loss`): input a parser
@@ -835,12 +964,35 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     } else {
         tcx.dcx().has_errors().is_none()
     };
-    facts.complete = whole && facts.unanalyzed_bodies.is_empty() && visibility_gaps.is_empty();
+    facts.complete = whole
+        && facts.unanalyzed_bodies.is_empty()
+        && visibility_gaps.is_empty()
+        && !synthetic_namespace_gap
+        && !synthetic_reference_gap
+        && !synthetic_impl_gap;
     facts.diagnostics.extend(visibility_gaps.into_iter().map(|def_path| {
         format!(
             "analysis incomplete: visibility for `{def_path}` is unknown because its trait path did not resolve; `public` and `exported` are only lower bounds"
         )
     }));
+    if synthetic_namespace_gap {
+        facts.diagnostics.push(
+            "analysis incomplete: one or more module names resolved to analyzer-injected lang-item placeholders and were omitted; source-visible names may be missing without a real dependency or sysroot".to_string(),
+        );
+    }
+    if synthetic_reference_gap {
+        facts.diagnostics.push(
+            "analysis incomplete: one or more references resolved to analyzer-injected lang-item placeholders and were omitted; their real dependency targets are unknown without a real dependency or sysroot".to_string(),
+        );
+    }
+    if synthetic_impl_gap {
+        facts.diagnostics.push(
+            format!(
+                "analysis incomplete: compiler identities affected by analyzer-injected lang-item placeholders (including associated and nested items) are provisional keys for joins within this result, not source spellings or globally canonical identities; trait targets resolved only through placeholders are omitted: {}",
+                synthetic_identity_paths.join(", ")
+            ),
+        );
+    }
     facts.uncomputed_consts = tcx.sess.uncomputed_consts();
 
     facts
@@ -884,6 +1036,8 @@ struct Names<'a, 'tcx> {
     local: &'a [DefFact],
     /// The input file, compared by pointer, and its name.
     input: (Arc<SourceFile>, Arc<str>),
+    /// Original byte length when this session appended analyzer-only declarations.
+    synthetic_start: Option<usize>,
 }
 
 impl<'a, 'tcx> Names<'a, 'tcx> {
@@ -916,6 +1070,36 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
         }
     }
 
+    /// Whether a span belongs wholly to the analyzer-appended source suffix.
+    ///
+    /// The suffix is tracked by its input boundary, not by its reserved names: facts from
+    /// that source are synthetic, while a similarly named item before the boundary is real.
+    fn synthetic_span(&self, span: Span) -> bool {
+        let Some(synthetic_start) = self.synthetic_start else { return false };
+        if span.is_dummy() || span.lo() >= span.hi() {
+            return false;
+        }
+        let source_map = self.tcx.sess.source_map();
+        let (lo_file, _) = source_map.lookup_byte_offset_in(span.lo());
+        let (hi_file, _) = source_map.lookup_byte_offset_in(span.hi());
+        let input = &self.input.0;
+        if !core::ptr::eq(Arc::as_ptr(input), lo_file)
+            || !core::ptr::eq(Arc::as_ptr(input), hi_file)
+        {
+            return false;
+        }
+        let start = input.original_relative_byte_pos(span.lo()).0 as usize;
+        let end = input.original_relative_byte_pos(span.hi()).0 as usize;
+        let source_end = input.original_relative_byte_pos(input.end_position()).0 as usize;
+        start >= synthetic_start && start < end && end <= source_end
+    }
+
+    fn synthetic_def(&self, def_id: DefId) -> bool {
+        def_id
+            .as_local()
+            .is_some_and(|local| self.synthetic_span(self.tcx.def_span(local.to_def_id())))
+    }
+
     /// `span` as a byte range in its file. A span in the input file shares its one name.
     fn span(&self, span: Span) -> ByteSpan {
         let sm = self.tcx.sess.source_map();
@@ -929,6 +1113,20 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
         };
         ByteSpan { file, start: lo.0, end: hi.0 }
     }
+
+    /// The crate root's HIR span encloses analyzer-appended declarations. Keep its reported
+    /// container span at the exact original-input boundary; this special case does not clamp
+    /// spans from source items or expansions.
+    fn definition_span(&self, def_id: DefId, span: Span) -> ByteSpan {
+        let mut reported = self.span(span);
+        if def_id == CRATE_DEF_ID.to_def_id() {
+            if let Some(original_end) = self.synthetic_start {
+                reported.end = u32::try_from(original_end)
+                    .expect("source map positions fit in a u32 byte offset");
+            }
+        }
+        reported
+    }
 }
 
 /// The names a module makes visible, from the resolver: its items, its imports and re-exports,
@@ -938,8 +1136,9 @@ fn module_names<'tcx>(
     tcx: TyCtxt<'tcx>,
     names: &Names<'_, 'tcx>,
     local: LocalDefId,
-) -> ModuleNames {
+) -> (ModuleNames, bool) {
     use crate::rustc_hir::def::{Namespace as Ns, Res};
+    let mut omitted_synthetic_names = false;
     let visible = tcx
         .module_children_local(local)
         .iter()
@@ -947,6 +1146,10 @@ fn module_names<'tcx>(
             let Res::Def(kind, def_id) = child.res else {
                 return None;
             };
+            if names.synthetic_def(def_id) {
+                omitted_synthetic_names = true;
+                return None;
+            }
             let namespace = match kind.ns()? {
                 Ns::TypeNS => Namespace::Type,
                 Ns::ValueNS => Namespace::Value,
@@ -956,11 +1159,19 @@ fn module_names<'tcx>(
                 name: child.ident.as_str().to_string(),
                 namespace,
                 target_def_path: names.path(def_id),
+                target_identity_complete: def_path_identity_complete(tcx, names, def_id),
                 public: child.vis.is_public(),
             })
         })
         .collect();
-    ModuleNames { module_def_path: names.path(local.to_def_id()), names: visible }
+    (
+        ModuleNames {
+            module_def_path: names.path(local.to_def_id()),
+            module_identity_complete: def_path_identity_complete(tcx, names, local.to_def_id()),
+            names: visible,
+        },
+        omitted_synthetic_names,
+    )
 }
 
 /// A declarative macro's definition, its rules printed from its tokens. `None` for a macro
@@ -977,6 +1188,7 @@ fn macro_facts<'tcx>(
     };
     Some(MacroFacts {
         def_path: names.path(local.to_def_id()),
+        identity_complete: def_path_identity_complete(tcx, names, local.to_def_id()),
         name: ident.as_str().to_string(),
         exported: crate::find_attr!(tcx, local, MacroExport { .. }),
         builtin: crate::find_attr!(tcx, local, RustcBuiltinMacro { .. }),
@@ -999,6 +1211,8 @@ struct PendingImpl {
     fact: Impl,
     /// The implemented trait, when it is local.
     local_trait: Option<LocalDefId>,
+    /// The trait's local definition is an analyzer-injected placeholder, not a proven crate fact.
+    synthetic_trait: bool,
     /// Each item's name, kind, id and, for an associated type, its type as written, in source
     /// order.
     items: Vec<(String, FactKind, LocalDefId, Option<String>)>,
@@ -1013,12 +1227,17 @@ struct ImplPaths {
 impl PendingImpl {
     fn paths(&self, names: &Names<'_, '_>) -> ImplPaths {
         ImplPaths {
-            local_trait: self.local_trait.map(|id| names.path(id.to_def_id())),
+            local_trait: if self.synthetic_trait {
+                None
+            } else {
+                self.local_trait.map(|id| names.path(id.to_def_id()))
+            },
             items: self.items.iter().map(|(_, _, id, _)| names.path(id.to_def_id())).collect(),
         }
     }
 
     fn finish(self, paths: ImplPaths) -> Impl {
+        let identity_complete = self.fact.identity_complete;
         let mut fact = self.fact;
         if paths.local_trait.is_some() {
             fact.trait_def_path = paths.local_trait;
@@ -1027,7 +1246,13 @@ impl PendingImpl {
             .items
             .into_iter()
             .zip(paths.items)
-            .map(|((name, kind, _, value), def_path)| ImplItem { name, kind, def_path, value })
+            .map(|((name, kind, _, value), def_path)| ImplItem {
+                name,
+                kind,
+                def_path,
+                identity_complete,
+                value,
+            })
             .collect();
         fact
     }
@@ -1057,6 +1282,46 @@ fn trait_impl_visibility_unresolved(tcx: TyCtxt<'_>, local: LocalDefId) -> bool 
         })
 }
 
+/// Whether this impl's compiler identity depends on an injected trait placeholder.
+fn impl_uses_synthetic_trait(
+    tcx: TyCtxt<'_>,
+    names: &Names<'_, '_>,
+    local: LocalDefId,
+) -> bool {
+    let Node::Item(hir::Item { kind: ItemKind::Impl(implementation), .. }) =
+        tcx.hir_node_by_def_id(local)
+    else {
+        return false;
+    };
+    implementation.of_trait.is_some_and(|header| {
+        matches!(
+            header.trait_ref.path.res,
+            crate::rustc_hir::def::Res::Def(_, trait_id) if names.synthetic_def(trait_id)
+        )
+    })
+}
+
+/// Whether a local item's canonical compiler identity is independent of injected trait stubs.
+/// Local descendants share their enclosing impl's qualified path, so inspect the def-path
+/// ancestry rather than only the item's immediate HIR kind.
+fn def_path_identity_complete(tcx: TyCtxt<'_>, names: &Names<'_, '_>, def_id: DefId) -> bool {
+    let crate_def_id = CRATE_DEF_ID.to_def_id();
+    let mut current = def_id;
+    while current.is_local() && current != crate_def_id {
+        if let Some(local) = current.as_local()
+            && impl_uses_synthetic_trait(tcx, names, local)
+        {
+            return false;
+        }
+        let parent = tcx.parent(current);
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    true
+}
+
 /// Whether a body owner is an unresolved trait-impl item or a closure/const nested inside one.
 /// Stop at another item boundary so a nested local item keeps its own type-check context.
 fn body_in_unresolved_trait_impl(tcx: TyCtxt<'_>, owner: LocalDefId) -> bool {
@@ -1082,6 +1347,9 @@ fn body_in_unresolved_trait_impl(tcx: TyCtxt<'_>, owner: LocalDefId) -> bool {
 /// moved out unchanged so each index can run on its own worker.
 fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> DefFact {
     let def_id = local.to_def_id();
+    if names.synthetic_def(def_id) {
+        return DefFact::Skipped;
+    }
     let kind = tcx.def_kind(def_id);
     if let DefKind::Impl { .. } = kind {
         return DefFact::Impl(impl_fact(tcx, names, local));
@@ -1092,12 +1360,14 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
     let Some(name) = tcx.opt_item_name(def_id) else {
         return DefFact::Skipped;
     };
+    let identity_complete = def_path_identity_complete(tcx, names, def_id);
     let visibility_known = !trait_impl_visibility_unresolved(tcx, local);
     let mut definition = Definition {
         def_path: names.path(def_id),
+        identity_complete,
         name: name.to_string(),
         kind,
-        span: names.span(tcx.def_span(def_id)),
+        span: names.definition_span(def_id, tcx.def_span(def_id)),
         signature_settled: !matches!(
             tcx.def_span(def_id).ctxt().outer_expn_data().kind,
             crate::rustc_span::hygiene::ExpnKind::Macro(
@@ -1376,6 +1646,9 @@ fn import_fact<'tcx>(
     item_id: hir::ItemId,
 ) -> Option<Import> {
     let item = tcx.hir_item(item_id);
+    if names.synthetic_span(item.span) {
+        return None;
+    }
     let ItemKind::Use(path, use_kind) = item.kind else {
         return None;
     };
@@ -1395,6 +1668,7 @@ fn import_fact<'tcx>(
     let module = tcx.parent_module_from_def_id(item.owner_id.def_id);
     Some(Import {
         module_def_path: names.path(module.to_def_id()),
+        module_identity_complete: def_path_identity_complete(tcx, names, module.to_def_id()),
         path: path_str,
         span: names.span(item.span),
         reexport: tcx.local_visibility(item.owner_id.def_id).is_public(),
@@ -1406,7 +1680,7 @@ fn import_fact<'tcx>(
 /// query stopped on a fatal error or is unavailable for an unresolved trait impl, the body's
 /// own path for [`CrateFacts::unanalyzed_bodies`].
 enum BodyFact {
-    Checked(Vec<Reference>),
+    Checked { references: Vec<Reference>, omitted_synthetic_targets: bool },
     Unanalyzed(Arc<str>),
 }
 
@@ -1464,6 +1738,9 @@ fn body_fact<'tcx>(
     owner: LocalDefId,
 ) -> Option<BodyFact> {
     let body = tcx.hir_maybe_body_owned_by(owner)?;
+    if names.synthetic_def(owner.to_def_id()) {
+        return None;
+    }
     let from = names.path(owner.to_def_id());
     // This compiler state can make typeck query an unprovided parent environment and panic.
     // Keep the definition facts but report this body's missing references instead.
@@ -1480,16 +1757,23 @@ fn body_fact<'tcx>(
     let mut visitor = RefVisitor { typeck, found: &mut found };
     visitor.visit_expr(body.value);
     let mut callees: FxHashMap<DefId, Arc<str>> = FxHashMap::default();
-    let refs = found
-        .into_iter()
-        .map(|(def_id, kind, span)| Reference {
+    let mut omitted_synthetic_targets = false;
+    let mut refs = Vec::with_capacity(found.len());
+    for (def_id, kind, span) in found {
+        if names.synthetic_def(def_id) {
+            omitted_synthetic_targets = true;
+            continue;
+        }
+        refs.push(Reference {
             from_def_path: Arc::clone(&from),
+            from_identity_complete: def_path_identity_complete(tcx, names, owner.to_def_id()),
             to_def_path: Arc::clone(callees.entry(def_id).or_insert_with(|| names.path(def_id))),
+            to_identity_complete: def_path_identity_complete(tcx, names, def_id),
             kind,
             span: names.span(span),
-        })
-        .collect();
-    Some(BodyFact::Checked(refs))
+        });
+    }
+    Some(BodyFact::Checked { references: refs, omitted_synthetic_targets })
 }
 
 /// One `impl` block's fact, with its local trait and its items left for [`PendingImpl::finish`].
@@ -1519,6 +1803,9 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
     let (generics, predicates) =
         hir_impl.map(|hir_impl| generics_text(tcx, hir_impl.generics)).unwrap_or_default();
     let local_trait = trait_id.and_then(DefId::as_local);
+    let synthetic_trait = impl_uses_synthetic_trait(tcx, names, local);
+    let trait_identity_complete = !synthetic_trait
+        && trait_id.is_none_or(|trait_id| def_path_identity_complete(tcx, names, trait_id));
     // A trait from another crate has no fact here to share, so it is printed now.
     let trait_def_path = match (trait_id, local_trait) {
         (Some(trait_id), None) => Some(names.path(trait_id)),
@@ -1548,8 +1835,10 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
     PendingImpl {
         fact: Impl {
             def_path: names.path(def_id),
+            identity_complete: def_path_identity_complete(tcx, names, def_id),
             self_type,
             trait_def_path,
+            trait_identity_complete,
             trait_ref,
             generics,
             predicates,
@@ -1571,6 +1860,7 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
             items: Vec::new(),
         },
         local_trait,
+        synthetic_trait,
         items,
     }
 }
@@ -2207,14 +2497,15 @@ fn analyze_input(
     // Without a sysroot, real bodies reach lang items (`?`, ranges, `Sized`) that no_core lacks;
     // append the synthetic declarations so analysis continues instead of aborting.
     let no_sysroot = setup.sysroot.is_none() && setup.loaded.dependencies.is_empty();
-    let (input, inject_stubs) = match input {
+    let (input, inject_stubs, synthetic_start) = match input {
         Input::Str { name, input: text }
             if write_metadata.is_none() && lang_item_stubs::should_inject(&text, no_sysroot) =>
         {
+            let synthetic_start = text.len();
             let appended = alloc::format!("{}\n{}", text, lang_item_stubs::MINIMAL_LANG_ITEMS);
-            (Input::Str { name, input: Arc::new(appended) }, true)
+            (Input::Str { name, input: Arc::new(appended) }, true, Some(synthetic_start))
         }
-        other => (other, false),
+        other => (other, false, None),
     };
     let mut opts = setup.options(&input)?;
     if inject_stubs {
@@ -2252,7 +2543,7 @@ fn analyze_input(
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
             create_and_enter_global_ctxt(compiler, krate, |tcx| {
-                extracted = Some(if items_only { extract_items(tcx) } else { extract(tcx) });
+                extracted = Some(extract_with(tcx, !items_only, synthetic_start));
                 // A crate with an error is no one's dependency, so its metadata is not written.
                 // A library read is not judged: its metadata is written whatever it recorded.
                 if let Some(path) = write_metadata
@@ -2686,16 +2977,21 @@ mod tests {
         assert!(facts.uncomputed_consts.is_empty());
     }
 
-    // A definition serialized before the shape fields existed still reads, with them empty,
-    // and one with no shape writes no shape fields, so the older form round-trips unchanged.
+    // A definition serialized before the shape and identity fields existed still reads with
+    // empty shapes and unknown identity. Serialization emits the new false identity flag while
+    // still omitting empty shape fields.
     #[test]
     fn definitions_without_shape_fields_round_trip() {
         let json = r#"{"def_path":"m::f","name":"f","kind":"fn","span":{"file":"lib.rs","start":0,"end":9}}"#;
         let definition: Definition = serde_json::from_str(json).unwrap();
+        assert!(!definition.identity_complete);
         assert_eq!(definition.signature, None);
         assert!(definition.fields.is_empty());
         assert!(definition.variants.is_empty());
-        assert_eq!(serde_json::to_string(&definition).unwrap(), json);
+        assert_eq!(
+            serde_json::to_string(&definition).unwrap(),
+            r#"{"def_path":"m::f","identity_complete":false,"name":"f","kind":"fn","span":{"file":"lib.rs","start":0,"end":9}}"#
+        );
     }
 
     #[test]
