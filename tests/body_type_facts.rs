@@ -2,8 +2,11 @@ use frontend::frontend_facts::effects::{
     EnclosingBodySpanError, StaticFact, TextRange, enclosing_function_body_span,
 };
 use frontend::frontend_facts::{
-    BodyTypeCoverageGapKind, BodyTypeDesugaringKind, BodyTypeFacts, Loaded, Severity,
-    analyze_body_type_facts, analyze_body_type_facts_with_loaded,
+    BodyTypeCoverageGapKind, BodyTypeDesugaringKind, BodyTypeFacts, CrateRead, Dependency,
+    Loaded, ResolvedOptionVariantRole, ResolvedPrimitive, ResolvedTypeIdentity,
+    ResolvedVariantIdentity, Severity, analyze_body_type_facts,
+    analyze_body_type_facts_with_loaded, analyze_body_type_identity,
+    analyze_body_type_identity_with_loaded, read_crate,
 };
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
@@ -17,6 +20,28 @@ fn ready() {
 fn range(source: &str, text: &str) -> TextRange {
     let start = source.find(text).expect("source range") as u32;
     TextRange { start, end: start + text.len() as u32 }
+}
+
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("body-type-identity-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&path).expect("create test scratch directory");
+        Self(path)
+    }
+
+    fn write(&self, name: &str, source: &str) -> String {
+        let path = self.0.join(name);
+        std::fs::write(&path, source).expect("write test source");
+        path.to_str().expect("test path is UTF-8").to_owned()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn assert_generated_range_fact(
@@ -94,6 +119,140 @@ fn primitive_expression_has_a_computed_type_and_full_body_span() {
         .find(|fact| fact.span.start == literal)
         .expect("typed literal expression");
     assert_eq!(fact.ty, StaticFact::Known { value: "i32".to_string() });
+}
+
+#[test]
+fn resolved_identities_use_rustc_types_and_refuse_the_injected_option_stub() {
+    ready();
+    let shadowed = "enum Option<T> { Some(T), None } struct Wrapper<T>(T); enum Shape { Record { value: u8 } } fn body() { let selected = Option::Some(1u8); let absent: Option<u8> = Option::None; let wrapped8 = Wrapper(1u8); let wrapped16 = Wrapper(1u16); let record = Shape::Record { value: 1u8 }; selected; absent; wrapped8; wrapped16; record; }";
+    let body = range(shadowed, "{ let selected = Option::Some(1u8); let absent: Option<u8> = Option::None; let wrapped8 = Wrapper(1u8); let wrapped16 = Wrapper(1u16); let record = Shape::Record { value: 1u8 }; selected; absent; wrapped8; wrapped16; record; }");
+    let report = analyze_body_type_identity("body_identity_shadowed_option", shadowed, body);
+    assert!(!report.type_facts.fatal, "{:?}", report.type_facts);
+    assert!(!report.identity_facts.extraction_complete, "unsupported function-item identities stay explicit: {:?}", report.identity_facts);
+    assert!(report.identity_facts.coverage_gaps.iter().any(|gap| gap.kind == BodyTypeCoverageGapKind::ExpressionTypeMissing), "{:?}", report.identity_facts);
+    let identity_at = |text: &str| {
+        let start = shadowed.find(text).expect("source marker") as u32;
+        let end = start + text.len() as u32;
+        report
+            .identity_facts
+            .expressions
+            .iter()
+            .find(|fact| fact.span.start == start && fact.span.end == end)
+            .expect("source-mapped identity fact")
+    };
+    assert!(matches!(
+        &identity_at("Option::Some(1u8)").resolved_ty,
+        StaticFact::Known { value: ResolvedTypeIdentity::Adt { arguments, .. } }
+            if arguments == &[ResolvedTypeIdentity::Primitive { primitive: ResolvedPrimitive::U8 }]
+    ));
+    assert!(matches!(
+        &identity_at("1u8").resolved_ty,
+        StaticFact::Known { value: ResolvedTypeIdentity::Primitive { primitive: ResolvedPrimitive::U8 } }
+    ));
+    assert!(matches!(
+        &identity_at("Option::Some(1u8)").resolved_variant,
+        StaticFact::Known { value: Some(_) }
+    ));
+    assert!(matches!(
+        &identity_at("Option::None").resolved_variant,
+        StaticFact::Known { value: Some(_) }
+    ));
+    assert!(matches!(
+        &identity_at("Option::Some(1u8)").resolved_variant,
+        StaticFact::Known { value: Some(ResolvedVariantIdentity { option_role: None, .. }) }
+    ));
+    assert_ne!(
+        &identity_at("Wrapper(1u8)").resolved_ty,
+        &identity_at("Wrapper(1u16)").resolved_ty,
+        "generic arguments distinguish otherwise identical ADT definitions"
+    );
+    assert!(matches!(
+        &identity_at("Shape::Record { value: 1u8 }").resolved_variant,
+        StaticFact::Known { value: Some(_) }
+    ));
+
+    let injected = "fn body() -> Option<u8> { Some(1u8) }";
+    let injected_body = range(injected, "{ Some(1u8) }");
+    let injected_report = analyze_body_type_identity("body_identity_injected_option", injected, injected_body);
+    let start = injected.find("Some(1u8)").expect("synthetic Option use") as u32;
+    let end = start + "Some(1u8)".len() as u32;
+    let synthetic_fact = injected_report
+        .identity_facts
+        .expressions
+        .iter()
+        .find(|fact| fact.span.start == start && fact.span.end == end)
+        .expect("source-mapped synthetic Option expression");
+    assert!(matches!(
+        &synthetic_fact.resolved_ty,
+        StaticFact::Unknown { why } if why == "synthetic_lang_item_context"
+    ));
+    assert!(matches!(
+        &synthetic_fact.resolved_variant,
+        StaticFact::Unknown { why } if why == "synthetic_lang_item_context"
+    ));
+    assert!(!injected_report.identity_facts.extraction_complete);
+    assert!(injected_report.identity_facts.coverage_gaps.iter().any(|gap| {
+        gap.kind == BodyTypeCoverageGapKind::ExpressionTypeMissing
+    }));
+}
+
+#[test]
+fn resolved_option_lang_item_and_variant_follow_external_metadata() {
+    ready();
+    let scratch = Scratch::new("loaded-option");
+    let option_source = "#![feature(no_core, lang_items)]\n#![allow(internal_features)]\n#![no_core]\n#[lang = \"pointee_sized\"] pub trait PointeeSized {}\n#[lang = \"meta_sized\"] pub trait MetaSized: PointeeSized {}\n#[lang = \"sized\"] pub trait Sized: MetaSized {}\n#[lang = \"copy\"] pub trait Copy {}\n#[lang = \"legacy_receiver\"] pub trait LegacyReceiver {}\nimpl<T: ?Sized> LegacyReceiver for &T {}\nimpl Copy for u32 {}\n#[lang = \"Option\"] pub enum Option<T> { #[lang = \"None\"] None, #[lang = \"Some\"] Some(T) }\n";
+    let root = scratch.write("optionlang.rs", option_source);
+    let metadata = scratch.0.join("liboptionlang.rmeta");
+    let metadata_text = metadata.to_str().expect("metadata path is UTF-8").to_owned();
+    read_crate(&CrateRead {
+        edition: Some("2024"),
+        items_only: true,
+        write_metadata: Some(eko::path::Path::new(&metadata_text)),
+        ..CrateRead::new("optionlang", eko::path::Path::new(&root))
+    })
+    .expect("write the fixture's Option lang-item metadata");
+    let dependencies = [Dependency::new("optionlang", metadata_text)];
+    let source = "#![feature(no_core)]\n#![no_core]\nextern crate optionlang;\nfn body() -> optionlang::Option<u32> { let present = optionlang::Option::Some(1u32); let absent: optionlang::Option<u32> = optionlang::Option::None; present }";
+    let body = range(source, "{ let present = optionlang::Option::Some(1u32); let absent: optionlang::Option<u32> = optionlang::Option::None; present }");
+    let report = analyze_body_type_identity_with_loaded(
+        "body_identity_loaded_option",
+        source,
+        body,
+        Some("2024"),
+        Loaded { dependencies: &dependencies, ..Loaded::default() },
+    );
+    let marker = "optionlang::Option::Some(1u32)";
+    let start = source.find(marker).expect("variant expression") as u32;
+    let end = start + marker.len() as u32;
+    let expression = report
+        .identity_facts
+        .expressions
+        .iter()
+        .find(|fact| fact.span.start == start && fact.span.end == end)
+        .expect("source-mapped Option expression");
+    let StaticFact::Known { value: ResolvedTypeIdentity::OptionLangItem { definition, argument } } = &expression.resolved_ty else {
+        panic!("external Option lang item was not resolved: {expression:?}");
+    };
+    assert!(matches!(argument.as_ref(), ResolvedTypeIdentity::Primitive { primitive: ResolvedPrimitive::U32 }));
+    let StaticFact::Known { value: Some(variant) } = &expression.resolved_variant else {
+        panic!("external Option variant was not resolved: {expression:?}");
+    };
+    assert_eq!(&variant.parent_enum, definition);
+    assert_eq!(variant.option_role, Some(ResolvedOptionVariantRole::Some));
+
+    let marker = "optionlang::Option::None";
+    let start = source.find(marker).expect("None variant expression") as u32;
+    let end = start + marker.len() as u32;
+    let none_expression = report
+        .identity_facts
+        .expressions
+        .iter()
+        .find(|fact| fact.span.start == start && fact.span.end == end)
+        .expect("source-mapped None expression");
+    let StaticFact::Known { value: Some(variant) } = &none_expression.resolved_variant else {
+        panic!("external Option None variant was not resolved: {none_expression:?}");
+    };
+    assert_eq!(variant.option_role, Some(ResolvedOptionVariantRole::None));
 }
 
 #[test]
