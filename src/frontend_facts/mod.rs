@@ -3115,17 +3115,55 @@ pub struct BodyTypeIdentityReport {
     pub identity_facts: BodyTypeIdentityFacts,
 }
 
-/// Type and variant identities observed for source-owned expressions in one body.
+/// Type and variant identities observed for source-owned expressions and constructor patterns
+/// in one body.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BodyTypeIdentityFacts {
     pub body_span: Option<ByteSpan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expressions: Vec<BodyExpressionIdentityFact>,
-    /// False when source expressions or type-check data were not fully identity-covered.
+    /// Compiler-resolved identities for source `Struct`, `TupleStruct`, and path patterns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<BodyPatternIdentityFact>,
+    /// False when any source constructor/path pattern was unmapped, duplicated, expanded, or
+    /// unresolved. Ordinary binding, wildcard, and literal patterns have no variant identity.
+    #[serde(default)]
+    pub pattern_extraction_complete: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pattern_coverage_gaps: Vec<BodyPatternIdentityCoverageGap>,
+    /// False when source expressions, constructor/path patterns, or type-check data were not
+    /// fully identity-covered.
     pub extraction_complete: bool,
     /// Includes `ExpressionTypeMissing` for any per-expression identity that is unknown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coverage_gaps: Vec<BodyTypeCoverageGap>,
+}
+
+/// Compiler-resolved identity for one source constructor or path pattern. The full source
+/// pattern span is the only join to candidate bytes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyPatternIdentityFact {
+    pub span: ByteSpan,
+    /// Known `None` means a resolved source path that is not an enum variant.
+    /// Unknown means the path could not be resolved to a stable variant identity.
+    pub resolved_variant: effects::StaticFact<Option<ResolvedVariantIdentity>>,
+}
+
+/// Why a path/constructor pattern identity could not be projected into source bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyPatternIdentityCoverageGapKind {
+    ExpandedPattern,
+    PatternSpanUnavailable,
+    PatternOutsideBody,
+    DuplicatePatternSpan,
+    PatternResolutionUnavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyPatternIdentityCoverageGap {
+    pub kind: BodyPatternIdentityCoverageGapKind,
+    pub span: Option<ByteSpan>,
 }
 
 /// Resolved identities for one source expression. `span` is the only join to source bytes;
@@ -3152,6 +3190,11 @@ pub enum ResolvedTypeIdentity {
     OptionLangItem {
         definition: StableDefPathIdentity,
         argument: Box<ResolvedTypeIdentity>,
+    },
+    /// A resolved enum-variant constructor function item, with all generic type arguments.
+    VariantConstructor {
+        variant: ResolvedVariantIdentity,
+        arguments: Vec<ResolvedTypeIdentity>,
     },
 }
 
@@ -3437,6 +3480,7 @@ fn analyze_body_facts_internal(
         report.type_facts.fatal = true;
         report.type_facts.type_extraction_complete = false;
         report.identity_facts.extraction_complete = false;
+        report.identity_facts.pattern_extraction_complete = false;
         let file = report.type_facts.body_span.as_ref().map(|span| span.file.clone());
         let span = file.map(|file| ByteSpan { file, start: body_span.start, end: body_span.end });
         push_body_type_gap(
@@ -3513,6 +3557,9 @@ fn extract_body_type_identity(
         }
     };
     report.type_facts.typeck_tainted_by_errors = Some(typeck.tainted_by_errors.is_some());
+    if capture_identities {
+        report.identity_facts.pattern_extraction_complete = true;
+    }
     {
         let mut visitor = BodyTypeVisitor {
             tcx,
@@ -3528,6 +3575,14 @@ fn extract_body_type_identity(
         visitor.visit_expr(body.value);
     }
     nested_body_gaps(tcx, owner, &input, &exact_span, &mut report.type_facts);
+    let nested_body_not_visited = report
+        .type_facts
+        .coverage_gaps
+        .iter()
+        .any(|gap| gap.kind == BodyTypeCoverageGapKind::NestedBodyNotVisited);
+    if capture_identities && nested_body_not_visited {
+        report.identity_facts.pattern_extraction_complete = false;
+    }
     report.type_facts.uncomputed_consts = tcx.sess.uncomputed_consts();
     if !report.type_facts.uncomputed_consts.is_empty() {
         push_body_type_gap(
@@ -3547,10 +3602,20 @@ fn extract_body_type_identity(
         for gap in identity_gaps {
             push_identity_gap(&mut report.identity_facts, gap.kind, gap.span);
         }
+        let pattern_identity_complete = report.identity_facts.pattern_extraction_complete
+            && report.identity_facts.pattern_coverage_gaps.is_empty()
+            && report.identity_facts.patterns.iter().all(|fact| {
+                matches!(
+                    &fact.resolved_variant,
+                    effects::StaticFact::Known { .. }
+                )
+            });
+        report.identity_facts.pattern_extraction_complete = pattern_identity_complete;
         report.identity_facts.extraction_complete = report.type_facts.type_extraction_complete
             && report.type_facts.projection_gaps.is_empty()
             && report.identity_facts.coverage_gaps.is_empty()
-            && report.identity_facts.expressions.len() == report.type_facts.expressions.len();
+            && report.identity_facts.expressions.len() == report.type_facts.expressions.len()
+            && pattern_identity_complete;
     }
     report
 }
@@ -3650,6 +3715,18 @@ fn push_optional_identity_gap(
 ) {
     if let Some(facts) = facts.as_deref_mut() {
         push_identity_gap(facts, kind, span);
+    }
+}
+
+fn push_pattern_identity_gap(
+    facts: &mut BodyTypeIdentityFacts,
+    kind: BodyPatternIdentityCoverageGapKind,
+    span: Option<ByteSpan>,
+) {
+    facts.pattern_extraction_complete = false;
+    let gap = BodyPatternIdentityCoverageGap { kind, span };
+    if !facts.pattern_coverage_gaps.contains(&gap) {
+        facts.pattern_coverage_gaps.push(gap);
     }
 }
 
@@ -3847,6 +3924,90 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
         }
         intravisit::walk_expr(self, expr);
     }
+
+    fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
+        let path = match &pat.kind {
+            hir::PatKind::TupleStruct(qpath, ..) | hir::PatKind::Struct(qpath, ..) => {
+                Some((qpath, pat.hir_id))
+            }
+            hir::PatKind::Expr(pat_expr) => match &pat_expr.kind {
+                hir::PatExprKind::Path(qpath) => Some((qpath, pat_expr.hir_id)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let (Some(identity_facts), Some((qpath, qpath_id))) =
+            (self.identity_facts.as_deref_mut(), path)
+        {
+            if pat.span.from_expansion() {
+                push_pattern_identity_gap(
+                    identity_facts,
+                    BodyPatternIdentityCoverageGapKind::ExpandedPattern,
+                    None,
+                );
+            } else if let Some(span) = source_mapped_body_span(self.tcx, self.input, pat.span) {
+                if span.start >= span.end {
+                    push_pattern_identity_gap(
+                        identity_facts,
+                        BodyPatternIdentityCoverageGapKind::PatternSpanUnavailable,
+                        Some(span),
+                    );
+                } else if span.start < self.body_span.start || span.end > self.body_span.end {
+                    push_pattern_identity_gap(
+                        identity_facts,
+                        BodyPatternIdentityCoverageGapKind::PatternOutsideBody,
+                        Some(span),
+                    );
+                } else {
+                    let duplicate = identity_facts
+                        .patterns
+                        .iter()
+                        .position(|fact| fact.span == span);
+                    let resolved_variant = if let Some(previous) = duplicate {
+                        identity_facts.patterns[previous].resolved_variant =
+                            unknown_variant_identity("duplicate_pattern_span");
+                        push_pattern_identity_gap(
+                            identity_facts,
+                            BodyPatternIdentityCoverageGapKind::DuplicatePatternSpan,
+                            Some(span.clone()),
+                        );
+                        unknown_variant_identity("duplicate_pattern_span")
+                    } else {
+                        body_pattern_variant_identity(
+                            self.tcx,
+                            self.typeck,
+                            qpath,
+                            qpath_id,
+                            self.synthetic_lang_items,
+                            self.input,
+                            self.original_source_len,
+                        )
+                    };
+                    if matches!(
+                        &resolved_variant,
+                        effects::StaticFact::Unknown { .. }
+                    ) {
+                        push_pattern_identity_gap(
+                            identity_facts,
+                            BodyPatternIdentityCoverageGapKind::PatternResolutionUnavailable,
+                            Some(span.clone()),
+                        );
+                    }
+                    identity_facts.patterns.push(BodyPatternIdentityFact {
+                        span,
+                        resolved_variant,
+                    });
+                }
+            } else {
+                push_pattern_identity_gap(
+                    identity_facts,
+                    BodyPatternIdentityCoverageGapKind::PatternSpanUnavailable,
+                    None,
+                );
+            }
+        }
+        intravisit::walk_pat(self, pat);
+    }
 }
 
 /// Require every hygiene mark to be an allowed source syntax lowering and the full callsite to be
@@ -4017,6 +4178,38 @@ fn resolved_type_identity(
             value: ResolvedTypeIdentity::Primitive { primitive },
         };
     }
+    if let TyKind::FnDef(def_id, args) = *resolved.kind() {
+        let kind = tcx.def_kind(def_id);
+        if !matches!(kind, DefKind::Variant | DefKind::Ctor(CtorOf::Variant, _)) {
+            return unknown_type_identity("unsupported_function_item_identity");
+        }
+        let Some(args) = args.no_bound_vars() else {
+            return unknown_type_identity("bound_variant_constructor_arguments");
+        };
+        let effects::StaticFact::Known { value: Some(variant) } = resolved_variant_identity(
+            tcx,
+            Res::Def(kind, def_id),
+            synthetic_lang_items,
+            input,
+            original_source_len,
+        ) else {
+            return unknown_type_identity("variant_constructor_identity_unavailable");
+        };
+        let arguments = match resolved_adt_arguments(
+            tcx,
+            args,
+            synthetic_lang_items,
+            input,
+            original_source_len,
+            depth,
+        ) {
+            Ok(arguments) => arguments,
+            Err(why) => return unknown_type_identity(why),
+        };
+        return effects::StaticFact::Known {
+            value: ResolvedTypeIdentity::VariantConstructor { variant, arguments },
+        };
+    }
     if let TyKind::Adt(definition, args) = *resolved.kind() {
         let def_id = definition.did();
         if tcx.lang_items().option_type() == Some(def_id) {
@@ -4134,6 +4327,40 @@ fn body_variant_identity(
         }
         _ => return known_non_variant(),
     };
+    resolved_variant_identity(
+        tcx,
+        resolved,
+        synthetic_lang_items,
+        input,
+        original_source_len,
+    )
+}
+
+fn body_pattern_variant_identity(
+    tcx: TyCtxt<'_>,
+    typeck: &crate::rustc_middle::ty::TypeckResults<'_>,
+    qpath: &hir::QPath<'_>,
+    qpath_id: crate::rustc_hir_id::HirId,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
+    resolved_variant_identity(
+        tcx,
+        typeck.qpath_res(qpath, qpath_id),
+        synthetic_lang_items,
+        input,
+        original_source_len,
+    )
+}
+
+fn resolved_variant_identity(
+    tcx: TyCtxt<'_>,
+    resolved: Res,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
     let variant = match resolved {
         Res::Err => {
             return effects::StaticFact::Unknown {
@@ -4194,6 +4421,10 @@ fn is_synthetic_local_definition(
 
 fn known_non_variant() -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
     effects::StaticFact::Known { value: None }
+}
+
+fn unknown_variant_identity(why: &str) -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
+    effects::StaticFact::Unknown { why: why.to_string() }
 }
 
 fn body_call_resolution(

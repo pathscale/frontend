@@ -124,11 +124,11 @@ fn primitive_expression_has_a_computed_type_and_full_body_span() {
 #[test]
 fn resolved_identities_use_rustc_types_and_refuse_the_injected_option_stub() {
     ready();
-    let shadowed = "enum Option<T> { Some(T), None } struct Wrapper<T>(T); enum Shape { Record { value: u8 } } fn body() { let selected = Option::Some(1u8); let absent: Option<u8> = Option::None; let wrapped8 = Wrapper(1u8); let wrapped16 = Wrapper(1u16); let record = Shape::Record { value: 1u8 }; selected; absent; wrapped8; wrapped16; record; }";
-    let body = range(shadowed, "{ let selected = Option::Some(1u8); let absent: Option<u8> = Option::None; let wrapped8 = Wrapper(1u8); let wrapped16 = Wrapper(1u16); let record = Shape::Record { value: 1u8 }; selected; absent; wrapped8; wrapped16; record; }");
+    let shadowed = "enum Option<T> { Some(T), None } struct Wrapper<T>(T); enum Shape { Record { value: u8 } } fn body() { let selected = Option::Some(1u8); let absent: Option<u8> = Option::None; let wrapped8 = Wrapper(1u8); let wrapped16 = Wrapper(1u16); let record = Shape::Record { value: 1u8 }; let matched = match Option::Some(2u8) { Option::Some(value) => Option::Some(value), Option::None => Option::None }; selected; absent; wrapped8; wrapped16; record; matched; }";
+    let body = range(shadowed, "{ let selected = Option::Some(1u8); let absent: Option<u8> = Option::None; let wrapped8 = Wrapper(1u8); let wrapped16 = Wrapper(1u16); let record = Shape::Record { value: 1u8 }; let matched = match Option::Some(2u8) { Option::Some(value) => Option::Some(value), Option::None => Option::None }; selected; absent; wrapped8; wrapped16; record; matched; }");
     let report = analyze_body_type_identity("body_identity_shadowed_option", shadowed, body);
     assert!(!report.type_facts.fatal, "{:?}", report.type_facts);
-    assert!(!report.identity_facts.extraction_complete, "unsupported function-item identities stay explicit: {:?}", report.identity_facts);
+    assert!(!report.identity_facts.extraction_complete, "unsupported non-variant function-item identities stay explicit: {:?}", report.identity_facts);
     assert!(report.identity_facts.coverage_gaps.iter().any(|gap| gap.kind == BodyTypeCoverageGapKind::ExpressionTypeMissing), "{:?}", report.identity_facts);
     let identity_at = |text: &str| {
         let start = shadowed.find(text).expect("source marker") as u32;
@@ -161,6 +161,13 @@ fn resolved_identities_use_rustc_types_and_refuse_the_injected_option_stub() {
         &identity_at("Option::Some(1u8)").resolved_variant,
         StaticFact::Known { value: Some(ResolvedVariantIdentity { option_role: None, .. }) }
     ));
+    assert!(report.identity_facts.pattern_extraction_complete, "{:?}", report.identity_facts);
+    assert!(report.identity_facts.pattern_coverage_gaps.is_empty(), "{:?}", report.identity_facts);
+    assert_eq!(report.identity_facts.patterns.len(), 2, "{:?}", report.identity_facts.patterns);
+    assert!(report.identity_facts.patterns.iter().all(|pattern| matches!(
+        &pattern.resolved_variant,
+        StaticFact::Known { value: Some(ResolvedVariantIdentity { option_role: None, .. }) }
+    )));
     assert_ne!(
         &identity_at("Wrapper(1u8)").resolved_ty,
         &identity_at("Wrapper(1u16)").resolved_ty,
@@ -194,6 +201,39 @@ fn resolved_identities_use_rustc_types_and_refuse_the_injected_option_stub() {
     assert!(injected_report.identity_facts.coverage_gaps.iter().any(|gap| {
         gap.kind == BodyTypeCoverageGapKind::ExpressionTypeMissing
     }));
+
+    let injected_patterns =
+        "fn body(value: Option<u8>) -> u8 { match value { Some(item) => item, None => 0 } }";
+    let injected_patterns_body = range(
+        injected_patterns,
+        "{ match value { Some(item) => item, None => 0 } }",
+    );
+    let injected_patterns_report = analyze_body_type_identity(
+        "body_identity_injected_option_patterns",
+        injected_patterns,
+        injected_patterns_body,
+    );
+    assert_eq!(injected_patterns_report.identity_facts.patterns.len(), 2);
+    assert!(!injected_patterns_report.identity_facts.pattern_extraction_complete);
+    assert!(!injected_patterns_report.identity_facts.extraction_complete);
+    assert!(
+        injected_patterns_report
+            .identity_facts
+            .pattern_coverage_gaps
+            .iter()
+            .any(|gap| {
+                gap.kind
+                    == frontend::frontend_facts::BodyPatternIdentityCoverageGapKind::PatternResolutionUnavailable
+            })
+    );
+    assert!(injected_patterns_report
+        .identity_facts
+        .patterns
+        .iter()
+        .all(|pattern| matches!(
+            &pattern.resolved_variant,
+            StaticFact::Unknown { why } if why == "synthetic_lang_item_context"
+        )));
 }
 
 #[test]
@@ -212,8 +252,11 @@ fn resolved_option_lang_item_and_variant_follow_external_metadata() {
     })
     .expect("write the fixture's Option lang-item metadata");
     let dependencies = [Dependency::new("optionlang", metadata_text)];
-    let source = "#![feature(no_core)]\n#![no_core]\nextern crate optionlang;\nfn body() -> optionlang::Option<u32> { let present = optionlang::Option::Some(1u32); let absent: optionlang::Option<u32> = optionlang::Option::None; present }";
-    let body = range(source, "{ let present = optionlang::Option::Some(1u32); let absent: optionlang::Option<u32> = optionlang::Option::None; present }");
+    let source = "#![feature(no_core)]\n#![no_core]\nextern crate optionlang;\nfn body(input: optionlang::Option<u32>) -> optionlang::Option<u32> { match input { optionlang::Option::Some(value) => optionlang::Option::Some(value), optionlang::Option::None => optionlang::Option::None } }";
+    let body = range(
+        source,
+        "{ match input { optionlang::Option::Some(value) => optionlang::Option::Some(value), optionlang::Option::None => optionlang::Option::None } }",
+    );
     let report = analyze_body_type_identity_with_loaded(
         "body_identity_loaded_option",
         source,
@@ -221,38 +264,133 @@ fn resolved_option_lang_item_and_variant_follow_external_metadata() {
         Some("2024"),
         Loaded { dependencies: &dependencies, ..Loaded::default() },
     );
-    let marker = "optionlang::Option::Some(1u32)";
-    let start = source.find(marker).expect("variant expression") as u32;
-    let end = start + marker.len() as u32;
-    let expression = report
-        .identity_facts
-        .expressions
-        .iter()
-        .find(|fact| fact.span.start == start && fact.span.end == end)
-        .expect("source-mapped Option expression");
-    let StaticFact::Known { value: ResolvedTypeIdentity::OptionLangItem { definition, argument } } = &expression.resolved_ty else {
-        panic!("external Option lang item was not resolved: {expression:?}");
-    };
-    assert!(matches!(argument.as_ref(), ResolvedTypeIdentity::Primitive { primitive: ResolvedPrimitive::U32 }));
-    let StaticFact::Known { value: Some(variant) } = &expression.resolved_variant else {
-        panic!("external Option variant was not resolved: {expression:?}");
-    };
-    assert_eq!(&variant.parent_enum, definition);
-    assert_eq!(variant.option_role, Some(ResolvedOptionVariantRole::Some));
+    assert!(
+        report.identity_facts.pattern_extraction_complete,
+        "{:?}",
+        report.identity_facts
+    );
+    assert!(
+        report.identity_facts.pattern_coverage_gaps.is_empty(),
+        "{:?}",
+        report.identity_facts
+    );
+    assert_eq!(
+        report.identity_facts.patterns.len(),
+        2,
+        "{:?}",
+        report.identity_facts.patterns
+    );
+    assert!(report.identity_facts.extraction_complete, "{:?}", report.identity_facts);
 
-    let marker = "optionlang::Option::None";
-    let start = source.find(marker).expect("None variant expression") as u32;
-    let end = start + marker.len() as u32;
-    let none_expression = report
+    let some_pattern = "optionlang::Option::Some(value)";
+    let some_start = source.find(some_pattern).expect("Some pattern") as u32;
+    let some_end = some_start + some_pattern.len() as u32;
+    let some_pattern_fact = report
+        .identity_facts
+        .patterns
+        .iter()
+        .find(|fact| fact.span.start == some_start && fact.span.end == some_end)
+        .expect("source-mapped Some pattern identity");
+    let StaticFact::Known {
+        value: Some(some_variant),
+    } = &some_pattern_fact.resolved_variant
+    else {
+        panic!("external Option Some pattern was not resolved: {some_pattern_fact:?}");
+    };
+    assert_eq!(some_variant.option_role, Some(ResolvedOptionVariantRole::Some));
+
+    let none_pattern = "optionlang::Option::None";
+    let none_start = source.find(none_pattern).expect("None pattern") as u32;
+    let none_end = none_start + none_pattern.len() as u32;
+    let none_pattern_fact = report
+        .identity_facts
+        .patterns
+        .iter()
+        .find(|fact| fact.span.start == none_start && fact.span.end == none_end)
+        .expect("source-mapped None pattern identity");
+    let StaticFact::Known {
+        value: Some(none_variant),
+    } = &none_pattern_fact.resolved_variant
+    else {
+        panic!("external Option None pattern was not resolved: {none_pattern_fact:?}");
+    };
+    assert_eq!(none_variant.option_role, Some(ResolvedOptionVariantRole::None));
+    assert_eq!(&some_variant.parent_enum, &none_variant.parent_enum);
+    assert_ne!(&some_variant.variant, &none_variant.variant);
+
+    let input_marker = "match input";
+    let input_start =
+        (source.find(input_marker).expect("Option scrutinee") + "match ".len()) as u32;
+    let input_end = input_start + "input".len() as u32;
+    let input_expression = report
         .identity_facts
         .expressions
         .iter()
-        .find(|fact| fact.span.start == start && fact.span.end == end)
-        .expect("source-mapped None expression");
-    let StaticFact::Known { value: Some(variant) } = &none_expression.resolved_variant else {
-        panic!("external Option None variant was not resolved: {none_expression:?}");
+        .find(|fact| fact.span.start == input_start && fact.span.end == input_end)
+        .expect("source-mapped Option scrutinee identity");
+    let StaticFact::Known {
+        value: ResolvedTypeIdentity::OptionLangItem { definition, argument },
+    } = &input_expression.resolved_ty
+    else {
+        panic!("external Option scrutinee type was not resolved: {input_expression:?}");
     };
-    assert_eq!(variant.option_role, Some(ResolvedOptionVariantRole::None));
+    assert!(matches!(
+        argument.as_ref(),
+        ResolvedTypeIdentity::Primitive {
+            primitive: ResolvedPrimitive::U32
+        }
+    ));
+    assert_eq!(&some_variant.parent_enum, definition);
+    assert_eq!(&none_variant.parent_enum, definition);
+
+    let some_path = "optionlang::Option::Some";
+    let some_path_start =
+        source.match_indices(some_path).nth(1).expect("Some expression callee").0 as u32;
+    let some_path_end = some_path_start + some_path.len() as u32;
+    let some_callee = report
+        .identity_facts
+        .expressions
+        .iter()
+        .find(|fact| fact.span.start == some_path_start && fact.span.end == some_path_end)
+        .expect("source-mapped Some constructor callee");
+    let StaticFact::Known {
+        value: ResolvedTypeIdentity::VariantConstructor { variant, arguments },
+    } = &some_callee.resolved_ty
+    else {
+        panic!("external Some constructor identity was not resolved: {some_callee:?}");
+    };
+    assert_eq!(variant, some_variant);
+    assert_eq!(
+        arguments,
+        &[ResolvedTypeIdentity::Primitive {
+            primitive: ResolvedPrimitive::U32
+        }]
+    );
+    assert!(matches!(
+        &some_callee.resolved_variant,
+        StaticFact::Known { value: Some(identity) } if identity == some_variant
+    ));
+}
+
+#[test]
+fn ordinary_function_items_remain_unknown_type_identities() {
+    ready();
+    let source = "fn ordinary() -> u8 { 1 } fn body() -> u8 { ordinary() }";
+    let body = range(source, "{ ordinary() }");
+    let report = analyze_body_type_identity("body_identity_ordinary_function", source, body);
+    let path_start = source.rfind("ordinary").expect("ordinary function callee") as u32;
+    let path_end = path_start + "ordinary".len() as u32;
+    let callee = report
+        .identity_facts
+        .expressions
+        .iter()
+        .find(|fact| fact.span.start == path_start && fact.span.end == path_end)
+        .expect("source-mapped ordinary function item");
+    assert!(matches!(
+        &callee.resolved_ty,
+        StaticFact::Unknown { why } if why == "unsupported_function_item_identity"
+    ));
+    assert!(!report.identity_facts.extraction_complete);
 }
 
 #[test]
@@ -329,14 +467,27 @@ fn body_range_cannot_select_appended_synthetic_declarations() {
 }
 
 #[test]
-fn nested_closure_body_is_an_explicit_coverage_gap() {
+fn nested_closure_patterns_are_an_explicit_identity_coverage_gap() {
     ready();
-    let source = "fn outer() -> i32 { let add = |x: i32| x + 1; add(2) }";
-    let body = range(source, "{ let add = |x: i32| x + 1; add(2) }");
-    let facts = analyze_body_type_facts("body_type_facts_closure", source, body);
-    assert!(facts.coverage_gaps.iter().any(|gap| {
+    let source = "enum Choice { Some(u8), None } fn outer(input: Choice) -> i32 { let classify = || match input { Choice::Some(value) => value as i32, Choice::None => 0 }; classify() }";
+    let body = range(
+        source,
+        "{ let classify = || match input { Choice::Some(value) => value as i32, Choice::None => 0 }; classify() }",
+    );
+    let report = analyze_body_type_identity("body_identity_nested_patterns", source, body);
+    assert!(report.type_facts.coverage_gaps.iter().any(|gap| {
         gap.kind == BodyTypeCoverageGapKind::NestedBodyNotVisited && gap.span.is_some()
     }));
+    assert!(
+        !report.identity_facts.pattern_extraction_complete,
+        "nested constructor patterns were not visited: {:?}",
+        report.identity_facts
+    );
+    assert!(
+        !report.identity_facts.extraction_complete,
+        "the body has an explicit nested-owner coverage gap: {:?}",
+        report.identity_facts
+    );
 }
 
 #[test]
