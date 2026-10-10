@@ -163,6 +163,11 @@ fn resolved_identities_use_rustc_types_and_refuse_the_injected_option_stub() {
     ));
     assert!(report.identity_facts.pattern_extraction_complete, "{:?}", report.identity_facts);
     assert!(report.identity_facts.pattern_coverage_gaps.is_empty(), "{:?}", report.identity_facts);
+    let wire = serde_json::to_value(&report.identity_facts).expect("identity report serializes");
+    assert_eq!(wire["pattern_coverage_gaps"].as_array().map(Vec::len), Some(0));
+    assert!(wire["coverage_gaps"].is_array());
+    assert!(wire["expressions"].is_array());
+    assert!(wire["patterns"].is_array());
     assert_eq!(report.identity_facts.patterns.len(), 2, "{:?}", report.identity_facts.patterns);
     assert!(report.identity_facts.patterns.iter().all(|pattern| matches!(
         &pattern.resolved_variant,

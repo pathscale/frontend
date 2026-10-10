@@ -3120,22 +3120,24 @@ pub struct BodyTypeIdentityReport {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BodyTypeIdentityFacts {
     pub body_span: Option<ByteSpan>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub expressions: Vec<BodyExpressionIdentityFact>,
     /// Compiler-resolved identities for source `Struct`, `TupleStruct`, and path patterns.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub patterns: Vec<BodyPatternIdentityFact>,
     /// False when any source constructor/path pattern was unmapped, duplicated, expanded, or
     /// unresolved. Ordinary binding, wildcard, and literal patterns have no variant identity.
     #[serde(default)]
     pub pattern_extraction_complete: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Empty coverage is explicit on the wire so consumers can distinguish it from an absent
+    // projection rather than deriving coverage from a missing field.
+    #[serde(default)]
     pub pattern_coverage_gaps: Vec<BodyPatternIdentityCoverageGap>,
     /// False when source expressions, constructor/path patterns, or type-check data were not
     /// fully identity-covered.
     pub extraction_complete: bool,
     /// Includes `ExpressionTypeMissing` for any per-expression identity that is unknown.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub coverage_gaps: Vec<BodyTypeCoverageGap>,
 }
 
