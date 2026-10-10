@@ -164,11 +164,16 @@ pub struct Definition {
     /// rather than a change to `variants`, whose shape callers already deserialise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variant_shapes: Vec<VariantShape>,
-    /// Declared plain `pub`. `pub(crate)` and the like are not.
+    /// Declared plain `pub`. `pub(crate)` and the like are not. If an associated item belongs
+    /// to a trait impl whose trait path did not resolve, `false` is only a lower-bound value:
+    /// see [`CrateFacts::complete`] and [`CrateFacts::diagnostics`] before treating it as
+    /// private.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub public: bool,
     /// Reachable from outside the crate, re-exports included: rustc's effective visibility,
-    /// which is what a path written in another crate can name.
+    /// which is what a path written in another crate can name. If a trait impl path did not
+    /// resolve, `false` is only a lower bound; see [`CrateFacts::complete`] and
+    /// [`CrateFacts::diagnostics`].
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub exported: bool,
     /// The library feature a use of it needs, when rustc's stability says it is unstable:
@@ -450,8 +455,8 @@ pub struct Reference {
 /// HIR, which exist for any program that parses and expands; they are reported even when no
 /// body type checks. References need a body's type check, so they are collected per body and
 /// a body that could not be checked contributes none. `complete` says whether anything was
-/// lost, and `diagnostics` says why; in a library read it says whether reading lost input,
-/// which a diagnostic alone does not (see `complete`).
+/// lost or left unresolved, and `diagnostics` says why. In a library read, `complete` says
+/// whether reading lost input, which a diagnostic alone does not (see `complete`).
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
@@ -466,13 +471,14 @@ pub struct CrateFacts {
     #[serde(default)]
     pub typed: Vec<TypeDiagnostic>,
     /// Every error the frontend emitted, one string each, in emission order, with its
-    /// location lines. The closing "aborting due to" summary is left out: it counts the others
-    /// rather than saying anything of its own.
+    /// location lines, followed by fact-extraction limitations. The closing "aborting due to"
+    /// summary is left out: it counts the others rather than saying anything of its own.
     #[serde(default)]
     pub diagnostics: Vec<String>,
-    /// Def paths of bodies whose type check stopped on a fatal error, so none of their
-    /// references are listed. A body whose type check merely reported errors is not here: its
-    /// references that did resolve are kept.
+    /// Def paths of bodies whose type check stopped on a fatal error or was skipped because an
+    /// unresolved trait impl left its compiler queries unavailable, so none of their references
+    /// are listed. A body whose type check merely reported errors is not here: its references
+    /// that did resolve are kept.
     #[serde(default)]
     pub unanalyzed_bodies: Vec<Arc<str>>,
     /// Def paths whose const values were requested but left uncomputed as too generic.
@@ -480,9 +486,11 @@ pub struct CrateFacts {
     pub uncomputed_consts: Vec<String>,
     /// The facts are whole: reading lost nothing. What that is measured by depends on the read.
     ///
-    /// **A strict read** is complete when no error was emitted and every body was type checked.
-    /// When false, `references` is a lower bound and the definitions, imports and impls are
-    /// unaffected.
+    /// **A strict read** is complete when no error was emitted, every body was type checked,
+    /// and visibility was established for every associated item.
+    /// When false, `references` may be a lower bound. Definitions, imports and impls remain
+    /// present, but an unresolved trait impl can leave `public` and `exported` as conservative
+    /// lower bounds, called out in `diagnostics`.
     ///
     /// **A library read** (the `library` field of [`CrateRead`]) judges nothing, and most of
     /// what it still emits is bookkeeping about source it does not know: an ABI, an attribute,
@@ -583,8 +591,9 @@ fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
 /// and nothing else. The query system poisons a query that unwound, so a later body whose type
 /// check needs the same result stops too, and is caught the same way.
 ///
-/// `diagnostics` is left empty here: the emitter belongs to whoever built the session, and
-/// only [`analyze_source`] installed one it can read back.
+/// Compiler diagnostics are left empty here: the emitter belongs to whoever built the session,
+/// and only [`analyze_source`] installed one it can read back. Extraction may add a limitation
+/// notice when an unresolved trait impl prevents a visibility fact.
 ///
 /// **Three independent walks, each spread over the session's workers when it has more than one.** The
 /// definitions, the imports and the bodies are each a list whose items do not read one
@@ -692,6 +701,19 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
         let local_def_index = crate::rustc_span::def_id::DefIndex::from_usize(i);
         def_fact(tcx, &printing, LocalDefId { local_def_index })
     });
+    let mut visibility_gaps: Vec<String> = def_facts
+        .iter()
+        .filter_map(|fact| match fact {
+            DefFact::Definition {
+                fact,
+                visibility_known: false,
+            } => {
+                Some(fact.def_path.to_string())
+            }
+            DefFact::Impl(_) | DefFact::Definition { .. } | DefFact::Skipped => None,
+        })
+        .collect();
+    visibility_gaps.sort();
 
     // From here on a local definition's path is the one the stage above printed, handed
     // forward: `def_facts` is frozen, indexed by `DefIndex`, and read in place.
@@ -703,7 +725,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
         .iter()
         .filter_map(|fact| match fact {
             DefFact::Impl(pending) => Some(pending.paths(&names)),
-            DefFact::Definition(_) | DefFact::Skipped => None,
+            DefFact::Definition { .. } | DefFact::Skipped => None,
         })
         .collect();
 
@@ -752,7 +774,15 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
         |order, i| tcx.stage_weight(owners[order[i]], cost::TYPECK),
         |order, i| {
             let owner = owners[order[i]];
-            lower_signature(tcx, tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(owner)).def_id);
+            // An anon const inside an unresolved trait-impl item has the same unavailable
+            // compiler context as that item's body. Do not query the parent signature to feed
+            // it; body_fact records the omitted body below.
+            if !body_in_unresolved_trait_impl(tcx, owner) {
+                lower_signature(
+                    tcx,
+                    tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(owner)).def_id,
+                );
+            }
             body_fact(tcx, &names, owner)
         },
     );
@@ -790,7 +820,7 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
                 let paths = impl_paths.next().expect("one `ImplPaths` per impl, in impl order");
                 facts.impls.push(pending.finish(paths));
             }
-            DefFact::Definition(definition) => facts.definitions.push(definition),
+            DefFact::Definition { fact, .. } => facts.definitions.push(fact),
             DefFact::Skipped => {}
         }
     }
@@ -805,7 +835,12 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool) -> CrateFacts {
     } else {
         tcx.dcx().has_errors().is_none()
     };
-    facts.complete = whole && facts.unanalyzed_bodies.is_empty();
+    facts.complete = whole && facts.unanalyzed_bodies.is_empty() && visibility_gaps.is_empty();
+    facts.diagnostics.extend(visibility_gaps.into_iter().map(|def_path| {
+        format!(
+            "analysis incomplete: visibility for `{def_path}` is unknown because its trait path did not resolve; `public` and `exported` are only lower bounds"
+        )
+    }));
     facts.uncomputed_consts = tcx.sess.uncomputed_consts();
 
     facts
@@ -875,7 +910,7 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
     fn reported(&self, def_id: DefId) -> Option<Arc<str>> {
         let local = def_id.as_local()?;
         match self.local.get(local.local_def_index.as_usize())? {
-            DefFact::Definition(definition) => Some(Arc::clone(&definition.def_path)),
+            DefFact::Definition { fact, .. } => Some(Arc::clone(&fact.def_path)),
             DefFact::Impl(pending) => Some(Arc::clone(&pending.fact.def_path)),
             DefFact::Skipped => None,
         }
@@ -953,7 +988,7 @@ fn macro_facts<'tcx>(
 /// nothing (a `use`, an anonymous item, a definition with no name).
 enum DefFact {
     Impl(PendingImpl),
-    Definition(Definition),
+    Definition { fact: Definition, visibility_known: bool },
     Skipped,
 }
 
@@ -998,6 +1033,51 @@ impl PendingImpl {
     }
 }
 
+/// Whether an impl item is missing the resolver-fed visibility because its trait path failed
+/// to resolve. A resolved trait with a missing member still gets a visibility feed from late
+/// resolution, so the HIR member result alone is not enough to identify this case.
+fn trait_impl_visibility_unresolved(tcx: TyCtxt<'_>, local: LocalDefId) -> bool {
+    let Node::ImplItem(item) = tcx.hir_node_by_def_id(local) else { return false };
+    if !matches!(
+        item.impl_kind,
+        hir::ImplItemImplKind::Trait { trait_item_def_id: Err(_), .. }
+    ) {
+        return false;
+    }
+    let parent = tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(local)).def_id;
+    let Node::Item(hir::Item { kind: ItemKind::Impl(implementation), .. }) =
+        tcx.hir_node_by_def_id(parent)
+    else {
+        return false;
+    };
+    implementation
+        .of_trait
+        .is_some_and(|header| {
+            matches!(header.trait_ref.path.res, crate::rustc_hir::def::Res::Err)
+        })
+}
+
+/// Whether a body owner is an unresolved trait-impl item or a closure/const nested inside one.
+/// Stop at another item boundary so a nested local item keeps its own type-check context.
+fn body_in_unresolved_trait_impl(tcx: TyCtxt<'_>, owner: LocalDefId) -> bool {
+    match tcx.hir_node_by_def_id(owner) {
+        Node::ImplItem(_) => return trait_impl_visibility_unresolved(tcx, owner),
+        Node::Item(_) | Node::TraitItem(_) | Node::ForeignItem(_) => return false,
+        _ => {}
+    }
+
+    for (_, node) in tcx.hir_parent_iter(tcx.local_def_id_to_hir_id(owner)) {
+        match node {
+            Node::ImplItem(item) => {
+                return trait_impl_visibility_unresolved(tcx, item.owner_id.def_id);
+            }
+            Node::Item(_) | Node::TraitItem(_) | Node::ForeignItem(_) => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// One local definition's fact. The body of the serial loop that used to sit in [`extract`],
 /// moved out unchanged so each index can run on its own worker.
 fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId) -> DefFact {
@@ -1012,6 +1092,7 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
     let Some(name) = tcx.opt_item_name(def_id) else {
         return DefFact::Skipped;
     };
+    let visibility_known = !trait_impl_visibility_unresolved(tcx, local);
     let mut definition = Definition {
         def_path: names.path(def_id),
         name: name.to_string(),
@@ -1028,8 +1109,11 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         fields: Vec::new(),
         variants: Vec::new(),
         variant_shapes: Vec::new(),
-        public: tcx.local_visibility(local).is_public(),
-        exported: names.exported.is_exported(local),
+        // An unresolved trait path has no visibility feed. Keep the definition, use the
+        // conservative bool defaults, and make the missing visibility explicit below instead
+        // of invoking the query provider that deliberately panics when no value was fed.
+        public: visibility_known && tcx.local_visibility(local).is_public(),
+        exported: visibility_known && names.exported.is_exported(local),
         unstable: unstable_feature(tcx, def_id),
         doc: None,
         doc_full: None,
@@ -1047,7 +1131,10 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         definition.opaque.push("body".to_string());
     }
     describe_shape(tcx, local, &mut definition);
-    DefFact::Definition(definition)
+    DefFact::Definition {
+        fact: definition,
+        visibility_known,
+    }
 }
 
 struct AssertVisitor<'tcx> {
@@ -1315,8 +1402,9 @@ fn import_fact<'tcx>(
     })
 }
 
-/// What one body contributes: the references its type check resolved, or, when the type check
-/// stopped on a fatal error, the body's own path for [`CrateFacts::unanalyzed_bodies`].
+/// What one body contributes: the references its type check resolved, or, when the compiler
+/// query stopped on a fatal error or is unavailable for an unresolved trait impl, the body's
+/// own path for [`CrateFacts::unanalyzed_bodies`].
 enum BodyFact {
     Checked(Vec<Reference>),
     Unanalyzed(Arc<str>),
@@ -1377,6 +1465,11 @@ fn body_fact<'tcx>(
 ) -> Option<BodyFact> {
     let body = tcx.hir_maybe_body_owned_by(owner)?;
     let from = names.path(owner.to_def_id());
+    // This compiler state can make typeck query an unprovided parent environment and panic.
+    // Keep the definition facts but report this body's missing references instead.
+    if body_in_unresolved_trait_impl(tcx, owner) {
+        return Some(BodyFact::Unanalyzed(from));
+    }
     // Results tainted by an error are still read: a path that resolved is a fact whether or not
     // some other expression in the body failed, and one that did not resolve is `Res::Err`,
     // which `RefVisitor` already skips.
@@ -2209,6 +2302,7 @@ fn analyze_input(
         return Err(errors);
     }
     facts.typed = typed;
+    errors.append(&mut facts.diagnostics);
     facts.diagnostics = errors;
     // A library read's `complete` is `extract`'s, whole: its run ends in an error whenever it
     // recorded one, and nothing it records is a loss by itself (see `CrateFacts::complete`).

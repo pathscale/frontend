@@ -40,6 +40,116 @@ fn a_real_file_keeps_its_facts_when_its_bodies_do_not_type_check() {
 }
 
 #[test]
+fn an_unresolved_trait_impl_keeps_its_method_and_marks_visibility_incomplete() {
+    ready();
+    let source = "\
+struct S;
+impl absent::Trait for S { fn f(&self) {} }
+";
+    let facts = match analyze_source("unresolved_trait_visibility", source) {
+        Ok(facts) => facts,
+        Err(error) => panic!("analyze_source refused: {error:?}"),
+    };
+
+    let method = facts
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "f")
+        .expect("unresolved trait impl method remains in definitions");
+    assert!(
+        facts.unanalyzed_bodies.contains(&method.def_path),
+        "the affected method body must be reported as unanalyzed: {:?}",
+        facts.unanalyzed_bodies
+    );
+    assert!(!method.public, "unknown visibility must not be reported as public");
+    assert!(!method.exported, "unknown visibility must not be reported as exported");
+    assert!(!facts.complete, "an unresolved trait must not yield complete visibility facts");
+    assert!(
+        facts.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("visibility for")
+                && diagnostic.contains("trait path did not resolve")
+                && diagnostic.contains("lower bounds")
+        }),
+        "missing explicit visibility limitation: {:?}",
+        facts.diagnostics
+    );
+    assert!(
+        facts.diagnostics.iter().any(|diagnostic| diagnostic.contains("absent")),
+        "the original unresolved-trait compiler diagnostic was lost: {:?}",
+        facts.diagnostics
+    );
+}
+
+#[test]
+fn unresolved_trait_impl_descendant_bodies_are_marked_unanalyzed() {
+    ready();
+    let source = "\
+struct S;
+impl absent::Trait for S {
+    fn f(&self) {
+        let _closure = || ();
+        let _inline_const = const { 1u8 };
+        let _array: [u8; 1] = [0u8];
+    }
+}
+";
+    let facts = match analyze_source("unresolved_trait_descendant_bodies", source) {
+        Ok(facts) => facts,
+        Err(error) => panic!("analyze_source refused: {error:?}"),
+    };
+
+    let method = facts
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "f")
+        .expect("unresolved trait impl method remains in definitions");
+    let method_prefix = format!("{}::", method.def_path);
+    let nested_unanalyzed = facts
+        .unanalyzed_bodies
+        .iter()
+        .filter(|path| path.starts_with(&method_prefix))
+        .count();
+    assert_eq!(
+        nested_unanalyzed, 3,
+        "the closure, inline const, and array-length const bodies must all be reported exactly once: {:?}",
+        facts.unanalyzed_bodies,
+    );
+}
+
+#[test]
+fn a_resolved_trait_with_a_missing_member_does_not_report_a_visibility_gap() {
+    ready();
+    let source = "\
+trait Contract { fn required(&self); }
+struct S;
+impl Contract for S { fn extra(&self) {} }
+";
+    let facts = match analyze_source("resolved_trait_missing_member", source) {
+        Ok(facts) => facts,
+        Err(error) => panic!("analyze_source refused: {error:?}"),
+    };
+
+    let extra = facts
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "extra")
+        .expect("the resolved-trait impl-only method remains in definitions");
+    assert!(
+        !facts.unanalyzed_bodies.contains(&extra.def_path),
+        "a resolved trait's missing-member method must not be classified as unanalyzed: {:?}",
+        facts.unanalyzed_bodies
+    );
+    assert!(
+        !facts.diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("visibility for")
+                && diagnostic.contains("trait path did not resolve")
+        }),
+        "a resolved trait path must not be classified as unresolved: {:?}",
+        facts.diagnostics
+    );
+}
+
+#[test]
 fn a_field_keeps_its_first_doc_line_without_type_checking_its_owner() {
     ready();
     let source = "\
