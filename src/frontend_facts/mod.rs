@@ -30,6 +30,7 @@ use emit::FactEmitter;
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -39,7 +40,7 @@ use core::sync::atomic::AtomicBool;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::sync::{cost, run_stage, run_stage_weighted};
 use crate::rustc_feature::UnstableFeatures;
-use crate::rustc_hir::def::DefKind;
+use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
@@ -3103,6 +3104,111 @@ pub struct BodyExpressionTypeFact {
     pub call_resolution: Option<BodyCallResolutionFact>,
 }
 
+/// Compiler-resolved identities aligned to the source expression spans in a body query.
+///
+/// This parallel report keeps `BodyTypeFacts` and its public struct-literal API unchanged.
+/// It is only meaningful inside the same source and metadata context as the paired type facts.
+/// It does not establish ownership, trait obligations, or candidate behavior.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyTypeIdentityReport {
+    pub type_facts: BodyTypeFacts,
+    pub identity_facts: BodyTypeIdentityFacts,
+}
+
+/// Type and variant identities observed for source-owned expressions in one body.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyTypeIdentityFacts {
+    pub body_span: Option<ByteSpan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expressions: Vec<BodyExpressionIdentityFact>,
+    /// False when source expressions or type-check data were not fully identity-covered.
+    pub extraction_complete: bool,
+    /// Includes `ExpressionTypeMissing` for any per-expression identity that is unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage_gaps: Vec<BodyTypeCoverageGap>,
+}
+
+/// Resolved identities for one source expression. `span` is the only join to source bytes;
+/// generated HIR does not receive an expression identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyExpressionIdentityFact {
+    pub span: ByteSpan,
+    pub resolved_ty: effects::StaticFact<ResolvedTypeIdentity>,
+    pub resolved_adjusted_ty: effects::StaticFact<ResolvedTypeIdentity>,
+    /// Known `None` means a resolved source expression that is not an enum variant.
+    /// Unknown means variant resolution could not be established.
+    pub resolved_variant: effects::StaticFact<Option<ResolvedVariantIdentity>>,
+}
+
+/// A type identity derived from rustc's resolved `Ty`, never from its display spelling.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedTypeIdentity {
+    Primitive { primitive: ResolvedPrimitive },
+    Adt {
+        definition: StableDefPathIdentity,
+        arguments: Vec<ResolvedTypeIdentity>,
+    },
+    OptionLangItem {
+        definition: StableDefPathIdentity,
+        argument: Box<ResolvedTypeIdentity>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedPrimitive {
+    Bool,
+    Char,
+    F16,
+    F32,
+    F64,
+    F128,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    Str,
+    Never,
+    Unit,
+}
+
+/// A compiler DefPathHash encoded without exposing compiler-local handles.
+///
+/// This is not a Cargo package identity. Consumers must bind it to the candidate's exact
+/// source and metadata-context receipt and must not join it across unrelated contexts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StableDefPathIdentity {
+    pub scheme: String,
+    /// Fixed-width lowercase hexadecimal text, not a JSON number.
+    pub stable_crate_id: String,
+    /// Fixed-width lowercase hexadecimal text, not a JSON number.
+    pub item_path_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedVariantIdentity {
+    pub parent_enum: StableDefPathIdentity,
+    pub variant: StableDefPathIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_role: Option<ResolvedOptionVariantRole>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedOptionVariantRole {
+    Some,
+    None,
+}
+
 /// Type observations for generated HIR; callsite is provenance, not source-expression identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GeneratedBodyExpressionTypeFact {
@@ -3215,6 +3321,45 @@ pub fn analyze_body_type_facts_with_loaded(
     edition: Option<&str>,
     loaded: Loaded<'_>,
 ) -> BodyTypeFacts {
+    analyze_body_facts_internal(crate_name, source, body_span, edition, loaded, false).type_facts
+}
+
+/// Analyze one exact body and return compiler-resolved type and variant identities beside the
+/// existing display-oriented type facts. The two reports share the same selected source body,
+/// type-check result, and loaded metadata context. No additional dependencies are loaded.
+pub fn analyze_body_type_identity(
+    crate_name: &str,
+    source: &str,
+    body_span: effects::TextRange,
+) -> BodyTypeIdentityReport {
+    analyze_body_type_identity_with_loaded(
+        crate_name,
+        source,
+        body_span,
+        Some("2024"),
+        Loaded::default(),
+    )
+}
+
+/// Loaded-context form of [`analyze_body_type_identity`].
+pub fn analyze_body_type_identity_with_loaded(
+    crate_name: &str,
+    source: &str,
+    body_span: effects::TextRange,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+) -> BodyTypeIdentityReport {
+    analyze_body_facts_internal(crate_name, source, body_span, edition, loaded, true)
+}
+
+fn analyze_body_facts_internal(
+    crate_name: &str,
+    source: &str,
+    body_span: effects::TextRange,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    capture_identities: bool,
+) -> BodyTypeIdentityReport {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "analyze_body_type_facts needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -3222,15 +3367,11 @@ pub fn analyze_body_type_facts_with_loaded(
 
     let (Ok(start), Ok(end)) = (usize::try_from(body_span.start), usize::try_from(body_span.end))
     else {
-        let mut facts = BodyTypeFacts::default();
-        push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::BodyNotFound, None);
-        return facts;
+        return body_identity_report_with_gap(BodyTypeCoverageGapKind::BodyNotFound, None);
     };
     // A caller cannot select appended helper declarations as its candidate body.
     if start >= end || source.get(start..end).is_none() {
-        let mut facts = BodyTypeFacts::default();
-        push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::BodyNotFound, None);
-        return facts;
+        return body_identity_report_with_gap(BodyTypeCoverageGapKind::BodyNotFound, None);
     }
 
     let setup = Setup { edition, loaded, ..Setup::plain(crate_name) };
@@ -3251,9 +3392,12 @@ pub fn analyze_body_type_facts_with_loaded(
     let mut opts = match setup.options(&input) {
         Ok(opts) => opts,
         Err(_) => {
-            let mut facts = BodyTypeFacts { fatal: true, ..BodyTypeFacts::default() };
-            push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::FrontendFatal, None);
-            return facts;
+            let mut report = body_identity_report_with_gap(
+                BodyTypeCoverageGapKind::FrontendFatal,
+                None,
+            );
+            report.type_facts.fatal = true;
+            return report;
         }
     };
     if inject_stubs {
@@ -3274,30 +3418,55 @@ pub fn analyze_body_type_facts_with_loaded(
         using_internal_features: &USING_INTERNAL_FEATURES,
         crate_cfg: setup.loaded.cfg.to_vec(),
     };
-    let mut facts = BodyTypeFacts::default();
+    let mut report = BodyTypeIdentityReport::default();
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
             create_and_enter_global_ctxt(compiler, krate, |tcx| {
-                facts = extract_body_type_facts(tcx, body_span);
+                report = extract_body_type_identity(
+                    tcx,
+                    body_span,
+                    inject_stubs,
+                    source.len(),
+                    capture_identities,
+                );
             });
         })
     });
     if finished.is_err() {
-        facts.fatal = true;
-        facts.type_extraction_complete = false;
-        let file = facts.body_span.as_ref().map(|span| span.file.clone());
+        report.type_facts.fatal = true;
+        report.type_facts.type_extraction_complete = false;
+        report.identity_facts.extraction_complete = false;
+        let file = report.type_facts.body_span.as_ref().map(|span| span.file.clone());
+        let span = file.map(|file| ByteSpan { file, start: body_span.start, end: body_span.end });
         push_body_type_gap(
-            &mut facts,
+            &mut report.type_facts,
             BodyTypeCoverageGapKind::FrontendFatal,
-            file.map(|file| ByteSpan { file, start: body_span.start, end: body_span.end }),
+            span.clone(),
         );
+        push_identity_gap(&mut report.identity_facts, BodyTypeCoverageGapKind::FrontendFatal, span);
     }
-    facts.diagnostics = captured.lock().typed.clone();
-    facts
+    report.type_facts.diagnostics = captured.lock().typed.clone();
+    report
 }
 
-fn extract_body_type_facts(tcx: TyCtxt<'_>, requested: effects::TextRange) -> BodyTypeFacts {
+fn body_identity_report_with_gap(
+    kind: BodyTypeCoverageGapKind,
+    span: Option<ByteSpan>,
+) -> BodyTypeIdentityReport {
+    let mut report = BodyTypeIdentityReport::default();
+    push_body_type_gap(&mut report.type_facts, kind, span.clone());
+    push_identity_gap(&mut report.identity_facts, kind, span);
+    report
+}
+
+fn extract_body_type_identity(
+    tcx: TyCtxt<'_>,
+    requested: effects::TextRange,
+    synthetic_lang_items: bool,
+    original_source_len: usize,
+    capture_identities: bool,
+) -> BodyTypeIdentityReport {
     let input = input_file(tcx);
     let mut candidates = Vec::new();
     for owner in tcx.hir_body_owner_ids().iter().copied() {
@@ -3310,51 +3479,80 @@ fn extract_body_type_facts(tcx: TyCtxt<'_>, requested: effects::TextRange) -> Bo
     }
 
     let spans: Vec<ByteSpan> = candidates.iter().map(|(_, _, span)| span.clone()).collect();
-    let mut facts = BodyTypeFacts::default();
+    let mut report = BodyTypeIdentityReport::default();
     let index = match exact_body_span_index(requested, &spans) {
         Ok(index) => index,
         Err(kind) => {
-            push_body_type_gap(&mut facts, kind, Some(requested_body_span(&input, requested)));
-            return facts;
+            let span = Some(requested_body_span(&input, requested));
+            push_body_type_gap(&mut report.type_facts, kind, span.clone());
+            push_identity_gap(&mut report.identity_facts, kind, span);
+            return report;
         }
     };
     let (owner, body, exact_span) = candidates.remove(index);
-    facts.body_span = Some(exact_span.clone());
+    report.type_facts.body_span = Some(exact_span.clone());
+    if capture_identities {
+        report.identity_facts.body_span = Some(exact_span.clone());
+    }
 
     let typeck = match catch_fatal_errors(|| tcx.typeck(owner)) {
         Ok(typeck) => typeck,
         Err(_) => {
-            facts.fatal = true;
+            report.type_facts.fatal = true;
             push_body_type_gap(
-                &mut facts,
+                &mut report.type_facts,
                 BodyTypeCoverageGapKind::TypeckFatal,
                 Some(exact_span.clone()),
             );
-            return facts;
+            push_identity_gap(
+                &mut report.identity_facts,
+                BodyTypeCoverageGapKind::TypeckFatal,
+                Some(exact_span),
+            );
+            return report;
         }
     };
-    facts.typeck_tainted_by_errors = Some(typeck.tainted_by_errors.is_some());
+    report.type_facts.typeck_tainted_by_errors = Some(typeck.tainted_by_errors.is_some());
     {
         let mut visitor = BodyTypeVisitor {
             tcx,
             input: &input,
             body_span: &exact_span,
             typeck,
-            facts: &mut facts,
+            facts: &mut report.type_facts,
+            identity_facts: capture_identities.then_some(&mut report.identity_facts),
+            synthetic_lang_items,
+            original_source_len,
             generated_visit_order: 0,
         };
         visitor.visit_expr(body.value);
     }
-    nested_body_gaps(tcx, owner, &input, &exact_span, &mut facts);
-    facts.uncomputed_consts = tcx.sess.uncomputed_consts();
-    if !facts.uncomputed_consts.is_empty() {
-        push_body_type_gap(&mut facts, BodyTypeCoverageGapKind::NontrivialConstNotComputed, None);
+    nested_body_gaps(tcx, owner, &input, &exact_span, &mut report.type_facts);
+    report.type_facts.uncomputed_consts = tcx.sess.uncomputed_consts();
+    if !report.type_facts.uncomputed_consts.is_empty() {
+        push_body_type_gap(
+            &mut report.type_facts,
+            BodyTypeCoverageGapKind::NontrivialConstNotComputed,
+            None,
+        );
     }
-    facts.type_extraction_complete = facts.body_span.is_some()
-        && !facts.fatal
-        && facts.coverage_gaps.is_empty()
-        && facts.uncomputed_consts.is_empty();
-    facts
+    report.type_facts.type_extraction_complete = report.type_facts.body_span.is_some()
+        && !report.type_facts.fatal
+        && report.type_facts.coverage_gaps.is_empty()
+        && report.type_facts.uncomputed_consts.is_empty();
+    if capture_identities {
+        let identity_gaps = core::mem::take(&mut report.identity_facts.coverage_gaps);
+        report.identity_facts.coverage_gaps = report.type_facts.coverage_gaps.clone();
+        report.identity_facts.coverage_gaps.extend(report.type_facts.projection_gaps.clone());
+        for gap in identity_gaps {
+            push_identity_gap(&mut report.identity_facts, gap.kind, gap.span);
+        }
+        report.identity_facts.extraction_complete = report.type_facts.type_extraction_complete
+            && report.type_facts.projection_gaps.is_empty()
+            && report.identity_facts.coverage_gaps.is_empty()
+            && report.identity_facts.expressions.len() == report.type_facts.expressions.len();
+    }
+    report
 }
 
 fn exact_body_span_index(
@@ -3434,13 +3632,47 @@ fn push_body_projection_gap(
     }
 }
 
+fn push_identity_gap(
+    facts: &mut BodyTypeIdentityFacts,
+    kind: BodyTypeCoverageGapKind,
+    span: Option<ByteSpan>,
+) {
+    let gap = BodyTypeCoverageGap { kind, span };
+    if !facts.coverage_gaps.contains(&gap) {
+        facts.coverage_gaps.push(gap);
+    }
+}
+
+fn push_optional_identity_gap(
+    facts: &mut Option<&mut BodyTypeIdentityFacts>,
+    kind: BodyTypeCoverageGapKind,
+    span: Option<ByteSpan>,
+) {
+    if let Some(facts) = facts.as_deref_mut() {
+        push_identity_gap(facts, kind, span);
+    }
+}
+
 struct BodyTypeVisitor<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     input: &'a (Arc<SourceFile>, Arc<str>),
     body_span: &'a ByteSpan,
     typeck: &'tcx crate::rustc_middle::ty::TypeckResults<'tcx>,
     facts: &'a mut BodyTypeFacts,
+    identity_facts: Option<&'a mut BodyTypeIdentityFacts>,
+    synthetic_lang_items: bool,
+    original_source_len: usize,
     generated_visit_order: u32,
+}
+
+struct BodyExpressionParts {
+    ty: effects::StaticFact<String>,
+    adjusted_ty: effects::StaticFact<String>,
+    adjustments: Vec<BodyAdjustmentTypeFact>,
+    call_resolution: Option<BodyCallResolutionFact>,
+    resolved_ty: Option<effects::StaticFact<ResolvedTypeIdentity>>,
+    resolved_adjusted_ty: Option<effects::StaticFact<ResolvedTypeIdentity>>,
+    resolved_variant: Option<effects::StaticFact<Option<ResolvedVariantIdentity>>>,
 }
 
 impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
@@ -3452,11 +3684,18 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
             let callsite = source_callsite_span(self.tcx, self.input, expr.span);
             match supported_body_desugaring(self.tcx, self.input, self.body_span, expr.span) {
                 Ok((callsite, desugaring_chain)) => {
-                    let (ty, adjusted_ty, adjustments, call_resolution) =
-                        body_expression_type_parts(self.tcx, self.typeck, expr);
-                    if !body_type_is_known(&ty)
-                        || !body_type_is_known(&adjusted_ty)
-                        || adjustments
+                    let parts = body_expression_type_parts(
+                        self.tcx,
+                        self.typeck,
+                        expr,
+                        self.synthetic_lang_items,
+                        false,
+                        self.input,
+                        self.original_source_len,
+                    );
+                    if !body_type_is_known(&parts.ty)
+                        || !body_type_is_known(&parts.adjusted_ty)
+                        || parts.adjustments
                             .iter()
                             .any(|adjustment| !body_type_is_known(&adjustment.target_ty))
                     {
@@ -3472,20 +3711,28 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                         callsite: callsite.clone(),
                         desugaring_chain,
                         visit_order,
-                        ty,
-                        adjusted_ty,
-                        adjustments,
-                        call_resolution,
+                        ty: parts.ty,
+                        adjusted_ty: parts.adjusted_ty,
+                        adjustments: parts.adjustments,
+                        call_resolution: parts.call_resolution,
                     });
                     // HIR types are present, but the callsite does not identify one source
                     // expression among the generated nodes.
                     push_body_projection_gap(
                         self.facts,
                         BodyTypeCoverageGapKind::DesugaredExpression,
+                        Some(callsite.clone()),
+                    );
+                    push_optional_identity_gap(
+                        &mut self.identity_facts,
+                        BodyTypeCoverageGapKind::DesugaredExpression,
                         Some(callsite),
                     );
                 }
-                Err(kind) => push_body_type_gap(self.facts, kind, callsite),
+                Err(kind) => {
+                    push_body_type_gap(self.facts, kind, callsite.clone());
+                    push_optional_identity_gap(&mut self.identity_facts, kind, callsite);
+                }
             }
         } else {
             match source_mapped_body_span(self.tcx, self.input, expr.span) {
@@ -3496,12 +3743,24 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                             BodyTypeCoverageGapKind::DuplicateExpressionSpan,
                             Some(span.clone()),
                         );
+                        push_optional_identity_gap(
+                            &mut self.identity_facts,
+                            BodyTypeCoverageGapKind::DuplicateExpressionSpan,
+                            Some(span.clone()),
+                        );
                     }
-                    let (ty, adjusted_ty, adjustments, call_resolution) =
-                        body_expression_type_parts(self.tcx, self.typeck, expr);
-                    if !body_type_is_known(&ty)
-                        || !body_type_is_known(&adjusted_ty)
-                        || adjustments
+                    let parts = body_expression_type_parts(
+                        self.tcx,
+                        self.typeck,
+                        expr,
+                        self.synthetic_lang_items,
+                        self.identity_facts.is_some(),
+                        self.input,
+                        self.original_source_len,
+                    );
+                    if !body_type_is_known(&parts.ty)
+                        || !body_type_is_known(&parts.adjusted_ty)
+                        || parts.adjustments
                             .iter()
                             .any(|adjustment| !body_type_is_known(&adjustment.target_ty))
                     {
@@ -3512,23 +3771,78 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                         );
                     }
                     self.facts.expressions.push(BodyExpressionTypeFact {
-                        span,
-                        ty,
-                        adjusted_ty,
-                        adjustments,
-                        call_resolution,
+                        span: span.clone(),
+                        ty: parts.ty,
+                        adjusted_ty: parts.adjusted_ty,
+                        adjustments: parts.adjustments,
+                        call_resolution: parts.call_resolution,
                     });
+                    if let Some(identity_facts) = self.identity_facts.as_deref_mut() {
+                        if let (
+                            Some(resolved_ty),
+                            Some(resolved_adjusted_ty),
+                            Some(resolved_variant),
+                        ) = (
+                            parts.resolved_ty,
+                            parts.resolved_adjusted_ty,
+                            parts.resolved_variant,
+                        ) {
+                            let identity_fact = BodyExpressionIdentityFact {
+                                span,
+                                resolved_ty,
+                                resolved_adjusted_ty,
+                                resolved_variant,
+                            };
+                            if matches!(
+                                &identity_fact.resolved_ty,
+                                effects::StaticFact::Unknown { .. }
+                            ) || matches!(
+                                &identity_fact.resolved_adjusted_ty,
+                                effects::StaticFact::Unknown { .. }
+                            ) || matches!(
+                                &identity_fact.resolved_variant,
+                                effects::StaticFact::Unknown { .. }
+                            ) {
+                                push_identity_gap(
+                                    identity_facts,
+                                    BodyTypeCoverageGapKind::ExpressionTypeMissing,
+                                    Some(identity_fact.span.clone()),
+                                );
+                            }
+                            identity_facts.expressions.push(identity_fact);
+                        } else {
+                            push_identity_gap(
+                                identity_facts,
+                                BodyTypeCoverageGapKind::ExpressionTypeMissing,
+                                Some(span),
+                            );
+                        }
+                    }
                 }
-                Some(span) => push_body_type_gap(
-                    self.facts,
-                    BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
-                    Some(span),
-                ),
-                None => push_body_type_gap(
-                    self.facts,
-                    BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
-                    None,
-                ),
+                Some(span) => {
+                    push_body_type_gap(
+                        self.facts,
+                        BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+                        Some(span.clone()),
+                    );
+                    push_optional_identity_gap(
+                        &mut self.identity_facts,
+                        BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+                        Some(span),
+                    );
+                }
+                None => {
+                    push_body_type_gap(
+                        self.facts,
+                        BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+                        None,
+                    );
+                    push_optional_identity_gap(
+                        &mut self.identity_facts,
+                        BodyTypeCoverageGapKind::ExpressionSpanUnavailable,
+                        None,
+                    );
+                }
             }
         }
         intravisit::walk_expr(self, expr);
@@ -3586,15 +3900,44 @@ fn body_expression_type_parts(
     tcx: TyCtxt<'_>,
     typeck: &crate::rustc_middle::ty::TypeckResults<'_>,
     expr: &hir::Expr<'_>,
-) -> (
-    effects::StaticFact<String>,
-    effects::StaticFact<String>,
-    Vec<BodyAdjustmentTypeFact>,
-    Option<BodyCallResolutionFact>,
-) {
+    synthetic_lang_items: bool,
+    capture_identities: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> BodyExpressionParts {
+    let resolved_ty = capture_identities.then(|| {
+        typeck.expr_ty_opt(expr).map_or_else(
+            || unknown_type_identity("type_not_recorded"),
+            |ty| {
+                resolved_type_identity(
+                    tcx,
+                    ty,
+                    synthetic_lang_items,
+                    input,
+                    original_source_len,
+                    0,
+                )
+            },
+        )
+    });
     let ty = typeck
         .expr_ty_opt(expr)
         .map_or_else(|| unknown_body_type("type_not_recorded"), body_type_fact);
+    let resolved_adjusted_ty = capture_identities.then(|| {
+        typeck.expr_ty_adjusted_opt(expr).map_or_else(
+            || unknown_type_identity("adjusted_type_not_recorded"),
+            |ty| {
+                resolved_type_identity(
+                    tcx,
+                    ty,
+                    synthetic_lang_items,
+                    input,
+                    original_source_len,
+                    0,
+                )
+            },
+        )
+    });
     let adjusted_ty = typeck
         .expr_ty_adjusted_opt(expr)
         .map_or_else(|| unknown_body_type("type_not_recorded"), body_type_fact);
@@ -3607,7 +3950,250 @@ fn body_expression_type_parts(
         })
         .collect();
     let call_resolution = body_call_resolution(tcx, typeck, expr);
-    (ty, adjusted_ty, adjustments, call_resolution)
+    BodyExpressionParts {
+        ty,
+        adjusted_ty,
+        adjustments,
+        call_resolution,
+        resolved_ty,
+        resolved_adjusted_ty,
+        resolved_variant: capture_identities.then(|| {
+            body_variant_identity(
+                tcx,
+                typeck,
+                expr,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+            )
+        }),
+    }
+}
+
+fn resolved_type_identity(
+    tcx: TyCtxt<'_>,
+    resolved: ty::Ty<'_>,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+    depth: u8,
+) -> effects::StaticFact<ResolvedTypeIdentity> {
+    if resolved.references_error() {
+        return unknown_type_identity("type_error");
+    }
+    if resolved.has_infer() {
+        return unknown_type_identity("unresolved_inference");
+    }
+    if depth > 4 {
+        return unknown_type_identity("identity_nesting_limit");
+    }
+    use ty::TyKind;
+    let primitive = match *resolved.kind() {
+        TyKind::Bool => Some(ResolvedPrimitive::Bool),
+        TyKind::Char => Some(ResolvedPrimitive::Char),
+        TyKind::Int(ty::IntTy::I8) => Some(ResolvedPrimitive::I8),
+        TyKind::Int(ty::IntTy::I16) => Some(ResolvedPrimitive::I16),
+        TyKind::Int(ty::IntTy::I32) => Some(ResolvedPrimitive::I32),
+        TyKind::Int(ty::IntTy::I64) => Some(ResolvedPrimitive::I64),
+        TyKind::Int(ty::IntTy::I128) => Some(ResolvedPrimitive::I128),
+        TyKind::Int(ty::IntTy::Isize) => Some(ResolvedPrimitive::Isize),
+        TyKind::Uint(ty::UintTy::U8) => Some(ResolvedPrimitive::U8),
+        TyKind::Uint(ty::UintTy::U16) => Some(ResolvedPrimitive::U16),
+        TyKind::Uint(ty::UintTy::U32) => Some(ResolvedPrimitive::U32),
+        TyKind::Uint(ty::UintTy::U64) => Some(ResolvedPrimitive::U64),
+        TyKind::Uint(ty::UintTy::U128) => Some(ResolvedPrimitive::U128),
+        TyKind::Uint(ty::UintTy::Usize) => Some(ResolvedPrimitive::Usize),
+        TyKind::Float(ty::FloatTy::F16) => Some(ResolvedPrimitive::F16),
+        TyKind::Float(ty::FloatTy::F32) => Some(ResolvedPrimitive::F32),
+        TyKind::Float(ty::FloatTy::F64) => Some(ResolvedPrimitive::F64),
+        TyKind::Float(ty::FloatTy::F128) => Some(ResolvedPrimitive::F128),
+        TyKind::Str => Some(ResolvedPrimitive::Str),
+        TyKind::Never => Some(ResolvedPrimitive::Never),
+        TyKind::Tuple(types) if types.is_empty() => Some(ResolvedPrimitive::Unit),
+        _ => None,
+    };
+    if let Some(primitive) = primitive {
+        return effects::StaticFact::Known {
+            value: ResolvedTypeIdentity::Primitive { primitive },
+        };
+    }
+    if let TyKind::Adt(definition, args) = *resolved.kind() {
+        let def_id = definition.did();
+        if tcx.lang_items().option_type() == Some(def_id) {
+            if synthetic_lang_items
+                && is_synthetic_local_definition(tcx, input, original_source_len, def_id)
+            {
+                return unknown_type_identity("synthetic_lang_item_context");
+            }
+            if def_id.is_local() {
+                return unknown_type_identity("local_option_lang_item_context");
+            }
+            let arguments = match resolved_adt_arguments(
+                tcx,
+                args,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+                depth,
+            ) {
+                Ok(arguments) if arguments.len() == 1 => arguments,
+                _ => return unknown_type_identity("option_argument_identity_unavailable"),
+            };
+            return effects::StaticFact::Known {
+                value: ResolvedTypeIdentity::OptionLangItem {
+                    definition: stable_def_path_identity(tcx, def_id),
+                    argument: Box::new(arguments[0].clone()),
+                },
+            };
+        }
+        if synthetic_lang_items
+            && is_synthetic_local_definition(tcx, input, original_source_len, def_id)
+        {
+            return unknown_type_identity("synthetic_declaration_context");
+        }
+        let arguments = match resolved_adt_arguments(
+            tcx,
+            args,
+            synthetic_lang_items,
+            input,
+            original_source_len,
+            depth,
+        ) {
+            Ok(arguments) => arguments,
+            Err(why) => return unknown_type_identity(why),
+        };
+        return effects::StaticFact::Known {
+            value: ResolvedTypeIdentity::Adt {
+                definition: stable_def_path_identity(tcx, def_id),
+                arguments,
+            },
+        };
+    }
+    unknown_type_identity("unsupported_resolved_type_form")
+}
+
+fn unknown_type_identity(why: &str) -> effects::StaticFact<ResolvedTypeIdentity> {
+    effects::StaticFact::Unknown { why: why.to_string() }
+}
+
+fn resolved_adt_arguments(
+    tcx: TyCtxt<'_>,
+    args: ty::GenericArgsRef<'_>,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+    depth: u8,
+) -> Result<Vec<ResolvedTypeIdentity>, &'static str> {
+    let mut arguments = Vec::new();
+    for argument in args.iter() {
+        let Some(argument_ty) = argument.as_type() else {
+            return Err("non_type_generic_argument_identity_unavailable");
+        };
+        let effects::StaticFact::Known { value } = resolved_type_identity(
+            tcx,
+            argument_ty,
+            synthetic_lang_items,
+            input,
+            original_source_len,
+            depth + 1,
+        ) else {
+            return Err("generic_argument_identity_unavailable");
+        };
+        arguments.push(value);
+    }
+    Ok(arguments)
+}
+
+fn stable_def_path_identity(tcx: TyCtxt<'_>, def_id: DefId) -> StableDefPathIdentity {
+    let hash = tcx.def_path_hash(def_id);
+    StableDefPathIdentity {
+        scheme: "rustc_def_path_hash_v1".to_string(),
+        stable_crate_id: format!("{:016x}", hash.stable_crate_id().as_u64()),
+        item_path_hash: format!("{:016x}", hash.local_hash().as_u64()),
+    }
+}
+
+fn body_variant_identity(
+    tcx: TyCtxt<'_>,
+    typeck: &crate::rustc_middle::ty::TypeckResults<'_>,
+    expr: &hir::Expr<'_>,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
+    let resolved = match &expr.kind {
+        ExprKind::Path(qpath) => typeck.qpath_res(qpath, expr.hir_id),
+        ExprKind::Struct(qpath, ..) => typeck.qpath_res(qpath, expr.hir_id),
+        ExprKind::Call(callee, _) => {
+            let ExprKind::Path(qpath) = &callee.kind else {
+                return effects::StaticFact::Unknown {
+                    why: "variant_call_target_indirect".to_string(),
+                };
+            };
+            typeck.qpath_res(qpath, callee.hir_id)
+        }
+        _ => return known_non_variant(),
+    };
+    let variant = match resolved {
+        Res::Err => {
+            return effects::StaticFact::Unknown {
+                why: "variant_path_unresolved".to_string(),
+            };
+        }
+        Res::Def(DefKind::Variant, variant) => variant,
+        Res::Def(DefKind::Ctor(CtorOf::Variant, _), constructor) => tcx.parent(constructor),
+        _ => return known_non_variant(),
+    };
+    let enum_definition = tcx.parent(variant);
+    if synthetic_lang_items
+        && is_synthetic_local_definition(tcx, input, original_source_len, enum_definition)
+    {
+        return effects::StaticFact::Unknown {
+            why: "synthetic_lang_item_context".to_string(),
+        };
+    }
+    let option_role = if !enum_definition.is_local()
+        && tcx.lang_items().option_type() == Some(enum_definition)
+    {
+        match (
+            tcx.lang_items().option_some_variant(),
+            tcx.lang_items().option_none_variant(),
+        ) {
+            (Some(some), _) if variant == some => Some(ResolvedOptionVariantRole::Some),
+            (_, Some(none)) if variant == none => Some(ResolvedOptionVariantRole::None),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    effects::StaticFact::Known {
+        value: Some(ResolvedVariantIdentity {
+            parent_enum: stable_def_path_identity(tcx, enum_definition),
+            variant: stable_def_path_identity(tcx, variant),
+            option_role,
+        }),
+    }
+}
+
+fn is_synthetic_local_definition(
+    tcx: TyCtxt<'_>,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+    def_id: DefId,
+) -> bool {
+    if !def_id.is_local() {
+        return false;
+    }
+    source_mapped_body_span(tcx, input, tcx.def_span(def_id)).is_none_or(|span| {
+        match usize::try_from(span.end) {
+            Ok(end) => end > original_source_len,
+            Err(_) => true,
+        }
+    })
+}
+
+fn known_non_variant() -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
+    effects::StaticFact::Known { value: None }
 }
 
 fn body_call_resolution(
