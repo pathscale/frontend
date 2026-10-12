@@ -243,6 +243,12 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         let mut swallow_next_invalid = 0;
         // Skip trivial (whitespace & comments) tokens
         loop {
+            // Whitespace is skipped in place rather than built as a token first.
+            let skipped = self.cursor.skip_whitespace();
+            if skipped != 0 {
+                self.pos = self.pos + BytePos(skipped);
+                preceded_by_whitespace = true;
+            }
             let str_before = self.cursor.as_str();
             let token = self.cursor.advance_token();
             let start = self.pos;
