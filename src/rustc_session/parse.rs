@@ -81,7 +81,9 @@ impl SymbolGallery {
 
     /// `insert` of each pair in order, under one lock.
     pub fn insert_all(&self, pairs: impl IntoIterator<Item = (Symbol, Span)>) {
+        let pairs = pairs.into_iter();
         let mut symbols = self.symbols.lock();
+        symbols.reserve(pairs.size_hint().0);
         for (symbol, span) in pairs {
             symbols.entry(symbol).or_insert(span);
         }
