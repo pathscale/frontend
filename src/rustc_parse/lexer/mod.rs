@@ -223,12 +223,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
     #[inline]
     fn nfc_normalize_src(&mut self, text: &'src str) -> Symbol {
-        if let Some(&sym) = self.nfc_cache.get(text) {
-            return sym;
-        }
-        let sym = nfc_normalize_in(text, self.owner);
-        self.nfc_cache.insert(text, sym);
-        sym
+        let owner = self.owner;
+        *self.nfc_cache.entry(text).or_insert_with(|| nfc_normalize_in(text, owner))
     }
 
     #[inline]
