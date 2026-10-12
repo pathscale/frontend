@@ -72,8 +72,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 .clone();
         }
 
-        let tts: Vec<TokenTree> = self.tree_buf.drain(start..).collect();
-        TokenStream::new(tts)
+        TokenStream::from_exact(self.tree_buf.drain(start..))
     }
 
     fn lex_token_tree_open_delim(
