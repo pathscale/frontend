@@ -1451,7 +1451,7 @@ impl<'a> Parser<'a> {
             let span = lo.to(self.prev_token.span);
             Ok(self.mk_expr(
                 span,
-                ExprKind::MethodCall(Box::new(ast::MethodCall {
+                ExprKind::MethodCall(P::new(ast::MethodCall {
                     seg,
                     receiver: self_arg,
                     args,

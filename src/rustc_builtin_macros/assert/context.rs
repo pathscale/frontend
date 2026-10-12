@@ -452,7 +452,7 @@ fn expr_method_call(
     args: ThinVec<P<Expr>>,
     span: Span,
 ) -> P<Expr> {
-    cx.expr(span, ExprKind::MethodCall(Box::new(MethodCall { seg, receiver, args, span })))
+    cx.expr(span, ExprKind::MethodCall(P::new(MethodCall { seg, receiver, args, span })))
 }
 
 fn expr_paren(cx: &ExtCtxt<'_>, sp: Span, e: P<Expr>) -> P<Expr> {
