@@ -2196,7 +2196,7 @@ pub enum ExprKind {
     /// tuple-like ADTs such as tuple structs and enum variants.
     Call(P<Expr>, ThinVec<P<Expr>>),
     /// A method call (e.g., `x.foo::<Bar, Baz>(a, b, c)`).
-    MethodCall(Box<MethodCall>),
+    MethodCall(P<MethodCall>),
     /// A tuple (e.g., `(a, b, c, d)`).
     Tup(ThinVec<P<Expr>>),
     /// A binary operation (e.g., `a + b`, `a * b`).

@@ -350,7 +350,7 @@ impl<'a> ExtCtxt<'a> {
         let seg = ast::PathSegment::from_ident(ident);
         self.expr(
             span,
-            ast::ExprKind::MethodCall(Box::new(ast::MethodCall {
+            ast::ExprKind::MethodCall(P::new(ast::MethodCall {
                 seg,
                 receiver: expr,
                 args,
