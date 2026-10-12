@@ -2782,10 +2782,16 @@ impl<'a> Parser<'a> {
                         let new_span = first_pat.span.to(pat.span);
                         let mut show_sugg = false;
                         // Try to construct a recovered pattern.
-                        match &mut pat.kind {
+                        let qpath = match &mut pat.kind {
                             PatKind::Struct(qself @ None, path, ..)
-                            | PatKind::TupleStruct(qself @ None, path, _)
-                            | PatKind::Path(qself @ None, path) => match &first_pat.kind {
+                            | PatKind::TupleStruct(qself @ None, path, _) => {
+                                Some((qself, &mut **path))
+                            }
+                            PatKind::Path(qself @ None, path) => Some((qself, path)),
+                            _ => None,
+                        };
+                        if let Some((qself, path)) = qpath {
+                            match &first_pat.kind {
                                 PatKind::Ident(_, ident, _) => {
                                     path.segments.insert(0, PathSegment::from_ident(*ident));
                                     path.span = new_span;
@@ -2805,37 +2811,35 @@ impl<'a> Parser<'a> {
                                     show_sugg = true;
                                 }
                                 _ => {}
-                            },
-                            PatKind::Ident(BindingMode::NONE, ident, None) => {
-                                match &first_pat.kind {
-                                    PatKind::Ident(_, old_ident, _) => {
-                                        let path = PatKind::Path(
-                                            None,
-                                            Path {
-                                                span: new_span,
-                                                segments: [
-                                                    PathSegment::from_ident(*old_ident),
-                                                    PathSegment::from_ident(*ident),
-                                                ].into_iter().collect(),
-                                            },
-                                        );
-                                        first_pat = self.mk_pat(new_span, path);
-                                        show_sugg = true;
-                                    }
-                                    PatKind::Path(old_qself, old_path) => {
-                                        let mut segments = old_path.segments.clone();
-                                        segments.push(PathSegment::from_ident(*ident));
-                                        let path = PatKind::Path(
-                                            old_qself.clone(),
-                                            Path { span: new_span, segments },
-                                        );
-                                        first_pat = self.mk_pat(new_span, path);
-                                        show_sugg = true;
-                                    }
-                                    _ => {}
-                                }
                             }
-                            _ => {}
+                        } else if let PatKind::Ident(BindingMode::NONE, ident, None) = &pat.kind {
+                            match &first_pat.kind {
+                                PatKind::Ident(_, old_ident, _) => {
+                                    let path = PatKind::Path(
+                                        None,
+                                        Path {
+                                            span: new_span,
+                                            segments: [
+                                                PathSegment::from_ident(*old_ident),
+                                                PathSegment::from_ident(*ident),
+                                            ].into_iter().collect(),
+                                        },
+                                    );
+                                    first_pat = self.mk_pat(new_span, path);
+                                    show_sugg = true;
+                                }
+                                PatKind::Path(old_qself, old_path) => {
+                                    let mut segments = old_path.segments.clone();
+                                    segments.push(PathSegment::from_ident(*ident));
+                                    let path = PatKind::Path(
+                                        old_qself.clone(),
+                                        Path { span: new_span, segments },
+                                    );
+                                    first_pat = self.mk_pat(new_span, path);
+                                    show_sugg = true;
+                                }
+                                _ => {}
+                            }
                         }
                         if show_sugg {
                             err.span_suggestion_verbose(

@@ -1575,7 +1575,7 @@ impl<'a> Parser<'a> {
             (ThinVec::new(), PatFieldsRest::Recovered(guar))
         });
         self.bump();
-        Ok(PatKind::Struct(qself, path, fields, etc))
+        Ok(PatKind::Struct(qself, P::new(path), fields, etc))
     }
 
     /// Parse tuple struct or tuple variant pattern (e.g. `Foo(...)` or `Foo::Bar(...)`).
@@ -1595,7 +1595,7 @@ impl<'a> Parser<'a> {
         if qself.is_some() {
             self.psess.gated_spans.gate(sym::more_qualified_paths, path.span);
         }
-        Ok(PatKind::TupleStruct(qself, path, fields))
+        Ok(PatKind::TupleStruct(qself, P::new(path), fields))
     }
 
     /// Are we sure this could not possibly be the start of a pattern?
