@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::sync::Arc;
 use diagnostics::make_errors_for_mismatched_closing_delims;
+use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_ast::ast::{self, AttrStyle};
 use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
@@ -104,6 +105,7 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         token: Token::dummy(),
         diag_info: TokenTreeDiagInfo::default(),
         tree_buf: Vec::new(),
+        nfc_cache: FxHashMap::default(),
         empty_stream: None,
         gallery_seen: Vec::new(),
         gallery_new: Vec::new(),
@@ -163,6 +165,9 @@ struct Lexer<'psess, 'src> {
     /// See `lex_token_trees`.
     tree_buf: Vec<TokenTree>,
 
+    /// Symbols of source spellings already normalized, keyed by the borrowed source text.
+    nfc_cache: FxHashMap<&'src str, Symbol>,
+
     /// Shared backing stream for empty groups.
     empty_stream: Option<TokenStream>,
 
@@ -214,6 +219,16 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
             Some(owner) => Symbol::intern_from_source(text, owner),
             None => Symbol::intern(text),
         }
+    }
+
+    #[inline]
+    fn nfc_normalize_src(&mut self, text: &'src str) -> Symbol {
+        if let Some(&sym) = self.nfc_cache.get(text) {
+            return sym;
+        }
+        let sym = nfc_normalize_in(text, self.owner);
+        self.nfc_cache.insert(text, sym);
+        sym
     }
 
     #[inline]
@@ -300,7 +315,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     self.ident_text(start, &str_before[..token.len as usize])
                 }
                 crate::rustc_lexer::TokenKind::RawIdent => {
-                    let sym = nfc_normalize_in(self.str_from(start + BytePos(2)), self.owner);
+                    let sym = self.nfc_normalize_src(self.str_from(start + BytePos(2)));
                     let span = self.mk_sp(start, self.pos);
                     self.record_symbol(sym, span);
                     if !sym.can_be_raw() {
@@ -331,7 +346,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                         sym.chars().count() == 1 && c == sym.chars().next().unwrap()
                     }) =>
                 {
-                    let sym = nfc_normalize_in(self.str_from(start), self.owner);
+                    let sym = self.nfc_normalize_src(self.str_from(start));
                     let span = self.mk_sp(start, self.pos);
                     self.psess
                         .bad_unicode_identifiers
@@ -397,7 +412,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     // Include the leading `'` in the real identifier, for macro
                     // expansion purposes. See #12512 for the gory details of why
                     // this is necessary.
-                    let lifetime_name = nfc_normalize_in(self.str_from(start), self.owner);
+                    let lifetime_name = self.nfc_normalize_src(self.str_from(start));
                     self.last_lifetime = Some(self.mk_sp(start, start + BytePos(1)));
                     if starts_with_number {
                         let span = self.mk_sp(start, self.pos);
@@ -475,7 +490,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                             }
                         );
 
-                        let lifetime_name = nfc_normalize_in(self.str_from(start), self.owner);
+                        let lifetime_name = self.nfc_normalize_src(self.str_from(start));
                         token::Lifetime(lifetime_name, IdentIsRaw::No)
                     }
                 }
@@ -569,8 +584,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
     /// `ident(start)` given its text, `self.str_from(start)`.
     #[inline]
-    fn ident_text(&mut self, start: BytePos, text: &str) -> TokenKind {
-        let sym = nfc_normalize_in(text, self.owner);
+    fn ident_text(&mut self, start: BytePos, text: &'src str) -> TokenKind {
+        let sym = self.nfc_normalize_src(text);
         let span = self.mk_sp(start, self.pos);
         self.record_symbol(sym, span);
         token::Ident(sym, IdentIsRaw::No)
