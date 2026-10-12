@@ -16,7 +16,7 @@ use thin_vec::{ThinVec, thin_vec};
 use crate::rustc_ast::ast::{
     AttrArgs, AttrId, AttrItem, AttrKind, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID, DelimArgs,
     Expr, ExprKind, LitKind, MetaItem, MetaItemInner, MetaItemKind, MetaItemLit, NormalAttr, Path,
-    PathSegment, Safety, SyntheticAttr,
+    PathSegment, PathSegments, Safety, SyntheticAttr,
 };
 use crate::rustc_ast::token::{
     self, CommentKind, Delimiter, DocFragmentKind, InvisibleOrigin, MetaVarKind, Token,
@@ -494,12 +494,12 @@ impl MetaItem {
                         iter.peek()
                     {
                         iter.next();
-                        thin_vec![PathSegment::from_ident(Ident::new(name, span))]
+                        PathSegments::from_elem(PathSegment::from_ident(Ident::new(name, span)), 1)
                     } else {
                         break 'arm Path::from_ident(Ident::new(name, span));
                     }
                 } else {
-                    thin_vec![PathSegment::path_root(span)]
+                    PathSegments::from_elem(PathSegment::path_root(span), 1)
                 };
                 loop {
                     let Some(&TokenTree::Token(Token { kind: token::Ident(name, _), span }, _)) =

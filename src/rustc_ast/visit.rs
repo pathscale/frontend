@@ -409,7 +409,7 @@ macro_rules! common_visitor_and_walkers {
             ThinVec<Ident>,
             ThinVec<(Ident, Option<Ident>)>,
             ThinVec<(NodeId, Path)>,
-            ThinVec<PathSegment>,
+            PathSegments,
             ThinVec<PreciseCapturingArg>,
             ThinVec<Pat>,
             ThinVec<TestBinderConstraint>,

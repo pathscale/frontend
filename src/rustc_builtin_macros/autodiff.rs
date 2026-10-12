@@ -31,7 +31,7 @@ mod llvm_enzyme {
     use crate::rustc_ast::{
         self as ast, AngleBracketedArg, AngleBracketedArgs, AnonConst, AssocItemKind, BindingMode,
         FnRetTy, FnSig, GenericArg, GenericArgs, GenericParamKind, Generics, ItemKind,
-        MetaItemInner, PatKind, Path, PathSegment, TyKind, Visibility,
+        MetaItemInner, PatKind, Path, PathSegment, PathSegments, TyKind, Visibility,
     };
     use crate::rustc_attr_ir::RustcAutodiff;
     use crate::rustc_expand::base::{Annotatable, ExtCtxt};
@@ -612,12 +612,14 @@ mod llvm_enzyme {
         };
 
         let segments = if is_impl {
-            thin_vec![
+            [
                 PathSegment { ident: Ident::from_str("Self"), id: ast::DUMMY_NODE_ID, args: None },
                 segment,
             ]
+            .into_iter()
+            .collect()
         } else {
-            thin_vec![segment]
+            PathSegments::from_elem(segment, 1)
         };
 
         let path = Path { span, segments };

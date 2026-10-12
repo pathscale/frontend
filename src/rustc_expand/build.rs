@@ -32,7 +32,7 @@ impl<'a> ExtCtxt<'a> {
     ) -> ast::Path {
         assert!(!idents.is_empty());
         let add_root = global && !idents[0].is_path_segment_keyword();
-        let mut segments = ThinVec::with_capacity(idents.len() + add_root as usize);
+        let mut segments = ast::PathSegments::new();
         if add_root {
             segments.push(ast::PathSegment::path_root(span));
         }

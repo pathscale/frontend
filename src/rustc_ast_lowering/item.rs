@@ -263,7 +263,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             ItemKind::Use(use_tree) => {
                 // Start with an empty prefix.
                 let prefix =
-                    Path { segments: ThinVec::new(), span: use_tree.prefix.span.shrink_to_lo() };
+                    Path { segments: PathSegments::new(), span: use_tree.prefix.span.shrink_to_lo() };
 
                 self.lower_use_tree(use_tree, &prefix, id, vis_span, attrs)
             }

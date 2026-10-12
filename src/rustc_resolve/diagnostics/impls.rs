@@ -1735,7 +1735,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     segms.append(&mut path_segments.clone());
 
                     segms.push(ast::PathSegment::from_ident(ident.orig(orig_ident_span)));
-                    let path = Path { span: name_binding.span, segments: segms };
+                    let path = Path { span: name_binding.span, segments: segms.into() };
 
                     if child_accessible
                         // Remove invisible match if exists
@@ -2598,7 +2598,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             return;
         }
 
-        *path = Path { span: path.span, segments: new_segments };
+        *path = Path { span: path.span, segments: new_segments.into() };
     }
 
     fn report_privacy_error(&mut self, privacy_error: &PrivacyError<'ra>) {

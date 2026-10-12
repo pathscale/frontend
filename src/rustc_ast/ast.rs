@@ -25,6 +25,8 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::borrow::Cow;
 use core::borrow::Borrow;
+use core::mem;
+use core::ops::{Deref, DerefMut};
 use core::{cmp, fmt};
 
 pub use GenericArgs::*;
@@ -101,14 +103,14 @@ pub struct Path {
     pub span: Span,
     /// The segments in the path: the things separated by `::`.
     /// Global paths begin with `kw::PathRoot`.
-    pub segments: ThinVec<PathSegment>,
+    pub segments: PathSegments,
 }
 
 // Succeeds if the path has a single segment that is arg-free and matches the given symbol.
 impl PartialEq<Symbol> for Path {
     #[inline]
     fn eq(&self, name: &Symbol) -> bool {
-        if let [segment] = self.segments.as_ref()
+        if let [segment] = self.segments.as_slice()
             && segment == name
         {
             true
@@ -139,7 +141,7 @@ impl Path {
     /// Convert a span and an identifier to the corresponding
     /// one-segment path.
     pub fn from_ident(ident: Ident) -> Path {
-        Path { segments: thin_vec![PathSegment::from_ident(ident)], span: ident.span }
+        Path { segments: PathSegments::from_elem(PathSegment::from_ident(ident), 1), span: ident.span }
     }
 
     pub fn is_global(&self) -> bool {
@@ -252,6 +254,314 @@ impl PathSegment {
             Some(args) => self.ident.span.to(args.span()),
             None => self.ident.span,
         }
+    }
+}
+
+/// The segments in an AST path.
+///
+/// A single segment is stored inline. Empty paths and paths with multiple segments use a
+/// `ThinVec`; its empty representation does not allocate.
+///
+/// `PathSegment` is 24 bytes, and `NodeId` is a plain `u32` in this crate, so it provides no
+/// layout niche for the enum tag. The enum and this wrapper are 32 bytes on 64-bit targets.
+#[repr(transparent)]
+#[derive(Clone)]
+pub struct PathSegments(PathSegmentsInner);
+
+#[derive(Clone)]
+enum PathSegmentsInner {
+    Inline(PathSegment),
+    Heap(ThinVec<PathSegment>),
+}
+
+impl PathSegments {
+    /// Creates an empty path segment list without allocating.
+    pub fn new() -> Self {
+        Self(PathSegmentsInner::Heap(ThinVec::new()))
+    }
+
+    /// Creates a list by cloning `element` `count` times.
+    pub fn from_elem(element: PathSegment, count: usize) -> Self {
+        match count {
+            0 => Self::new(),
+            1 => Self(PathSegmentsInner::Inline(element)),
+            count => {
+                let mut segments = ThinVec::with_capacity(count);
+                for _ in 0..count {
+                    segments.push(element.clone());
+                }
+                Self(PathSegmentsInner::Heap(segments))
+            }
+        }
+    }
+
+    /// Returns the segments as a slice.
+    pub fn as_slice(&self) -> &[PathSegment] {
+        match &self.0 {
+            PathSegmentsInner::Inline(segment) => core::slice::from_ref(segment),
+            PathSegmentsInner::Heap(segments) => segments.as_slice(),
+        }
+    }
+
+    /// Returns the segments as a mutable slice.
+    pub fn as_mut_slice(&mut self) -> &mut [PathSegment] {
+        match &mut self.0 {
+            PathSegmentsInner::Inline(segment) => core::slice::from_mut(segment),
+            PathSegmentsInner::Heap(segments) => segments.as_mut_slice(),
+        }
+    }
+
+    /// Returns an iterator over the segments.
+    pub fn iter(&self) -> core::slice::Iter<'_, PathSegment> {
+        self.as_slice().iter()
+    }
+
+    /// Returns a mutable iterator over the segments.
+    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, PathSegment> {
+        self.as_mut_slice().iter_mut()
+    }
+
+    /// Returns the number of segments.
+    pub fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    /// Returns whether the path has no segments.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Adds a segment to the end of the list.
+    pub fn push(&mut self, segment: PathSegment) {
+        self.insert(self.len(), segment);
+    }
+
+    /// Inserts a segment at `index`.
+    pub fn insert(&mut self, index: usize, segment: PathSegment) {
+        assert!(index <= self.len());
+        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+        self.0 = match old {
+            PathSegmentsInner::Inline(first) => {
+                let mut segments = ThinVec::with_capacity(2);
+                if index == 0 {
+                    segments.push(segment);
+                    segments.push(first);
+                } else {
+                    segments.push(first);
+                    segments.push(segment);
+                }
+                PathSegmentsInner::Heap(segments)
+            }
+            PathSegmentsInner::Heap(mut segments) if segments.is_empty() => {
+                PathSegmentsInner::Inline(segment)
+            }
+            PathSegmentsInner::Heap(mut segments) => {
+                segments.insert(index, segment);
+                PathSegmentsInner::Heap(segments)
+            }
+        };
+    }
+
+    /// Removes and returns the last segment.
+    pub fn pop(&mut self) -> Option<PathSegment> {
+        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+        match old {
+            PathSegmentsInner::Inline(segment) => Some(segment),
+            PathSegmentsInner::Heap(mut segments) => {
+                let popped = segments.pop();
+                self.0 = match segments.len() {
+                    0 => PathSegmentsInner::Heap(ThinVec::new()),
+                    1 => PathSegmentsInner::Inline(segments.pop().unwrap()),
+                    _ => PathSegmentsInner::Heap(segments),
+                };
+                popped
+            }
+        }
+    }
+
+    /// Removes and returns the segment at `index`.
+    pub fn remove(&mut self, index: usize) -> PathSegment {
+        let mut segments: ThinVec<PathSegment> = mem::take(self).into_iter().collect();
+        let removed = segments.remove(index);
+        *self = segments.into();
+        removed
+    }
+
+    /// Keeps only the first `len` segments.
+    pub fn truncate(&mut self, len: usize) {
+        if len >= self.len() {
+            return;
+        }
+        if len == 0 {
+            self.clear();
+            return;
+        }
+        if len == 1 {
+            let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+            self.0 = match old {
+                PathSegmentsInner::Inline(segment) => PathSegmentsInner::Inline(segment),
+                PathSegmentsInner::Heap(mut segments) => {
+                    segments.truncate(1);
+                    match segments.pop() {
+                        Some(segment) => PathSegmentsInner::Inline(segment),
+                        None => PathSegmentsInner::Heap(ThinVec::new()),
+                    }
+                }
+            };
+            return;
+        }
+        if let PathSegmentsInner::Heap(segments) = &mut self.0 {
+            segments.truncate(len);
+        }
+    }
+
+    /// Removes all segments without allocating.
+    pub fn clear(&mut self) {
+        self.0 = PathSegmentsInner::Heap(ThinVec::new());
+    }
+}
+
+impl Default for PathSegments {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for PathSegments {
+    type Target = [PathSegment];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for PathSegments {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+impl From<ThinVec<PathSegment>> for PathSegments {
+    fn from(segments: ThinVec<PathSegment>) -> Self {
+        match segments.len() {
+            0 => Self::new(),
+            1 => Self(PathSegmentsInner::Inline(segments.into_iter().next().unwrap())),
+            _ => Self(PathSegmentsInner::Heap(segments)),
+        }
+    }
+}
+
+impl Extend<PathSegment> for PathSegments {
+    fn extend<T: IntoIterator<Item = PathSegment>>(&mut self, segments: T) {
+        for segment in segments {
+            self.push(segment);
+        }
+    }
+}
+
+impl FromIterator<PathSegment> for PathSegments {
+    fn from_iter<T: IntoIterator<Item = PathSegment>>(segments: T) -> Self {
+        let mut result = Self::new();
+        result.extend(segments);
+        result
+    }
+}
+
+impl IntoIterator for PathSegments {
+    type Item = PathSegment;
+    type IntoIter = PathSegmentsIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self.0 {
+            PathSegmentsInner::Inline(segment) => {
+                PathSegmentsIntoIter::Inline(Some(segment))
+            }
+            PathSegmentsInner::Heap(segments) => {
+                PathSegmentsIntoIter::Heap(segments.into_iter())
+            }
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a PathSegments {
+    type Item = &'a PathSegment;
+    type IntoIter = core::slice::Iter<'a, PathSegment>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut PathSegments {
+    type Item = &'a mut PathSegment;
+    type IntoIter = core::slice::IterMut<'a, PathSegment>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl fmt::Debug for PathSegments {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_slice(), f)
+    }
+}
+
+/// An owned iterator over path segments.
+pub enum PathSegmentsIntoIter {
+    /// Iterates over an inline segment, if present.
+    Inline(Option<PathSegment>),
+    /// Iterates over heap-stored segments.
+    Heap(thin_vec::IntoIter<PathSegment>),
+}
+
+impl Iterator for PathSegmentsIntoIter {
+    type Item = PathSegment;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Inline(segment) => segment.take(),
+            Self::Heap(segments) => segments.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = match self {
+            Self::Inline(segment) => usize::from(segment.is_some()),
+            Self::Heap(segments) => segments.len(),
+        };
+        (len, Some(len))
+    }
+}
+
+impl DoubleEndedIterator for PathSegmentsIntoIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Inline(segment) => segment.take(),
+            Self::Heap(segments) => segments.next_back(),
+        }
+    }
+}
+
+impl ExactSizeIterator for PathSegmentsIntoIter {
+    fn len(&self) -> usize {
+        self.size_hint().0
+    }
+}
+
+impl core::iter::FusedIterator for PathSegmentsIntoIter {}
+
+impl<E: crate::rustc_span::SpanEncoder> crate::rustc_serialize::Encodable<E> for PathSegments {
+    fn encode(&self, encoder: &mut E) {
+        crate::rustc_serialize::Encodable::encode(self.as_slice(), encoder);
+    }
+}
+
+impl<D: crate::rustc_span::SpanDecoder> crate::rustc_serialize::Decodable<D> for PathSegments {
+    fn decode(decoder: &mut D) -> Self {
+        let segments: ThinVec<PathSegment> =
+            crate::rustc_serialize::Decodable::decode(decoder);
+        segments.into()
     }
 }
 
@@ -4478,11 +4788,12 @@ mod size_asserts {
     // tidy-alphabetical-start
     static_assert_size!(AssocItem, 72);
     static_assert_size!(AssocItemKind, 16);
+    static_assert_size!(PathSegments, 32);
     static_assert_size!(AttrKind, 16);
     static_assert_size!(Attribute, 32);
     static_assert_size!(Block, 24);
-    static_assert_size!(Expr, 72);
-    static_assert_size!(ExprKind, 40);
+    static_assert_size!(Expr, 80);
+    static_assert_size!(ExprKind, 48);
     static_assert_size!(FieldDef, 80);
     static_assert_size!(Fn, 192);
     static_assert_size!(FnDecl, 24);
@@ -4492,7 +4803,7 @@ mod size_asserts {
     static_assert_size!(ForeignItemKind, 16);
     static_assert_size!(GenericArg, 24);
     static_assert_size!(GenericArgs, 40);
-    static_assert_size!(GenericBound, 80);
+    static_assert_size!(GenericBound, 104);
     static_assert_size!(GenericParam, 88);
     static_assert_size!(Generics, 40);
     static_assert_size!(Impl, 80);
@@ -4501,20 +4812,20 @@ mod size_asserts {
     static_assert_size!(Lifetime, 16);
     static_assert_size!(LitKind, 24);
     static_assert_size!(Local, 96);
-    static_assert_size!(MetaItem, 88);
+    static_assert_size!(MetaItem, 112);
     static_assert_size!(MetaItemKind, 48);
     static_assert_size!(MetaItemLit, 48);
-    static_assert_size!(NormalAttr, 80);
+    static_assert_size!(NormalAttr, 104);
     static_assert_size!(Param, 40);
-    static_assert_size!(Pat, 64);
-    static_assert_size!(PatKind, 48);
-    static_assert_size!(Path, 16);
+    static_assert_size!(Pat, 88);
+    static_assert_size!(PatKind, 72);
+    static_assert_size!(Path, 40);
     static_assert_size!(PathSegment, 24);
     static_assert_size!(QSelf, 24);
     static_assert_size!(Stmt, 32);
     static_assert_size!(StmtKind, 16);
-    static_assert_size!(TraitImplHeader, 64);
-    static_assert_size!(Ty, 56);
-    static_assert_size!(TyKind, 40);
+    static_assert_size!(TraitImplHeader, 88);
+    static_assert_size!(Ty, 64);
+    static_assert_size!(TyKind, 48);
     // tidy-alphabetical-end
 }

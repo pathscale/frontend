@@ -1451,18 +1451,21 @@ impl<'a> Parser<'a> {
                 self.dcx().emit_err(ExpectedFnPathFoundFnKeyword { fn_token_span });
                 Some(ast::Path {
                     span: fn_token_span.to(self.prev_token.span),
-                    segments: thin_vec![ast::PathSegment {
-                        ident: Ident::new(sym::Fn, fn_token_span),
-                        id: DUMMY_NODE_ID,
-                        args: Some(Box::new(ast::GenericArgs::Parenthesized(
-                            ast::ParenthesizedArgs {
+                    segments: ast::PathSegments::from_elem(
+                        ast::PathSegment {
+                            ident: Ident::new(sym::Fn, fn_token_span),
+                            id: DUMMY_NODE_ID,
+                            args: Some(Box::new(ast::GenericArgs::Parenthesized(
+                                ast::ParenthesizedArgs {
                                 span: args_lo.to(self.prev_token.span),
                                 inputs: decl.inputs.iter().map(|a| a.clone()).collect(),
                                 inputs_span: args_lo.until(decl.output.span()),
                                 output: decl.output.clone(),
-                            }
-                        ))),
-                    }],
+                                }
+                            ))),
+                        },
+                        1,
+                    ),
                 })
             }
             Err(diag) => {
