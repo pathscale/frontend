@@ -666,6 +666,24 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Eats a run of whitespace that starts with an ASCII whitespace byte, once a frontmatter
+    /// can no longer start, and returns its length (0 when the next byte is not one). The run
+    /// is the one a `Whitespace` token from `advance_token` would cover, without building it.
+    #[inline(always)]
+    pub fn skip_whitespace(&mut self) -> u32 {
+        // Tab, line feed, vertical tab, form feed, carriage return, space.
+        if matches!(self.frontmatter_allowed, FrontmatterAllowed::No)
+            && let Some(&b) = self.as_str().as_bytes().first()
+            && matches!(b, 0x09..=0x0D | 0x20)
+        {
+            self.eat_whitespace();
+            let len = self.pos_within_token();
+            self.reset_pos_within_token();
+            return len;
+        }
+        0
+    }
+
     /// Parses a token from the input string.
     #[inline]
     pub fn advance_token(&mut self) -> Token {
