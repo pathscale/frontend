@@ -14,6 +14,7 @@ use core::{cmp, fmt, iter, mem};
 
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_data_structures::sync;
+use crate::rustc_data_structures::thin_arc::ThinArcSlice;
 use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
 use crate::rustc_serialize::{Decodable, Encodable};
 use crate::rustc_span::{DUMMY_SP, Span, SpanDecoder, SpanEncoder, Symbol, sym};
@@ -623,12 +624,22 @@ pub enum Spacing {
 }
 
 /// A `TokenStream` is an abstract sequence of tokens, organized into [`TokenTree`]s.
+///
+/// The trees live in one `ThinArcSlice` allocation: building from an exact-length iterator
+/// (the lexer's `drain`) allocates once, where `Arc<Vec<_>>` allocated twice, and empty
+/// streams share a static header.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Encodable, Decodable)]
-pub struct TokenStream(Arc<Vec<TokenTree>>);
+pub struct TokenStream(ThinArcSlice<TokenTree>);
 
 impl TokenStream {
     pub fn new(tts: Vec<TokenTree>) -> TokenStream {
-        TokenStream(Arc::new(tts))
+        TokenStream(ThinArcSlice::from(tts))
+    }
+
+    /// Builds a stream in one allocation from an iterator of known exact length.
+    #[inline]
+    pub fn from_exact<I: ExactSizeIterator<Item = TokenTree>>(iter: I) -> TokenStream {
+        TokenStream(ThinArcSlice::from_exact(iter))
     }
 
     #[inline]
@@ -687,12 +698,12 @@ impl TokenStream {
     /// construction within the compiler just build a `Vec<TokenTree>` with
     /// normal `Vec` operations and then do `TokenStream::new`.
     pub fn push_tree_with_gluing(&mut self, tt: TokenTree) {
-        let vec_mut = Arc::make_mut(&mut self.0);
-
-        if Self::try_glue_to_last(vec_mut, &tt) {
+        if Self::try_glue_to_last(self.0.make_mut(), &tt) {
             // nothing else to do
         } else {
-            vec_mut.push(tt);
+            let mut vec = self.0.to_vec();
+            vec.push(tt);
+            self.0 = ThinArcSlice::from(vec);
         }
     }
 
@@ -704,19 +715,21 @@ impl TokenStream {
     /// construction within the compiler just build a `Vec<TokenTree>` with
     /// normal `Vec` operations and then do `TokenStream::new`.
     pub fn push_stream_with_gluing(&mut self, stream: TokenStream) {
-        let vec_mut = Arc::make_mut(&mut self.0);
+        let mut vec = Vec::with_capacity(self.0.len() + stream.0.len());
+        vec.extend_from_slice(&self.0);
 
         let stream_iter = stream.0.iter().cloned();
 
         if let Some(first) = stream.0.first()
-            && Self::try_glue_to_last(vec_mut, first)
+            && Self::try_glue_to_last(&mut vec, first)
         {
             // Now skip the first token tree from `stream`.
-            vec_mut.extend(stream_iter.skip(1));
+            vec.extend(stream_iter.skip(1));
         } else {
             // Append all of `stream`.
-            vec_mut.extend(stream_iter);
+            vec.extend(stream_iter);
         }
+        self.0 = ThinArcSlice::from(vec);
     }
 
     /// Desugar doc comments like `/// foo` in the stream into `#[doc =
@@ -739,7 +752,9 @@ impl TokenStream {
                     ) => {
                         let desugared = desugared_tts(attr_style, data, span);
                         let desugared_len = desugared.len();
-                        Arc::make_mut(&mut stream.0).splice(i..i + 1, desugared);
+                        let mut vec = stream.0.to_vec();
+                        vec.splice(i..i + 1, desugared);
+                        stream.0 = ThinArcSlice::from(vec);
                         modified = true;
                         i += desugared_len;
                     }
@@ -750,7 +765,7 @@ impl TokenStream {
                         if let Some(desugared_delim_stream) = desugar_inner(delim_stream.clone()) {
                             let new_tt =
                                 TokenTree::Delimited(sp, spacing, delim, desugared_delim_stream);
-                            Arc::make_mut(&mut stream.0)[i] = new_tt;
+                            stream.0.make_mut()[i] = new_tt;
                             modified = true;
                         }
                         i += 1;
@@ -847,13 +862,13 @@ impl TokenStream {
 
 impl FromIterator<TokenTree> for TokenStream {
     fn from_iter<I: IntoIterator<Item = TokenTree>>(iter: I) -> Self {
-        TokenStream::new(iter.into_iter().collect::<Vec<TokenTree>>())
+        TokenStream(iter.into_iter().collect())
     }
 }
 
 impl StableHash for TokenStream {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        self.0.as_slice().stable_hash(hcx, hasher);
+        self.0[..].stable_hash(hcx, hasher);
     }
 }
 
@@ -862,7 +877,7 @@ pub struct TokenStreamIter<'t>(core::slice::Iter<'t, TokenTree>);
 
 impl<'t> TokenStreamIter<'t> {
     fn new(stream: &'t TokenStream) -> Self {
-        TokenStreamIter(stream.0.as_slice().iter())
+        TokenStreamIter(stream.0[..].iter())
     }
 
     // Peeking could be done via `Peekable`, but most iterators need peeking,
