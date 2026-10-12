@@ -128,6 +128,36 @@ fn alloc_node(layout: Layout) -> NonNull<u8> {
     })
 }
 
+/// Allocates nonempty storage, sharing AST chunks for small layouts.
+#[inline]
+pub(crate) fn alloc_bytes(layout: Layout) -> NonNull<u8> {
+    assert!(layout.size() != 0);
+    if layout.size() <= MAX_NODE_BYTES && layout.align() <= HEADER_BYTES {
+        alloc_node(layout)
+    } else {
+        // SAFETY: the layout has a nonzero size.
+        let raw = unsafe { alloc(layout) };
+        NonNull::new(raw).unwrap_or_else(|| handle_alloc_error(layout))
+    }
+}
+
+/// Releases storage returned by `alloc_bytes`.
+///
+/// # Safety
+///
+/// `ptr` must be a live allocation from `alloc_bytes(layout)`, with all values
+/// in it already dropped. The caller gives up ownership of that allocation.
+#[inline]
+pub(crate) unsafe fn dealloc_bytes(ptr: NonNull<u8>, layout: Layout) {
+    if layout.size() <= MAX_NODE_BYTES && layout.align() <= HEADER_BYTES {
+        // SAFETY: the allocation owns one count of its chunk.
+        unsafe { release(chunk_of(ptr)) };
+    } else {
+        // SAFETY: the pointer and layout describe the original global allocation.
+        unsafe { dealloc(ptr.as_ptr(), layout) };
+    }
+}
+
 pub struct P<T> {
     ptr: NonNull<T>,
     _owns: PhantomData<T>,
