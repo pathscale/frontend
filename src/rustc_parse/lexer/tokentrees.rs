@@ -65,6 +65,13 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
     /// `Vec` has exactly their length as capacity (`Drain` is `TrustedLen`,
     /// so `collect` allocates once, and not at all for an empty group).
     fn take_trees(&mut self, start: usize) -> TokenStream {
+        if start == self.tree_buf.len() {
+            return self
+                .empty_stream
+                .get_or_insert_with(|| TokenStream::new(Vec::new()))
+                .clone();
+        }
+
         let tts: Vec<TokenTree> = self.tree_buf.drain(start..).collect();
         TokenStream::new(tts)
     }

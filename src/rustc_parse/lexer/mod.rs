@@ -104,6 +104,7 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         token: Token::dummy(),
         diag_info: TokenTreeDiagInfo::default(),
         tree_buf: Vec::new(),
+        empty_stream: None,
         gallery_seen: Vec::new(),
         gallery_new: Vec::new(),
     };
@@ -161,6 +162,9 @@ struct Lexer<'psess, 'src> {
     /// Scratch stack of the token trees of every open group, innermost last.
     /// See `lex_token_trees`.
     tree_buf: Vec<TokenTree>,
+
+    /// Shared backing stream for empty groups.
+    empty_stream: Option<TokenStream>,
 
     /// The session's `symbol_gallery` keeps each symbol's first occurrence, so of the
     /// identifiers this lexer records only the first of each symbol can change it, and nothing
