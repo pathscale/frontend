@@ -384,7 +384,7 @@ impl<'a> Parser<'a> {
                         });
                     }
 
-                    Box::new(ast::GenericArgs::ParenthesizedElided(span))
+                    P::new(ast::GenericArgs::ParenthesizedElided(span))
                 } else {
                     // `(T, U) -> R`
 

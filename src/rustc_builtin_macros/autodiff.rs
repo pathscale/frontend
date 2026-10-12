@@ -608,7 +608,7 @@ mod llvm_enzyme {
         let segment = PathSegment {
             ident,
             id: ast::DUMMY_NODE_ID,
-            args: Some(Box::new(GenericArgs::AngleBracketed(args))),
+            args: Some(P::new(GenericArgs::AngleBracketed(args))),
         };
 
         let segments = if is_impl {

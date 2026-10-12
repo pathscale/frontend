@@ -1467,7 +1467,7 @@ impl<'a> Parser<'a> {
                         ast::PathSegment {
                             ident: Ident::new(sym::Fn, fn_token_span),
                             id: DUMMY_NODE_ID,
-                            args: Some(Box::new(ast::GenericArgs::Parenthesized(
+                            args: Some(P::new(ast::GenericArgs::Parenthesized(
                                 ast::ParenthesizedArgs {
                                 span: args_lo.to(self.prev_token.span),
                                 inputs: decl.inputs.iter().map(|a| a.clone()).collect(),
@@ -1519,7 +1519,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, ()> {
         let fn_path_segment = fn_path.segments.last_mut().unwrap();
         let generic_args = if let Some(p_args) = &fn_path_segment.args {
-            *p_args.clone()
+            (**p_args).clone()
         } else {
             // Normally it wouldn't come here because the upstream should have parsed
             // generic parameters (otherwise it's impossible to call this function).
