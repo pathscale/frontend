@@ -228,8 +228,8 @@ pub struct PathSegment {
     /// `None` means that no parameter list is supplied (`Path`),
     /// `Some` means that parameter list is supplied (`Path<X, Y>`)
     /// but it can be empty (`Path<>`).
-    /// `Box` is used as a size optimization for the common case with no parameters.
-    pub args: Option<Box<GenericArgs>>,
+    /// An arena-owned pointer keeps the common case with no parameters small.
+    pub args: Option<P<GenericArgs>>,
 }
 
 // Succeeds if the path segment is arg-free and matches the given symbol.
@@ -766,15 +766,15 @@ impl AngleBracketedArg {
     }
 }
 
-impl From<AngleBracketedArgs> for Box<GenericArgs> {
+impl From<AngleBracketedArgs> for P<GenericArgs> {
     fn from(val: AngleBracketedArgs) -> Self {
-        Box::new(GenericArgs::AngleBracketed(val))
+        P::new(GenericArgs::AngleBracketed(val))
     }
 }
 
-impl From<ParenthesizedArgs> for Box<GenericArgs> {
+impl From<ParenthesizedArgs> for P<GenericArgs> {
     fn from(val: ParenthesizedArgs) -> Self {
-        Box::new(GenericArgs::Parenthesized(val))
+        P::new(GenericArgs::Parenthesized(val))
     }
 }
 

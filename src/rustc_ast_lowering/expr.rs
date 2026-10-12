@@ -606,7 +606,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         // Add generic args to the last element of the path.
         let last_segment = path.segments.last_mut().unwrap();
         assert!(last_segment.args.is_none());
-        last_segment.args = Some(Box::new(GenericArgs::AngleBracketed(AngleBracketedArgs {
+        last_segment.args = Some(P::new(GenericArgs::AngleBracketed(AngleBracketedArgs {
             span: DUMMY_SP,
             args: generic_args,
         })));

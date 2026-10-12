@@ -4575,7 +4575,7 @@ fn mk_where_bound_predicate(
             Some(_) => return None,
             None => {
                 second_last.args =
-                    Some(Box::new(ast::GenericArgs::AngleBracketed(ast::AngleBracketedArgs {
+                    Some(P::new(ast::GenericArgs::AngleBracketed(ast::AngleBracketedArgs {
                         args: ThinVec::from([added_constraint]),
                         span: DUMMY_SP,
                     })));
