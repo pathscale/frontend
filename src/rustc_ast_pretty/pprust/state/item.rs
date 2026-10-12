@@ -1,4 +1,5 @@
 #[allow(unused_imports)]
+use crate::rustc_ast::ptr::P;
 use {alloc::boxed::Box, alloc::string::String};
 use ast::StaticItem;
 use crate::rustc_ast::{self as ast, EiiImpl, ModKind, Safety, TraitAlias};
@@ -704,7 +705,7 @@ impl<'a> State<'a> {
         qself: &Option<Box<ast::QSelf>>,
         path: &ast::Path,
         kind: DelegationKind<'_>,
-        body: &Option<Box<ast::Block>>,
+        body: &Option<P<ast::Block>>,
     ) {
         let body_cb_ib = body.as_ref().map(|body| (body, self.head("")));
         self.print_visibility(vis);

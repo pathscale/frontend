@@ -16,6 +16,7 @@
 //! constructions produced by proc macros. This pass is only intended for simple checks that do not
 //! require name resolution or type checking, or other kinds of complex analysis.
 
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -1135,7 +1136,7 @@ impl<'a> AstValidator<'a> {
         }
     }
 
-    fn deny_items(&self, trait_items: &[Box<AssocItem>], ident_span: Span) {
+    fn deny_items(&self, trait_items: &[P<AssocItem>], ident_span: Span) {
         if !trait_items.is_empty() {
             let spans: Vec<_> = trait_items.iter().map(|i| i.kind.ident().unwrap().span).collect();
             let total = trait_items.first().unwrap().span.to(trait_items.last().unwrap().span);

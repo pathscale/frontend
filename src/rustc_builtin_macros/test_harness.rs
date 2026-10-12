@@ -3,6 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -299,7 +300,7 @@ fn generate_test_harness(
 /// [`TestCtxt::reexport_test_harness_main`] provides a different name for the `main`
 /// function and [`TestCtxt::test_runner`] provides a path that replaces
 /// `test::test_main_static`.
-fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
+fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
     let sp = cx.def_site;
     let ecx = &cx.ext_cx;
     let test_ident = Ident::new(sym::test, sp);
@@ -378,7 +379,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> Box<ast::Item> {
 
 /// Creates a slice containing every test like so:
 /// &[&test1, &test2]
-fn mk_tests_slice(cx: &TestCtxt<'_>, sp: Span) -> Box<ast::Expr> {
+fn mk_tests_slice(cx: &TestCtxt<'_>, sp: Span) -> P<ast::Expr> {
     debug!("building test vector from {} tests", cx.test_cases.len());
     let ecx = &cx.ext_cx;
 

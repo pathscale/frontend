@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use ast::token::IdentIsRaw;
 use crate::rustc_ast as ast;
@@ -120,7 +121,7 @@ impl<'a> Parser<'a> {
         sig_lo: Span,
         vis: &Visibility,
         case: Case,
-    ) -> PResult<'a, (Ident, FnSig, Generics, Option<Box<FnContract>>, Option<Box<Block>>)> {
+    ) -> PResult<'a, (Ident, FnSig, Generics, Option<Box<FnContract>>, Option<P<Block>>)> {
         let fn_span = self.token.span;
         let header = self.parse_fn_front_matter(vis, case, FrontMatterParsingMode::Function)?; // `const ... fn`
         let ident = self.parse_ident()?; // `foo`
@@ -247,7 +248,7 @@ impl<'a> Parser<'a> {
         sig_hi: &mut Span,
         req_body: bool,
         fn_params_end: Option<Span>,
-    ) -> PResult<'a, Option<Box<Block>>> {
+    ) -> PResult<'a, Option<P<Block>>> {
         let has_semi = if req_body {
             self.token == TokenKind::Semi
         } else {

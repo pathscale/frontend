@@ -1,5 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 
 use alloc::sync::Arc;
@@ -142,7 +143,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     }
 
     /// Lower the precondition check intrinsic.
-    fn lower_precond(&mut self, req: &Box<crate::rustc_ast::Expr>) -> crate::rustc_hir::Stmt<'hir> {
+    fn lower_precond(&mut self, req: &P<crate::rustc_ast::Expr>) -> crate::rustc_hir::Stmt<'hir> {
         let lowered_req = self.lower_expr_mut(&req);
         let req_span = self.mark_span_with_reason(
             crate::rustc_span::DesugaringKind::Contract,
@@ -159,7 +160,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     fn lower_postcond_checker(
         &mut self,
-        ens: &Box<crate::rustc_ast::Expr>,
+        ens: &P<crate::rustc_ast::Expr>,
     ) -> &'hir crate::rustc_hir::Expr<'hir> {
         let ens_span = self.lower_span(ens.span);
         let ens_span = self.mark_span_with_reason(

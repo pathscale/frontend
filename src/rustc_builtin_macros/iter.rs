@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -33,7 +34,7 @@ fn parse_closure<'a>(
     cx: &mut ExtCtxt<'a>,
     span: Span,
     stream: TokenStream,
-) -> PResult<'a, Box<Expr>> {
+) -> PResult<'a, P<Expr>> {
     let mut closure_parser = cx.new_parser_from_tts(stream);
 
     let coroutine_marker = Some(CoroutineMarker::new(CoroutineKind::Gen, span));

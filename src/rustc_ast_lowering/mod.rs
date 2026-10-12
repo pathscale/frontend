@@ -49,6 +49,7 @@
 // ---------------------------------------------------------------------------------------------
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec;
@@ -594,7 +595,7 @@ fn index_ast<'tcx>(
             &mut self,
             tree: &UseTree,
             parent: LocalDefId,
-            items: &mut SmallVec<[Box<Item>; 1]>,
+            items: &mut SmallVec<[P<Item>; 1]>,
         ) {
             match tree.kind {
                 UseTreeKind::Glob(_) | UseTreeKind::Simple(_) => {}
@@ -617,7 +618,7 @@ fn index_ast<'tcx>(
             // as they are not accessible to the rest of the HIR.
         }
 
-        fn flat_map_item(&mut self, mut item: Box<Item>) -> SmallVec<[Box<Item>; 1]> {
+        fn flat_map_item(&mut self, mut item: P<Item>) -> SmallVec<[P<Item>; 1]> {
             let def_id = self.owners[&item.id].def_id;
             mut_visit::walk_item(self, &mut *item);
             let dummy = Box::new(self.make_dummy(item.id, item.span, ItemKind::MacCall));
@@ -652,9 +653,9 @@ fn index_ast<'tcx>(
         // Items in their parent's list arrive boxed: the box moves into the index as it is.
         fn flat_map_assoc_item(
             &mut self,
-            mut item: Box<AssocItem>,
+            mut item: P<AssocItem>,
             ctxt: visit::AssocCtxt,
-        ) -> SmallVec<[Box<AssocItem>; 1]> {
+        ) -> SmallVec<[P<AssocItem>; 1]> {
             mut_visit::walk_assoc_item(self, &mut *item, ctxt);
             let dummy = match ctxt {
                 visit::AssocCtxt::Trait => {
@@ -669,8 +670,8 @@ fn index_ast<'tcx>(
 
         fn flat_map_foreign_item(
             &mut self,
-            mut item: Box<ForeignItem>,
-        ) -> SmallVec<[Box<ForeignItem>; 1]> {
+            mut item: P<ForeignItem>,
+        ) -> SmallVec<[P<ForeignItem>; 1]> {
             mut_visit::walk_item(self, &mut *item);
             smallvec![self.take_boxed(item, ForeignItemKind::MacCall, AstOwner::ForeignItem)]
         }
@@ -2814,7 +2815,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     fn lower_const_item_rhs(
         &mut self,
-        body: &Option<Box<Expr>>,
+        body: &Option<P<Expr>>,
         kind: ConstItemKind,
         span: Span,
     ) -> hir::ConstItemRhs<'hir> {

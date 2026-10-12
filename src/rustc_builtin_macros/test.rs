@@ -4,6 +4,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -212,7 +213,7 @@ pub(crate) fn expand_test_or_bench(
     // `-Cinstrument-coverage` builds.
     // This requires `#[allow_internal_unstable(coverage_attribute)]` on the
     // corresponding macro declaration in `core::macros`.
-    let coverage_off = |mut expr: Box<ast::Expr>| {
+    let coverage_off = |mut expr: P<ast::Expr>| {
         assert_matches!(expr.kind, ast::ExprKind::Closure(_));
         expr.attrs.push(cx.attr_nested_word(sym::coverage, sym::off, sp));
         expr

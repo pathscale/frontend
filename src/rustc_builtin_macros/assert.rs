@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -104,7 +105,7 @@ pub(crate) fn expand_assert<'cx>(
 }
 
 struct Assert {
-    cond_expr: Box<Expr>,
+    cond_expr: P<Expr>,
     custom_message: Option<TokenStream>,
 }
 
@@ -112,10 +113,10 @@ struct Assert {
 fn expr_if_not(
     cx: &ExtCtxt<'_>,
     span: Span,
-    cond: Box<Expr>,
-    then: Box<Expr>,
-    els: Option<Box<Expr>>,
-) -> Box<Expr> {
+    cond: P<Expr>,
+    then: P<Expr>,
+    els: Option<P<Expr>>,
+) -> P<Expr> {
     cx.expr_if(span, cx.expr(span, ExprKind::Unary(UnOp::Not, cond)), then, els)
 }
 

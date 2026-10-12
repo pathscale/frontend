@@ -13,6 +13,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -765,7 +766,7 @@ pub(crate) struct UnnecessaryQualification<'ra> {
 #[derive(Default, Debug)]
 pub(crate) struct DiagMetadata<'ast> {
     /// The current trait's associated items' ident, used for diagnostic suggestions.
-    current_trait_assoc_items: Option<&'ast [Box<AssocItem>]>,
+    current_trait_assoc_items: Option<&'ast [P<AssocItem>]>,
 
     /// The current self type if inside an impl (used for better errors).
     pub(crate) current_self_type: Option<&'ast Ty>,
@@ -818,7 +819,7 @@ pub(crate) struct DiagMetadata<'ast> {
     current_type_path: Option<&'ast Ty>,
 
     /// The current impl items (used to suggest).
-    current_impl_items: Option<&'ast [Box<AssocItem>]>,
+    current_impl_items: Option<&'ast [P<AssocItem>]>,
 
     /// The current impl items (used to suggest).
     current_impl_item: Option<&'ast AssocItem>,
@@ -3639,7 +3640,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     }
 
     /// When evaluating a `trait` use its associated types' idents for suggestions in E0425.
-    fn resolve_trait_items(&mut self, trait_items: &'ast [Box<AssocItem>]) {
+    fn resolve_trait_items(&mut self, trait_items: &'ast [P<AssocItem>]) {
         let trait_assoc_items =
             replace(&mut self.diag_metadata.current_trait_assoc_items, Some(trait_items));
 
@@ -3794,7 +3795,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         of_trait: Option<&'ast ast::TraitImplHeader>,
         self_type: &'ast Ty,
         item_id: NodeId,
-        impl_items: &'ast [Box<AssocItem>],
+        impl_items: &'ast [P<AssocItem>],
     ) {
         debug!("resolve_implementation");
         // If applicable, create a rib for the type parameters.
@@ -4185,7 +4186,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     fn resolve_const_item_rhs(
         &mut self,
-        body: &'ast Option<Box<Expr>>,
+        body: &'ast Option<P<Expr>>,
         item: Option<(Ident, ConstantItemKind)>,
     ) {
         if let Some(body) = body {
@@ -6270,7 +6271,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// before any unit runs.
     fn collect_late_units_in<'ast>(
         &self,
-        items: &'ast [Box<Item>],
+        items: &'ast [P<Item>],
         parent: Option<usize>,
         macro_rules: &mut MacroRulesScopeRef<'ra>,
         units: &mut Vec<LateUnit<'ast, 'ra>>,

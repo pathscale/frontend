@@ -4,6 +4,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -22,7 +23,7 @@ use thin_vec::ThinVec;
 #[derive(Clone)]
 pub(crate) struct Path {
     path: Vec<Symbol>,
-    params: Vec<Box<Ty>>,
+    params: Vec<P<Ty>>,
     kind: PathKind,
 }
 
@@ -39,7 +40,7 @@ impl Path {
     pub(crate) fn new_local(path: Symbol) -> Path {
         Path::new_(vec![path], Vec::new(), PathKind::Local)
     }
-    pub(crate) fn new_(path: Vec<Symbol>, params: Vec<Box<Ty>>, kind: PathKind) -> Path {
+    pub(crate) fn new_(path: Vec<Symbol>, params: Vec<P<Ty>>, kind: PathKind) -> Path {
         Path { path, params, kind }
     }
 
@@ -67,14 +68,14 @@ impl Path {
 pub(crate) enum Ty {
     Self_,
     /// A reference.
-    Ref(Box<Ty>, ast::Mutability),
+    Ref(P<Ty>, ast::Mutability),
     /// `mod::mod::Type<[lifetime], [Params...]>`, including a plain type
     /// parameter, and things like `i32`
     Path(Path),
     /// For () return types.
     Unit,
     /// An arbitrary type.
-    AstTy(Box<ast::Ty>),
+    AstTy(P<ast::Ty>),
 }
 
 pub(crate) fn self_ref() -> Ty {
@@ -88,7 +89,7 @@ impl Ty {
         span: Span,
         self_ty: Ident,
         self_generics: &Generics,
-    ) -> Box<ast::Ty> {
+    ) -> P<ast::Ty> {
         match self {
             Ref(ty, mutbl) => {
                 let raw_ty = ty.to_ty(cx, span, self_ty, self_generics);

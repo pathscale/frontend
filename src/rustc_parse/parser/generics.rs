@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -362,7 +363,7 @@ impl<'a> Parser<'a> {
 
     fn parse_contract_requires(
         &mut self,
-    ) -> PResult<'a, (ThinVec<crate::rustc_ast::Stmt>, Option<Box<crate::rustc_ast::Expr>>)> {
+    ) -> PResult<'a, (ThinVec<crate::rustc_ast::Stmt>, Option<P<crate::rustc_ast::Expr>>)> {
         Ok(if self.eat_keyword_noexpect(exp!(ContractRequires).kw) {
             self.psess.gated_spans.gate(sym::contracts_internals, self.prev_token.span);
             let mut decls_and_precond = self.parse_block()?;
@@ -384,7 +385,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_contract_ensures(&mut self) -> PResult<'a, Option<Box<crate::rustc_ast::Expr>>> {
+    fn parse_contract_ensures(&mut self) -> PResult<'a, Option<P<crate::rustc_ast::Expr>>> {
         Ok(if self.eat_keyword_noexpect(exp!(ContractEnsures).kw) {
             self.psess.gated_spans.gate(sym::contracts_internals, self.prev_token.span);
             let postcond = self.parse_expr()?;

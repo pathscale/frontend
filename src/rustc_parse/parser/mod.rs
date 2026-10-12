@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -1320,7 +1321,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses inline const expressions.
-    fn parse_const_block(&mut self, span: Span, pat: bool) -> PResult<'a, Box<Expr>> {
+    fn parse_const_block(&mut self, span: Span, pat: bool) -> PResult<'a, P<Expr>> {
         self.expect_keyword(exp!(Const))?;
         let (attrs, blk) = self.parse_inner_attrs_and_block(None)?;
         let anon_const = AnonConst {
@@ -1868,13 +1869,13 @@ pub enum ParseNtResult {
     Tt(TokenTree),
     Ident(Ident, IdentIsRaw),
     Lifetime(Ident, IdentIsRaw),
-    Item(Box<ast::Item>),
-    Block(WithTokens<Box<ast::Block>>),
+    Item(P<ast::Item>),
+    Block(WithTokens<P<ast::Block>>),
     Stmt(Box<ast::Stmt>),
-    Pat(WithTokens<Box<ast::Pat>>, NtPatKind),
-    Expr(Box<ast::Expr>, NtExprKind),
-    Literal(Box<ast::Expr>),
-    Ty(WithTokens<Box<ast::Ty>>),
+    Pat(WithTokens<P<ast::Pat>>, NtPatKind),
+    Expr(P<ast::Expr>, NtExprKind),
+    Literal(P<ast::Expr>),
+    Ty(WithTokens<P<ast::Ty>>),
     // These tokens are for the attr item, e.g. just the `foo` within `#[foo]` or `#![foo]`.
     Meta(WithTokens<Box<ast::AttrItem>>),
     Path(WithTokens<Box<ast::Path>>),

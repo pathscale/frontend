@@ -18,6 +18,7 @@
 //! - [`Attribute`]: Metadata associated with item.
 //! - [`UnOp`], [`BinOp`], and [`BinOpKind`]: Unary and binary operators.
 
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -287,7 +288,7 @@ pub enum GenericArg {
     /// `'a` in `Foo<'a>`.
     Lifetime(#[visitable(extra = LifetimeCtxt::GenericArg)] Lifetime),
     /// `Bar` in `Foo<Bar>`.
-    Type(Box<Ty>),
+    Type(P<Ty>),
     /// `1` in `Foo<1>`.
     Const(AnonConst),
 }
@@ -436,10 +437,10 @@ pub enum GenericParamKind {
     /// A lifetime definition (e.g., `'a: 'b + 'c + 'd`).
     Lifetime,
     Type {
-        default: Option<Box<Ty>>,
+        default: Option<P<Ty>>,
     },
     Const {
-        ty: Box<Ty>,
+        ty: P<Ty>,
         /// Span of the whole parameter definition, including default.
         span: Span,
         /// Optional default value for the const generic param.
@@ -525,7 +526,7 @@ pub struct WhereBoundPredicate {
     /// Any generics from a `for` binding.
     pub bound_generic_params: ThinVec<GenericParam>,
     /// The type being bounded.
-    pub bounded_ty: Box<Ty>,
+    pub bounded_ty: P<Ty>,
     /// Trait and lifetime bounds (`Clone + Send + 'static`).
     #[visitable(extra = BoundKind::Bound)]
     pub bounds: GenericBounds,
@@ -547,8 +548,8 @@ pub struct WhereRegionPredicate {
 /// E.g., `T = int`.
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct WhereEqPredicate {
-    pub lhs_ty: Box<Ty>,
-    pub rhs_ty: Box<Ty>,
+    pub lhs_ty: P<Ty>,
+    pub rhs_ty: P<Ty>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
@@ -557,7 +558,7 @@ pub struct Crate {
     /// expansion placeholders or an unassigned value (`DUMMY_NODE_ID`) before that.
     pub id: NodeId,
     pub attrs: AttrVec,
-    pub items: ThinVec<Box<Item>>,
+    pub items: ThinVec<P<Item>>,
     pub spans: ModSpans,
     pub is_placeholder: bool,
 }
@@ -636,7 +637,7 @@ pub struct Pat {
 impl Pat {
     /// Attempt reparsing the pattern as a type.
     /// This is intended for use by diagnostics.
-    pub fn to_ty(&self) -> Option<Box<Ty>> {
+    pub fn to_ty(&self) -> Option<P<Ty>> {
         let kind = match &self.kind {
             PatKind::Missing => unreachable!(),
             // In a type expression `_` is an inference variable.
@@ -769,8 +770,8 @@ impl Pat {
     }
 }
 
-impl From<Box<Pat>> for Pat {
-    fn from(value: Box<Pat>) -> Self {
+impl From<P<Pat>> for Pat {
+    fn from(value: P<Pat>) -> Self {
         *value
     }
 }
@@ -785,7 +786,7 @@ pub struct PatField {
     /// The identifier for the field.
     pub ident: Ident,
     /// The pattern the field is destructured to.
-    pub pat: Box<Pat>,
+    pub pat: P<Pat>,
     pub is_shorthand: bool,
     pub attrs: AttrVec,
     pub id: NodeId,
@@ -884,7 +885,7 @@ pub enum PatKind {
     /// or a unit struct/variant pattern, or a const pattern (in the last two cases the third
     /// field must be `None`). Disambiguation cannot be done with parser alone, so it happens
     /// during name resolution.
-    Ident(BindingMode, Ident, Option<Box<Pat>>),
+    Ident(BindingMode, Ident, Option<P<Pat>>),
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     Struct(Option<Box<QSelf>>, Path, ThinVec<PatField>, PatFieldsRest),
@@ -906,16 +907,16 @@ pub enum PatKind {
     Tuple(ThinVec<Pat>),
 
     /// A `deref` pattern (currently `deref!()` macro-based syntax).
-    Deref(Box<Pat>),
+    Deref(P<Pat>),
 
     /// A reference pattern (e.g., `&mut (a, b)`).
-    Ref(Box<Pat>, Pinnedness, Mutability),
+    Ref(P<Pat>, Pinnedness, Mutability),
 
     /// A literal, const block or path.
-    Expr(Box<Expr>),
+    Expr(P<Expr>),
 
     /// A range pattern (e.g., `1...2`, `1..2`, `1..`, `..2`, `1..=2`, `..=2`).
-    Range(Option<Box<Expr>>, Option<Box<Expr>>, Spanned<RangeEnd>),
+    Range(Option<P<Expr>>, Option<P<Expr>>, Spanned<RangeEnd>),
 
     /// A slice pattern `[a, b, c]`.
     Slice(ThinVec<Pat>),
@@ -938,10 +939,10 @@ pub enum PatKind {
     Never,
 
     /// A guard pattern (e.g., `x if guard(x)`).
-    Guard(Box<Pat>, Box<Guard>),
+    Guard(P<Pat>, Box<Guard>),
 
     /// Parentheses in patterns used for grouping (i.e., `(PAT)`).
-    Paren(Box<Pat>),
+    Paren(P<Pat>),
 
     /// A macro pattern; pre-expansion.
     MacCall(Box<MacCall>),
@@ -1243,11 +1244,11 @@ pub enum StmtKind {
     /// A local (let) binding.
     Let(Box<Local>),
     /// An item definition.
-    Item(Box<Item>),
+    Item(P<Item>),
     /// Expr without trailing semi-colon.
-    Expr(Box<Expr>),
+    Expr(P<Expr>),
     /// Expr with a trailing semi-colon.
-    Semi(Box<Expr>),
+    Semi(P<Expr>),
     /// Just a trailing semi-colon.
     Empty,
     /// Macro.
@@ -1293,8 +1294,8 @@ pub enum MacStmtStyle {
 pub struct Local {
     pub id: NodeId,
     pub super_: Option<Span>,
-    pub pat: Box<Pat>,
-    pub ty: Option<Box<Ty>>,
+    pub pat: P<Pat>,
+    pub ty: Option<P<Ty>>,
     pub kind: LocalKind,
     pub span: Span,
     pub colon_sp: Option<Span>,
@@ -1309,10 +1310,10 @@ pub enum LocalKind {
     Decl,
     /// Local declaration with an initializer.
     /// Example: `let x = y;`
-    Init(Box<Expr>),
+    Init(P<Expr>),
     /// Local declaration with an initializer and an `else` clause.
     /// Example: `let Some(x) = y else { return };`
-    InitElse(Box<Expr>, Box<Block>),
+    InitElse(P<Expr>, P<Block>),
 }
 
 impl LocalKind {
@@ -1346,11 +1347,11 @@ impl LocalKind {
 pub struct Arm {
     pub attrs: AttrVec,
     /// Match arm pattern, e.g. `10` in `match foo { 10 => {}, _ => {} }`.
-    pub pat: Box<Pat>,
+    pub pat: P<Pat>,
     /// Match arm guard, e.g. `n > 10` in `match foo { n if n > 10 => {}, _ => {} }`.
     pub guard: Option<Box<Guard>>,
     /// Match arm body. Omitted if the pattern is a never pattern.
-    pub body: Option<Box<Expr>>,
+    pub body: Option<P<Expr>>,
     pub span: Span,
     pub id: NodeId,
     pub is_placeholder: bool,
@@ -1363,7 +1364,7 @@ pub struct ExprField {
     pub id: NodeId,
     pub span: Span,
     pub ident: Ident,
-    pub expr: Box<Expr>,
+    pub expr: P<Expr>,
     pub is_shorthand: bool,
     pub is_placeholder: bool,
 }
@@ -1390,7 +1391,7 @@ pub enum UnsafeSource {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct AnonConst {
     pub id: NodeId,
-    pub value: Box<Expr>,
+    pub value: P<Expr>,
 }
 
 /// An expression.
@@ -1496,7 +1497,7 @@ impl Expr {
     }
 
     /// Attempts to reparse as `Ty` (for diagnostic purposes).
-    pub fn to_ty(&self) -> Option<Box<Ty>> {
+    pub fn to_ty(&self) -> Option<P<Ty>> {
         let kind = match &self.kind {
             // Trivial conversions.
             ExprKind::Path(qself, path) => TyKind::Path(qself.clone(), path.clone()),
@@ -1656,17 +1657,17 @@ impl Expr {
     }
 }
 
-impl From<Box<Expr>> for Expr {
-    fn from(value: Box<Expr>) -> Self {
+impl From<P<Expr>> for Expr {
+    fn from(value: P<Expr>) -> Self {
         *value
     }
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct ForLoop {
-    pub pat: Box<Pat>,
-    pub iter: Box<Expr>,
-    pub body: Box<Block>,
+    pub pat: P<Pat>,
+    pub iter: P<Expr>,
+    pub body: P<Block>,
     pub label: Option<Label>,
     pub kind: ForLoopKind,
 }
@@ -1679,7 +1680,7 @@ pub struct Closure {
     pub coroutine_marker: Option<CoroutineMarker>,
     pub movability: Movability,
     pub fn_decl: Box<FnDecl>,
-    pub body: Box<Expr>,
+    pub body: P<Expr>,
     /// The span of the declaration block: 'move |...| -> ...'
     pub fn_decl_span: Span,
     /// The span of the argument block `|...|`
@@ -1710,9 +1711,9 @@ pub struct MethodCall {
     /// The method name and its generic arguments, e.g. `foo::<Bar, Baz>`.
     pub seg: PathSegment,
     /// The receiver, e.g. `x`.
-    pub receiver: Box<Expr>,
+    pub receiver: P<Expr>,
     /// The arguments, e.g. `a, b, c`.
-    pub args: ThinVec<Box<Expr>>,
+    pub args: ThinVec<P<Expr>>,
     /// The span of the function, without the dot and receiver e.g. `foo::<Bar,
     /// Baz>(a, b, c)`.
     pub span: Span,
@@ -1721,7 +1722,7 @@ pub struct MethodCall {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum StructRest {
     /// `..x`.
-    Base(Box<Expr>),
+    Base(P<Expr>),
     /// `..`.
     Rest(Span),
     /// No trailing `..` or expression.
@@ -1746,7 +1747,7 @@ pub struct StructExpr {
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub enum ExprKind {
     /// An array (e.g, `[a, b, c, d]`).
-    Array(ThinVec<Box<Expr>>),
+    Array(ThinVec<P<Expr>>),
     /// Allow anonymous constants from an inline `const` block.
     ConstBlock(AnonConst),
     /// A function call.
@@ -1755,42 +1756,42 @@ pub enum ExprKind {
     /// and the second field is the list of arguments.
     /// This also represents calling the constructor of
     /// tuple-like ADTs such as tuple structs and enum variants.
-    Call(Box<Expr>, ThinVec<Box<Expr>>),
+    Call(P<Expr>, ThinVec<P<Expr>>),
     /// A method call (e.g., `x.foo::<Bar, Baz>(a, b, c)`).
     MethodCall(Box<MethodCall>),
     /// A tuple (e.g., `(a, b, c, d)`).
-    Tup(ThinVec<Box<Expr>>),
+    Tup(ThinVec<P<Expr>>),
     /// A binary operation (e.g., `a + b`, `a * b`).
-    Binary(BinOp, Box<Expr>, Box<Expr>),
+    Binary(BinOp, P<Expr>, P<Expr>),
     /// A unary operation (e.g., `!x`, `*x`).
-    Unary(UnOp, Box<Expr>),
+    Unary(UnOp, P<Expr>),
     /// A `move(expr)` expression.
-    Move(Box<Expr>, Span),
+    Move(P<Expr>, Span),
     /// A literal (e.g., `1`, `"foo"`).
     Lit(token::Lit),
     /// A cast (e.g., `foo as f64`).
-    Cast(Box<Expr>, Box<Ty>),
+    Cast(P<Expr>, P<Ty>),
     /// A type ascription (e.g., `builtin # type_ascribe(42, usize)`).
     ///
     /// Usually not written directly in user code but
     /// indirectly via the macro `type_ascribe!(...)`.
-    Type(Box<Expr>, Box<Ty>),
+    Type(P<Expr>, P<Ty>),
     /// A `let pat = expr` expression that is only semantically allowed in the condition
     /// of `if` / `while` expressions. (e.g., `if let 0 = x { .. }`).
     ///
     /// `Span` represents the whole `let pat = expr` statement.
-    Let(Box<Pat>, Box<Expr>, Span, Recovered),
+    Let(P<Pat>, P<Expr>, Span, Recovered),
     /// An `if` block, with an optional `else` block.
     ///
     /// `if expr { block } else { expr }`
     ///
     /// If present, the "else" expr is always `ExprKind::Block` (for `else`) or
     /// `ExprKind::If` (for `else if`).
-    If(Box<Expr>, Box<Block>, Option<Box<Expr>>),
+    If(P<Expr>, P<Block>, Option<P<Expr>>),
     /// A while loop, with an optional label.
     ///
     /// `'label: while expr { block }`
-    While(Box<Expr>, Box<Block>, Option<Label>),
+    While(P<Expr>, P<Block>, Option<Label>),
     /// A `for` loop, with an optional label.
     ///
     /// `'label: for await? pat in iter { block }`
@@ -1800,23 +1801,23 @@ pub enum ExprKind {
     /// Conditionless loop (can be exited with `break`, `continue`, or `return`).
     ///
     /// `'label: loop { block }`
-    Loop(Box<Block>, Option<Label>, Span),
+    Loop(P<Block>, Option<Label>, Span),
     /// A `match` block.
-    Match(Box<Expr>, ThinVec<Arm>, MatchKind),
+    Match(P<Expr>, ThinVec<Arm>, MatchKind),
     /// A closure (e.g., `move |a, b, c| a + b + c`).
     Closure(Box<Closure>),
     /// A block (`'label: { ... }`).
-    Block(Box<Block>, Option<Label>),
+    Block(P<Block>, Option<Label>),
     /// An `async` block (`async move { ... }`),
     /// or a `gen` block (`gen move { ... }`).
     ///
     /// The span is the "decl", which is the header before the body `{ }`
     /// including the `async`/`gen` keywords and possibly `move`.
-    Gen(CaptureBy, Box<Block>, CoroutineKind, Span),
+    Gen(CaptureBy, P<Block>, CoroutineKind, Span),
     /// An await expression (`my_future.await`). Span is of await keyword.
-    Await(Box<Expr>, Span),
+    Await(P<Expr>, Span),
     /// A use expression (`x.use`). Span is of use keyword.
-    Use(Box<Expr>, Span),
+    Use(P<Expr>, Span),
 
     /// A try block (`try { ... }`), if the type is `None`, or
     /// A try block (`try bikeshed Ty { ... }`) if the type is `Some`.
@@ -1825,22 +1826,22 @@ pub enum ExprKind {
     /// syntax to avoid deciding what keyword or symbol should go there.
     /// It's that way for experimentation only; an RFC to decide the final
     /// semantics and syntax would be needed to put it on stabilization-track.
-    TryBlock(Box<Block>, Option<Box<Ty>>),
+    TryBlock(P<Block>, Option<P<Ty>>),
 
     /// An assignment (`a = foo()`).
     /// The `Span` argument is the span of the `=` token.
-    Assign(Box<Expr>, Box<Expr>, Span),
+    Assign(P<Expr>, P<Expr>, Span),
     /// An assignment with an operator.
     ///
     /// E.g., `a += 1`.
-    AssignOp(AssignOp, Box<Expr>, Box<Expr>),
+    AssignOp(AssignOp, P<Expr>, P<Expr>),
     /// Access of a named (e.g., `obj.foo`) or unnamed (e.g., `obj.0`) struct field.
-    Field(Box<Expr>, Ident),
+    Field(P<Expr>, Ident),
     /// An indexing operation (e.g., `foo[2]`).
     /// The span represents the span of the `[2]`, including brackets.
-    Index(Box<Expr>, Box<Expr>, Span),
+    Index(P<Expr>, P<Expr>, Span),
     /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`; and `..` in destructuring assignment).
-    Range(Option<Box<Expr>>, Option<Box<Expr>>, RangeLimits),
+    Range(Option<P<Expr>>, Option<P<Expr>>, RangeLimits),
     /// An underscore, used in destructuring assignment to ignore a value.
     Underscore,
 
@@ -1851,13 +1852,13 @@ pub enum ExprKind {
     Path(Option<Box<QSelf>>, Path),
 
     /// A referencing operation (`&a`, `&mut a`, `&raw const a` or `&raw mut a`).
-    AddrOf(BorrowKind, Mutability, Box<Expr>),
+    AddrOf(BorrowKind, Mutability, P<Expr>),
     /// A `break`, with an optional label to break, and an optional expression.
-    Break(Option<Label>, Option<Box<Expr>>),
+    Break(Option<Label>, Option<P<Expr>>),
     /// A `continue`, with an optional label.
     Continue(Option<Label>),
     /// A `return`, with an optional value to be returned.
-    Ret(Option<Box<Expr>>),
+    Ret(Option<P<Expr>>),
 
     /// Output of the `asm!()` macro.
     InlineAsm(Box<InlineAsm>),
@@ -1866,7 +1867,7 @@ pub enum ExprKind {
     ///
     /// Usually not written directly in user code but
     /// indirectly via the macro `core::mem::offset_of!(...)`.
-    OffsetOf(Box<Ty>, ThinVec<Ident>),
+    OffsetOf(P<Ty>, ThinVec<Ident>),
 
     /// A macro invocation; pre-expansion.
     MacCall(Box<MacCall>),
@@ -1880,25 +1881,25 @@ pub enum ExprKind {
     ///
     /// E.g., `[1; 5]`. The expression is the element to be
     /// repeated; the constant is the number of times to repeat it.
-    Repeat(Box<Expr>, AnonConst),
+    Repeat(P<Expr>, AnonConst),
 
     /// No-op: used solely so we can pretty-print faithfully.
-    Paren(Box<Expr>),
+    Paren(P<Expr>),
 
     /// A try expression (`expr?`).
-    Try(Box<Expr>),
+    Try(P<Expr>),
 
     /// A `yield`, with an optional value to be yielded.
     Yield(YieldKind),
 
     /// A `do yeet` (aka `throw`/`fail`/`bail`/`raise`/whatever),
     /// with an optional value to be returned.
-    Yeet(Option<Box<Expr>>),
+    Yeet(Option<P<Expr>>),
 
     /// A tail call return, with the value to be returned.
     ///
     /// While `.0` must be a function call, we check this later, after parsing.
-    Become(Box<Expr>),
+    Become(P<Expr>),
 
     /// Bytes included via `include_bytes!`
     ///
@@ -1916,10 +1917,10 @@ pub enum ExprKind {
     /// A `format_args!()` expression.
     FormatArgs(Box<FormatArgs>),
 
-    UnsafeBinderCast(UnsafeBinderCastKind, Box<Expr>, Option<Box<Ty>>),
+    UnsafeBinderCast(UnsafeBinderCastKind, P<Expr>, Option<P<Ty>>),
 
     /// An mGCA `direct_const_arg!()` expression.
-    DirectConstArg(Box<Expr>),
+    DirectConstArg(P<Expr>),
 
     /// Placeholder for an expression that wasn't syntactically well formed in some way.
     Err(ErrorGuaranteed),
@@ -1993,7 +1994,7 @@ pub enum UnsafeBinderCastKind {
 /// ```
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct QSelf {
-    pub ty: Box<Ty>,
+    pub ty: P<Ty>,
 
     /// The span of `a::b::Trait` in a path like `<Vec<T> as
     /// a::b::Trait>::AssociatedItem`; in the case where `position ==
@@ -2073,7 +2074,7 @@ pub enum AttrArgs {
     Eq {
         /// Span of the `=` token.
         eq_span: Span,
-        expr: Box<Expr>,
+        expr: P<Expr>,
     },
 }
 
@@ -2159,16 +2160,16 @@ pub enum MatchKind {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum YieldKind {
     /// yield expr { ... }
-    Prefix(Option<Box<Expr>>),
+    Prefix(Option<P<Expr>>),
     /// expr.yield { ... }
-    Postfix(Box<Expr>),
+    Postfix(P<Expr>),
 }
 
 impl YieldKind {
     /// Returns the expression inside the yield expression, if any.
     ///
     /// For postfix yields, this is guaranteed to be `Some`.
-    pub const fn expr(&self) -> Option<&Box<Expr>> {
+    pub const fn expr(&self) -> Option<&P<Expr>> {
         match self {
             YieldKind::Prefix(expr) => expr.as_ref(),
             YieldKind::Postfix(expr) => Some(expr),
@@ -2176,7 +2177,7 @@ impl YieldKind {
     }
 
     /// Returns a mutable reference to the expression being yielded, if any.
-    pub const fn expr_mut(&mut self) -> Option<&mut Box<Expr>> {
+    pub const fn expr_mut(&mut self) -> Option<&mut P<Expr>> {
         match self {
             YieldKind::Prefix(expr) => expr.as_mut(),
             YieldKind::Postfix(expr) => Some(expr),
@@ -2338,7 +2339,7 @@ impl LitKind {
 // type structure in `middle/ty.rs` as well.
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct MutTy {
-    pub ty: Box<Ty>,
+    pub ty: P<Ty>,
     pub mutbl: Mutability,
 }
 
@@ -2413,12 +2414,12 @@ pub struct AssocItemConstraint {
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum Term {
-    Ty(Box<Ty>),
+    Ty(P<Ty>),
     Const(AnonConst),
 }
 
-impl From<Box<Ty>> for Term {
-    fn from(v: Box<Ty>) -> Self {
+impl From<P<Ty>> for Term {
+    fn from(v: P<Ty>) -> Self {
         Term::Ty(v)
     }
 }
@@ -2459,8 +2460,8 @@ impl Clone for Ty {
     }
 }
 
-impl From<Box<Ty>> for Ty {
-    fn from(value: Box<Ty>) -> Self {
+impl From<P<Ty>> for Ty {
+    fn from(value: P<Ty>) -> Self {
         *value
     }
 }
@@ -2513,7 +2514,7 @@ impl FnPtrTy {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct UnsafeBinderTy {
     pub generic_params: ThinVec<GenericParam>,
-    pub inner_ty: Box<Ty>,
+    pub inner_ty: P<Ty>,
 }
 
 /// The various kinds of type recognized by the compiler.
@@ -2522,9 +2523,9 @@ pub struct UnsafeBinderTy {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum TyKind {
     /// A variable-length slice (`[T]`).
-    Slice(Box<Ty>),
+    Slice(P<Ty>),
     /// A fixed length array (`[T; n]`).
-    Array(Box<Ty>, AnonConst),
+    Array(P<Ty>, AnonConst),
     /// A raw pointer (`*const T` or `*mut T`).
     Ptr(MutTy),
     /// A reference (`&'a T` or `&'a mut T`).
@@ -2540,7 +2541,7 @@ pub enum TyKind {
     /// The never type (`!`).
     Never,
     /// A tuple (`(A, B, C, D,...)`).
-    Tup(ThinVec<Box<Ty>>),
+    Tup(ThinVec<P<Ty>>),
     /// A path (`module::module::...::Type`), optionally
     /// "qualified", e.g., `<Vec<T> as SomeTrait>::SomeType`.
     ///
@@ -2557,7 +2558,7 @@ pub enum TyKind {
     /// the generation of opaque `type Foo = impl Trait` items significantly.
     ImplTrait(NodeId, #[visitable(extra = BoundKind::Impl)] GenericBounds),
     /// No-op; kept solely so that we can pretty-print faithfully.
-    Paren(Box<Ty>),
+    Paren(P<Ty>),
     /// This means the type should be inferred instead of it having been
     /// specified. This can appear anywhere in a type.
     Infer,
@@ -2569,16 +2570,16 @@ pub enum TyKind {
     CVarArgs,
     /// Pattern types like `pattern_type!(u32 is 1..=)`, which is the same as `NonZero<u32>`,
     /// just as part of the type system.
-    Pat(Box<Ty>, Box<TyPat>),
+    Pat(P<Ty>, Box<TyPat>),
     /// A `field_of` expression (e.g., `builtin # field_of(Struct, field)`).
     ///
     /// Usually not written directly in user code but indirectly via the macro
     /// `core::field::field_of!(...)`.
-    FieldOf(Box<Ty>, Option<Ident>, Ident),
+    FieldOf(P<Ty>, Option<Ident>, Ident),
     /// A view of a type. `T.{ field_1, field_2 }`.
-    View(Box<Ty>, #[visitable(ignore)] ThinVec<Ident>),
+    View(P<Ty>, #[visitable(ignore)] ThinVec<Ident>),
     /// An mGCA `direct_const_arg!()` expression.
-    DirectConstArg(Box<Expr>),
+    DirectConstArg(P<Expr>),
     /// Sometimes we need a dummy value when no error has occurred.
     Dummy,
     /// Placeholder for a kind that has failed to be defined.
@@ -2834,23 +2835,23 @@ pub struct InlineAsmSym {
 pub enum InlineAsmOperand {
     In {
         reg: InlineAsmRegOrRegClass,
-        expr: Box<Expr>,
+        expr: P<Expr>,
     },
     Out {
         reg: InlineAsmRegOrRegClass,
         late: bool,
-        expr: Option<Box<Expr>>,
+        expr: Option<P<Expr>>,
     },
     InOut {
         reg: InlineAsmRegOrRegClass,
         late: bool,
-        expr: Box<Expr>,
+        expr: P<Expr>,
     },
     SplitInOut {
         reg: InlineAsmRegOrRegClass,
         late: bool,
-        in_expr: Box<Expr>,
-        out_expr: Option<Box<Expr>>,
+        in_expr: P<Expr>,
+        out_expr: Option<P<Expr>>,
     },
     Const {
         anon_const: AnonConst,
@@ -2859,7 +2860,7 @@ pub enum InlineAsmOperand {
         sym: InlineAsmSym,
     },
     Label {
-        block: Box<Block>,
+        block: P<Block>,
     },
 }
 
@@ -2932,8 +2933,8 @@ pub struct InlineAsm {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct Param {
     pub attrs: AttrVec,
-    pub ty: Box<Ty>,
-    pub pat: Box<Pat>,
+    pub ty: P<Ty>,
+    pub pat: P<Pat>,
     pub id: NodeId,
     pub span: Span,
     pub is_placeholder: bool,
@@ -2951,7 +2952,7 @@ pub enum SelfKind {
     /// `&'lt pin const self`, `&'lt pin mut self`
     Pinned(Option<Lifetime>, Mutability),
     /// `self: TYPE`, `mut self: TYPE`
-    Explicit(Box<Ty>, Mutability),
+    Explicit(P<Ty>, Mutability),
 }
 
 impl SelfKind {
@@ -3242,7 +3243,7 @@ pub enum FnRetTy {
     /// Span points to where return type would be inserted.
     Default(Span),
     /// Everything else.
-    Ty(Box<Ty>),
+    Ty(P<Ty>),
 }
 
 impl FnRetTy {
@@ -3267,7 +3268,7 @@ pub enum ModKind {
     /// or with definition outlined to a separate file `mod foo;` and already loaded from it.
     /// The inner span is from the first token past `{` to the last token until `}`,
     /// or from the first to the last token in the loaded file.
-    Loaded(ThinVec<Box<Item>>, Inline, ModSpans),
+    Loaded(ThinVec<P<Item>>, Inline, ModSpans),
     /// Module with definition outlined to a separate file `mod foo;` but not yet loaded from it.
     Unloaded,
 }
@@ -3291,7 +3292,7 @@ pub struct ForeignMod {
     /// semantically by Rust.
     pub safety: Safety,
     pub abi: Option<StrLit>,
-    pub items: ThinVec<Box<ForeignItem>>,
+    pub items: ThinVec<P<ForeignItem>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
@@ -3639,7 +3640,7 @@ pub struct FieldDef {
     pub extras: Option<Box<FieldDefExtras>>,
     pub ident: Option<Ident>,
 
-    pub ty: Box<Ty>,
+    pub ty: P<Ty>,
     pub is_placeholder: bool,
 }
 
@@ -3872,7 +3873,7 @@ pub struct Trait {
     #[visitable(extra = BoundKind::SuperTraits)]
     pub bounds: GenericBounds,
     #[visitable(extra = AssocCtxt::Trait)]
-    pub items: ThinVec<Box<AssocItem>>,
+    pub items: ThinVec<P<AssocItem>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
@@ -3897,7 +3898,7 @@ pub struct TyAlias {
     pub after_where_clause: WhereClause,
     #[visitable(extra = BoundKind::Bound)]
     pub bounds: GenericBounds,
-    pub ty: Option<Box<Ty>>,
+    pub ty: Option<P<Ty>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]
@@ -3905,8 +3906,8 @@ pub struct Impl {
     pub generics: Generics,
     pub constness: Const,
     pub of_trait: Option<Box<TraitImplHeader>>,
-    pub self_ty: Box<Ty>,
-    pub items: ThinVec<Box<AssocItem>>,
+    pub self_ty: P<Ty>,
+    pub items: ThinVec<P<AssocItem>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]
@@ -3922,8 +3923,8 @@ pub struct FnContract {
     /// Declarations of variables accessible both in the `requires` and
     /// `ensures` clauses.
     pub declarations: ThinVec<Stmt>,
-    pub requires: Option<Box<Expr>>,
-    pub ensures: Option<Box<Expr>>,
+    pub requires: Option<P<Expr>>,
+    pub ensures: Option<P<Expr>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]
@@ -3934,7 +3935,7 @@ pub struct Fn {
     pub sig: FnSig,
     pub contract: Option<Box<FnContract>>,
     pub define_opaque: Option<ThinVec<(NodeId, Path)>>,
-    pub body: Option<Box<Block>>,
+    pub body: Option<P<Block>>,
 
     /// This function is an implementation of an externally implementable item (EII).
     /// This means, there was an EII declared somewhere and this function is the
@@ -3993,7 +3994,7 @@ pub struct Delegation {
     pub path: Path,
     pub ident: Ident,
     pub rename: Option<Ident>,
-    pub body: Option<Box<Block>>,
+    pub body: Option<P<Block>>,
     /// The item was expanded from a glob delegation item.
     #[visitable(ignore)]
     pub source: DelegationSource,
@@ -4016,16 +4017,16 @@ pub struct DelegationMac {
     pub qself: Option<Box<QSelf>>,
     pub prefix: Path,
     pub suffixes: DelegationSuffixes,
-    pub body: Option<Box<Block>>,
+    pub body: Option<P<Block>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct StaticItem {
     pub ident: Ident,
-    pub ty: Box<Ty>,
+    pub ty: P<Ty>,
     pub safety: Safety,
     pub mutability: Mutability,
-    pub expr: Option<Box<Expr>>,
+    pub expr: Option<P<Expr>>,
     pub define_opaque: Option<ThinVec<(NodeId, Path)>>,
 
     /// This static is an implementation of an externally implementable item (EII).
@@ -4039,8 +4040,8 @@ pub struct ConstItem {
     pub defaultness: Defaultness,
     pub ident: Ident,
     pub generics: Generics,
-    pub ty: Box<Ty>,
-    pub body: Option<Box<Expr>>,
+    pub ty: P<Ty>,
+    pub body: Option<P<Expr>>,
     #[visitable(ignore)]
     pub kind: ConstItemKind,
     pub define_opaque: Option<ThinVec<(NodeId, Path)>>,
@@ -4056,7 +4057,7 @@ pub enum ConstItemKind {
 pub struct ConstBlockItem {
     pub id: NodeId,
     pub span: Span,
-    pub block: Box<Block>,
+    pub block: P<Block>,
 }
 
 impl ConstBlockItem {
@@ -4120,7 +4121,7 @@ pub enum TestBinderConstraint {
         rhs: Lifetime,
     },
     Type {
-        lhs: Box<Ty>,
+        lhs: P<Ty>,
         #[visitable(extra = LifetimeCtxt::Bound)]
         rhs: Lifetime,
     },
@@ -4153,7 +4154,7 @@ pub enum ItemKind {
     /// A function declaration (`fn`).
     ///
     /// E.g., `fn foo(bar: usize) -> usize { .. }`.
-    Fn(Box<Fn>),
+    Fn(P<Fn>),
     /// A module declaration (`mod`).
     ///
     /// E.g., `mod foo;` or `mod foo { .. }`.
@@ -4335,7 +4336,7 @@ pub enum AssocItemKind {
     /// If `def` is parsed, then the constant is provided, and otherwise required.
     Const(Box<ConstItem>),
     /// An associated function.
-    Fn(Box<Fn>),
+    Fn(P<Fn>),
     /// An associated type.
     Type(Box<TyAlias>),
     /// A macro expanding to associated items.
@@ -4405,7 +4406,7 @@ pub enum ForeignItemKind {
     /// A foreign static item (`static FOO: u8`).
     Static(Box<StaticItem>),
     /// A foreign function.
-    Fn(Box<Fn>),
+    Fn(P<Fn>),
     /// A foreign type.
     TyAlias(Box<TyAlias>),
     /// A macro expanding to foreign items.
@@ -4462,10 +4463,10 @@ pub enum AstOwner {
     /// The `LocalDefId` points to its HIR owner.
     NestedUseTree(LocalDefId),
     Crate(Box<Crate>),
-    Item(Box<Item>),
-    TraitItem(Box<AssocItem>),
-    ImplItem(Box<AssocItem>),
-    ForeignItem(Box<ForeignItem>),
+    Item(P<Item>),
+    TraitItem(P<AssocItem>),
+    ImplItem(P<AssocItem>),
+    ForeignItem(P<ForeignItem>),
 }
 
 // Some nodes are used a lot. Make sure they don't unintentionally get bigger.

@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -30,7 +31,7 @@ fn outer_normal_attr(normal: &Box<ast::NormalAttr>, id: ast::AttrId, span: Span)
 
 fn extract_fn(
     item: &Annotatable,
-) -> Option<(ast::Visibility, ast::FnSig, Ident, ast::Generics, Option<Box<ast::Block>>)> {
+) -> Option<(ast::Visibility, ast::FnSig, Ident, ast::Generics, Option<P<ast::Block>>)> {
     match item {
         Annotatable::Item(iitem) => match &iitem.kind {
             ast::ItemKind::Fn(f) => {

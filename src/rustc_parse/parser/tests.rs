@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -2251,7 +2252,7 @@ fn parse_item_from_source_str(
     name: FileName,
     source: String,
     psess: &ParseSess,
-) -> PResult<'_, Option<Box<ast::Item>>> {
+) -> PResult<'_, Option<P<ast::Item>>> {
     unwrap_or_emit_fatal(new_parser_from_source_str(psess, name, source, StripTokens::Nothing))
         .parse_item(ForceCollect::No, AllowConstBlockItems::Yes)
 }
@@ -2262,12 +2263,12 @@ fn sp(a: u32, b: u32) -> Span {
 }
 
 /// Parses a string, return an expression.
-fn string_to_expr(source_str: String) -> Box<ast::Expr> {
+fn string_to_expr(source_str: String) -> P<ast::Expr> {
     with_error_checking_parse(source_str, &ParseSess::new(), |p| p.parse_expr())
 }
 
 /// Parses a string, returns an item.
-fn string_to_item(source_str: String) -> Option<Box<ast::Item>> {
+fn string_to_item(source_str: String) -> Option<P<ast::Item>> {
     with_error_checking_parse(source_str, &ParseSess::new(), |p| {
         p.parse_item(ForceCollect::No, AllowConstBlockItems::Yes)
     })
@@ -2535,7 +2536,7 @@ fn ttdelim_span() {
         name: FileName,
         source: String,
         psess: &ParseSess,
-    ) -> PResult<'_, Box<ast::Expr>> {
+    ) -> PResult<'_, P<ast::Expr>> {
         unwrap_or_emit_fatal(new_parser_from_source_str(psess, name, source, StripTokens::Nothing))
             .parse_expr()
     }

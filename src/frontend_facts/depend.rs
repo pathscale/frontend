@@ -4,6 +4,7 @@
 //! so an opaque macro or a path outside the function's bindings remains an explicit unknown.
 //! Loop states are joined until their finite dependency sets stop growing.
 
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
@@ -268,7 +269,7 @@ fn error_entries(text: &str) -> Vec<String> {
     entries
 }
 
-fn find_functions<'a>(items: &'a [Box<Item>], name: &str, found: &mut Vec<&'a Fn>) {
+fn find_functions<'a>(items: &'a [P<Item>], name: &str, found: &mut Vec<&'a Fn>) {
     for item in items {
         match &item.kind {
             ItemKind::Fn(function) if function.ident.name.to_string() == name => {

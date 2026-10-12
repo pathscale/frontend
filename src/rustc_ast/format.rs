@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxHashMap;
@@ -148,7 +149,7 @@ impl FormatArguments {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct FormatArgument {
     pub kind: FormatArgumentKind,
-    pub expr: Box<Expr>,
+    pub expr: P<Expr>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]

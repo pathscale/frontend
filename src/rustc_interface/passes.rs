@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use core::fmt::Write as _;
 use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
@@ -135,7 +136,7 @@ impl LintStoreExpand for LintStoreExpandImpl<'_> {
         registered_lint_tools: &RegisteredTools,
         node_id: ast::NodeId,
         attrs: &[ast::Attribute],
-        items: &[Box<ast::Item>],
+        items: &[P<ast::Item>],
         name: Symbol,
     ) {
         let check_node = EarlyCheckNode::LoadedMod(node_id, attrs, items);

@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -113,7 +114,7 @@ impl AllocFnFactory<'_, '_> {
         self.cx.stmt_item(self.ty_span, item)
     }
 
-    fn call_allocator(&self, method: Symbol, mut args: ThinVec<Box<Expr>>) -> Box<Expr> {
+    fn call_allocator(&self, method: Symbol, mut args: ThinVec<P<Expr>>) -> P<Expr> {
         let method = self.cx.std_path(&[sym::alloc, sym::GlobalAlloc, method]);
         let method = self.cx.expr_path(self.cx.path(self.ty_span, method));
         let allocator = self.cx.path_ident(self.ty_span, self.global);
@@ -138,7 +139,7 @@ impl AllocFnFactory<'_, '_> {
         ]
     }
 
-    fn arg_ty(&self, input: &AllocatorMethodInput, args: &mut ThinVec<Param>) -> Box<Expr> {
+    fn arg_ty(&self, input: &AllocatorMethodInput, args: &mut ThinVec<Param>) -> P<Expr> {
         match input.ty {
             AllocatorTy::Layout => {
                 // If an allocator method is ever introduced having multiple
@@ -185,7 +186,7 @@ impl AllocFnFactory<'_, '_> {
         }
     }
 
-    fn ret_ty(&self, ty: &AllocatorTy) -> Box<Ty> {
+    fn ret_ty(&self, ty: &AllocatorTy) -> P<Ty> {
         match *ty {
             AllocatorTy::ResultPtr => self.ptr_u8(),
 
@@ -197,18 +198,18 @@ impl AllocFnFactory<'_, '_> {
         }
     }
 
-    fn usize(&self) -> Box<Ty> {
+    fn usize(&self) -> P<Ty> {
         let usize = self.cx.path_ident(self.span, Ident::new(sym::usize, self.span));
         self.cx.ty_path(usize)
     }
 
-    fn ptr_alignment(&self) -> Box<Ty> {
+    fn ptr_alignment(&self) -> P<Ty> {
         let path = self.cx.std_path(&[sym::mem, sym::Alignment]);
         let path = self.cx.path(self.span, path);
         self.cx.ty_path(path)
     }
 
-    fn ptr_u8(&self) -> Box<Ty> {
+    fn ptr_u8(&self) -> P<Ty> {
         let u8 = self.cx.path_ident(self.span, Ident::new(sym::u8, self.span));
         let ty_u8 = self.cx.ty_path(u8);
         self.cx.ty_ptr(self.span, ty_u8, Mutability::Mut)

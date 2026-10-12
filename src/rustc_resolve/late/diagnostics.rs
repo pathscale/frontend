@@ -3,6 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
@@ -2655,7 +2656,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         err: &mut Diag<'_>,
         path_span: Span,
         call_span: Span,
-        args: &[Box<Expr>],
+        args: &[P<Expr>],
     ) {
         if def_id.is_local() {
             // Doing analysis on local `DefId`s would cause infinite recursion.

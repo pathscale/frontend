@@ -1,5 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::ToString;
@@ -162,7 +163,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         (ident, binding)
     }
 
-    fn lower_exprs(&mut self, exprs: &[Box<Expr>]) -> &'hir [hir::Expr<'hir>] {
+    fn lower_exprs(&mut self, exprs: &[P<Expr>]) -> &'hir [hir::Expr<'hir>] {
         self.arena.alloc_from_iter(exprs.iter().map(|x| self.lower_expr_mut(x)))
     }
 
@@ -541,7 +542,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_legacy_const_generics(
         &mut self,
         mut f: Expr,
-        args: ThinVec<Box<Expr>>,
+        args: ThinVec<P<Expr>>,
         legacy_args_idx: &[usize],
     ) -> hir::ExprKind<'hir> {
         let ExprKind::Path(None, path) = &mut f.kind else {
@@ -1407,7 +1408,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     /// Each sub-assignment is recorded in `assignments`.
     fn destructure_sequence(
         &mut self,
-        elements: &[Box<Expr>],
+        elements: &[P<Expr>],
         ctx: &str,
         eq_sign_span: Span,
         assignments: &mut Vec<hir::Stmt<'hir>>,

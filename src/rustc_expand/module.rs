@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::ToString;
@@ -38,7 +39,7 @@ pub struct ModulePathSuccess {
 }
 
 pub(crate) struct ParsedExternalMod {
-    pub items: ThinVec<Box<Item>>,
+    pub items: ThinVec<P<Item>>,
     pub spans: ModSpans,
     pub file_path: PathBuf,
     pub dir_path: PathBuf,

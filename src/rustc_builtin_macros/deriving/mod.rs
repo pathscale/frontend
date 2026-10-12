@@ -3,6 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -111,15 +112,15 @@ fn call_intrinsic(
     cx: &ExtCtxt<'_>,
     span: Span,
     intrinsic: Symbol,
-    args: ThinVec<Box<ast::Expr>>,
-) -> Box<ast::Expr> {
+    args: ThinVec<P<ast::Expr>>,
+) -> P<ast::Expr> {
     let span = cx.with_def_site_ctxt(span);
     let path = cx.std_path(&[sym::intrinsics, intrinsic]);
     cx.expr_call_global(span, path, args)
 }
 
 /// Constructs an expression that calls the `unreachable` intrinsic.
-fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> Box<ast::Expr> {
+fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> P<ast::Expr> {
     let call = call_intrinsic(cx, span, sym::unreachable, ThinVec::new());
     cx.expr_block(Box::new(ast::Block {
         stmts: thin_vec![cx.stmt_expr(call)],
@@ -132,7 +133,7 @@ fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> Box<ast::Expr> {
 fn assert_ty_bounds(
     cx: &ExtCtxt<'_>,
     stmts: &mut ThinVec<ast::Stmt>,
-    ty: Box<ast::Ty>,
+    ty: P<ast::Ty>,
     span: Span,
     assert_path: &[Symbol],
 ) {

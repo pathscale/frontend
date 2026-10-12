@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -83,15 +84,15 @@ fn mk_attr(g: &AttrIdGenerator, cfg_entry: CfgEntry) -> ast::Attribute {
 }
 
 impl<'cx, 'sess> MacResult for CfgSelectResult<'cx, 'sess> {
-    forward_to_parser_any_macro!(make_expr, Box<Expr>);
+    forward_to_parser_any_macro!(make_expr, P<Expr>);
     forward_to_parser_any_macro!(make_stmts, SmallVec<[ast::Stmt; 1]>);
     forward_to_parser_any_macro!(
         make_items,
-        SmallVec<[Box<ast::Item>; 1]>,
+        SmallVec<[P<ast::Item>; 1]>,
         |ecx: &mut ExtCtxt<'_>,
          cfg_entry: CfgEntry,
          _span: Span,
-         items: Option<SmallVec<[Box<ast::Item>; 1]>>| if let Some(items) = items {
+         items: Option<SmallVec<[P<ast::Item>; 1]>>| if let Some(items) = items {
             // Register item names that were not selected for error reporting. We do this
             // for `#[cfg]` too.
             for item in items {
@@ -105,7 +106,7 @@ impl<'cx, 'sess> MacResult for CfgSelectResult<'cx, 'sess> {
                 }
             }
         },
-        |ecx: &mut ExtCtxt<'_>, cfg_entry: CfgEntry, items: SmallVec<[Box<ast::Item>; 1]>| {
+        |ecx: &mut ExtCtxt<'_>, cfg_entry: CfgEntry, items: SmallVec<[P<ast::Item>; 1]>| {
             items
                 .into_iter()
                 .map(|mut item| {
@@ -116,13 +117,13 @@ impl<'cx, 'sess> MacResult for CfgSelectResult<'cx, 'sess> {
         }
     );
 
-    forward_to_parser_any_macro!(make_impl_items, SmallVec<[Box<ast::AssocItem>; 1]>);
-    forward_to_parser_any_macro!(make_trait_impl_items, SmallVec<[Box<ast::AssocItem>; 1]>);
-    forward_to_parser_any_macro!(make_trait_items, SmallVec<[Box<ast::AssocItem>; 1]>);
-    forward_to_parser_any_macro!(make_foreign_items, SmallVec<[Box<ast::ForeignItem>; 1]>);
+    forward_to_parser_any_macro!(make_impl_items, SmallVec<[P<ast::AssocItem>; 1]>);
+    forward_to_parser_any_macro!(make_trait_impl_items, SmallVec<[P<ast::AssocItem>; 1]>);
+    forward_to_parser_any_macro!(make_trait_items, SmallVec<[P<ast::AssocItem>; 1]>);
+    forward_to_parser_any_macro!(make_foreign_items, SmallVec<[P<ast::ForeignItem>; 1]>);
 
-    forward_to_parser_any_macro!(make_ty, Box<ast::Ty>);
-    forward_to_parser_any_macro!(make_pat, Box<ast::Pat>);
+    forward_to_parser_any_macro!(make_ty, P<ast::Ty>);
+    forward_to_parser_any_macro!(make_pat, P<ast::Pat>);
 }
 
 pub(super) fn expand_cfg_select<'cx>(

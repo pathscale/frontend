@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -116,7 +117,7 @@ pub(crate) fn expand_deriving_partial_ord(
 // ```
 // Some(::core::cmp::Ord::cmp(self, other))
 // ```
-fn cs_partial_cmp_simple(cx: &ExtCtxt<'_>, span: Span, other_expr: Box<ast::Expr>) -> BlockOrExpr {
+fn cs_partial_cmp_simple(cx: &ExtCtxt<'_>, span: Span, other_expr: P<ast::Expr>) -> BlockOrExpr {
     let ord_cmp_path = cx.std_path(&[sym::cmp, sym::Ord, sym::cmp]);
     let cmp_expr =
         cx.expr_call_global(span, ord_cmp_path, thin_vec![cx.expr_self(span), other_expr]);
