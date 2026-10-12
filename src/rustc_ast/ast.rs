@@ -1198,10 +1198,12 @@ pub enum PatKind {
     Ident(BindingMode, Ident, Option<P<Pat>>),
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
-    Struct(Option<Box<QSelf>>, Path, ThinVec<PatField>, PatFieldsRest),
+    /// The path uses the node allocator to keep the common pattern variants small.
+    Struct(Option<Box<QSelf>>, P<Path>, ThinVec<PatField>, PatFieldsRest),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
-    TupleStruct(Option<Box<QSelf>>, Path, ThinVec<Pat>),
+    /// The path uses the node allocator to keep the common pattern variants small.
+    TupleStruct(Option<Box<QSelf>>, P<Path>, ThinVec<Pat>),
 
     /// An or-pattern `A | B | C`.
     /// Invariant: `pats.len() >= 2`.
@@ -4817,10 +4819,11 @@ mod size_asserts {
     static_assert_size!(MetaItemLit, 48);
     static_assert_size!(NormalAttr, 104);
     static_assert_size!(Param, 40);
-    static_assert_size!(Pat, 88);
-    static_assert_size!(PatKind, 72);
+    static_assert_size!(Pat, 64);
+    static_assert_size!(PatKind, 48);
     static_assert_size!(Path, 40);
     static_assert_size!(PathSegment, 24);
+    static_assert_size!(P<Path>, 8);
     static_assert_size!(QSelf, 24);
     static_assert_size!(Stmt, 32);
     static_assert_size!(StmtKind, 16);
