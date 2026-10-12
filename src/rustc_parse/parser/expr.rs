@@ -1057,36 +1057,43 @@ impl<'a> Parser<'a> {
     //  tokens in the lexer (probably preferable).
     pub(super) fn break_up_float(&self, float: Symbol, span: Span) -> DestructuredFloat {
         #[derive(Debug)]
-        enum FloatComponent {
-            IdentLike(String),
+        enum FloatComponent<'s> {
+            IdentLike(&'s str),
             Punct(char),
         }
         use FloatComponent::*;
 
         let float_str = float.as_str();
-        let mut components = Vec::new();
-        let mut ident_like = String::new();
-        for c in float_str.chars() {
+        let mut components = smallvec::SmallVec::<[FloatComponent<'_>; 5]>::new();
+        let mut ident_start = 0;
+        for (index, c) in float_str.char_indices() {
             if c == '_' || c.is_ascii_alphanumeric() {
-                ident_like.push(c);
+                continue;
             } else if matches!(c, '.' | '+' | '-') {
-                if !ident_like.is_empty() {
-                    components.push(IdentLike(mem::take(&mut ident_like)));
+                if ident_start < index {
+                    components.push(IdentLike(&float_str[ident_start..index]));
                 }
                 components.push(Punct(c));
+                ident_start = index + 1;
             } else {
                 panic!("unexpected character in a float token: {c:?}")
             }
         }
-        if !ident_like.is_empty() {
-            components.push(IdentLike(ident_like));
+        if ident_start < float_str.len() {
+            components.push(IdentLike(&float_str[ident_start..]));
         }
 
         // With proc macros the span can refer to anything, the source may be too short,
         // or too long, or non-ASCII. It only makes sense to break our span into components
         // if its underlying text is identical to our float literal.
-        let can_take_span_apart =
-            || self.span_to_snippet(span).as_deref() == Ok(float_str).as_deref();
+        let can_take_span_apart = || {
+            self.psess
+                .source_map()
+                .span_to_source(span, |source, start, end| {
+                    Ok(source.get(start..end) == Some(float_str))
+                })
+                .unwrap_or(false)
+        };
 
         match &*components {
             // 1e2

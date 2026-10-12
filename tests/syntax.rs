@@ -61,6 +61,14 @@ fn a_binary_operation_is_an_expression() {
 }
 
 #[test]
+fn chained_tuple_fields_split_float_tokens() {
+    ready();
+    assert_eq!(parses_as("value.0.1.2", Fragment::Expr), Ok(()));
+    assert_eq!(parses_as("value.0.method()", Fragment::Expr), Ok(()));
+    assert!(!refused("value.0.1e+2", Fragment::Expr).is_empty());
+}
+
+#[test]
 fn a_braced_body_is_a_block() {
     ready();
     assert_eq!(parses_as("{ let x = 1; x }", Fragment::Block), Ok(()));
