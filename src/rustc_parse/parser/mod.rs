@@ -275,6 +275,8 @@ enum Capturing {
     No,
     /// We are capturing tokens
     Yes,
+    /// Token collection is disabled for a caller that will discard the AST.
+    Disabled,
 }
 
 // This state is used by `Parser::collect_tokens`.
@@ -394,6 +396,12 @@ impl<'a> Parser<'a> {
         parser.num_bump_calls = 0;
 
         parser
+    }
+
+    /// Disables token collection for a caller that will discard the parsed AST.
+    pub(crate) fn without_token_capture(mut self) -> Self {
+        self.capture_state.capturing = Capturing::Disabled;
+        self
     }
 
     #[inline]
@@ -1438,7 +1446,7 @@ impl<'a> Parser<'a> {
             // i.e. at depth `d - 1`.
             let target_depth = self.token_cursor.depth() - 1;
 
-            if let Capturing::No = self.capture_state.capturing {
+            if !matches!(self.capture_state.capturing, Capturing::Yes) {
                 // We are not capturing tokens, so skip to the end of the
                 // delimited sequence. This is a perf win when dealing with
                 // declarative macros that pass large `tt` fragments through
