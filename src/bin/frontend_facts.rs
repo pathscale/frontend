@@ -39,6 +39,10 @@
 
 use frontend::frontend_facts::{CrateRead, Dependency, Loaded};
 
+#[cfg(feature = "rusty_alloc")]
+#[global_allocator]
+static GLOBAL: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
+
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
 }
