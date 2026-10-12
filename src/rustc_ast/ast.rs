@@ -1680,7 +1680,7 @@ impl Stmt {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum StmtKind {
     /// A local (let) binding.
-    Let(Box<Local>),
+    Let(P<Local>),
     /// An item definition.
     Item(P<Item>),
     /// Expr without trailing semi-colon.
