@@ -237,7 +237,7 @@ impl<'a> ExtCtxt<'a> {
         } else {
             self.pat_ident(sp, ident)
         };
-        let local = Box::new(ast::Local {
+        let local = P::new(ast::Local {
             super_: None,
             pat: P::new(pat),
             ty,
@@ -253,7 +253,7 @@ impl<'a> ExtCtxt<'a> {
 
     /// Generates `let _: Type;`, which is usually used for type assertions.
     pub fn stmt_let_type_only(&self, span: Span, ty: P<ast::Ty>) -> ast::Stmt {
-        let local = Box::new(ast::Local {
+        let local = P::new(ast::Local {
             super_: None,
             pat: P::new(self.pat_wild(span)),
             ty: Some(ty),
@@ -271,7 +271,7 @@ impl<'a> ExtCtxt<'a> {
         ast::Stmt { id: ast::DUMMY_NODE_ID, span: expr.span, kind: ast::StmtKind::Semi(expr) }
     }
 
-    pub fn stmt_local(&self, local: Box<ast::Local>, span: Span) -> ast::Stmt {
+    pub fn stmt_local(&self, local: P<ast::Local>, span: Span) -> ast::Stmt {
         ast::Stmt { id: ast::DUMMY_NODE_ID, kind: ast::StmtKind::Let(local), span }
     }
 

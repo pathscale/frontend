@@ -321,7 +321,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a local variable declaration.
-    fn parse_local(&mut self, super_: Option<Span>, attrs: AttrVec) -> PResult<'a, Box<Local>> {
+    fn parse_local(&mut self, super_: Option<Span>, attrs: AttrVec) -> PResult<'a, P<Local>> {
         let lo = super_.unwrap_or(self.prev_token.span);
 
         if self.token.is_keyword(kw::Const) && self.look_ahead(1, |t| t.is_ident()) {
@@ -424,7 +424,7 @@ impl<'a> Parser<'a> {
             }
         };
         let hi = if self.token == token::Semi { self.token.span } else { self.prev_token.span };
-        Ok(Box::new(ast::Local {
+        Ok(P::new(ast::Local {
             super_,
             ty,
             pat,
@@ -1089,6 +1089,7 @@ impl<'a> Parser<'a> {
             }
             StmtKind::Expr(_) | StmtKind::MacCall(_) => {}
             StmtKind::Let(local) => {
+                let local = &mut **local;
                 if self.try_recover_let_missing_semi(local).is_some() {
                     return Ok(stmt);
                 }
