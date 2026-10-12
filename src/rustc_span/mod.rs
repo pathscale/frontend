@@ -657,10 +657,14 @@ impl FileName {
         FileName::MacroExpansion(hasher.finish())
     }
 
+    /// An anonymous name for `src`. Only identity within one session matters here, so this
+    /// uses FxHash, which costs a fraction of SipHash on whole files.
     pub fn anon_source_code(src: &str) -> FileName {
-        let mut hasher = StableHasher::new();
-        src.hash(&mut hasher);
-        FileName::Anon(hasher.finish())
+        use core::hash::Hasher as _;
+        let mut hasher = rustc_hash::FxHasher::default();
+        hasher.write(src.as_bytes());
+        hasher.write_usize(src.len());
+        FileName::Anon(Hash64::new(hasher.finish()))
     }
 
     pub fn proc_macro_source_code(src: &str) -> FileName {
