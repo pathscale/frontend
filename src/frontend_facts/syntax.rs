@@ -133,7 +133,7 @@ fn parse_all(psess: &ParseSess, source: &str, kind: Fragment) {
     let strip = if kind == Fragment::Items { StripTokens::Shebang } else { StripTokens::Nothing };
     let name = FileName::anon_source_code(source);
     let mut parser = match new_parser_from_source_str(psess, name, source.to_string(), strip) {
-        Ok(parser) => parser,
+        Ok(parser) => parser.without_token_capture(),
         // Unbalanced delimiters and bad tokens are refused while lexing, before a parser exists.
         Err(diags) => {
             for diag in diags {

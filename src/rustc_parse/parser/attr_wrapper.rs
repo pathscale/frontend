@@ -161,6 +161,10 @@ impl<'a> Parser<'a> {
         force_collect: ForceCollect,
         f: impl FnOnce(&mut Self, AttrVec) -> PResult<'a, (R, Trailing, UsePreAttrPos)>,
     ) -> PResult<'a, R> {
+        if matches!(self.capture_state.capturing, Capturing::Disabled) {
+            return Ok(f(self, attrs.attrs)?.0);
+        }
+
         let possible_capture_mode = self.capture_cfg;
 
         // We must collect if anything could observe the collected tokens, i.e.
@@ -389,7 +393,7 @@ impl<'a> Parser<'a> {
             self.capture_state
                 .parser_replacements
                 .push((ParserRange(start_pos..end_pos), Some(target)));
-        } else if matches!(self.capture_state.capturing, Capturing::No) {
+        } else if !matches!(self.capture_state.capturing, Capturing::Yes) {
             // Only clear the ranges once we've finished capturing entirely, i.e. we've finished
             // the outermost call to this method.
             self.capture_state.parser_replacements.clear();
