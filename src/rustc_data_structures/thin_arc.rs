@@ -2,10 +2,11 @@
 //!
 //! One allocation holds the count, the length and the elements, so building one from an
 //! exact-length iterator costs one allocation, where `Arc<Vec<T>>` costs two and `Arc<[T]>`
-//! doubles the handle to 16 bytes. Every empty slice shares one static header and never
-//! allocates or touches a count.
+//! doubles the handle to 16 bytes. Small slices share the AST's 64 KiB chunks;
+//! larger or over-aligned slices use the global allocator. Every empty slice shares one
+//! static header and never allocates or touches a count.
 
-use alloc::alloc::{alloc, dealloc, handle_alloc_error};
+use crate::rustc_ast::ptr::{alloc_bytes, dealloc_bytes};
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::hash::{Hash, Hasher};
@@ -72,9 +73,9 @@ impl<T> ThinArcSlice<T> {
             return Self::empty();
         }
         let (layout, offset) = Self::layout(len);
-        // SAFETY: `layout` has a nonzero size, since it includes the header.
-        let raw = unsafe { alloc(layout) };
-        let Some(ptr) = NonNull::new(raw.cast::<Header>()) else { handle_alloc_error(layout) };
+        let storage = alloc_bytes(layout);
+        let raw = storage.as_ptr();
+        let ptr = storage.cast::<Header>();
         // SAFETY: `ptr` is fresh and aligned for `Header`; elements go at `offset`.
         unsafe {
             ptr.as_ptr().write(Header { count: AtomicUsize::new(1), len });
@@ -84,7 +85,7 @@ impl<T> ThinArcSlice<T> {
                     Some(item) => data.add(i).write(item),
                     None => {
                         ptr::drop_in_place(ptr::slice_from_raw_parts_mut(data, i));
-                        dealloc(raw, layout);
+                        dealloc_bytes(storage, layout);
                         panic!("ExactSizeIterator yielded fewer items than its len");
                     }
                 }
@@ -152,7 +153,7 @@ impl<T> Drop for ThinArcSlice<T> {
         // SAFETY: the last handle; the elements are initialized and dropped once.
         unsafe {
             ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.data(), len));
-            dealloc(self.ptr.as_ptr().cast::<u8>(), layout);
+            dealloc_bytes(self.ptr.cast(), layout);
         }
     }
 }
@@ -237,6 +238,38 @@ mod tests {
         let f = e.clone();
         assert!(e.is_empty() && f.is_empty());
         assert_eq!(e, ThinArcSlice::default());
+    }
+
+    #[test]
+    fn small_slice_survives_chunk_turnover() {
+        let a = ThinArcSlice::from_exact((0..64).map(Arc::new));
+        let b = a.clone();
+        let probe = a[0].clone();
+        for _ in 0..1024 {
+            let transient = ThinArcSlice::from_exact(0..64u32);
+            assert_eq!(transient[63], 63);
+        }
+        drop(a);
+        assert_eq!(*b[63], 63);
+        assert_eq!(Arc::strong_count(&probe), 2);
+        drop(b);
+        assert_eq!(Arc::strong_count(&probe), 1);
+    }
+
+    #[test]
+    fn large_and_overaligned_slices() {
+        #[repr(align(128))]
+        struct Aligned(u8);
+
+        let large = ThinArcSlice::from_exact(0..4096u32);
+        let shared = large.clone();
+        drop(large);
+        assert_eq!(shared[4095], 4095);
+
+        let mut aligned = ThinArcSlice::from_exact(core::iter::once(Aligned(7)));
+        assert_eq!(aligned.as_ptr() as usize % 128, 0);
+        aligned.get_mut().unwrap()[0].0 = 9;
+        assert_eq!(aligned[0].0, 9);
     }
 
     #[test]
