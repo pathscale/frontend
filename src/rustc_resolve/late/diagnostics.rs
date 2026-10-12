@@ -4559,7 +4559,7 @@ fn mk_where_bound_predicate(
             ident: last.ident,
             gen_args: None,
             kind: ast::AssocItemConstraintKind::Equality {
-                term: ast::Term::Ty(Box::new(ast::Ty {
+                term: ast::Term::Ty(P::new(ast::Ty {
                     kind: ast::TyKind::Path(None, poly_trait_ref.trait_ref.path.clone()),
                     id: DUMMY_NODE_ID,
                     span: DUMMY_SP,
@@ -4588,7 +4588,7 @@ fn mk_where_bound_predicate(
 
     let new_where_bound_predicate = ast::WhereBoundPredicate {
         bound_generic_params: ThinVec::new(),
-        bounded_ty: Box::new(ty.clone()),
+        bounded_ty: P::new(ty.clone()),
         bounds: thin_vec![ast::GenericBound::Trait(ast::PolyTraitRef {
             bound_generic_params: ThinVec::new(),
             modifiers: ast::TraitBoundModifiers::NONE,

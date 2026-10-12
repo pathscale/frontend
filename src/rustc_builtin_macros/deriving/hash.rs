@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -41,7 +42,7 @@ pub(crate) fn expand_deriving_hash(
             name: sym::hash,
             generics: Bounds { bounds: vec![(typaram, vec![path_std!(hash::Hasher)])] },
             explicit_self: true,
-            nonself_args: smallvec![(Ref(Box::new(Path(arg)), Mutability::Mut), sym::state)],
+            nonself_args: smallvec![(Ref(P::new(Path(arg)), Mutability::Mut), sym::state)],
             ret_ty: Unit,
             attributes: thin_vec![cx.attr_word(sym::inline, span)],
             fieldless_variants_strategy: FieldlessVariantsStrategy::Unify,

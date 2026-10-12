@@ -1,4 +1,5 @@
 #[allow(unused_imports)]
+use crate::rustc_ast::ptr::P;
 use {alloc::boxed::Box, alloc::string::String};
 use crate::rustc_ast as ast;
 use crate::rustc_span::{DUMMY_SP, Ident, create_default_session_globals_then};
@@ -71,7 +72,7 @@ fn test_field_view() {
         let ty = ast::Ty {
             id: ast::DUMMY_NODE_ID,
             kind: ast::TyKind::View(
-                Box::new(ast::Ty {
+                P::new(ast::Ty {
                     id: ast::DUMMY_NODE_ID,
                     kind: ast::TyKind::Dummy,
                     span: DUMMY_SP,

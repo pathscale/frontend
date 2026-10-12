@@ -94,6 +94,16 @@ where
     }
 }
 
+impl<'a, V: Visitor<'a>, T> Visitable<'a, V> for P<T>
+where
+    T: Visitable<'a, V>,
+{
+    type Extra = T::Extra;
+    fn visit(&'a self, visitor: &mut V, extra: Self::Extra) -> V::Result {
+        (**self).visit(visitor, extra)
+    }
+}
+
 impl<'a, V: Visitor<'a>, T> Visitable<'a, V> for Option<T>
 where
     T: Visitable<'a, V>,

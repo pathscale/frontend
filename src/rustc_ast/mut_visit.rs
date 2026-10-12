@@ -52,6 +52,16 @@ where
     }
 }
 
+impl<V: MutVisitor, T> MutVisitable<V> for P<T>
+where
+    T: MutVisitable<V>,
+{
+    type Extra = T::Extra;
+    fn visit_mut(&mut self, visitor: &mut V, extra: Self::Extra) {
+        (**self).visit_mut(visitor, extra)
+    }
+}
+
 impl<V: MutVisitor, T> MutVisitable<V> for Option<T>
 where
     T: MutVisitable<V>,

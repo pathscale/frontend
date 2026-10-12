@@ -1288,7 +1288,7 @@ impl<'a> Parser<'a> {
             Err(err) => err,
         };
         // The callee is in no result from here on: hand its path to the recovery.
-        let snapshot = match (snapshot, (*fun).kind) {
+        let snapshot = match (snapshot, fun.into_inner().kind) {
             (Some(snapshot), ExprKind::Path(None, path)) => Some((snapshot, path)),
             _ => None,
         };
@@ -2667,7 +2667,7 @@ impl<'a> Parser<'a> {
         let lo = self.token.span;
         let attrs = self.parse_outer_attributes()?;
         self.collect_tokens(None, attrs, ForceCollect::No, |this, attrs| {
-            let pat = Box::new(this.parse_pat_no_top_alt(Some(Expected::ParameterName), None)?);
+            let pat = P::new(this.parse_pat_no_top_alt(Some(Expected::ParameterName), None)?);
             let ty = if this.eat(exp!(Colon)) {
                 this.parse_ty()?
             } else {
@@ -2874,7 +2874,7 @@ impl<'a> Parser<'a> {
         }
         let expr = self.parse_expr_assoc(Bound::Excluded(prec_let_scrutinee_needs_par()))?;
         let span = lo.to(expr.span);
-        Ok(self.mk_expr(span, ExprKind::Let(Box::new(pat), expr, span, recovered)))
+        Ok(self.mk_expr(span, ExprKind::Let(P::new(pat), expr, span, recovered)))
     }
 
     /// Parses an `else { ... }` expression (`else` token already eaten).
@@ -3065,7 +3065,7 @@ impl<'a> Parser<'a> {
         let kind = if is_await { ForLoopKind::ForAwait } else { ForLoopKind::For };
 
         let (pat, expr) = self.parse_for_head()?;
-        let pat = Box::new(pat);
+        let pat = P::new(pat);
         // Recover from missing expression in `for` loop
         if matches!(expr.kind, ExprKind::Block(..))
             && self.token.kind != token::OpenBrace
@@ -3268,7 +3268,7 @@ impl<'a> Parser<'a> {
                     // Always push at least one arm to make the match non-empty
                     arms.push(Arm {
                         attrs: Default::default(),
-                        pat: Box::new(self.mk_pat(span, ast::PatKind::Err(guar))),
+                        pat: P::new(self.mk_pat(span, ast::PatKind::Err(guar))),
                         guard: None,
                         body: Some(self.mk_expr_err(span, guar)),
                         span,
@@ -3369,7 +3369,7 @@ impl<'a> Parser<'a> {
         self.collect_tokens(None, attrs, ForceCollect::No, |this, attrs| {
             let lo = this.token.span;
             let (pat, guard) = this.parse_match_arm_pat_and_guard()?;
-            let pat = Box::new(pat);
+            let pat = P::new(pat);
 
             let span_before_body = this.prev_token.span;
             let arm_body;
@@ -3601,7 +3601,7 @@ impl<'a> Parser<'a> {
 
         CondChecker::new(self, LetChainsPolicy::AlwaysAllowed).visit_expr(&mut cond);
 
-        let guard = Guard { cond: *cond, span_with_leading_if: leading_if_span.to(cond_span) };
+        let guard = Guard { cond: cond.into_inner(), span_with_leading_if: leading_if_span.to(cond_span) };
         Ok(Box::new(guard))
     }
 
@@ -3621,7 +3621,7 @@ impl<'a> Parser<'a> {
                 // FIXME(guard_patterns): convert this to a normal guard instead
                 let span = pat.span;
                 let ast::PatKind::Paren(subpat) = pat.kind else { unreachable!() };
-                let ast::PatKind::Guard(_, mut guard) = subpat.kind else { unreachable!() };
+                let ast::PatKind::Guard(_, mut guard) = subpat.into_inner().kind else { unreachable!() };
                 self.psess.gated_spans.ungate_last(sym::guard_patterns, guard.span());
                 let mut checker = CondChecker::new(self, LetChainsPolicy::AlwaysAllowed);
                 checker.visit_expr(&mut guard.cond);
@@ -3633,7 +3633,7 @@ impl<'a> Parser<'a> {
                 });
 
                 if let Some(guar) = checker.found_incorrect_let_chain {
-                    guard.cond = *self.mk_expr_err(guard.span(), guar);
+                    guard.cond = self.mk_expr_err(guard.span(), guar).into_inner();
                 }
                 Ok((self.mk_pat(span, ast::PatKind::Wild), Some(guard)))
             } else {
@@ -4240,7 +4240,7 @@ impl<'a> Parser<'a> {
         kind: ExprKind,
         attrs: AttrVec,
     ) -> P<Expr> {
-        Box::new(Expr { kind, span, attrs, id: DUMMY_NODE_ID, tokens: None })
+        P::new(Expr { kind, span, attrs, id: DUMMY_NODE_ID, tokens: None })
     }
 
     pub(crate) fn mk_expr(&self, span: Span, kind: ExprKind) -> P<Expr> {

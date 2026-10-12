@@ -392,7 +392,7 @@ fn generate_foreign_item(
             extern_span: eii_attr_span,
             safety: ast::Safety::Unsafe(eii_attr_span),
             abi,
-            items: From::from([Box::new(ast::ForeignItem {
+            items: From::from([P::new(ast::ForeignItem {
                 attrs: foreign_item_attrs,
                 id: ast::DUMMY_NODE_ID,
                 span: item_span,
@@ -466,7 +466,7 @@ fn generate_attribute_macro_to_implement(
     macro_attrs.push(ecx.attr_nested_word(sym::rustc_builtin_macro, sym::eii_shared_macro, span));
 
     // cant use ecx methods here to construct item since we need it to be public
-    Box::new(ast::Item {
+    P::new(ast::Item {
         attrs: macro_attrs,
         id: ast::DUMMY_NODE_ID,
         span,

@@ -67,7 +67,7 @@ impl<'a> Parser<'a> {
         let attrs = self.parse_inner_attributes()?;
 
         let post_attr_lo = self.token.span;
-        let mut items: ThinVec<Box<_>> = ThinVec::new();
+        let mut items: ThinVec<P<_>> = ThinVec::new();
 
         // There shouldn't be any stray semicolons before or after items.
         // `parse_item` consumes the appropriate semicolons so any leftover is an error.
@@ -135,7 +135,7 @@ impl<'a> Parser<'a> {
         let fn_parse_mode =
             FnParseMode { req_name: |_, _| true, context: FnContext::Free, req_body: true };
         self.parse_item_(fn_parse_mode, force_collect, allow_const_block_items)
-            .map(|i| i.map(Box::new))
+            .map(|i| i.map(P::new))
     }
 
     fn parse_item_(
@@ -171,7 +171,7 @@ impl<'a> Parser<'a> {
         }) {
             let mut item = item.expect("an actual item");
             attrs.prepend_to_nt_inner(&mut item.attrs);
-            return Ok(Some(*item));
+            return Ok(Some(item.into_inner()));
         }
 
         self.collect_tokens(None, attrs, force_collect, |this, mut attrs| {
@@ -281,7 +281,7 @@ impl<'a> Parser<'a> {
             }
             let (ident, sig, generics, contract, body) =
                 self.parse_fn(attrs, fn_parse_mode, lo, vis, case)?;
-            ItemKind::Fn(Box::new(Fn {
+            ItemKind::Fn(P::new(Fn {
                 defaultness,
                 ident,
                 sig,
@@ -787,7 +787,7 @@ impl<'a> Parser<'a> {
                         .emit_err(diagnostics::MissingForInTraitImpl { span: missing_for_span });
                 }
 
-                let ty_first = *ty_first;
+                let ty_first = ty_first.into_inner();
                 let path = match ty_first.kind {
                     // This notably includes paths passed through `ty` macro fragments (#46438).
                     TyKind::Path(None, path) => path,
@@ -899,7 +899,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_delegation_body()?;
         let whole_reuse_span = span.to(self.prev_token.span);
 
-        items.push(Box::new(AssocItem {
+        items.push(P::new(AssocItem {
             id: DUMMY_NODE_ID,
             attrs: Default::default(),
             span: whole_reuse_span,
@@ -1313,7 +1313,7 @@ impl<'a> Parser<'a> {
                         _ => return self.error_bad_item_kind(span, &kind, "`trait`s or `impl`s"),
                     },
                 };
-                Some(Box::new(Item { attrs, id, span, vis, kind, tokens }))
+                Some(P::new(Item { attrs, id, span, vis, kind, tokens }))
             }))
     }
 
@@ -1649,7 +1649,7 @@ impl<'a> Parser<'a> {
                         _ => return self.error_bad_item_kind(span, &kind, "`extern` blocks"),
                     },
                 };
-                Some(Box::new(Item { attrs, id, span, vis, kind, tokens }))
+                Some(P::new(Item { attrs, id, span, vis, kind, tokens }))
             }))
     }
 
@@ -1914,7 +1914,7 @@ impl<'a> Parser<'a> {
 
         // The user intended that the type be inferred,
         // so treat this as if the user wrote e.g. `const A: _ = expr;`.
-        Box::new(Ty { kind: TyKind::Infer, span, id: ast::DUMMY_NODE_ID })
+        P::new(Ty { kind: TyKind::Infer, span, id: ast::DUMMY_NODE_ID })
     }
 
     /// Parses an enum declaration.

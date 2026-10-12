@@ -28,7 +28,7 @@ pub(crate) fn expand_deriving_partial_ord(
 ) {
     let ordering_ty = Path(path_std!(cmp::Ordering));
     let ret_ty =
-        Path(Path::new_(pathvec!(option::Option), vec![Box::new(ordering_ty)], PathKind::Std));
+        Path(Path::new_(pathvec!(option::Option), vec![P::new(ordering_ty)], PathKind::Std));
 
     // Order in which to perform matching
     let discr_then_data = if let Annotatable::Item(item) = item

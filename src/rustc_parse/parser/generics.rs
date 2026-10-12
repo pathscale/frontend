@@ -378,7 +378,7 @@ impl<'a> Parser<'a> {
                 None => self.mk_unit_expr(decls_and_precond.span),
             };
             let precond = self.mk_closure_expr(precond.span, precond);
-            let decls = decls_and_precond.stmts;
+            let decls = decls_and_precond.into_inner().stmts;
             (decls, Some(precond))
         } else {
             (Default::default(), None)
@@ -637,7 +637,7 @@ impl<'a> Parser<'a> {
             diag.span(lhs_ty.span.to(rhs_ty.span));
             diag.span_label(lhs_ty.span.to(rhs_ty.span), "not supported");
 
-            suggest_replacing_equality_pred_with_assoc_item_constraint(&mut diag, *lhs_ty, *rhs_ty);
+            suggest_replacing_equality_pred_with_assoc_item_constraint(&mut diag, lhs_ty.into_inner(), rhs_ty.into_inner());
 
             return Err(diag);
         }

@@ -585,7 +585,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 self.create_def(node_id, None, DefKind::AnonConst, arg.span);
                 let const_value =
                     if let ControlFlow::Break(span) = WillCreateDefIdsVisitor.visit_expr(&arg) {
-                        Box::new(Expr {
+                        P::new(Expr {
                             id: self.next_node_id(),
                             kind: ExprKind::Err(invalid_expr_error(self.tcx, span)),
                             span: f.span,

@@ -159,7 +159,7 @@ fn item_from_annotatable(item: &Annotatable) -> Option<&ast::Item> {
 fn parse_schema_item(ecx: &ExtCtxt<'_>, tokens: &TokenStream) -> Option<ast::Item> {
     let mut parser = Parser::new(&ecx.sess.psess, tokens.clone(), Some("proc-macro input"));
     match parser.parse_item(ForceCollect::No, AllowConstBlockItems::Yes) {
-        Ok(Some(item)) => Some(*item),
+        Ok(Some(item)) => Some(item.into_inner()),
         Ok(None) => None,
         Err(error) => {
             error.cancel();

@@ -548,7 +548,7 @@ impl MacResult for MacEager {
     fn make_pat(self: Box<Self>) -> Option<P<ast::Pat>> {
         if let Some(e) = self.expr {
             if matches!(e.kind, ast::ExprKind::Lit(_) | ast::ExprKind::IncludedBytes(_)) {
-                return Some(Box::new(ast::Pat {
+                return Some(P::new(ast::Pat {
                     id: ast::DUMMY_NODE_ID,
                     span: e.span,
                     kind: PatKind::Expr(e),
@@ -587,7 +587,7 @@ impl DummyResult {
 
     /// A plain dummy expression.
     pub fn raw_expr(sp: Span, guar: Option<ErrorGuaranteed>) -> P<ast::Expr> {
-        Box::new(ast::Expr {
+        P::new(ast::Expr {
             id: ast::DUMMY_NODE_ID,
             kind: if let Some(guar) = guar {
                 ast::ExprKind::Err(guar)
@@ -611,7 +611,7 @@ impl MacResult for DummyResult {
     }
 
     fn make_pat(self: Box<DummyResult>) -> Option<P<ast::Pat>> {
-        Some(Box::new(ast::Pat { id: ast::DUMMY_NODE_ID, kind: PatKind::Wild, span: self.span }))
+        Some(P::new(ast::Pat { id: ast::DUMMY_NODE_ID, kind: PatKind::Wild, span: self.span }))
     }
 
     fn make_items(self: Box<DummyResult>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
@@ -646,7 +646,7 @@ impl MacResult for DummyResult {
         // FIXME(nnethercote): you might expect `ast::TyKind::Dummy` to be used here, but some
         // values produced here end up being lowered to HIR, which `ast::TyKind::Dummy` does not
         // support, so we use an empty tuple instead.
-        Some(Box::new(ast::Ty {
+        Some(P::new(ast::Ty {
             id: ast::DUMMY_NODE_ID,
             kind: ast::TyKind::Tup(ThinVec::new()),
             span: self.span,

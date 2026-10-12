@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -36,7 +37,7 @@ pub(crate) fn expand<'cx>(
     if p.token != token::Eof {
         cx.dcx().emit_err(diagnostics::OnlyOneArgument { span: p.token.span, name });
     }
-    let item = Box::new(ast::Item {
+    let item = P::new(ast::Item {
         attrs: AttrVec::default(),
         id: ast::DUMMY_NODE_ID,
         span,

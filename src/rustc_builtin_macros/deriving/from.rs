@@ -69,7 +69,7 @@ pub(crate) fn expand_deriving_from(
     });
 
     let path =
-        Path::new_(pathvec!(convert::From), vec![Box::new(from_type.clone())], PathKind::Std);
+        Path::new_(pathvec!(convert::From), vec![P::new(from_type.clone())], PathKind::Std);
 
     // Generate code like this:
     //

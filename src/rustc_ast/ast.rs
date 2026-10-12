@@ -977,7 +977,7 @@ impl Pat {
             _ => return None,
         };
 
-        Some(Box::new(Ty { kind, id: self.id, span: self.span }))
+        Some(P::new(Ty { kind, id: self.id, span: self.span }))
     }
 
     /// Walk top-down and call `it` in each place where a pattern occurs
@@ -1082,7 +1082,7 @@ impl Pat {
 
 impl From<P<Pat>> for Pat {
     fn from(value: P<Pat>) -> Self {
-        *value
+        value.into_inner()
     }
 }
 
@@ -1848,7 +1848,7 @@ impl Expr {
             _ => return None,
         };
 
-        Some(Box::new(Ty { kind, id: self.id, span: self.span }))
+        Some(P::new(Ty { kind, id: self.id, span: self.span }))
     }
 
     pub fn precedence(&self) -> ExprPrecedence {
@@ -1969,7 +1969,7 @@ impl Expr {
 
 impl From<P<Expr>> for Expr {
     fn from(value: P<Expr>) -> Self {
-        *value
+        value.into_inner()
     }
 }
 
@@ -2772,7 +2772,7 @@ impl Clone for Ty {
 
 impl From<P<Ty>> for Ty {
     fn from(value: P<Ty>) -> Self {
-        *value
+        value.into_inner()
     }
 }
 
@@ -3319,13 +3319,13 @@ impl Param {
     pub fn from_self(attrs: AttrVec, eself: ExplicitSelf, eself_ident: Ident) -> Param {
         let span = eself.span.to(eself_ident.span);
         let infer_ty =
-            Box::new(Ty { id: DUMMY_NODE_ID, kind: TyKind::ImplicitSelf, span: eself_ident.span });
+            P::new(Ty { id: DUMMY_NODE_ID, kind: TyKind::ImplicitSelf, span: eself_ident.span });
         let (mutbl, ty) = match eself.node {
             SelfKind::Explicit(ty, mutbl) => (mutbl, ty),
             SelfKind::Value(mutbl) => (mutbl, infer_ty),
             SelfKind::Region(lt, mutbl) => (
                 Mutability::Not,
-                Box::new(Ty {
+                P::new(Ty {
                     id: DUMMY_NODE_ID,
                     kind: TyKind::Ref(lt, MutTy { ty: infer_ty, mutbl }),
                     span,
@@ -3333,7 +3333,7 @@ impl Param {
             ),
             SelfKind::Pinned(lt, mutbl) => (
                 Mutability::Not,
-                Box::new(Ty {
+                P::new(Ty {
                     id: DUMMY_NODE_ID,
                     kind: TyKind::PinnedRef(lt, MutTy { ty: infer_ty, mutbl }),
                     span,
@@ -3342,7 +3342,7 @@ impl Param {
         };
         Param {
             attrs,
-            pat: Box::new(Pat {
+            pat: P::new(Pat {
                 id: DUMMY_NODE_ID,
                 kind: PatKind::Ident(BindingMode(ByRef::No, mutbl), eself_ident, None),
                 span,

@@ -76,7 +76,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn ty(&self, span: Span, kind: ast::TyKind) -> P<ast::Ty> {
-        Box::new(ast::Ty { id: ast::DUMMY_NODE_ID, span, kind })
+        P::new(ast::Ty { id: ast::DUMMY_NODE_ID, span, kind })
     }
 
     pub fn ty_infer(&self, span: Span) -> P<ast::Ty> {
@@ -96,7 +96,7 @@ impl<'a> ExtCtxt<'a> {
     pub fn anon_const(&self, span: Span, kind: ast::ExprKind) -> ast::AnonConst {
         ast::AnonConst {
             id: ast::DUMMY_NODE_ID,
-            value: Box::new(ast::Expr {
+            value: P::new(ast::Expr {
                 id: ast::DUMMY_NODE_ID,
                 kind,
                 span,
@@ -239,7 +239,7 @@ impl<'a> ExtCtxt<'a> {
         };
         let local = Box::new(ast::Local {
             super_: None,
-            pat: Box::new(pat),
+            pat: P::new(pat),
             ty,
             id: ast::DUMMY_NODE_ID,
             kind: LocalKind::Init(ex),
@@ -255,7 +255,7 @@ impl<'a> ExtCtxt<'a> {
     pub fn stmt_let_type_only(&self, span: Span, ty: P<ast::Ty>) -> ast::Stmt {
         let local = Box::new(ast::Local {
             super_: None,
-            pat: Box::new(self.pat_wild(span)),
+            pat: P::new(self.pat_wild(span)),
             ty: Some(ty),
             id: ast::DUMMY_NODE_ID,
             kind: LocalKind::Decl,
@@ -290,11 +290,11 @@ impl<'a> ExtCtxt<'a> {
         )
     }
     pub fn block(&self, span: Span, stmts: ThinVec<ast::Stmt>) -> P<ast::Block> {
-        Box::new(ast::Block { stmts, id: ast::DUMMY_NODE_ID, rules: BlockCheckMode::Default, span })
+        P::new(ast::Block { stmts, id: ast::DUMMY_NODE_ID, rules: BlockCheckMode::Default, span })
     }
 
     pub fn expr(&self, span: Span, kind: ast::ExprKind) -> P<ast::Expr> {
-        Box::new(ast::Expr {
+        P::new(ast::Expr {
             id: ast::DUMMY_NODE_ID,
             kind,
             span,
@@ -582,7 +582,7 @@ impl<'a> ExtCtxt<'a> {
     pub fn arm(&self, span: Span, pat: ast::Pat, expr: P<ast::Expr>) -> ast::Arm {
         ast::Arm {
             attrs: AttrVec::new(),
-            pat: Box::new(pat),
+            pat: P::new(pat),
             guard: None,
             body: Some(expr),
             span,
@@ -661,7 +661,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn param(&self, span: Span, ident: Ident, ty: P<ast::Ty>) -> ast::Param {
-        let pat = Box::new(self.pat_ident(span, ident));
+        let pat = P::new(self.pat_ident(span, ident));
         ast::Param {
             attrs: AttrVec::default(),
             id: ast::DUMMY_NODE_ID,
@@ -678,7 +678,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn item(&self, span: Span, attrs: ast::AttrVec, kind: ast::ItemKind) -> P<ast::Item> {
-        Box::new(ast::Item {
+        P::new(ast::Item {
             attrs,
             id: ast::DUMMY_NODE_ID,
             kind,

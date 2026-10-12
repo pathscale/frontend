@@ -28,7 +28,7 @@ pub(crate) fn expand_deriving_debug(
     is_const: bool,
 ) {
     // &mut ::core::fmt::Formatter
-    let fmtr = Ref(Box::new(Path(path_std!(fmt::Formatter))), ast::Mutability::Mut);
+    let fmtr = Ref(P::new(Path(path_std!(fmt::Formatter))), ast::Mutability::Mut);
 
     let trait_def = TraitDef {
         span,

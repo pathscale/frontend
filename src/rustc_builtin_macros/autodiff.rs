@@ -333,7 +333,7 @@ mod llvm_enzyme {
         );
 
         // The first element of it is the name of the function to be generated
-        let d_fn = Box::new(ast::Fn {
+        let d_fn = P::new(ast::Fn {
             defaultness: ast::Defaultness::Implicit,
             sig: d_sig,
             ident: first_ident(&meta_item_vec[0]),
@@ -441,7 +441,7 @@ mod llvm_enzyme {
         let d_annotatable = match &item {
             Annotatable::AssocItem(_, ctxt) => {
                 let assoc_item: AssocItemKind = ast::AssocItemKind::Fn(d_fn);
-                let d_fn = Box::new(ast::AssocItem {
+                let d_fn = P::new(ast::AssocItem {
                     attrs: d_attrs,
                     id: ast::DUMMY_NODE_ID,
                     span,
@@ -527,7 +527,7 @@ mod llvm_enzyme {
                 ast::Param {
                     attrs: ast::AttrVec::new(),
                     ty,
-                    pat: Box::new(ecx.pat_wild(span)),
+                    pat: P::new(ecx.pat_wild(span)),
                     id: ast::DUMMY_NODE_ID,
                     span,
                     is_placeholder: false,
@@ -804,7 +804,7 @@ mod llvm_enzyme {
                     let shadow_arg = ast::Param {
                         attrs: ThinVec::new(),
                         ty: ty.clone(),
-                        pat: Box::new(ast::Pat {
+                        pat: P::new(ast::Pat {
                             id: ast::DUMMY_NODE_ID,
                             kind: PatKind::Ident(BindingMode::NONE, ident, None),
                             span: ty.span,
@@ -827,7 +827,7 @@ mod llvm_enzyme {
                 FnRetTy::Default(span) => {
                     // We want to return core::hint::black_box(()).
                     let kind = TyKind::Tup(ThinVec::new());
-                    let ty = Box::new(crate::rustc_ast::Ty { kind, id: ast::DUMMY_NODE_ID, span });
+                    let ty = P::new(crate::rustc_ast::Ty { kind, id: ast::DUMMY_NODE_ID, span });
                     d_decl.output = FnRetTy::Ty(ty.clone());
                     assert!(matches!(x.ret_activity, DiffActivity::None));
                     // this won't be used below, so any type would be fine.
@@ -848,7 +848,7 @@ mod llvm_enzyme {
                     };
                     TyKind::Array(ty.clone(), anon_const)
                 };
-                let ty = Box::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span });
+                let ty = P::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span });
                 d_decl.output = FnRetTy::Ty(ty);
             }
             if matches!(x.ret_activity, DiffActivity::DualOnly | DiffActivity::DualvOnly) {
@@ -861,7 +861,7 @@ mod llvm_enzyme {
                         value: ecx.expr_usize(span, x.width as usize),
                     };
                     let kind = TyKind::Array(ty.clone(), anon_const);
-                    let ty = Box::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span });
+                    let ty = P::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span });
                     d_decl.output = FnRetTy::Ty(ty);
                 }
             }
@@ -883,14 +883,14 @@ mod llvm_enzyme {
                         act_ret.insert(0, ty.clone());
                     }
                     let kind = TyKind::Tup(act_ret);
-                    Box::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span })
+                    P::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span })
                 }
                 FnRetTy::Default(span) => {
                     if act_ret.len() == 1 {
                         act_ret[0].clone()
                     } else {
                         let kind = TyKind::Tup(act_ret);
-                        Box::new(crate::rustc_ast::Ty { kind, id: ast::DUMMY_NODE_ID, span })
+                        P::new(crate::rustc_ast::Ty { kind, id: ast::DUMMY_NODE_ID, span })
                     }
                 }
             };
