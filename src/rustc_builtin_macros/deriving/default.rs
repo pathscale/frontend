@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -66,7 +67,7 @@ pub(crate) fn expand_deriving_default(
     trait_def.expand(cx, mitem, item, push)
 }
 
-fn default_call(cx: &ExtCtxt<'_>, span: Span) -> Box<ast::Expr> {
+fn default_call(cx: &ExtCtxt<'_>, span: Span) -> P<ast::Expr> {
     // Note that `kw::Default` is "default" and `sym::Default` is "Default"!
     let default_ident = cx.std_path(&[kw::Default, sym::Default, kw::Default]);
     cx.expr_call_global(span, default_ident, ThinVec::new())

@@ -15,6 +15,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 mod llvm_enzyme {
+    use crate::rustc_ast::ptr::P;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
     use alloc::string::ToString;
@@ -87,7 +88,7 @@ mod llvm_enzyme {
     }
 
     // Get information about the function the macro is applied to
-    fn extract_item_info(iitem: &Box<ast::Item>) -> Option<(Visibility, FnSig, Ident, Generics)> {
+    fn extract_item_info(iitem: &P<ast::Item>) -> Option<(Visibility, FnSig, Ident, Generics)> {
         match &iitem.kind {
             ItemKind::Fn(f) => {
                 let ast::Fn { sig, ident, generics, .. } = &**f;
@@ -583,7 +584,7 @@ mod llvm_enzyme {
         generics: &Generics,
         span: Span,
         is_impl: bool,
-    ) -> Box<ast::Expr> {
+    ) -> P<ast::Expr> {
         let generic_args = generics
             .params
             .iter()

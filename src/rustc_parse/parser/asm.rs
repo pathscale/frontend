@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::rustc_ast::{self as ast, AsmMacro};
@@ -15,7 +16,7 @@ pub struct AsmArg {
 }
 
 pub enum AsmArgKind {
-    Template(Box<ast::Expr>),
+    Template(P<ast::Expr>),
     Operand(Option<Symbol>, ast::InlineAsmOperand),
     Options(Vec<AsmOption>),
     ClobberAbi(Vec<(Symbol, Span)>),

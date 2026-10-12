@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::ToString;
@@ -477,7 +478,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses the RHS of a local variable declaration (e.g., `= 14;`).
-    fn parse_initializer(&mut self, eq_optional: bool) -> PResult<'a, Option<Box<Expr>>> {
+    fn parse_initializer(&mut self, eq_optional: bool) -> PResult<'a, Option<P<Expr>>> {
         let eq_consumed = match self.token.kind {
             token::PlusEq
             | token::MinusEq
@@ -508,7 +509,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a block. No inner attributes are allowed.
-    pub fn parse_block(&mut self) -> PResult<'a, Box<Block>> {
+    pub fn parse_block(&mut self) -> PResult<'a, P<Block>> {
         let (attrs, block) = self.parse_inner_attrs_and_block(None)?;
         if let [.., last] = &*attrs {
             let suggest_to_outer = match &last.kind {
@@ -695,7 +696,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_inner_attrs_and_block(
         &mut self,
         loop_header: Option<Span>,
-    ) -> PResult<'a, (AttrVec, Box<Block>)> {
+    ) -> PResult<'a, (AttrVec, P<Block>)> {
         self.parse_block_common(self.token.span, BlockCheckMode::Default, loop_header)
     }
 
@@ -708,7 +709,7 @@ impl<'a> Parser<'a> {
         lo: Span,
         blk_mode: BlockCheckMode,
         loop_header: Option<Span>,
-    ) -> PResult<'a, (AttrVec, Box<Block>)> {
+    ) -> PResult<'a, (AttrVec, P<Block>)> {
         if let Some(block) = self.eat_metavar_seq(MetaVarKind::Block, |this| this.parse_block()) {
             return Ok((AttrVec::new(), block));
         }
@@ -734,7 +735,7 @@ impl<'a> Parser<'a> {
         lo: Span,
         s: BlockCheckMode,
         recover: AttemptLocalParseRecovery,
-    ) -> PResult<'a, Box<Block>> {
+    ) -> PResult<'a, P<Block>> {
         let mut stmts = ThinVec::new();
         let mut snapshot = None;
         while !self.eat(exp!(CloseBrace)) {
@@ -1170,7 +1171,7 @@ impl<'a> Parser<'a> {
         stmts: ThinVec<Stmt>,
         rules: BlockCheckMode,
         span: Span,
-    ) -> Box<Block> {
+    ) -> P<Block> {
         Box::new(Block { stmts, id: DUMMY_NODE_ID, rules, span })
     }
 
@@ -1182,7 +1183,7 @@ impl<'a> Parser<'a> {
         self.mk_stmt(span, StmtKind::Expr(self.mk_expr_err(span, guar)))
     }
 
-    pub(super) fn mk_block_err(&self, span: Span, guar: ErrorGuaranteed) -> Box<Block> {
+    pub(super) fn mk_block_err(&self, span: Span, guar: ErrorGuaranteed) -> P<Block> {
         self.mk_block(thin_vec![self.mk_stmt_err(span, guar)], BlockCheckMode::Default, span)
     }
 }

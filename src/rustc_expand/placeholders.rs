@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::rustc_ast::mut_visit::*;
@@ -330,7 +331,7 @@ impl MutVisitor for PlaceholderExpander {
         }
     }
 
-    fn flat_map_item(&mut self, item: Box<ast::Item>) -> SmallVec<[Box<ast::Item>; 1]> {
+    fn flat_map_item(&mut self, item: P<ast::Item>) -> SmallVec<[P<ast::Item>; 1]> {
         if self.exhausted() {
             return smallvec![item];
         }
@@ -342,9 +343,9 @@ impl MutVisitor for PlaceholderExpander {
 
     fn flat_map_assoc_item(
         &mut self,
-        item: Box<ast::AssocItem>,
+        item: P<ast::AssocItem>,
         ctxt: AssocCtxt,
-    ) -> SmallVec<[Box<ast::AssocItem>; 1]> {
+    ) -> SmallVec<[P<ast::AssocItem>; 1]> {
         if self.exhausted() {
             return smallvec![item];
         }
@@ -363,8 +364,8 @@ impl MutVisitor for PlaceholderExpander {
 
     fn flat_map_foreign_item(
         &mut self,
-        item: Box<ast::ForeignItem>,
-    ) -> SmallVec<[Box<ast::ForeignItem>; 1]> {
+        item: P<ast::ForeignItem>,
+    ) -> SmallVec<[P<ast::ForeignItem>; 1]> {
         if self.exhausted() {
             return smallvec![item];
         }
@@ -394,7 +395,7 @@ impl MutVisitor for PlaceholderExpander {
         }
     }
 
-    fn filter_map_expr(&mut self, expr: Box<ast::Expr>) -> Option<Box<ast::Expr>> {
+    fn filter_map_expr(&mut self, expr: P<ast::Expr>) -> Option<P<ast::Expr>> {
         if self.exhausted() {
             return Some(expr);
         }

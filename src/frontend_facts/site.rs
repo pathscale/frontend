@@ -17,6 +17,7 @@
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
@@ -649,7 +650,7 @@ impl<'s> Finder<'s> {
         self.module_body(&krate.items);
     }
 
-    fn module_body(&mut self, items: &[Box<Item>]) {
+    fn module_body(&mut self, items: &[P<Item>]) {
         self.enter_module_scope();
         self.push_frame();
         self.bind_items(items.iter().map(|item| &**item));
@@ -707,7 +708,7 @@ impl<'s> Finder<'s> {
         }
     }
 
-    fn assoc_body(&mut self, items: &[Box<AssocItem>], position: Position, ctxt: AssocCtxt) {
+    fn assoc_body(&mut self, items: &[P<AssocItem>], position: Position, ctxt: AssocCtxt) {
         self.position = position;
         if let Some(item) = items.iter().find(|item| self.inside(item.span)) {
             self.assoc_item(item, ctxt);
@@ -819,7 +820,7 @@ impl<'s> Finder<'s> {
         }
     }
 
-    fn call_args(&mut self, open_from: Span, call: &Expr, args: &[Box<Expr>]) {
+    fn call_args(&mut self, open_from: Span, call: &Expr, args: &[P<Expr>]) {
         let from = self.at(open_from.hi());
         let end = self.at(call.span.hi());
         let open = self.find_byte(from, end, b'(');

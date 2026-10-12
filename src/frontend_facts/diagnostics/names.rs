@@ -53,6 +53,7 @@
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
+use crate::rustc_ast::ptr::P;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -1031,7 +1032,7 @@ fn closure_arity(e: &Expr) -> Option<usize> {
 
 /// An argument list whose length is not what it looks like: a `#[cfg]`'d argument, or a macro
 /// that may expand to nothing.
-fn args_unsettled(args: &[alloc::boxed::Box<Expr>]) -> bool {
+fn args_unsettled(args: &[P<Expr>]) -> bool {
     args.iter().any(|a| !a.attrs.is_empty() || matches!(a.kind, ExprKind::MacCall(_)))
 }
 
@@ -1321,7 +1322,7 @@ impl<'a, 'b, 'c> Checker<'a, 'b, 'c> {
         found: usize,
         call: Span,
         before_args: Span,
-        args: &[alloc::boxed::Box<Expr>],
+        args: &[P<Expr>],
     ) {
         if self.suppress > 0 {
             return;
@@ -1361,7 +1362,7 @@ impl<'a, 'b, 'c> Checker<'a, 'b, 'c> {
         decl: &ast::FnDecl,
         call: &Expr,
         callee: &Expr,
-        args: &[alloc::boxed::Box<Expr>],
+        args: &[P<Expr>],
     ) {
         let Some((fixed, variadic)) = arity(decl) else { return };
         let found = args.len();
@@ -1375,7 +1376,7 @@ impl<'a, 'b, 'c> Checker<'a, 'b, 'c> {
         data: &VariantData,
         call: &Expr,
         callee: &Expr,
-        args: &[alloc::boxed::Box<Expr>],
+        args: &[P<Expr>],
     ) {
         let VariantData::Tuple(fields, _) = data else { return };
         if fields.iter().any(|f| is_unsettled(&f.attrs)) {
@@ -1386,7 +1387,7 @@ impl<'a, 'b, 'c> Checker<'a, 'b, 'c> {
         }
     }
 
-    fn check_call(&mut self, call: &Expr, callee: &Expr, args: &[alloc::boxed::Box<Expr>]) {
+    fn check_call(&mut self, call: &Expr, callee: &Expr, args: &[P<Expr>]) {
         if !self.en.arg_count() || self.suppress > 0 || args_unsettled(args) {
             return;
         }

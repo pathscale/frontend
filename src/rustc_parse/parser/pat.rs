@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -264,7 +265,7 @@ impl<'a> Parser<'a> {
         expected: Option<Expected>,
         rc: RecoverComma,
         syntax_loc: PatternLocation,
-    ) -> PResult<'a, (Box<Pat>, bool)> {
+    ) -> PResult<'a, (P<Pat>, bool)> {
         // We use `parse_pat_allow_top_alt` regardless of whether we actually want top-level
         // or-patterns so that we can detect when a user tries to use it. This allows us to print a
         // better error message.
@@ -312,7 +313,7 @@ impl<'a> Parser<'a> {
     ///
     /// The return value represents the parsed pattern and `true` if a `Colon` was parsed (`false`
     /// otherwise).
-    pub(super) fn parse_fn_param_pat_colon(&mut self) -> PResult<'a, (Box<Pat>, bool)> {
+    pub(super) fn parse_fn_param_pat_colon(&mut self) -> PResult<'a, (P<Pat>, bool)> {
         // In order to get good UX, we first recover in the case of a leading vert for an illegal
         // top-level or-pat. Normally, this means recovering both `|` and `||`, but in this case,
         // a leading `||` probably doesn't indicate an or-pattern attempt, so we handle that
@@ -1024,7 +1025,7 @@ impl<'a> Parser<'a> {
         // with an inline type annotation, which is invalid syntax. This is kept
         // out of the element patterns themselves so that the happy path doesn't
         // have to allocate for it.
-        let mut tys: Vec<(usize, Span, Box<Ty>)> = Vec::new();
+        let mut tys: Vec<(usize, Span, P<Ty>)> = Vec::new();
         let mut index = 0;
 
         let (fields, trailing_comma) = self.parse_paren_comma_seq(|p| {
@@ -1128,7 +1129,7 @@ impl<'a> Parser<'a> {
         &self,
         open_paren: Span,
         fields: &[Pat],
-        tys: &[(usize, Span, Box<Ty>)],
+        tys: &[(usize, Span, P<Ty>)],
         trailing_comma: Trailing,
         syntax_loc: Option<PatternLocation>,
     ) {
@@ -1187,7 +1188,7 @@ impl<'a> Parser<'a> {
         open_paren: Span,
         close_paren: Span,
         fields: &[Pat],
-        tys: &[(usize, Span, Box<Ty>)],
+        tys: &[(usize, Span, P<Ty>)],
         paren_pattern: bool,
     ) {
         // Build the replacement from the source snippets. Elements without an
@@ -1366,7 +1367,7 @@ impl<'a> Parser<'a> {
     /// `$begin $form` has already been parsed.
     fn parse_pat_range_begin_with(
         &mut self,
-        begin: Box<Expr>,
+        begin: P<Expr>,
         re: Spanned<RangeEnd>,
     ) -> PResult<'a, PatKind> {
         let end = if self.is_pat_range_end_start(0) {
@@ -1442,7 +1443,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a range pattern end bound
-    fn parse_pat_range_end(&mut self) -> PResult<'a, Box<Expr>> {
+    fn parse_pat_range_end(&mut self) -> PResult<'a, P<Expr>> {
         // recover leading `(`
         let open_paren = (self.may_recover() && self.eat_noexpect(&token::OpenParen))
             .then_some(self.prev_token.span);

@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -175,7 +176,7 @@ impl MutVisitor for CfgEval<'_> {
         mut_visit::walk_expr(self, expr);
     }
 
-    fn filter_map_expr(&mut self, expr: Box<ast::Expr>) -> Option<Box<ast::Expr>> {
+    fn filter_map_expr(&mut self, expr: P<ast::Expr>) -> Option<P<ast::Expr>> {
         let mut expr = configure!(self, expr);
         mut_visit::walk_expr(self, &mut expr);
         Some(expr)
@@ -194,24 +195,24 @@ impl MutVisitor for CfgEval<'_> {
         mut_visit::walk_flat_map_stmt(self, stmt)
     }
 
-    fn flat_map_item(&mut self, item: Box<ast::Item>) -> SmallVec<[Box<ast::Item>; 1]> {
+    fn flat_map_item(&mut self, item: P<ast::Item>) -> SmallVec<[P<ast::Item>; 1]> {
         let item = configure!(self, item);
         mut_visit::walk_flat_map_item(self, item)
     }
 
     fn flat_map_assoc_item(
         &mut self,
-        item: Box<ast::AssocItem>,
+        item: P<ast::AssocItem>,
         ctxt: AssocCtxt,
-    ) -> SmallVec<[Box<ast::AssocItem>; 1]> {
+    ) -> SmallVec<[P<ast::AssocItem>; 1]> {
         let item = configure!(self, item);
         mut_visit::walk_flat_map_assoc_item(self, item, ctxt)
     }
 
     fn flat_map_foreign_item(
         &mut self,
-        foreign_item: Box<ast::ForeignItem>,
-    ) -> SmallVec<[Box<ast::ForeignItem>; 1]> {
+        foreign_item: P<ast::ForeignItem>,
+    ) -> SmallVec<[P<ast::ForeignItem>; 1]> {
         let foreign_item = configure!(self, foreign_item);
         mut_visit::walk_flat_map_foreign_item(self, foreign_item)
     }

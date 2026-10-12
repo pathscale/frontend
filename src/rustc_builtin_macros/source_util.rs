@@ -3,6 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -150,7 +151,7 @@ pub(crate) fn expand_include<'cx>(
         span: Span,
     }
     impl<'a> MacResult for ExpandInclude<'a> {
-        fn make_expr(self: Box<ExpandInclude<'a>>) -> Option<Box<ast::Expr>> {
+        fn make_expr(self: Box<ExpandInclude<'a>>) -> Option<P<ast::Expr>> {
             let mut p = unwrap_or_emit_fatal(new_parser_from_file(
                 self.psess,
                 &self.path,
@@ -169,7 +170,7 @@ pub(crate) fn expand_include<'cx>(
             Some(expr)
         }
 
-        fn make_items(self: Box<ExpandInclude<'a>>) -> Option<SmallVec<[Box<ast::Item>; 1]>> {
+        fn make_items(self: Box<ExpandInclude<'a>>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
             let mut p = unwrap_or_emit_fatal(new_parser_from_file(
                 self.psess,
                 &self.path,

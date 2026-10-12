@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -103,7 +104,7 @@ fn show_substructure(cx: &ExtCtxt<'_>, span: Span, substr: &Substructure<'_>) ->
         field: &FieldInfo,
         index: usize,
         len: usize,
-    ) -> Box<ast::Expr> {
+    ) -> P<ast::Expr> {
         if index < len - 1 {
             field.self_expr.clone()
         } else {
@@ -279,8 +280,8 @@ fn show_fieldless_enum_concat_str(
     cx: &ExtCtxt<'_>,
     span: Span,
     def: &EnumDef,
-    fmt: Box<ast::Expr>,
-) -> Option<(ThinVec<ast::Stmt>, Box<ast::Expr>)> {
+    fmt: P<ast::Expr>,
+) -> Option<(ThinVec<ast::Stmt>, P<ast::Expr>)> {
     // Minimum variants count where this optimization starts to pay off.
     // See https://github.com/rust-lang/rust/pull/155452 for more details.
     const THRESHOLD: usize = 10;

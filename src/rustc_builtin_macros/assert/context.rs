@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -62,7 +63,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
 
     /// Builds the whole `assert!` expression. For example, `let elem = 1; assert!(elem == 1);` expands to:
     ///
-    pub(super) fn build(mut self, mut cond_expr: Box<Expr>, panic_path: Path) -> Box<Expr> {
+    pub(super) fn build(mut self, mut cond_expr: P<Expr>, panic_path: Path) -> P<Expr> {
         let expr_str = pprust::expr_to_string(&cond_expr);
         self.manage_cond_expr(&mut cond_expr);
         let initial_imports = self.build_initial_imports();
@@ -119,7 +120,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     }
 
     /// Takes the conditional expression of `assert!` and then wraps it inside `unlikely`
-    fn build_unlikely(&self, cond_expr: Box<Expr>) -> Box<Expr> {
+    fn build_unlikely(&self, cond_expr: P<Expr>) -> P<Expr> {
         let unlikely_path = self.cx.std_path(&[sym::intrinsics, sym::unlikely]);
         self.cx.expr_call(
             self.span,
@@ -135,7 +136,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///     __capture0,
     ///     ...
     /// );
-    fn build_panic(&self, expr_str: &str, panic_path: Path) -> Box<Expr> {
+    fn build_panic(&self, expr_str: &str, panic_path: Path) -> P<Expr> {
         let escaped_expr_str = escape_to_fmt(expr_str);
         let initial = [
             TokenTree::token_joint(
@@ -180,7 +181,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     /// Recursive function called until `cond_expr` and `fmt_str` are fully modified.
     ///
     /// See [Self::manage_initial_capture] and [Self::manage_try_capture]
-    fn manage_cond_expr(&mut self, expr: &mut Box<Expr>) {
+    fn manage_cond_expr(&mut self, expr: &mut P<Expr>) {
         match &mut expr.kind {
             ExprKind::AddrOf(_, mutability, local_expr) => {
                 self.with_is_consumed_management(matches!(mutability, Mutability::Mut), |this| {
@@ -325,7 +326,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///
     /// `fmt_str`, the formatting string used for debugging, is constructed to show possible
     /// captured variables.
-    fn manage_initial_capture(&mut self, expr: &mut Box<Expr>, path_ident: Ident) {
+    fn manage_initial_capture(&mut self, expr: &mut P<Expr>, path_ident: Ident) {
         if self.paths.contains(&path_ident) {
             return;
         } else {
@@ -358,7 +359,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
         &mut self,
         capture: Ident,
         curr_capture_idx: usize,
-        expr: &mut Box<Expr>,
+        expr: &mut P<Expr>,
     ) {
         let local_bind_string = format!("__local_bind{curr_capture_idx}");
         let local_bind = Ident::new(Symbol::intern(&local_bind_string), self.span);
@@ -440,20 +441,20 @@ fn escape_to_fmt(s: &str) -> String {
     rslt
 }
 
-fn expr_addr_of_mut(cx: &ExtCtxt<'_>, sp: Span, e: Box<Expr>) -> Box<Expr> {
+fn expr_addr_of_mut(cx: &ExtCtxt<'_>, sp: Span, e: P<Expr>) -> P<Expr> {
     cx.expr(sp, ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mut, e))
 }
 
 fn expr_method_call(
     cx: &ExtCtxt<'_>,
     seg: PathSegment,
-    receiver: Box<Expr>,
-    args: ThinVec<Box<Expr>>,
+    receiver: P<Expr>,
+    args: ThinVec<P<Expr>>,
     span: Span,
-) -> Box<Expr> {
+) -> P<Expr> {
     cx.expr(span, ExprKind::MethodCall(Box::new(MethodCall { seg, receiver, args, span })))
 }
 
-fn expr_paren(cx: &ExtCtxt<'_>, sp: Span, e: Box<Expr>) -> Box<Expr> {
+fn expr_paren(cx: &ExtCtxt<'_>, sp: Span, e: P<Expr>) -> P<Expr> {
     cx.expr(sp, ExprKind::Paren(e))
 }

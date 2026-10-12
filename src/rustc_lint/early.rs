@@ -7,6 +7,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -287,7 +288,7 @@ crate::early_lint_methods!(impl_early_lint_pass, []);
 /// This trait generalizes over those nodes.
 pub enum EarlyCheckNode<'a> {
     CrateRoot(&'a ast::Crate, &'a [ast::Attribute]),
-    LoadedMod(ast::NodeId, &'a [ast::Attribute], &'a [Box<ast::Item>]),
+    LoadedMod(ast::NodeId, &'a [ast::Attribute], &'a [P<ast::Item>]),
 }
 
 impl<'a> EarlyCheckNode<'a> {

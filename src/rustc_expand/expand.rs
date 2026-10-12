@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -70,8 +71,8 @@ macro_rules! ast_fragments {
         /// A fragment of AST that can be produced by a single macro expansion.
         /// Can also serve as an input and intermediate result for macro expansion operations.
         pub enum AstFragment {
-            OptExpr(Option<Box<ast::Expr>>),
-            MethodReceiverExpr(Box<ast::Expr>),
+            OptExpr(Option<P<ast::Expr>>),
+            MethodReceiverExpr(P<ast::Expr>),
             $($Kind($AstTy),)*
         }
 
@@ -118,14 +119,14 @@ macro_rules! ast_fragments {
                 }
             }
 
-            pub(crate) fn make_opt_expr(self) -> Option<Box<ast::Expr>> {
+            pub(crate) fn make_opt_expr(self) -> Option<P<ast::Expr>> {
                 match self {
                     AstFragment::OptExpr(expr) => expr,
                     _ => panic!("AstFragment::make_opt_expr called on the wrong kind of fragment"),
                 }
             }
 
-            pub(crate) fn make_method_receiver_expr(self) -> Box<ast::Expr> {
+            pub(crate) fn make_method_receiver_expr(self) -> P<ast::Expr> {
                 match self {
                     AstFragment::MethodReceiverExpr(expr) => expr,
                     _ => panic!("AstFragment::make_method_receiver_expr called on the wrong kind of fragment"),
@@ -179,17 +180,17 @@ macro_rules! ast_fragments {
 }
 
 ast_fragments! {
-    Expr(Box<ast::Expr>) {
+    Expr(P<ast::Expr>) {
         "expression";
         one fn visit_expr;
         fn make_expr;
     }
-    Pat(Box<ast::Pat>) {
+    Pat(P<ast::Pat>) {
         "pattern";
         one fn visit_pat;
         fn make_pat;
     }
-    Ty(Box<ast::Ty>) {
+    Ty(P<ast::Ty>) {
         "type";
         one fn visit_ty;
         fn make_ty;
@@ -199,27 +200,27 @@ ast_fragments! {
         many fn flat_map_stmt; fn visit_stmt();
         fn make_stmts;
     }
-    Items(SmallVec<[Box<ast::Item>; 1]>) {
+    Items(SmallVec<[P<ast::Item>; 1]>) {
         "item";
         many fn flat_map_item; fn visit_item();
         fn make_items;
     }
-    TraitItems(SmallVec<[Box<ast::AssocItem>; 1]>) {
+    TraitItems(SmallVec<[P<ast::AssocItem>; 1]>) {
         "trait item";
         many fn flat_map_assoc_item; fn visit_assoc_item(AssocCtxt::Trait);
         fn make_trait_items;
     }
-    ImplItems(SmallVec<[Box<ast::AssocItem>; 1]>) {
+    ImplItems(SmallVec<[P<ast::AssocItem>; 1]>) {
         "impl item";
         many fn flat_map_assoc_item; fn visit_assoc_item(AssocCtxt::Impl { of_trait: false });
         fn make_impl_items;
     }
-    TraitImplItems(SmallVec<[Box<ast::AssocItem>; 1]>) {
+    TraitImplItems(SmallVec<[P<ast::AssocItem>; 1]>) {
         "impl item";
         many fn flat_map_assoc_item; fn visit_assoc_item(AssocCtxt::Impl { of_trait: true });
         fn make_trait_impl_items;
     }
-    ForeignItems(SmallVec<[Box<ast::ForeignItem>; 1]>) {
+    ForeignItems(SmallVec<[P<ast::ForeignItem>; 1]>) {
         "foreign item";
         many fn flat_map_foreign_item; fn visit_foreign_item();
         fn make_foreign_items;
@@ -398,7 +399,7 @@ pub enum InvocationKind {
         item: Annotatable,
     },
     GlobDelegation {
-        item: Box<ast::AssocItem>,
+        item: P<ast::AssocItem>,
         /// Whether this is a trait impl or an inherent impl
         of_trait: bool,
     },
@@ -1038,7 +1039,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     _ => unreachable!(),
                 };
 
-                type Node = AstNodeWrapper<Box<ast::AssocItem>, ImplItemTag>;
+                type Node = AstNodeWrapper<P<ast::AssocItem>, ImplItemTag>;
                 let single_delegations = build_single_delegations::<Node>(
                     self.cx,
                     deleg,
@@ -1347,10 +1348,10 @@ macro_rules! declared_idents {
 
 // Use the default "empty" list of idents for the following:
 declared_idents! {
-    AstNodeWrapper<Box<ast::AssocItem>, TraitItemTag>,
-    AstNodeWrapper<Box<ast::AssocItem>, ImplItemTag>,
-    AstNodeWrapper<Box<ast::AssocItem>, TraitImplItemTag>,
-    Box<ast::ForeignItem>,
+    AstNodeWrapper<P<ast::AssocItem>, TraitItemTag>,
+    AstNodeWrapper<P<ast::AssocItem>, ImplItemTag>,
+    AstNodeWrapper<P<ast::AssocItem>, TraitImplItemTag>,
+    P<ast::ForeignItem>,
     ast::Variant,
     ast::WherePredicate,
     ast::FieldDef,
@@ -1364,11 +1365,11 @@ declared_idents! {
     ast::Ty,
     ast::Pat,
     ast::Expr,
-    AstNodeWrapper<Box<ast::Expr>, OptExprTag>,
+    AstNodeWrapper<P<ast::Expr>, OptExprTag>,
     AstNodeWrapper<ast::Expr, MethodReceiverTag>
 }
 
-impl InvocationCollectorNode for Box<ast::Item> {
+impl InvocationCollectorNode for P<ast::Item> {
     type OutputTy = SmallVec<[Self; 1]>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::Items;
@@ -1500,7 +1501,7 @@ impl InvocationCollectorNode for Box<ast::Item> {
     }
 }
 
-impl DeclaredIdents for Box<ast::Item> {
+impl DeclaredIdents for P<ast::Item> {
     fn declared_idents(&self) -> Vec<Ident> {
         if let ItemKind::Use(ut) = &self.kind {
             fn collect_use_tree_leaves(ut: &ast::UseTree, idents: &mut Vec<Ident>) {
@@ -1524,8 +1525,8 @@ impl DeclaredIdents for Box<ast::Item> {
 }
 
 struct TraitItemTag;
-impl InvocationCollectorNode for AstNodeWrapper<Box<ast::AssocItem>, TraitItemTag> {
-    type OutputTy = SmallVec<[Box<ast::AssocItem>; 1]>;
+impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, TraitItemTag> {
+    type OutputTy = SmallVec<[P<ast::AssocItem>; 1]>;
     type ItemKind = AssocItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::TraitItems;
     fn to_annotatable(self) -> Annotatable {
@@ -1568,8 +1569,8 @@ impl InvocationCollectorNode for AstNodeWrapper<Box<ast::AssocItem>, TraitItemTa
 }
 
 struct ImplItemTag;
-impl InvocationCollectorNode for AstNodeWrapper<Box<ast::AssocItem>, ImplItemTag> {
-    type OutputTy = SmallVec<[Box<ast::AssocItem>; 1]>;
+impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, ImplItemTag> {
+    type OutputTy = SmallVec<[P<ast::AssocItem>; 1]>;
     type ItemKind = AssocItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::ImplItems;
     fn to_annotatable(self) -> Annotatable {
@@ -1612,8 +1613,8 @@ impl InvocationCollectorNode for AstNodeWrapper<Box<ast::AssocItem>, ImplItemTag
 }
 
 struct TraitImplItemTag;
-impl InvocationCollectorNode for AstNodeWrapper<Box<ast::AssocItem>, TraitImplItemTag> {
-    type OutputTy = SmallVec<[Box<ast::AssocItem>; 1]>;
+impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, TraitImplItemTag> {
+    type OutputTy = SmallVec<[P<ast::AssocItem>; 1]>;
     type ItemKind = AssocItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::TraitImplItems;
     fn to_annotatable(self) -> Annotatable {
@@ -1655,7 +1656,7 @@ impl InvocationCollectorNode for AstNodeWrapper<Box<ast::AssocItem>, TraitImplIt
     }
 }
 
-impl InvocationCollectorNode for Box<ast::ForeignItem> {
+impl InvocationCollectorNode for P<ast::ForeignItem> {
     type OutputTy = SmallVec<[Self; 1]>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::ForeignItems;
@@ -1956,7 +1957,7 @@ impl InvocationCollectorNode for ast::Crate {
 }
 
 impl InvocationCollectorNode for ast::Ty {
-    type OutputTy = Box<ast::Ty>;
+    type OutputTy = P<ast::Ty>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::Ty;
     fn to_annotatable(self) -> Annotatable {
@@ -1994,7 +1995,7 @@ impl InvocationCollectorNode for ast::Ty {
 }
 
 impl InvocationCollectorNode for ast::Pat {
-    type OutputTy = Box<ast::Pat>;
+    type OutputTy = P<ast::Pat>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::Pat;
     fn to_annotatable(self) -> Annotatable {
@@ -2021,7 +2022,7 @@ impl InvocationCollectorNode for ast::Pat {
 }
 
 impl InvocationCollectorNode for ast::Expr {
-    type OutputTy = Box<ast::Expr>;
+    type OutputTy = P<ast::Expr>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::Expr;
     fn to_annotatable(self) -> Annotatable {
@@ -2051,8 +2052,8 @@ impl InvocationCollectorNode for ast::Expr {
 }
 
 struct OptExprTag;
-impl InvocationCollectorNode for AstNodeWrapper<Box<ast::Expr>, OptExprTag> {
-    type OutputTy = Option<Box<ast::Expr>>;
+impl InvocationCollectorNode for AstNodeWrapper<P<ast::Expr>, OptExprTag> {
+    type OutputTy = Option<P<ast::Expr>>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::OptExpr;
     fn to_annotatable(self) -> Annotatable {
@@ -2088,7 +2089,7 @@ impl InvocationCollectorNode for AstNodeWrapper<Box<ast::Expr>, OptExprTag> {
 struct MethodReceiverTag;
 
 impl InvocationCollectorNode for AstNodeWrapper<ast::Expr, MethodReceiverTag> {
-    type OutputTy = AstNodeWrapper<Box<ast::Expr>, MethodReceiverTag>;
+    type OutputTy = AstNodeWrapper<P<ast::Expr>, MethodReceiverTag>;
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::MethodReceiverExpr;
     fn descr() -> &'static str {
@@ -2258,7 +2259,7 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
 
     fn collect_glob_delegation(
         &mut self,
-        item: Box<ast::AssocItem>,
+        item: P<ast::AssocItem>,
         of_trait: bool,
         kind: AstFragmentKind,
     ) -> AstFragment {
@@ -2580,15 +2581,15 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
 }
 
 impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
-    fn flat_map_item(&mut self, node: Box<ast::Item>) -> SmallVec<[Box<ast::Item>; 1]> {
+    fn flat_map_item(&mut self, node: P<ast::Item>) -> SmallVec<[P<ast::Item>; 1]> {
         self.flat_map_node(node)
     }
 
     fn flat_map_assoc_item(
         &mut self,
-        node: Box<ast::AssocItem>,
+        node: P<ast::AssocItem>,
         ctxt: AssocCtxt,
-    ) -> SmallVec<[Box<ast::AssocItem>; 1]> {
+    ) -> SmallVec<[P<ast::AssocItem>; 1]> {
         match ctxt {
             AssocCtxt::Trait => self.flat_map_node(AstNodeWrapper::new(node, TraitItemTag)),
             AssocCtxt::Impl { of_trait: false, .. } => {
@@ -2602,8 +2603,8 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
 
     fn flat_map_foreign_item(
         &mut self,
-        node: Box<ast::ForeignItem>,
-    ) -> SmallVec<[Box<ast::ForeignItem>; 1]> {
+        node: P<ast::ForeignItem>,
+    ) -> SmallVec<[P<ast::ForeignItem>; 1]> {
         self.flat_map_node(node)
     }
 
@@ -2698,7 +2699,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
         self.visit_node(AstNodeWrapper::from_mut(node, MethodReceiverTag))
     }
 
-    fn filter_map_expr(&mut self, node: Box<ast::Expr>) -> Option<Box<ast::Expr>> {
+    fn filter_map_expr(&mut self, node: P<ast::Expr>) -> Option<P<ast::Expr>> {
         self.flat_map_node(AstNodeWrapper::new(node, OptExprTag))
     }
 

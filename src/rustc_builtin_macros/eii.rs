@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -284,7 +285,7 @@ fn generate_default_impl(
     eii_attr_span: Span,
     item_span: Span,
     foreign_item_name: Ident,
-) -> Option<Box<ast::Item>> {
+) -> Option<P<ast::Item>> {
     let attrs = ThinVec::new();
 
     match item_kind {
@@ -362,7 +363,7 @@ fn generate_foreign_item(
     item_kind: &ItemKind,
     vis: Visibility,
     attrs_from_decl: ThinVec<Attribute>,
-) -> Box<ast::Item> {
+) -> P<ast::Item> {
     let mut foreign_item_attrs = attrs_from_decl;
 
     // Add the rustc_eii_foreign_item on the foreign item. Usually, foreign items are mangled.
@@ -404,7 +405,7 @@ fn generate_foreign_item(
 }
 
 fn generate_foreign_func(
-    mut func: Box<ast::Fn>,
+    mut func: P<ast::Fn>,
     abi: &mut Option<ast::StrLit>,
 ) -> ast::ForeignItemKind {
     match func.sig.header.ext {
@@ -455,7 +456,7 @@ fn generate_attribute_macro_to_implement(
     foreign_item_name: Ident,
     impl_unsafe: bool,
     attrs_from_decl: ThinVec<Attribute>,
-) -> Box<ast::Item> {
+) -> P<ast::Item> {
     let mut macro_attrs = attrs_from_decl;
 
     // Avoid "missing stability attribute" errors for eiis in std. See #146993.

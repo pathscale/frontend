@@ -1,5 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::ToString;
@@ -107,7 +108,7 @@ impl<'hir> ItemLowerer<'_, 'hir> {
 impl<'hir> LoweringContext<'_, 'hir> {
     pub(super) fn lower_mod(
         &mut self,
-        items: &[Box<Item>],
+        items: &[P<Item>],
         spans: &ModSpans,
     ) -> &'hir hir::Mod<'hir> {
         self.arena.alloc(hir::Mod {

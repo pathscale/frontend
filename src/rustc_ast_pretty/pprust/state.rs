@@ -3,6 +3,7 @@
 //! Note that HIR pretty printing is layered on top of this crate.
 
 #[allow(unused_imports)]
+use crate::rustc_ast::ptr::P;
 use alloc::string::ToString;
 #[allow(unused_imports)]
 use {alloc::boxed::Box, alloc::string::String, alloc::vec::Vec};
@@ -1257,7 +1258,7 @@ impl<'a> State<'a> {
         self.end(rb);
     }
 
-    fn commasep_exprs(&mut self, b: Breaks, exprs: &[Box<ast::Expr>]) {
+    fn commasep_exprs(&mut self, b: Breaks, exprs: &[P<ast::Expr>]) {
         self.commasep_cmnt(b, exprs, |s, e| s.print_expr(e, FixupContext::default()), |e| e.span)
     }
 

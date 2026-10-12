@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -35,7 +36,7 @@ pub(crate) fn expand<'cx>(
 fn parse_view_ty<'a>(
     cx: &mut ExtCtxt<'a>,
     stream: TokenStream,
-) -> PResult<'a, (Box<Ty>, ThinVec<Ident>)> {
+) -> PResult<'a, (P<Ty>, ThinVec<Ident>)> {
     let mut parser = cx.new_parser_from_tts(stream);
 
     let ty = parser.parse_ty()?;

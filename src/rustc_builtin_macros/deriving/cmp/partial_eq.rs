@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -118,7 +119,7 @@ fn get_substructure_equality_expr(
     cx: &ExtCtxt<'_>,
     span: Span,
     substructure: &Substructure<'_>,
-) -> Box<Expr> {
+) -> P<Expr> {
     use SubstructureFields::*;
 
     match substructure.fields {
@@ -179,7 +180,7 @@ fn get_substructure_equality_expr(
 ///
 /// Panics if there are not exactly two arguments to compare (should be `self`
 /// and `other`).
-fn get_field_equality_expr(cx: &ExtCtxt<'_>, field: &FieldInfo) -> Box<Expr> {
+fn get_field_equality_expr(cx: &ExtCtxt<'_>, field: &FieldInfo) -> P<Expr> {
     let [rhs] = &field.other_selflike_exprs[..] else {
         cx.dcx().span_bug(field.span, "not exactly 2 arguments in `derive(PartialEq)`");
     };
@@ -197,7 +198,7 @@ fn get_field_equality_expr(cx: &ExtCtxt<'_>, field: &FieldInfo) -> Box<Expr> {
 /// This is used to strip away any number of leading `&` from an expression
 /// (e.g., `&&&T` becomes `T`). Only removes immutable references; mutable
 /// references are preserved.
-fn peel_refs(mut expr: &Box<Expr>) -> Box<Expr> {
+fn peel_refs(mut expr: &P<Expr>) -> P<Expr> {
     while let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Not, inner) = &expr.kind {
         expr = inner;
     }
@@ -209,7 +210,7 @@ fn peel_refs(mut expr: &Box<Expr>) -> Box<Expr> {
 ///
 /// If the given expression is a block, it is wrapped in parentheses; otherwise,
 /// it is returned unchanged.
-fn wrap_block_expr(cx: &ExtCtxt<'_>, expr: Box<Expr>) -> Box<Expr> {
+fn wrap_block_expr(cx: &ExtCtxt<'_>, expr: P<Expr>) -> P<Expr> {
     if matches!(&expr.kind, ExprKind::Block(..)) {
         return cx.expr_paren(expr.span, expr);
     }

@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -27,7 +28,7 @@ use crate::rustc_builtin_macros::util::{ExprToSpannedString, expr_to_spanned_str
 
 /// Validated assembly arguments, ready for macro expansion.
 struct ValidatedAsmArgs {
-    pub templates: Vec<Box<ast::Expr>>,
+    pub templates: Vec<P<ast::Expr>>,
     pub operands: Vec<(ast::InlineAsmOperand, Span)>,
     named_args: FxIndexMap<Symbol, usize>,
     reg_args: GrowableBitSet<usize>,

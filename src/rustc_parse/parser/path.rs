@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem;
@@ -845,7 +846,7 @@ impl<'a> Parser<'a> {
     /// - A numeric literal prefixed by `-`.
     /// - A single-segment path.
     /// - A const block (under mGCA)
-    pub(super) fn expr_is_valid_const_arg(&self, expr: &Box<crate::rustc_ast::Expr>) -> bool {
+    pub(super) fn expr_is_valid_const_arg(&self, expr: &P<crate::rustc_ast::Expr>) -> bool {
         match &expr.kind {
             ast::ExprKind::Block(_, _)
             | ast::ExprKind::Lit(_)
@@ -888,7 +889,7 @@ impl<'a> Parser<'a> {
     /// - Single-segment paths (i.e. standalone generic const parameters).
     /// All other expressions that can be parsed will emit an error suggesting the expression be
     /// wrapped in braces.
-    pub(super) fn parse_unambiguous_unbraced_const_arg(&mut self) -> PResult<'a, Box<Expr>> {
+    pub(super) fn parse_unambiguous_unbraced_const_arg(&mut self) -> PResult<'a, P<Expr>> {
         let start = self.token.span;
         let expr = self.parse_expr_res(Restrictions::CONST_EXPR).map_err(|mut err| {
             err.span_label(

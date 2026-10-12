@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -61,7 +62,7 @@ impl<'a> Parser<'a> {
     pub fn parse_mod(
         &mut self,
         term: ExpTokenPair,
-    ) -> PResult<'a, (AttrVec, ThinVec<Box<Item>>, ModSpans)> {
+    ) -> PResult<'a, (AttrVec, ThinVec<P<Item>>, ModSpans)> {
         let lo = self.token.span;
         let attrs = self.parse_inner_attributes()?;
 
@@ -130,7 +131,7 @@ impl<'a> Parser<'a> {
         &mut self,
         force_collect: ForceCollect,
         allow_const_block_items: AllowConstBlockItems,
-    ) -> PResult<'a, Option<Box<Item>>> {
+    ) -> PResult<'a, Option<P<Item>>> {
         let fn_parse_mode =
             FnParseMode { req_name: |_, _| true, context: FnContext::Free, req_body: true };
         self.parse_item_(fn_parse_mode, force_collect, allow_const_block_items)
@@ -869,7 +870,7 @@ impl<'a> Parser<'a> {
         Ok(item_kind)
     }
 
-    fn parse_delegation_body(&mut self) -> PResult<'a, Option<Box<Block>>> {
+    fn parse_delegation_body(&mut self) -> PResult<'a, Option<P<Block>>> {
         Ok(if self.check(exp!(OpenBrace)) {
             Some(self.parse_block()?)
         } else {
@@ -1253,7 +1254,7 @@ impl<'a> Parser<'a> {
     pub fn parse_impl_item(
         &mut self,
         force_collect: ForceCollect,
-    ) -> PResult<'a, Option<Option<Box<AssocItem>>>> {
+    ) -> PResult<'a, Option<Option<P<AssocItem>>>> {
         let fn_parse_mode =
             FnParseMode { req_name: |_, _| true, context: FnContext::Impl, req_body: true };
         self.parse_assoc_item(fn_parse_mode, force_collect)
@@ -1262,7 +1263,7 @@ impl<'a> Parser<'a> {
     pub fn parse_trait_item(
         &mut self,
         force_collect: ForceCollect,
-    ) -> PResult<'a, Option<Option<Box<AssocItem>>>> {
+    ) -> PResult<'a, Option<Option<P<AssocItem>>>> {
         let fn_parse_mode = FnParseMode {
             req_name: |edition, _| edition >= Edition::Edition2018,
             context: FnContext::Trait,
@@ -1276,7 +1277,7 @@ impl<'a> Parser<'a> {
         &mut self,
         fn_parse_mode: FnParseMode,
         force_collect: ForceCollect,
-    ) -> PResult<'a, Option<Option<Box<AssocItem>>>> {
+    ) -> PResult<'a, Option<Option<P<AssocItem>>>> {
         Ok(self
             .parse_item_(
                 fn_parse_mode,
@@ -1611,7 +1612,7 @@ impl<'a> Parser<'a> {
     pub fn parse_foreign_item(
         &mut self,
         force_collect: ForceCollect,
-    ) -> PResult<'a, Option<Option<Box<ForeignItem>>>> {
+    ) -> PResult<'a, Option<Option<P<ForeignItem>>>> {
         let fn_parse_mode = FnParseMode {
             req_name: |_, is_dot_dot_dot| is_dot_dot_dot == IsDotDotDot::No,
             context: FnContext::Free,
@@ -1797,7 +1798,7 @@ impl<'a> Parser<'a> {
     fn parse_const_item(
         &mut self,
         const_span: Span,
-    ) -> PResult<'a, (Ident, Generics, Box<Ty>, Option<Box<Expr>>)> {
+    ) -> PResult<'a, (Ident, Generics, P<Ty>, Option<P<Expr>>)> {
         let ident = self.parse_ident_or_underscore()?;
 
         let mut generics = self.parse_generics()?;
@@ -1893,7 +1894,7 @@ impl<'a> Parser<'a> {
         &mut self,
         colon_present: bool,
         m: Option<Mutability>,
-    ) -> Box<Ty> {
+    ) -> P<Ty> {
         // Construct the error and stash it away with the hope
         // that typeck will later enrich the error with a type.
         let kind = match m {
@@ -2939,9 +2940,9 @@ impl<'a> Parser<'a> {
     /// Returns a corrected expression if recovery is successful.
     fn try_recover_const_missing_semi(
         &mut self,
-        rhs: &Option<Box<Expr>>,
+        rhs: &Option<P<Expr>>,
         const_span: Span,
-    ) -> Option<Box<Expr>> {
+    ) -> Option<P<Expr>> {
         if self.token == TokenKind::Semi {
             return None;
         }

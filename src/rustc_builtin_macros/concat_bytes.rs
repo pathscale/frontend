@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -99,7 +100,7 @@ fn handle_array_element(
     cx: &ExtCtxt<'_>,
     guar: &mut Option<ErrorGuaranteed>,
     missing_literals: &mut Vec<crate::rustc_span::Span>,
-    expr: &Box<crate::rustc_ast::Expr>,
+    expr: &P<crate::rustc_ast::Expr>,
 ) -> Option<u8> {
     let dcx = cx.dcx();
 
