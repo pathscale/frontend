@@ -259,8 +259,8 @@ impl PathSegment {
 
 /// The segments in an AST path.
 ///
-/// A single segment is stored inline. Empty paths and paths with multiple segments use a
-/// `ThinVec`; its empty representation does not allocate.
+/// A single segment is stored inline. Two through four segments use an arena-owned
+/// inline buffer. Longer paths use a `ThinVec`; empty paths do not allocate.
 ///
 /// `PathSegment` is 24 bytes, and `NodeId` is a plain `u32` in this crate, so it provides no
 /// layout niche for the enum tag. The enum and this wrapper are 32 bytes on 64-bit targets.
@@ -271,6 +271,7 @@ pub struct PathSegments(PathSegmentsInner);
 #[derive(Clone)]
 enum PathSegmentsInner {
     Inline(PathSegment),
+    Short(P<smallvec::SmallVec<[PathSegment; 4]>>),
     Heap(ThinVec<PathSegment>),
 }
 
@@ -285,6 +286,13 @@ impl PathSegments {
         match count {
             0 => Self::new(),
             1 => Self(PathSegmentsInner::Inline(element)),
+            2..=4 => {
+                let mut segments = smallvec::SmallVec::new();
+                for _ in 0..count {
+                    segments.push(element.clone());
+                }
+                Self(PathSegmentsInner::Short(P::new(segments)))
+            }
             count => {
                 let mut segments = ThinVec::with_capacity(count);
                 for _ in 0..count {
@@ -299,6 +307,7 @@ impl PathSegments {
     pub fn as_slice(&self) -> &[PathSegment] {
         match &self.0 {
             PathSegmentsInner::Inline(segment) => core::slice::from_ref(segment),
+            PathSegmentsInner::Short(segments) => segments.as_slice(),
             PathSegmentsInner::Heap(segments) => segments.as_slice(),
         }
     }
@@ -307,6 +316,7 @@ impl PathSegments {
     pub fn as_mut_slice(&mut self) -> &mut [PathSegment] {
         match &mut self.0 {
             PathSegmentsInner::Inline(segment) => core::slice::from_mut(segment),
+            PathSegmentsInner::Short(segments) => segments.as_mut_slice(),
             PathSegmentsInner::Heap(segments) => segments.as_mut_slice(),
         }
     }
@@ -342,7 +352,7 @@ impl PathSegments {
         let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
         self.0 = match old {
             PathSegmentsInner::Inline(first) => {
-                let mut segments = ThinVec::with_capacity(2);
+                let mut segments = smallvec::SmallVec::new();
                 if index == 0 {
                     segments.push(segment);
                     segments.push(first);
@@ -350,7 +360,17 @@ impl PathSegments {
                     segments.push(first);
                     segments.push(segment);
                 }
-                PathSegmentsInner::Heap(segments)
+                PathSegmentsInner::Short(P::new(segments))
+            }
+            PathSegmentsInner::Short(mut segments) if segments.len() < 4 => {
+                segments.insert(index, segment);
+                PathSegmentsInner::Short(segments)
+            }
+            PathSegmentsInner::Short(segments) => {
+                let mut heap = ThinVec::with_capacity(8);
+                heap.extend(segments.into_inner());
+                heap.insert(index, segment);
+                PathSegmentsInner::Heap(heap)
             }
             PathSegmentsInner::Heap(mut segments) if segments.is_empty() => {
                 PathSegmentsInner::Inline(segment)
@@ -367,6 +387,15 @@ impl PathSegments {
         let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
         match old {
             PathSegmentsInner::Inline(segment) => Some(segment),
+            PathSegmentsInner::Short(mut segments) => {
+                let popped = segments.pop();
+                self.0 = if segments.len() == 1 {
+                    PathSegmentsInner::Inline(segments.pop().unwrap())
+                } else {
+                    PathSegmentsInner::Short(segments)
+                };
+                popped
+            }
             PathSegmentsInner::Heap(mut segments) => {
                 let popped = segments.pop();
                 self.0 = match segments.len() {
@@ -381,10 +410,25 @@ impl PathSegments {
 
     /// Removes and returns the segment at `index`.
     pub fn remove(&mut self, index: usize) -> PathSegment {
-        let mut segments: ThinVec<PathSegment> = mem::take(self).into_iter().collect();
-        let removed = segments.remove(index);
-        *self = segments.into();
-        removed
+        assert!(index < self.len());
+        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+        match old {
+            PathSegmentsInner::Inline(segment) => segment,
+            PathSegmentsInner::Short(mut segments) => {
+                let removed = segments.remove(index);
+                self.0 = if segments.len() == 1 {
+                    PathSegmentsInner::Inline(segments.pop().unwrap())
+                } else {
+                    PathSegmentsInner::Short(segments)
+                };
+                removed
+            }
+            PathSegmentsInner::Heap(mut segments) => {
+                let removed = segments.remove(index);
+                *self = segments.into();
+                removed
+            }
+        }
     }
 
     /// Keeps only the first `len` segments.
@@ -400,6 +444,10 @@ impl PathSegments {
             let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
             self.0 = match old {
                 PathSegmentsInner::Inline(segment) => PathSegmentsInner::Inline(segment),
+                PathSegmentsInner::Short(segments) => {
+                    let mut segments = segments.into_inner().into_iter();
+                    PathSegmentsInner::Inline(segments.next().unwrap())
+                }
                 PathSegmentsInner::Heap(mut segments) => {
                     segments.truncate(1);
                     match segments.pop() {
@@ -410,8 +458,10 @@ impl PathSegments {
             };
             return;
         }
-        if let PathSegmentsInner::Heap(segments) = &mut self.0 {
-            segments.truncate(len);
+        match &mut self.0 {
+            PathSegmentsInner::Short(segments) => segments.truncate(len),
+            PathSegmentsInner::Heap(segments) => segments.truncate(len),
+            PathSegmentsInner::Inline(_) => {}
         }
     }
 
@@ -446,6 +496,7 @@ impl From<ThinVec<PathSegment>> for PathSegments {
         match segments.len() {
             0 => Self::new(),
             1 => Self(PathSegmentsInner::Inline(segments.into_iter().next().unwrap())),
+            2..=4 => Self(PathSegmentsInner::Short(P::new(segments.into_iter().collect()))),
             _ => Self(PathSegmentsInner::Heap(segments)),
         }
     }
@@ -475,6 +526,9 @@ impl IntoIterator for PathSegments {
         match self.0 {
             PathSegmentsInner::Inline(segment) => {
                 PathSegmentsIntoIter::Inline(Some(segment))
+            }
+            PathSegmentsInner::Short(segments) => {
+                PathSegmentsIntoIter::Short(segments.into_inner().into_iter())
             }
             PathSegmentsInner::Heap(segments) => {
                 PathSegmentsIntoIter::Heap(segments.into_iter())
@@ -511,6 +565,8 @@ impl fmt::Debug for PathSegments {
 pub enum PathSegmentsIntoIter {
     /// Iterates over an inline segment, if present.
     Inline(Option<PathSegment>),
+    /// Iterates over segments moved out of the arena-owned inline buffer.
+    Short(smallvec::IntoIter<[PathSegment; 4]>),
     /// Iterates over heap-stored segments.
     Heap(thin_vec::IntoIter<PathSegment>),
 }
@@ -521,6 +577,7 @@ impl Iterator for PathSegmentsIntoIter {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Inline(segment) => segment.take(),
+            Self::Short(segments) => segments.next(),
             Self::Heap(segments) => segments.next(),
         }
     }
@@ -528,6 +585,7 @@ impl Iterator for PathSegmentsIntoIter {
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = match self {
             Self::Inline(segment) => usize::from(segment.is_some()),
+            Self::Short(segments) => segments.len(),
             Self::Heap(segments) => segments.len(),
         };
         (len, Some(len))
@@ -538,6 +596,7 @@ impl DoubleEndedIterator for PathSegmentsIntoIter {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self {
             Self::Inline(segment) => segment.take(),
+            Self::Short(segments) => segments.next_back(),
             Self::Heap(segments) => segments.next_back(),
         }
     }
@@ -562,6 +621,73 @@ impl<D: crate::rustc_span::SpanDecoder> crate::rustc_serialize::Decodable<D> for
         let segments: ThinVec<PathSegment> =
             crate::rustc_serialize::Decodable::decode(decoder);
         segments.into()
+    }
+}
+
+#[cfg(test)]
+mod path_segments_tests {
+    use super::*;
+
+    fn segment(name: Symbol) -> PathSegment {
+        PathSegment::from_ident(Ident::with_dummy_span(name))
+    }
+
+    fn names(segments: &PathSegments) -> Vec<Symbol> {
+        segments.iter().map(|segment| segment.ident.name).collect()
+    }
+
+    #[test]
+    fn short_paths_grow_and_shrink_in_order() {
+        let expected = [kw::SelfLower, kw::SelfUpper, kw::Crate, kw::Super, kw::PathRoot];
+        let mut path = PathSegments::new();
+        for &name in &expected[..4] {
+            path.push(segment(name));
+        }
+        assert!(matches!(&path.0, PathSegmentsInner::Short(_)));
+        assert_eq!(names(&path), expected[..4]);
+
+        let mut cloned = path.clone();
+        cloned[0].ident.name = kw::Super;
+        assert_eq!(names(&path), expected[..4]);
+        path.push(segment(expected[4]));
+        assert!(matches!(&path.0, PathSegmentsInner::Heap(_)));
+        assert_eq!(names(&path), expected);
+
+        assert_eq!(path.pop().unwrap().ident.name, expected[4]);
+        path.truncate(1);
+        assert!(matches!(&path.0, PathSegmentsInner::Inline(_)));
+        assert_eq!(path.pop().unwrap().ident.name, expected[0]);
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn short_paths_insert_remove_and_truncate() {
+        let mut path = PathSegments::from_elem(segment(kw::SelfLower), 2);
+        path.insert(1, segment(kw::Crate));
+        assert_eq!(names(&path), [kw::SelfLower, kw::Crate, kw::SelfLower]);
+        assert_eq!(path.remove(0).ident.name, kw::SelfLower);
+        assert_eq!(names(&path), [kw::Crate, kw::SelfLower]);
+        assert!(matches!(&path.0, PathSegmentsInner::Short(_)));
+        path.truncate(1);
+        assert_eq!(names(&path), [kw::Crate]);
+        assert!(matches!(&path.0, PathSegmentsInner::Inline(_)));
+        path.clear();
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn short_owned_iterator_is_double_ended() {
+        let input = [kw::SelfLower, kw::Crate, kw::Super];
+        let path: PathSegments = input.into_iter().map(segment).collect();
+        let mut iter = path.into_iter();
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.next().unwrap().ident.name, kw::SelfLower);
+        assert_eq!(iter.next_back().unwrap().ident.name, kw::Super);
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.next().unwrap().ident.name, kw::Crate);
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+        assert!(iter.next_back().is_none());
     }
 }
 
