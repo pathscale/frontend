@@ -447,7 +447,7 @@ fn find_type_parameters(
             {
                 self.type_params.push(TypeParameter {
                     bound_generic_params: self.bound_generic_params_stack.clone(),
-                    ty: Box::new(ty.clone()),
+                    ty: P::new(ty.clone()),
                 });
             }
 
@@ -612,7 +612,7 @@ impl<'a> TraitDef<'a> {
 
         // Transform associated types from `deriving::ty::Ty` into `ast::AssocItem`
         let associated_types = self.associated_types.iter().map(|&(ident, ref type_def)| {
-            Box::new(ast::AssocItem {
+            P::new(ast::AssocItem {
                 id: ast::DUMMY_NODE_ID,
                 span: self.span,
                 vis: ast::Visibility {
@@ -1080,12 +1080,12 @@ impl<'a> MethodDef<'a> {
         let defaultness = ast::Defaultness::Implicit;
 
         // Create the method.
-        Box::new(ast::AssocItem {
+        P::new(ast::AssocItem {
             id: ast::DUMMY_NODE_ID,
             attrs: self.attributes.clone(),
             span,
             vis: ast::Visibility { span: trait_lo_sp, kind: ast::VisibilityKind::Inherited },
-            kind: ast::AssocItemKind::Fn(Box::new(ast::Fn {
+            kind: ast::AssocItemKind::Fn(P::new(ast::Fn {
                 defaultness,
                 sig,
                 ident: method_ident,
@@ -1525,7 +1525,7 @@ impl<'a> TraitDef<'a> {
                                     attrs: ast::AttrVec::new(),
                                     id: ast::DUMMY_NODE_ID,
                                     span: pat.span.with_ctxt(self.span.ctxt()),
-                                    pat: Box::new(pat),
+                                    pat: P::new(pat),
                                     is_placeholder: false,
                                 }
                             })

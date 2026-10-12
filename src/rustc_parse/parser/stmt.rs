@@ -167,7 +167,7 @@ impl<'a> Parser<'a> {
             force_collect,
             AllowConstBlockItems::No,
         )? {
-            self.mk_stmt(lo.to(item.span), StmtKind::Item(Box::new(item)))
+            self.mk_stmt(lo.to(item.span), StmtKind::Item(P::new(item)))
         } else if self.eat(exp!(Semi)) {
             // Do not attempt to parse an expression if we're done here.
             self.error_outer_attrs(attrs)?;
@@ -1172,7 +1172,7 @@ impl<'a> Parser<'a> {
         rules: BlockCheckMode,
         span: Span,
     ) -> P<Block> {
-        Box::new(Block { stmts, id: DUMMY_NODE_ID, rules, span })
+        P::new(Block { stmts, id: DUMMY_NODE_ID, rules, span })
     }
 
     pub(super) fn mk_stmt(&self, span: Span, kind: StmtKind) -> Stmt {

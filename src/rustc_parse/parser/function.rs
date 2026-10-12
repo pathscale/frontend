@@ -266,9 +266,10 @@ impl<'a> Parser<'a> {
             let res = self.parse_block_common(self.token.span, BlockCheckMode::Default, None).map(
                 |(attrs, mut body)| {
                     if let Some(guar) = self.fn_body_missing_semi_guar.take() {
+                        let span = body.span;
                         body.stmts.push(self.mk_stmt(
-                            body.span,
-                            StmtKind::Expr(self.mk_expr(body.span, ExprKind::Err(guar))),
+                            span,
+                            StmtKind::Expr(self.mk_expr(span, ExprKind::Err(guar))),
                         ));
                     }
                     (attrs, Some(body))
@@ -838,7 +839,7 @@ impl<'a> Parser<'a> {
                 match ty {
                     Ok(ty) => {
                         let pat = this.mk_pat(ty.span, PatKind::Missing);
-                        (Box::new(pat), ty)
+                        (P::new(pat), ty)
                     }
                     // If this is a C-variadic argument and we hit an error, return the error.
                     Err(err) if this.token == token::DotDotDot => return Err(err),

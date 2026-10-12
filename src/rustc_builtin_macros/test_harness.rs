@@ -352,7 +352,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
         None => Ident::new(sym::main, sp),
     };
 
-    let main = ast::ItemKind::Fn(Box::new(ast::Fn {
+    let main = ast::ItemKind::Fn(P::new(ast::Fn {
         defaultness,
         sig,
         ident: main_ident,
@@ -363,7 +363,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
         eii_impl: None,
     }));
 
-    let main = Box::new(ast::Item {
+    let main = P::new(ast::Item {
         attrs: thin_vec![main_attr, coverage_attr, doc_hidden_attr],
         id: ast::DUMMY_NODE_ID,
         kind: main,

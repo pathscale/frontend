@@ -1050,7 +1050,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                 );
                 // `-Zmacro-stats` ignores these because they don't seem important.
                 fragment_kind.expect_from_annotatables(single_delegations.map(|item| {
-                    Annotatable::AssocItem(Box::new(item), AssocCtxt::Impl { of_trait })
+                    Annotatable::AssocItem(P::new(item), AssocCtxt::Impl { of_trait })
                 }))
             }
         })
@@ -1180,7 +1180,7 @@ pub fn parse_ast_fragment<'a>(
             }
         }
         AstFragmentKind::Ty => AstFragment::Ty(this.parse_ty()?),
-        AstFragmentKind::Pat => AstFragment::Pat(Box::new(this.parse_pat_allow_top_guard(
+        AstFragmentKind::Pat => AstFragment::Pat(P::new(this.parse_pat_allow_top_guard(
             None,
             RecoverComma::No,
             RecoverColon::Yes,
@@ -1386,8 +1386,9 @@ impl InvocationCollectorNode for P<ast::Item> {
         matches!(self.kind, ItemKind::MacCall(..))
     }
     fn take_mac_call(self) -> (Box<ast::MacCall>, ast::AttrVec, AddSemicolon) {
-        match self.kind {
-            ItemKind::MacCall(mac) => (mac, self.attrs, AddSemicolon::No),
+        let inner = self.into_inner();
+        match inner.kind {
+            ItemKind::MacCall(mac) => (mac, inner.attrs, AddSemicolon::No),
             _ => unreachable!(),
         }
     }
@@ -1401,7 +1402,7 @@ impl InvocationCollectorNode for P<ast::Item> {
         ItemKind::Delegation(deleg)
     }
     fn from_item(item: ast::Item<Self::ItemKind>) -> Self {
-        Box::new(item)
+        P::new(item)
     }
     fn flatten_outputs(items: impl Iterator<Item = Self::OutputTy>) -> Self::OutputTy {
         items.flatten().collect()
@@ -1415,7 +1416,8 @@ impl InvocationCollectorNode for P<ast::Item> {
             return Ok(walk_flat_map(node, collector));
         }
 
-        let ItemKind::Mod(_, ident, ref mut mod_kind) = node.kind else { unreachable!() };
+        let item: &mut ast::Item = &mut node;
+        let ItemKind::Mod(_, ident, ref mut mod_kind) = item.kind else { unreachable!() };
         let ecx = &mut collector.cx;
         let (file_path, dir_path, dir_ownership) = match mod_kind {
             ModKind::Loaded(_, inline, _) => {
@@ -1423,7 +1425,7 @@ impl InvocationCollectorNode for P<ast::Item> {
                 let (dir_path, dir_ownership) = mod_dir_path(
                     ecx.sess,
                     ident,
-                    &node.attrs,
+                    &item.attrs,
                     &ecx.current_expansion.module,
                     ecx.current_expansion.dir_ownership,
                     *inline,
@@ -1432,13 +1434,13 @@ impl InvocationCollectorNode for P<ast::Item> {
                 // This lets `parse_external_mod` catch cycles if it's self-referential.
                 let file_path = match inline {
                     Inline::Yes => None,
-                    Inline::No { .. } => mod_file_path_from_attr(ecx.sess, &node.attrs, &dir_path),
+                    Inline::No { .. } => mod_file_path_from_attr(ecx.sess, &item.attrs, &dir_path),
                 };
                 (file_path, dir_path, dir_ownership)
             }
             ModKind::Unloaded => {
                 // We have an outline `mod foo;` so we need to parse the file.
-                let old_attrs_len = node.attrs.len();
+                let old_attrs_len = item.attrs.len();
                 let ParsedExternalMod {
                     items,
                     spans,
@@ -1449,10 +1451,10 @@ impl InvocationCollectorNode for P<ast::Item> {
                 } = parse_external_mod(
                     ecx.sess,
                     ident,
-                    node.span,
+                    item.span,
                     &ecx.current_expansion.module,
                     ecx.current_expansion.dir_ownership,
-                    &mut node.attrs,
+                    &mut item.attrs,
                 );
 
                 if let Some(lint_store) = ecx.lint_store {
@@ -1461,14 +1463,14 @@ impl InvocationCollectorNode for P<ast::Item> {
                         ecx.ecfg.features,
                         ecx.resolver.registered_lint_tools(),
                         ecx.current_expansion.lint_node_id,
-                        &node.attrs,
+                        &item.attrs,
                         &items,
                         ident.name,
                     );
                 }
 
                 *mod_kind = ModKind::Loaded(items, Inline::No { had_parse_error }, spans);
-                if node.attrs.len() > old_attrs_len {
+                if item.attrs.len() > old_attrs_len {
                     // If we loaded an out-of-line module and added some inner attributes,
                     // then we need to re-configure it and re-collect attributes for
                     // resolution and expansion.
@@ -1543,8 +1545,9 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, TraitItemTag>
     }
     fn take_mac_call(self) -> (Box<ast::MacCall>, ast::AttrVec, AddSemicolon) {
         let item = self.wrapped;
-        match item.kind {
-            AssocItemKind::MacCall(mac) => (mac, item.attrs, AddSemicolon::No),
+        let inner = item.into_inner();
+        match inner.kind {
+            AssocItemKind::MacCall(mac) => (mac, inner.attrs, AddSemicolon::No),
             _ => unreachable!(),
         }
     }
@@ -1558,7 +1561,7 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, TraitItemTag>
         AssocItemKind::Delegation(deleg)
     }
     fn from_item(item: ast::Item<Self::ItemKind>) -> Self {
-        AstNodeWrapper::new(Box::new(item), TraitItemTag)
+        AstNodeWrapper::new(P::new(item), TraitItemTag)
     }
     fn flatten_outputs(items: impl Iterator<Item = Self::OutputTy>) -> Self::OutputTy {
         items.flatten().collect()
@@ -1587,8 +1590,9 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, ImplItemTag> 
     }
     fn take_mac_call(self) -> (Box<ast::MacCall>, ast::AttrVec, AddSemicolon) {
         let item = self.wrapped;
-        match item.kind {
-            AssocItemKind::MacCall(mac) => (mac, item.attrs, AddSemicolon::No),
+        let inner = item.into_inner();
+        match inner.kind {
+            AssocItemKind::MacCall(mac) => (mac, inner.attrs, AddSemicolon::No),
             _ => unreachable!(),
         }
     }
@@ -1602,7 +1606,7 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, ImplItemTag> 
         AssocItemKind::Delegation(deleg)
     }
     fn from_item(item: ast::Item<Self::ItemKind>) -> Self {
-        AstNodeWrapper::new(Box::new(item), ImplItemTag)
+        AstNodeWrapper::new(P::new(item), ImplItemTag)
     }
     fn flatten_outputs(items: impl Iterator<Item = Self::OutputTy>) -> Self::OutputTy {
         items.flatten().collect()
@@ -1631,8 +1635,9 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, TraitImplItem
     }
     fn take_mac_call(self) -> (Box<ast::MacCall>, ast::AttrVec, AddSemicolon) {
         let item = self.wrapped;
-        match item.kind {
-            AssocItemKind::MacCall(mac) => (mac, item.attrs, AddSemicolon::No),
+        let inner = item.into_inner();
+        match inner.kind {
+            AssocItemKind::MacCall(mac) => (mac, inner.attrs, AddSemicolon::No),
             _ => unreachable!(),
         }
     }
@@ -1646,7 +1651,7 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::AssocItem>, TraitImplItem
         AssocItemKind::Delegation(deleg)
     }
     fn from_item(item: ast::Item<Self::ItemKind>) -> Self {
-        AstNodeWrapper::new(Box::new(item), TraitImplItemTag)
+        AstNodeWrapper::new(P::new(item), TraitImplItemTag)
     }
     fn flatten_outputs(items: impl Iterator<Item = Self::OutputTy>) -> Self::OutputTy {
         items.flatten().collect()
@@ -1673,8 +1678,9 @@ impl InvocationCollectorNode for P<ast::ForeignItem> {
         matches!(self.kind, ForeignItemKind::MacCall(..))
     }
     fn take_mac_call(self) -> (Box<ast::MacCall>, ast::AttrVec, AddSemicolon) {
-        match self.kind {
-            ForeignItemKind::MacCall(mac) => (mac, self.attrs, AddSemicolon::No),
+        let inner = self.into_inner();
+        match inner.kind {
+            ForeignItemKind::MacCall(mac) => (mac, inner.attrs, AddSemicolon::No),
             _ => unreachable!(),
         }
     }
@@ -1878,13 +1884,13 @@ impl InvocationCollectorNode for ast::Stmt {
                 let ast::MacCallStmt { mac, style, attrs, .. } = *mac;
                 (style == MacStmtStyle::Semicolon, mac, attrs)
             }
-            StmtKind::Item(item) => match *item {
+            StmtKind::Item(item) => match item.into_inner() {
                 ast::Item { kind: ItemKind::MacCall(mac), attrs, .. } => {
                     (mac.args.need_semicolon(), mac, attrs)
                 }
                 _ => unreachable!(),
             },
-            StmtKind::Semi(expr) => match *expr {
+            StmtKind::Semi(expr) => match expr.into_inner() {
                 ast::Expr { kind: ExprKind::MacCall(mac), attrs, .. } => {
                     (mac.args.need_semicolon(), mac, attrs)
                 }
@@ -1907,7 +1913,7 @@ impl InvocationCollectorNode for ast::Stmt {
         ItemKind::Delegation(deleg)
     }
     fn from_item(item: ast::Item<Self::ItemKind>) -> Self {
-        ast::Stmt { id: ast::DUMMY_NODE_ID, span: item.span, kind: StmtKind::Item(Box::new(item)) }
+        ast::Stmt { id: ast::DUMMY_NODE_ID, span: item.span, kind: StmtKind::Item(P::new(item)) }
     }
     fn flatten_outputs(items: impl Iterator<Item = Self::OutputTy>) -> Self::OutputTy {
         items.flatten().collect()
@@ -2026,7 +2032,7 @@ impl InvocationCollectorNode for ast::Expr {
     type ItemKind = ItemKind;
     const KIND: AstFragmentKind = AstFragmentKind::Expr;
     fn to_annotatable(self) -> Annotatable {
-        Annotatable::Expr(Box::new(self))
+        Annotatable::Expr(P::new(self))
     }
     fn fragment_to_output(fragment: AstFragment) -> Self::OutputTy {
         fragment.make_expr()
@@ -2071,8 +2077,9 @@ impl InvocationCollectorNode for AstNodeWrapper<P<ast::Expr>, OptExprTag> {
     }
     fn take_mac_call(self) -> (Box<ast::MacCall>, ast::AttrVec, AddSemicolon) {
         let node = self.wrapped;
-        match node.kind {
-            ExprKind::MacCall(mac) => (mac, node.attrs, AddSemicolon::No),
+        let inner = node.into_inner();
+        match inner.kind {
+            ExprKind::MacCall(mac) => (mac, inner.attrs, AddSemicolon::No),
             _ => unreachable!(),
         }
     }
@@ -2096,7 +2103,7 @@ impl InvocationCollectorNode for AstNodeWrapper<ast::Expr, MethodReceiverTag> {
         "an expression"
     }
     fn to_annotatable(self) -> Annotatable {
-        Annotatable::Expr(Box::new(self.wrapped))
+        Annotatable::Expr(P::new(self.wrapped))
     }
     fn fragment_to_output(fragment: AstFragment) -> Self::OutputTy {
         AstNodeWrapper::new(fragment.make_method_receiver_expr(), MethodReceiverTag)

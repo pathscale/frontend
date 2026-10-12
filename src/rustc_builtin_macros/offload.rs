@@ -67,7 +67,7 @@ pub(crate) fn expand_kernel(
     let span = ecx.with_def_site_ctxt(expand_span);
 
     // device function
-    let mut device_fn = Box::new(ast::Fn {
+    let mut device_fn = P::new(ast::Fn {
         defaultness: ast::Defaultness::Implicit,
         sig: sig.clone(),
         ident,
@@ -124,7 +124,7 @@ pub(crate) fn expand_kernel(
     let body = ecx.block(span, thin_vec![stmt]);
 
     // host function
-    let mut host_fn = Box::new(ast::Fn {
+    let mut host_fn = P::new(ast::Fn {
         defaultness: ast::Defaultness::Implicit,
         sig,
         ident,

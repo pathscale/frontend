@@ -122,13 +122,13 @@ impl<'a> Parser<'a> {
                 let leading_if_span = self.prev_token.span;
                 let cond = self.parse_expr()?;
                 let cond_span = cond.span;
-                Box::new(Guard { cond: *cond, span_with_leading_if: leading_if_span.to(cond_span) })
+                Box::new(Guard { cond: cond.into_inner(), span_with_leading_if: leading_if_span.to(cond_span) })
             };
 
             // Feature-gate guard patterns
             self.psess.gated_spans.gate(sym::guard_patterns, guard.span());
             let span = pat.span.to(guard.span());
-            Ok(self.mk_pat(span, PatKind::Guard(Box::new(pat), guard)))
+            Ok(self.mk_pat(span, PatKind::Guard(P::new(pat), guard)))
         } else {
             Ok(pat)
         }
@@ -276,7 +276,7 @@ impl<'a> Parser<'a> {
             CommaRecoveryMode::LikelyTuple,
             Some(syntax_loc),
         )?;
-        let pat = Box::new(pat);
+        let pat = P::new(pat);
         let colon = self.eat(exp!(Colon));
 
         if let PatKind::Or(pats) = &pat.kind {
@@ -954,7 +954,7 @@ impl<'a> Parser<'a> {
             let lhs_span = lhs.span;
             // Move the LHS into the RHS as a subpattern.
             // The RHS is now the full pattern.
-            *sub = Some(Box::new(lhs));
+            *sub = Some(P::new(lhs));
 
             self.dcx().emit_err(PatternOnWrongSideOfAt {
                 whole_span,
@@ -1011,7 +1011,7 @@ impl<'a> Parser<'a> {
 
         let (pinned, mutbl) = self.parse_pin_and_mut();
         let subpat = self.parse_pat_with_range_pat(false, expected, None)?;
-        Ok(PatKind::Ref(Box::new(subpat), pinned, mutbl))
+        Ok(PatKind::Ref(P::new(subpat), pinned, mutbl))
     }
 
     /// Parse a tuple or parenthesis pattern.
@@ -1108,7 +1108,7 @@ impl<'a> Parser<'a> {
                 }
 
                 // (pat) with optional parentheses
-                _ => PatKind::Paren(Box::new(pat)),
+                _ => PatKind::Paren(P::new(pat)),
             }
         } else {
             PatKind::Tuple(fields)
@@ -1531,7 +1531,7 @@ impl<'a> Parser<'a> {
         }
 
         let sub = if self.eat(exp!(At)) {
-            Some(Box::new(self.parse_pat_no_top_alt(Some(Expected::BindingPattern), None)?))
+            Some(P::new(self.parse_pat_no_top_alt(Some(Expected::BindingPattern), None)?))
         } else {
             None
         };
@@ -1621,7 +1621,7 @@ impl<'a> Parser<'a> {
             Ok(match ident.name {
                 // builtin#deref(PAT)
                 sym::deref => {
-                    Some(ast::PatKind::Deref(Box::new(self_.parse_pat_allow_top_guard(
+                    Some(ast::PatKind::Deref(P::new(self_.parse_pat_allow_top_guard(
                         None,
                         RecoverComma::Yes,
                         RecoverColon::Yes,
@@ -1650,14 +1650,14 @@ impl<'a> Parser<'a> {
             // We cannot use `parse_pat_ident()` since it will complain `box`
             // is not an identifier.
             let sub = if self.eat(exp!(At)) {
-                Some(Box::new(self.parse_pat_no_top_alt(Some(Expected::BindingPattern), None)?))
+                Some(P::new(self.parse_pat_no_top_alt(Some(Expected::BindingPattern), None)?))
             } else {
                 None
             };
 
             Ok(PatKind::Ident(BindingMode::NONE, Ident::new(kw::Box, box_span), sub))
         } else {
-            let pat = Box::new(self.parse_pat_with_range_pat(false, None, None)?);
+            let pat = P::new(self.parse_pat_with_range_pat(false, None, None)?);
             self.dcx().emit_err(diagnostics::BoxPatternsRemoved {
                 span: box_span.to(self.prev_token.span),
             });
@@ -1934,7 +1934,7 @@ impl<'a> Parser<'a> {
                 self.psess.gated_spans.gate(sym::mut_ref, fieldpat.span);
             }
             let subpat = if is_box {
-                self.mk_pat(lo.to(hi), PatKind::Deref(Box::new(fieldpat)))
+                self.mk_pat(lo.to(hi), PatKind::Deref(P::new(fieldpat)))
             } else {
                 fieldpat
             };
@@ -1943,7 +1943,7 @@ impl<'a> Parser<'a> {
 
         Ok(PatField {
             ident: fieldname,
-            pat: Box::new(subpat),
+            pat: P::new(subpat),
             is_shorthand,
             attrs,
             id: ast::DUMMY_NODE_ID,

@@ -1,5 +1,6 @@
 //! Functions dealing with attributes and meta items.
 
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 pub mod data_structures;
@@ -857,7 +858,7 @@ pub fn mk_attr_name_value_str(
     span: Span,
 ) -> Attribute {
     let lit = token::Lit::new(token::Str, escape_string_symbol(val), None);
-    let expr = Box::new(Expr {
+    let expr = P::new(Expr {
         id: DUMMY_NODE_ID,
         kind: ExprKind::Lit(lit),
         span,

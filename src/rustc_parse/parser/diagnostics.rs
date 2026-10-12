@@ -53,7 +53,7 @@ use crate::rustc_parse::parser::{FnContext, IsDotDotDot};
 
 /// Creates a placeholder argument.
 pub(super) fn dummy_arg(ident: Ident, guar: ErrorGuaranteed) -> Param {
-    let pat = Box::new(Pat {
+    let pat = P::new(Pat {
         id: ast::DUMMY_NODE_ID,
         kind: PatKind::Ident(BindingMode::NONE, ident, None),
         span: ident.span,
@@ -64,7 +64,7 @@ pub(super) fn dummy_arg(ident: Ident, guar: ErrorGuaranteed) -> Param {
         id: ast::DUMMY_NODE_ID,
         pat,
         span: ident.span,
-        ty: Box::new(ty),
+        ty: P::new(ty),
         is_placeholder: false,
     }
 }
@@ -85,10 +85,20 @@ impl<T: RecoverQPath> RecoverQPath for Box<T> {
     }
 }
 
+impl<T: RecoverQPath> RecoverQPath for P<T> {
+    const PATH_STYLE: PathStyle = T::PATH_STYLE;
+    fn to_ty(&self) -> Option<P<Ty>> {
+        T::to_ty(self)
+    }
+    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
+        P::new(T::recovered(qself, path))
+    }
+}
+
 impl RecoverQPath for Ty {
     const PATH_STYLE: PathStyle = PathStyle::Type;
     fn to_ty(&self) -> Option<P<Ty>> {
-        Some(Box::new(self.clone()))
+        Some(P::new(self.clone()))
     }
     fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
         Self { span: path.span, kind: TyKind::Path(qself, path), id: ast::DUMMY_NODE_ID }
@@ -2408,7 +2418,7 @@ impl<'a> Parser<'a> {
         });
 
         // Pretend the pattern is `_`, to avoid duplicate errors from AST validation.
-        let pat = Box::new(Pat { kind: PatKind::Wild, span: pat.span, id: ast::DUMMY_NODE_ID });
+        let pat = P::new(Pat { kind: PatKind::Wild, span: pat.span, id: ast::DUMMY_NODE_ID });
         Ok((pat, ty))
     }
 
@@ -3164,7 +3174,7 @@ impl<'a> Parser<'a> {
                     return origin_error;
                 }
             };
-            let TyKind::Path(_, path) = ty.kind else {
+            let TyKind::Path(_, path) = ty.into_inner().kind else {
                 return origin_error;
             };
             let Some(ref seg_args) = path.segments[0].args else {

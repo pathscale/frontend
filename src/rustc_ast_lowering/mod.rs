@@ -569,23 +569,23 @@ fn index_ast<'tcx>(
             &mut self,
             item: &mut ast::Item<K>,
             dummy: impl FnOnce(Box<MacCall>) -> K,
-            node: impl FnOnce(Box<Item<K>>) -> AstOwner,
+            node: impl FnOnce(P<Item<K>>) -> AstOwner,
         ) {
             let dummy = self.make_dummy(item.id, item.span, dummy);
             let item = mem::replace(item, dummy);
-            self.insert(item.id, node(Box::new(item)));
+            self.insert(item.id, node(P::new(item)));
         }
 
         /// Moves a boxed item, box and all, into the index and returns a boxed dummy in its
         /// place: one allocation (the dummy's box), where `replace_with_dummy` needs two.
         fn take_boxed<K>(
             &mut self,
-            item: Box<Item<K>>,
+            item: P<Item<K>>,
             dummy: impl FnOnce(Box<MacCall>) -> K,
-            node: impl FnOnce(Box<Item<K>>) -> AstOwner,
-        ) -> Box<Item<K>> {
+            node: impl FnOnce(P<Item<K>>) -> AstOwner,
+        ) -> P<Item<K>> {
             let (id, span) = (item.id, item.span);
-            let dummy = Box::new(self.make_dummy(id, span, dummy));
+            let dummy = P::new(self.make_dummy(id, span, dummy));
             self.insert(id, node(item));
             dummy
         }
@@ -602,7 +602,7 @@ fn index_ast<'tcx>(
                 UseTreeKind::Nested { items: ref nested_vec, span } => {
                     for &(ref nested, id) in nested_vec {
                         self.insert(id, AstOwner::NestedUseTree(parent));
-                        items.push(Box::new(self.make_dummy(id, span, ItemKind::MacCall)));
+                        items.push(P::new(self.make_dummy(id, span, ItemKind::MacCall)));
 
                         let def_id = self.owners[&id].def_id;
                         self.visit_item_id_use_tree(nested, def_id, items);
@@ -621,7 +621,7 @@ fn index_ast<'tcx>(
         fn flat_map_item(&mut self, mut item: P<Item>) -> SmallVec<[P<Item>; 1]> {
             let def_id = self.owners[&item.id].def_id;
             mut_visit::walk_item(self, &mut *item);
-            let dummy = Box::new(self.make_dummy(item.id, item.span, ItemKind::MacCall));
+            let dummy = P::new(self.make_dummy(item.id, item.span, ItemKind::MacCall));
             let mut items = smallvec![dummy];
             if let ItemKind::Use(ref use_tree) = item.kind {
                 self.visit_item_id_use_tree(use_tree, def_id, &mut items);

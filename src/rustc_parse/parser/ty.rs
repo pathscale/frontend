@@ -481,7 +481,19 @@ impl<'a> Parser<'a> {
         if ts.len() == 1 && matches!(trailing, Trailing::No) {
             let ty = ts.into_iter().next().unwrap();
             let maybe_bounds = allow_plus == AllowPlus::Yes && self.token.is_like_plus();
-            match ty.kind {
+            // Only the arms that take a part of the type move it out of its handle.
+            let takes_part = maybe_bounds
+                && match &ty.kind {
+                    TyKind::Path(None, _) => true,
+                    TyKind::TraitObject(bounds, TraitObjectSyntax::None) => {
+                        bounds.len() == 1 && !trailing_plus
+                    }
+                    _ => false,
+                };
+            if !takes_part {
+                return Ok(TyKind::Paren(ty));
+            }
+            match ty.into_inner().kind {
                 // `"(" BareTraitBound ")" "+" Bound "+" ...`.
                 TyKind::Path(None, path) if maybe_bounds => self.parse_remaining_bounds_path(
                     ThinVec::new(),
@@ -499,7 +511,7 @@ impl<'a> Parser<'a> {
                     self.parse_remaining_bounds(bounds, true)
                 }
                 // `(TYPE)`
-                _ => Ok(TyKind::Paren(ty)),
+                _ => unreachable!(),
             }
         } else {
             Ok(TyKind::Tup(ts))
@@ -1649,6 +1661,6 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn mk_ty(&self, span: Span, kind: TyKind) -> P<Ty> {
-        Box::new(Ty { kind, span, id: ast::DUMMY_NODE_ID })
+        P::new(Ty { kind, span, id: ast::DUMMY_NODE_ID })
     }
 }

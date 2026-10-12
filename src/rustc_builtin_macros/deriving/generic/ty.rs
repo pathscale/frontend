@@ -79,7 +79,7 @@ pub(crate) enum Ty {
 }
 
 pub(crate) fn self_ref() -> Ty {
-    Ref(Box::new(Self_), ast::Mutability::Not)
+    Ref(P::new(Self_), ast::Mutability::Not)
 }
 
 impl Ty {

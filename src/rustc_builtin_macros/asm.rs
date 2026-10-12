@@ -601,7 +601,7 @@ pub(super) fn expand_asm<'cx>(
                 return ExpandResult::Retry(());
             };
             let expr = match mac {
-                Ok(inline_asm) => Box::new(ast::Expr {
+                Ok(inline_asm) => P::new(ast::Expr {
                     id: ast::DUMMY_NODE_ID,
                     kind: ast::ExprKind::InlineAsm(Box::new(inline_asm)),
                     span: sp,
@@ -631,7 +631,7 @@ pub(super) fn expand_naked_asm<'cx>(
                 return ExpandResult::Retry(());
             };
             let expr = match mac {
-                Ok(inline_asm) => Box::new(ast::Expr {
+                Ok(inline_asm) => P::new(ast::Expr {
                     id: ast::DUMMY_NODE_ID,
                     kind: ast::ExprKind::InlineAsm(Box::new(inline_asm)),
                     span: sp,
@@ -661,7 +661,7 @@ pub(super) fn expand_global_asm<'cx>(
                 return ExpandResult::Retry(());
             };
             match mac {
-                Ok(inline_asm) => MacEager::items(smallvec![Box::new(ast::Item {
+                Ok(inline_asm) => MacEager::items(smallvec![P::new(ast::Item {
                     attrs: ast::AttrVec::new(),
                     id: ast::DUMMY_NODE_ID,
                     kind: ast::ItemKind::GlobalAsm(Box::new(inline_asm)),

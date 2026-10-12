@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use crate::rustc_ast::token::NtExprKind::*;
 use crate::rustc_ast::token::NtPatKind::*;
@@ -157,7 +158,7 @@ impl<'a> Parser<'a> {
                             CommaRecoveryMode::EitherTupleOrPipe,
                         ),
                     }
-                    .map(|pat| WithTokens::new(Box::new(pat)))
+                    .map(|pat| WithTokens::new(P::new(pat)))
                 })?,
                 pat_kind,
             )),
