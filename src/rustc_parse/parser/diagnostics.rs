@@ -975,7 +975,7 @@ impl<'a> Parser<'a> {
             // }
             debug!(?maybe_struct_name, ?self.token);
             let mut snapshot = self.create_snapshot_for_diagnostic();
-            let path = Path { segments: ThinVec::new(), span: self.prev_token.span.shrink_to_lo() };
+            let path = Path { segments: ast::PathSegments::new(), span: self.prev_token.span.shrink_to_lo() };
             let struct_expr = snapshot.parse_expr_struct(None, path, false);
             let block_tail = self.parse_block_tail(lo, s, AttemptLocalParseRecovery::No);
             return Some(match (struct_expr, block_tail) {
@@ -1847,7 +1847,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, T> {
         self.expect(exp!(PathSep))?;
 
-        let mut path = ast::Path { segments: ThinVec::new(), span: DUMMY_SP };
+        let mut path = ast::Path { segments: ast::PathSegments::new(), span: DUMMY_SP };
         self.parse_path_segments(&mut path.segments, T::PATH_STYLE, None)?;
         path.span = ty_span.to(self.prev_token.span);
 
@@ -2803,10 +2803,10 @@ impl<'a> Parser<'a> {
                                             None,
                                             Path {
                                                 span: new_span,
-                                                segments: thin_vec![
+                                                segments: [
                                                     PathSegment::from_ident(*old_ident),
                                                     PathSegment::from_ident(*ident),
-                                                ],
+                                                ].into_iter().collect(),
                                             },
                                         );
                                         first_pat = self.mk_pat(new_span, path);

@@ -8,7 +8,7 @@ use crate::rustc_ast::token::{self, MetaVarKind, Token, TokenKind};
 use crate::rustc_ast::{
     self as ast, AngleBracketedArg, AngleBracketedArgs, AnonConst, AssocItemConstraint,
     AssocItemConstraintKind, BlockCheckMode, GenericArg, GenericArgs, Generics, ParenthesizedArgs,
-    Path, PathSegment, QSelf,
+    Path, PathSegment, PathSegments, QSelf,
 };
 use crate::rustc_errors::{Applicability, Diag, PResult};
 use crate::rustc_span::{BytePos, Ident, Span, kw, sym};
@@ -95,7 +95,7 @@ impl<'a> Parser<'a> {
             path_span = path_lo.to(self.prev_token.span);
         } else {
             path_span = self.token.span.to(self.token.span);
-            path = ast::Path { segments: ThinVec::new(), span: path_span };
+            path = ast::Path { segments: PathSegments::new(), span: path_span };
         }
 
         // See doc comment for `unmatched_angle_bracket_count`.
@@ -215,7 +215,7 @@ impl<'a> Parser<'a> {
         }
 
         let lo = self.token.span;
-        let mut segments = ThinVec::new();
+        let mut segments = PathSegments::new();
         let mod_sep_ctxt = self.token.span.ctxt();
         if self.eat_path_sep() {
             segments.push(PathSegment::path_root(lo.shrink_to_lo().with_ctxt(mod_sep_ctxt)));
@@ -226,7 +226,7 @@ impl<'a> Parser<'a> {
 
     pub(super) fn parse_path_segments(
         &mut self,
-        segments: &mut ThinVec<PathSegment>,
+        segments: &mut PathSegments,
         style: PathStyle,
         ty_generics: Option<&Generics>,
     ) -> PResult<'a, ()> {

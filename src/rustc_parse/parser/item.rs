@@ -1363,7 +1363,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, UseTree> {
         let lo = self.token.span;
 
-        let mut prefix = ast::Path { segments: ThinVec::new(), span: lo.shrink_to_lo() };
+        let mut prefix = ast::Path { segments: ast::PathSegments::new(), span: lo.shrink_to_lo() };
         let kind =
             if self.check(exp!(OpenBrace)) || self.check(exp!(Star)) || self.is_import_coupler() {
                 // `use *;` or `use ::*;` or `use {...};` or `use ::{...};`

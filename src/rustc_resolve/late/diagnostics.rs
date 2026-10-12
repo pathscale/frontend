@@ -3103,7 +3103,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                     let doc_visible = doc_visible
                         && (module_def_id.is_local() || !r.tcx.is_doc_hidden(module_def_id));
                     if module_def_id == def_id {
-                        let path = Path { span: name_binding.span, segments: path_segments };
+                        let path = Path { span: name_binding.span, segments: path_segments.into() };
                         result = Some((
                             r.expect_module(module_def_id),
                             ImportSuggestion {
@@ -4552,7 +4552,7 @@ fn mk_where_bound_predicate(
         let [preceding @ .., second_last, last] = segments.as_mut_slice() else {
             return None;
         };
-        let mut segments = ThinVec::from(preceding);
+        let mut segments: ast::PathSegments = preceding.iter().cloned().collect();
 
         let added_constraint = ast::AngleBracketedArg::Constraint(ast::AssocItemConstraint {
             id: DUMMY_NODE_ID,
