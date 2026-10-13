@@ -355,12 +355,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///    (&Wrapper(__local_bindN)).try_capture(&mut __captureN);
     ///    __local_bindN
     /// }
-    fn manage_try_capture(
-        &mut self,
-        capture: Ident,
-        curr_capture_idx: usize,
-        expr: &mut P<Expr>,
-    ) {
+    fn manage_try_capture(&mut self, capture: Ident, curr_capture_idx: usize, expr: &mut P<Expr>) {
         let local_bind_string = format!("__local_bind{curr_capture_idx}");
         let local_bind = Ident::new(Symbol::intern(&local_bind_string), self.span);
         self.local_bind_decls.push(self.cx.stmt_let(
@@ -452,7 +447,10 @@ fn expr_method_call(
     args: ThinVec<P<Expr>>,
     span: Span,
 ) -> P<Expr> {
-    cx.expr(span, ExprKind::MethodCall(P::new(MethodCall { seg, receiver, args, span })))
+    cx.expr(
+        span,
+        ExprKind::MethodCall(P::new(MethodCall { seg, receiver, args: args.into(), span })),
+    )
 }
 
 fn expr_paren(cx: &ExtCtxt<'_>, sp: Span, e: P<Expr>) -> P<Expr> {

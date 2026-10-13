@@ -19,30 +19,32 @@
 //! - [`UnOp`], [`BinOp`], and [`BinOpKind`]: Unary and binary operators.
 
 use crate::rustc_ast::ptr::P;
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::Cow;
+use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::mem;
 use core::ops::{Deref, DerefMut};
 use core::{cmp, fmt};
 
-pub use GenericArgs::*;
-pub use UnsafeSource::*;
 pub use crate::rustc_ast_ir::{FloatTy, IntTy, Movability, Mutability, Pinnedness, UintTy};
 use crate::rustc_data_structures::packed::Pu128;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_data_structures::tagged_ptr::Tag;
-use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
 pub use crate::rustc_span::AttrId;
 use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{
     ByteSymbol, DUMMY_SP, ErrorGuaranteed, Ident, LocalExpnId, Span, Spanned, Symbol, kw, respan,
     sym,
 };
+pub use GenericArgs::*;
+pub use UnsafeSource::*;
+use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
 use thin_vec::{ThinVec, thin_vec};
+
+pub use crate::rustc_ast::arena_vec::ArenaVec;
 
 use crate::rustc_ast::attr::data_structures::CfgEntry;
 pub use crate::rustc_ast::format::*;
@@ -141,7 +143,10 @@ impl Path {
     /// Convert a span and an identifier to the corresponding
     /// one-segment path.
     pub fn from_ident(ident: Ident) -> Path {
-        Path { segments: PathSegments::from_elem(PathSegment::from_ident(ident), 1), span: ident.span }
+        Path {
+            segments: PathSegments::from_elem(PathSegment::from_ident(ident), 1),
+            span: ident.span,
+        }
     }
 
     pub fn is_global(&self) -> bool {
@@ -524,15 +529,11 @@ impl IntoIterator for PathSegments {
 
     fn into_iter(self) -> Self::IntoIter {
         match self.0 {
-            PathSegmentsInner::Inline(segment) => {
-                PathSegmentsIntoIter::Inline(Some(segment))
-            }
+            PathSegmentsInner::Inline(segment) => PathSegmentsIntoIter::Inline(Some(segment)),
             PathSegmentsInner::Short(segments) => {
                 PathSegmentsIntoIter::Short(segments.into_inner().into_iter())
             }
-            PathSegmentsInner::Heap(segments) => {
-                PathSegmentsIntoIter::Heap(segments.into_iter())
-            }
+            PathSegmentsInner::Heap(segments) => PathSegmentsIntoIter::Heap(segments.into_iter()),
         }
     }
 }
@@ -618,8 +619,7 @@ impl<E: crate::rustc_span::SpanEncoder> crate::rustc_serialize::Encodable<E> for
 
 impl<D: crate::rustc_span::SpanDecoder> crate::rustc_serialize::Decodable<D> for PathSegments {
     fn decode(decoder: &mut D) -> Self {
-        let segments: ThinVec<PathSegment> =
-            crate::rustc_serialize::Decodable::decode(decoder);
+        let segments: ThinVec<PathSegment> = crate::rustc_serialize::Decodable::decode(decoder);
         segments.into()
     }
 }
@@ -2151,7 +2151,7 @@ pub struct MethodCall {
     /// The receiver, e.g. `x`.
     pub receiver: P<Expr>,
     /// The arguments, e.g. `a, b, c`.
-    pub args: ThinVec<P<Expr>>,
+    pub args: ArenaVec<P<Expr>>,
     /// The span of the function, without the dot and receiver e.g. `foo::<Bar,
     /// Baz>(a, b, c)`.
     pub span: Span,
@@ -2194,7 +2194,7 @@ pub enum ExprKind {
     /// and the second field is the list of arguments.
     /// This also represents calling the constructor of
     /// tuple-like ADTs such as tuple structs and enum variants.
-    Call(P<Expr>, ThinVec<P<Expr>>),
+    Call(P<Expr>, ArenaVec<P<Expr>>),
     /// A method call (e.g., `x.foo::<Bar, Baz>(a, b, c)`).
     MethodCall(P<MethodCall>),
     /// A tuple (e.g., `(a, b, c, d)`).

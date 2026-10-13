@@ -14,12 +14,12 @@
 //! those that are created by the expansion of a macro.
 
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 pub use crate::rustc_ast_ir::visit::VisitorResult;
 pub use crate::rustc_ast_ir::{try_visit, visit_opt, walk_list, walk_visitable_list};
-use rustc_macros::StableHash;
 use crate::rustc_span::{Ident, Span, Spanned, Symbol};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use rustc_macros::StableHash;
 use thin_vec::ThinVec;
 
 use crate::rustc_ast::ast::*;
@@ -1216,6 +1216,17 @@ macro_rules! common_visitor_and_walkers {
 }
 
 common_visitor_and_walkers!(Visitor<'a>);
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<P<Expr>> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for expr in self {
+            try_visit!(visitor.visit_expr(expr));
+        }
+        V::Result::output()
+    }
+}
 
 macro_rules! generate_list_visit_fns {
     ($($name:ident, $Ty:ty, $visit_fn:ident$(, $param:ident: $ParamTy:ty)*;)+) => {

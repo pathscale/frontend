@@ -1,8 +1,8 @@
 use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 pub mod attr;
 mod attr_wrapper;
 mod diagnostics;
@@ -22,16 +22,12 @@ mod ty;
 pub mod asm;
 pub mod cfg_select;
 
-use core::{fmt, mem, slice};
 use crate::debug_assert_matches;
+use core::{fmt, mem, slice};
 
 use attr_wrapper::{AttrWrapper, UsePreAttrPos};
 pub use diagnostics::AttemptLocalParseRecovery;
 // Public to use it for custom `if` expressions in rustfmt forks like https://github.com/tucant/rustfmt
-pub use expr::LetChainsPolicy;
-pub(crate) use function::{FnContext, FnParseMode, FrontMatterParsingMode, IsDotDotDot};
-pub use pat::{CommaRecoveryMode, RecoverColon, RecoverComma};
-pub use path::PathStyle;
 use crate::rustc_ast::token::{
     self, IdentIsRaw, InvisibleOrigin, MetaVarKind, NtExprKind, NtPatKind, Token, TokenKind,
 };
@@ -53,16 +49,20 @@ use crate::rustc_errors::{Applicability, Diag, FatalError, MultiSpan, PResult};
 use crate::rustc_index::interval::IntervalSet;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, Symbol, kw, sym};
+pub use expr::LetChainsPolicy;
+pub(crate) use function::{FnContext, FnParseMode, FrontMatterParsingMode, IsDotDotDot};
+pub use pat::{CommaRecoveryMode, RecoverColon, RecoverComma};
+pub use path::PathStyle;
 use thin_vec::ThinVec;
 use token_type::TokenTypeSet;
 pub use token_type::{ExpKeywordPair, ExpTokenPair, TokenType};
 use tracing::debug;
 
+use crate::exp;
 use crate::rustc_parse::diagnostics::{
     IncorrectImplRestriction, IncorrectMutRestriction, IncorrectVisibilityRestriction,
     NonStringAbiLiteral, TokenDescription,
 };
-use crate::exp;
 
 #[cfg(test)]
 mod tests;
@@ -631,7 +631,11 @@ impl<'a> Parser<'a> {
                 (false, false) => crate::rustc_parse::diagnostics::Case::Mixed,
             };
 
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::KwBadCase { span: ident.span, kw, case });
+            self.dcx().emit_err(crate::rustc_parse::diagnostics::KwBadCase {
+                span: ident.span,
+                kw,
+                case,
+            });
             self.bump();
             true
         } else {
@@ -871,12 +875,22 @@ impl<'a> Parser<'a> {
         closes_expected: &[ExpTokenPair],
         closes_not_expected: &[&TokenKind],
         sep: SeqSep,
-        mut f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
+        f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
     ) -> PResult<'a, (ThinVec<T>, Trailing, Recovered)> {
+        self.parse_seq_to_before_tokens_with(closes_expected, closes_not_expected, sep, f)
+    }
+
+    fn parse_seq_to_before_tokens_with<T, L: Default + Extend<T>>(
+        &mut self,
+        closes_expected: &[ExpTokenPair],
+        closes_not_expected: &[&TokenKind],
+        sep: SeqSep,
+        mut f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
+    ) -> PResult<'a, (L, Trailing, Recovered)> {
         let mut first = true;
         let mut recovered = Recovered::No;
         let mut trailing = Trailing::No;
-        let mut v = ThinVec::new();
+        let mut v = L::default();
 
         while !self.expect_any_with_type(closes_expected, closes_not_expected) {
             if self.token.kind.is_close_delim_or_eof() {
@@ -967,7 +981,7 @@ impl<'a> Parser<'a> {
                                         )
                                         .emit();
 
-                                    v.push(t);
+                                    v.extend(core::iter::once(t));
                                     continue;
                                 }
                                 Err(e) => {
@@ -1005,7 +1019,7 @@ impl<'a> Parser<'a> {
             }
 
             let t = f(self)?;
-            v.push(t);
+            v.extend(core::iter::once(t));
         }
 
         Ok((v, trailing, recovered))
@@ -1089,7 +1103,17 @@ impl<'a> Parser<'a> {
         sep: SeqSep,
         f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
     ) -> PResult<'a, (ThinVec<T>, Trailing)> {
-        let (val, trailing, recovered) = self.parse_seq_to_before_end(close, sep, f)?;
+        self.parse_seq_to_end_with(close, sep, f)
+    }
+
+    fn parse_seq_to_end_with<T, L: Default + Extend<T>>(
+        &mut self,
+        close: ExpTokenPair,
+        sep: SeqSep,
+        f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
+    ) -> PResult<'a, (L, Trailing)> {
+        let (val, trailing, recovered) =
+            self.parse_seq_to_before_tokens_with(&[close], &[], sep, f)?;
         if matches!(recovered, Recovered::No) && !self.eat(close) {
             self.dcx().span_delayed_bug(
                 self.token.span,
@@ -1387,10 +1411,12 @@ impl<'a> Parser<'a> {
         if let token::Literal(token::Lit { kind: token::Integer, symbol, suffix }) = self.token.kind
         {
             if let Some(suffix) = suffix {
-                self.dcx().emit_err(crate::rustc_parse::diagnostics::InvalidLiteralSuffixOnTupleIndex {
-                    span: self.token.span,
-                    suffix,
-                });
+                self.dcx().emit_err(
+                    crate::rustc_parse::diagnostics::InvalidLiteralSuffixOnTupleIndex {
+                        span: self.token.span,
+                        suffix,
+                    },
+                );
             }
             self.bump();
             Ok(Ident::new(symbol, self.prev_token.span))
