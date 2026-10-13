@@ -594,7 +594,8 @@ impl<'a> Parser<'a> {
             lo.to(self.prev_token.span),
             parens,
         );
-        let bounds = thin_vec![GenericBound::Trait(poly_trait_ref)];
+        let mut bounds = ast::ArenaVec::with_capacity(1);
+        bounds.push(GenericBound::Trait(poly_trait_ref));
         self.parse_remaining_bounds(bounds, parse_plus)
     }
 
@@ -606,7 +607,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, TyKind> {
         if plus {
             self.eat_plus(); // `+`, or `+=` gets split and `+` is discarded
-            bounds.append(&mut self.parse_generic_bounds()?);
+            bounds.extend(self.parse_generic_bounds()?);
         }
         Ok(TyKind::TraitObject(bounds, TraitObjectSyntax::None))
     }
@@ -1078,7 +1079,7 @@ impl<'a> Parser<'a> {
     /// Only if `allow_plus` this parses a `+`-separated list of bounds (trailing `+` is admitted).
     /// Otherwise, this only parses a single bound or none.
     fn parse_generic_bounds_common(&mut self, allow_plus: AllowPlus) -> PResult<'a, GenericBounds> {
-        let mut bounds = ThinVec::new();
+        let mut bounds = ast::ArenaVec::new();
 
         // In addition to looping while we find generic bounds:
         // We continue even if we find a keyword. This is necessary for error recovery on,
@@ -1434,7 +1435,7 @@ impl<'a> Parser<'a> {
             // Someone has written something like `&dyn (Trait + Other)`. The correct code
             // would be `&(dyn Trait + Other)`
             if self.token.is_like_plus() && leading_token.is_keyword(kw::Dyn) {
-                let bounds = thin_vec![];
+                let bounds = ast::ArenaVec::new();
                 self.parse_remaining_bounds(bounds, true)?;
                 self.expect(exp!(CloseParen))?;
                 self.dcx().emit_err(diagnostics::IncorrectParensTraitBounds {
@@ -1620,7 +1621,7 @@ impl<'a> Parser<'a> {
                 id: lt.id,
                 ident: lt.ident,
                 attrs: ast::AttrVec::new(),
-                bounds: ThinVec::new(),
+                bounds: ast::ArenaVec::new(),
                 is_placeholder: false,
                 kind: ast::GenericParamKind::Lifetime,
                 colon_span: None,

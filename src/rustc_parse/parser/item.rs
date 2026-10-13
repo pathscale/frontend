@@ -1210,7 +1210,7 @@ impl<'a> Parser<'a> {
         // Parse optional colon and supertrait bounds.
         let had_colon = self.eat(exp!(Colon));
         let span_at_colon = self.prev_token.span;
-        let bounds = if had_colon { self.parse_generic_bounds()? } else { ThinVec::new() };
+        let bounds = if had_colon { self.parse_generic_bounds()? } else { ast::ArenaVec::new() };
 
         let span_before_eq = self.prev_token.span;
         if self.eat(exp!(Eq)) {
@@ -1333,7 +1333,7 @@ impl<'a> Parser<'a> {
 
         // Parse optional colon and param bounds.
         let bounds =
-            if self.eat(exp!(Colon)) { self.parse_generic_bounds()? } else { ThinVec::new() };
+            if self.eat(exp!(Colon)) { self.parse_generic_bounds()? } else { ast::ArenaVec::new() };
         generics.where_clause = self.parse_where_clause()?;
 
         let ty = if self.eat(exp!(Eq)) { Some(self.parse_ty()?) } else { None };

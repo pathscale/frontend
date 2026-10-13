@@ -337,6 +337,14 @@ macro_rules! generate_flat_map_visitor_fns {
     }
 }
 
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<WherePredicate> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|predicate| visitor.flat_map_where_predicate(predicate));
+    }
+}
+
 generate_flat_map_visitor_fns! {
     visit_items, P<Item>, flat_map_item;
     visit_foreign_items, P<ForeignItem>, flat_map_foreign_item;

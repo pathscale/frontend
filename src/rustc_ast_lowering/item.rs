@@ -17,12 +17,12 @@ use crate::rustc_hir::{
     self as hir, CRATE_OWNER_ID, HirId, ImplItemImplKind, LifetimeSource, PredicateOrigin, Target,
     find_attr,
 };
-use crate::span_bug;
 use crate::rustc_middle::ty::data_structures::IndexMap;
 use crate::rustc_middle::ty::{ResolverAstLowering, TyCtxt};
 use crate::rustc_span::def_id::{DefId, LocalDefId};
 use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::{DUMMY_SP, DesugaringKind, Ident, Span, Symbol, kw, sym};
+use crate::span_bug;
 use smallvec::SmallVec;
 use thin_vec::ThinVec;
 use tracing::instrument;
@@ -35,7 +35,9 @@ use super::{
     FnDeclKind, GenericArgsMode, ImplTraitContext, ImplTraitPosition, LoweringContext, ParamMode,
     RelaxedBoundForbiddenReason, RelaxedBoundPolicy,
 };
-use crate::rustc_ast_lowering::diagnostics::{ConstComptimeFn, ResolvingRestrictionKind, RestrictionAncestorOnly};
+use crate::rustc_ast_lowering::diagnostics::{
+    ConstComptimeFn, ResolvingRestrictionKind, RestrictionAncestorOnly,
+};
 
 pub(super) struct ItemLowerer<'a, 'hir> {
     pub(super) tcx: TyCtxt<'hir>,
@@ -50,7 +52,7 @@ fn add_ty_alias_where_clause(
     after_where_clause: &ast::WhereClause,
     prefer_first: bool,
 ) {
-    generics.where_clause.predicates.extend_from_slice(&after_where_clause.predicates);
+    generics.where_clause.predicates.extend(after_where_clause.predicates.iter().cloned());
 
     let mut before = (generics.where_clause.has_where_token, generics.where_clause.span);
     let mut after = (after_where_clause.has_where_token, after_where_clause.span);
@@ -262,8 +264,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
             }
             ItemKind::Use(use_tree) => {
                 // Start with an empty prefix.
-                let prefix =
-                    Path { segments: PathSegments::new(), span: use_tree.prefix.span.shrink_to_lo() };
+                let prefix = Path {
+                    segments: PathSegments::new(),
+                    span: use_tree.prefix.span.shrink_to_lo(),
+                };
 
                 self.lower_use_tree(use_tree, &prefix, id, vis_span, attrs)
             }
@@ -1002,9 +1006,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 )
             }
             AssocItemKind::Fn(f) => {
-                let Fn {
-                    sig, ident, generics, body: Some(body), contract, define_opaque, ..
-                } = &**f
+                let Fn { sig, ident, generics, body: Some(body), contract, define_opaque, .. } =
+                    &**f
                 else {
                     unreachable!()
                 };
@@ -1527,7 +1530,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 // we can keep the same name for the parameter.
                 // This lets rustdoc render it correctly in documentation.
                 hir::PatKind::Binding(_, _, ident, _) => (ident, false),
-                hir::PatKind::Wild => (Ident::with_dummy_span(crate::rustc_span::kw::Underscore), false),
+                hir::PatKind::Wild => {
+                    (Ident::with_dummy_span(crate::rustc_span::kw::Underscore), false)
+                }
                 _ => {
                     // Replace the ident for bindings that aren't simple.
                     let name = format!("__arg{index}");

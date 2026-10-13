@@ -31,7 +31,7 @@ impl<'a> Parser<'a> {
     /// BOUND = LT_BOUND (e.g., `'a`)
     /// ```
     pub(crate) fn parse_lt_param_bounds(&mut self) -> GenericBounds {
-        let mut lifetimes = ThinVec::new();
+        let mut lifetimes = ast::ArenaVec::new();
         while self.check_lifetime() {
             lifetimes.push(ast::GenericBound::Outlives(self.expect_lifetime()));
 
@@ -91,7 +91,7 @@ impl<'a> Parser<'a> {
             }
             self.parse_generic_bounds()?
         } else {
-            ThinVec::new()
+            ast::ArenaVec::new()
         };
 
         let default = if self.eat(exp!(Eq)) { Some(self.parse_ty()?) } else { None };
@@ -130,7 +130,7 @@ impl<'a> Parser<'a> {
                     ident,
                     id: ast::DUMMY_NODE_ID,
                     attrs: preceding_attrs,
-                    bounds: ThinVec::new(),
+                    bounds: ast::ArenaVec::new(),
                     kind: GenericParamKind::Const { ty, span, default: None },
                     is_placeholder: false,
                     colon_span: None,
@@ -153,7 +153,7 @@ impl<'a> Parser<'a> {
             ident,
             id: ast::DUMMY_NODE_ID,
             attrs: preceding_attrs,
-            bounds: ThinVec::new(),
+            bounds: ast::ArenaVec::new(),
             kind: GenericParamKind::Const { ty, span, default },
             is_placeholder: false,
             colon_span: None,
@@ -194,7 +194,7 @@ impl<'a> Parser<'a> {
             ident,
             id: ast::DUMMY_NODE_ID,
             attrs: preceding_attrs,
-            bounds: ThinVec::new(),
+            bounds: ast::ArenaVec::new(),
             kind: GenericParamKind::Const { ty, span, default },
             is_placeholder: false,
             colon_span: None,
@@ -230,7 +230,7 @@ impl<'a> Parser<'a> {
                     let (colon_span, bounds) = if this.eat(exp!(Colon)) {
                         (Some(this.prev_token.span), this.parse_lt_param_bounds())
                     } else {
-                        (None, ThinVec::new())
+                        (None, ast::ArenaVec::new())
                     };
 
                     if this.check_noexpect(&token::Eq) && this.look_ahead(1, |t| t.is_lifetime()) {
@@ -341,7 +341,7 @@ impl<'a> Parser<'a> {
             params,
             where_clause: WhereClause {
                 has_where_token: false,
-                predicates: ThinVec::new(),
+                predicates: ast::ArenaVec::new(),
                 span: self.prev_token.span.shrink_to_hi(),
             },
             span,
@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
     ) -> PResult<'a, (WhereClause, Option<ThinVec<ast::FieldDef>>)> {
         let mut where_clause = WhereClause {
             has_where_token: false,
-            predicates: ThinVec::new(),
+            predicates: ast::ArenaVec::new(),
             span: self.prev_token.span.shrink_to_hi(),
         };
         let mut tuple_struct_body = None;
