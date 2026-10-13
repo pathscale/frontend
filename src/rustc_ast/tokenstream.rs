@@ -971,13 +971,38 @@ pub struct TokenCursor {
     // allocated once per descent into a delimited group, or taken from a
     // `FrameSpare`, and freed or kept as the spare on the way out unless a clone
     // still holds it.
-    stack: Option<Arc<TokenCursorFrame>>,
+    stack: Option<TokenCursorFrameRef>,
+}
+
+/// A shared frame in the AST chunks, with the same one-word handle as an Arc.
+#[derive(Clone, Debug)]
+struct TokenCursorFrameRef(ThinArcSlice<TokenCursorFrame>);
+
+impl TokenCursorFrameRef {
+    #[inline]
+    fn new(frame: TokenCursorFrame) -> Self {
+        Self(ThinArcSlice::from_exact(iter::once(frame)))
+    }
+
+    #[inline]
+    fn get_mut(&mut self) -> Option<&mut TokenCursorFrame> {
+        self.0.get_mut().map(|frames| &mut frames[0])
+    }
+}
+
+impl core::ops::Deref for TokenCursorFrameRef {
+    type Target = TokenCursorFrame;
+
+    #[inline]
+    fn deref(&self) -> &TokenCursorFrame {
+        &self.0[0]
+    }
 }
 
 #[derive(Debug)]
 struct TokenCursorFrame {
     cursor: TokenTreeCursor,
-    parent: Option<Arc<TokenCursorFrame>>,
+    parent: Option<TokenCursorFrameRef>,
     /// Number of frames from this one to the outermost, inclusive.
     depth: usize,
 }
@@ -992,7 +1017,7 @@ struct TokenCursorFrame {
 /// lazily collected token stream pays for. Each still holds the cursor of the stream it last
 /// left until a descent overwrites it. A clone starts empty, so the list always has one owner.
 #[derive(Debug, Default)]
-pub struct FrameSpare(Option<Arc<TokenCursorFrame>>);
+pub struct FrameSpare(Option<TokenCursorFrameRef>);
 
 impl Clone for FrameSpare {
     fn clone(&self) -> Self {
@@ -1020,13 +1045,13 @@ impl TokenCursor {
         let depth = parent.as_ref().map_or(0, |frame| frame.depth) + 1;
         let frame = TokenCursorFrame { cursor, parent, depth };
         if let Some(mut reused) = spare.0.take()
-            && let Some(slot) = Arc::get_mut(&mut reused)
+            && let Some(slot) = reused.get_mut()
         {
             spare.0 = slot.parent.take();
             *slot = frame;
             self.stack = Some(reused);
         } else {
-            self.stack = Some(Arc::new(frame));
+            self.stack = Some(TokenCursorFrameRef::new(frame));
         }
     }
 
@@ -1038,7 +1063,7 @@ impl TokenCursor {
         let Some(mut frame) = self.stack.take() else {
             return false;
         };
-        match Arc::get_mut(&mut frame) {
+        match frame.get_mut() {
             Some(owned) => {
                 self.stack = owned.parent.take();
                 mem::swap(&mut self.curr, &mut owned.cursor);
