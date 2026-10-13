@@ -32,7 +32,9 @@ use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::fatal_error::catch_fatal_errors;
 use crate::rustc_span::source_map::{FilePathMapping, SourceMap};
-use crate::rustc_span::{FileName, create_session_if_not_set_then};
+use crate::rustc_span::{
+    FileName, create_session_if_not_set_then, create_session_if_not_set_then_with_source_len,
+};
 use serde::{Deserialize, Serialize};
 
 /// The nonterminal kind a piece of text is checked against.
@@ -95,7 +97,9 @@ pub fn parses_as(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
     } else {
         None
     };
-    create_session_if_not_set_then(Edition::Edition2024, |_| parse_in_session(source, kind))
+    create_session_if_not_set_then_with_source_len(Edition::Edition2024, source.len(), |_| {
+        parse_in_session(source, kind)
+    })
 }
 
 /// Whether `source` is an entire file or module body. Shorthand for [`Fragment::Items`].
@@ -149,7 +153,7 @@ fn parse_in_session_with_diagnostics(
         .sm(Some(Arc::clone(&sm)))
         .short_message(true)
         .dst(Box::new(super::Sink(Arc::clone(&text))));
-    let psess = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), sm);
+    let psess = ParseSess::with_dcx_without_symbol_gallery(DiagCtxt::new(Box::new(emitter)), sm);
 
     let finished = catch_fatal_errors(|| parse_all(&psess, source, kind, defer_diagnostics));
     // A stashed diagnostic is otherwise emitted when the session drops, after the buffer has

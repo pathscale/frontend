@@ -2898,15 +2898,14 @@ const EMPTY_SLOT: u16 = u16::MAX;
 /// Marks an empty entry of [`PredefinedSymbols::slots`]. A full entry is
 /// `predefined_tag(hash) << 16 | index` with `index < EMPTY_SLOT`, so its low half is never
 /// `0xFFFF` and it never equals this.
-const EMPTY_PREDEFINED_SLOT: u32 = u32::MAX;
+const EMPTY_PREDEFINED_SLOT: u64 = u64::MAX;
 
-/// The 16-bit tag a [`PredefinedSymbols::slots`] entry keeps of its string's `symbol_hash`: the
-/// top bits, which the slot index (`hash & mask`, a mask far below 48 bits) does not use. Equal
-/// strings have equal hashes and so equal tags; a lookup compares strings only when the tags
-/// agree, so almost every occupied slot of a miss is passed over without reading its string.
+/// The 48-bit tag a [`PredefinedSymbols::slots`] entry keeps of its string's `symbol_hash`.
+/// Equal strings have equal hashes and so equal tags; a lookup compares strings only when the
+/// tags agree, so almost every occupied slot of a miss is passed over without reading its string.
 #[inline]
-const fn predefined_tag(hash: u64) -> u32 {
-    (hash >> 48) as u32
+const fn predefined_tag(hash: u64) -> u64 {
+    hash >> 16
 }
 
 /// The hash of an interned string, for both the static table of predefined symbols and a
@@ -2986,7 +2985,7 @@ const fn const_bytes_eq(a: &[u8], b: &[u8]) -> bool {
 /// `strs.len()`) with `predefined_tag(hash) << 16 | index` for every string of `strs`, by linear
 /// probing from `hash & mask`, `hash` being `symbol_hash(s)`. Panics on a duplicate string - at
 /// compile time for the static table.
-const fn fill_predefined_slots(strs: &[&str], slots: &mut [u32]) {
+const fn fill_predefined_slots(strs: &[&str], slots: &mut [u64]) {
     assert!(strs.len() < EMPTY_SLOT as usize, "too many predefined symbols for a u16 slot");
     assert!(slots.len().is_power_of_two() && slots.len() >= strs.len() * 2);
     let mask = slots.len() - 1;
@@ -2998,7 +2997,7 @@ const fn fill_predefined_slots(strs: &[&str], slots: &mut [u32]) {
         loop {
             let entry = slots[slot];
             if entry == EMPTY_PREDEFINED_SLOT {
-                slots[slot] = predefined_tag(hash) << 16 | index as u32;
+                slots[slot] = predefined_tag(hash) << 16 | index as u64;
                 break;
             }
             let occupant = (entry & 0xFFFF) as usize;
@@ -3013,7 +3012,7 @@ const fn fill_predefined_slots(strs: &[&str], slots: &mut [u32]) {
 
 const PREDEFINED_SLOT_COUNT: usize = predefined_slot_count(PREDEFINED_SYMBOLS_COUNT as usize);
 
-const fn predefined_slots() -> [u32; PREDEFINED_SLOT_COUNT] {
+const fn predefined_slots() -> [u64; PREDEFINED_SLOT_COUNT] {
     let mut slots = [EMPTY_PREDEFINED_SLOT; PREDEFINED_SLOT_COUNT];
     fill_predefined_slots(&PREDEFINED_SYMBOL_LIST, &mut slots);
     slots
@@ -3023,7 +3022,7 @@ const fn predefined_slots() -> [u32; PREDEFINED_SLOT_COUNT] {
 static PREDEFINED_SYMBOL_STRS: [&str; PREDEFINED_SYMBOLS_COUNT as usize] = PREDEFINED_SYMBOL_LIST;
 
 /// String to index for the predefined symbols, built at compile time.
-static PREDEFINED_SYMBOL_SLOTS: [u32; PREDEFINED_SLOT_COUNT] = predefined_slots();
+static PREDEFINED_SYMBOL_SLOTS: [u64; PREDEFINED_SLOT_COUNT] = predefined_slots();
 
 /// The predefined symbols of every session: immutable, compile-time data.
 static PREDEFINED_SYMBOLS: PredefinedSymbols =
@@ -3034,7 +3033,7 @@ static PREDEFINED_SYMBOLS: PredefinedSymbols =
 /// full entry carrying a tag of its string's hash beside the index.
 pub(crate) struct PredefinedSymbols {
     strs: &'static [&'static str],
-    slots: &'static [u32],
+    slots: &'static [u64],
 }
 
 impl PredefinedSymbols {
@@ -3055,7 +3054,7 @@ impl PredefinedSymbols {
                 return None;
             }
             if entry >> 16 == tag {
-                let occupant = entry & 0xFFFF;
+                let occupant = (entry & 0xFFFF) as u32;
                 if self.strs[occupant as usize].as_bytes() == bytes {
                     return Some(occupant);
                 }
@@ -3115,8 +3114,7 @@ impl InternerInner {
     }
 }
 
-/// The first table of a session's [`SymbolIndices`]: 32 KiB, enough for a large file's
-/// identifiers without growing, and a power of two as the probing needs.
+/// The minimum table size of a session's [`SymbolIndices`], a 32 KiB floor for small inputs.
 const SYMBOL_INDICES_FIRST_SLOTS: usize = 4096;
 
 /// One open-addressed table of [`SymbolIndices`]. A slot is `0` when empty, else
@@ -3185,7 +3183,21 @@ struct SymbolIndices {
 
 impl SymbolIndices {
     fn new() -> SymbolIndices {
-        SymbolIndices { current: AtomicPtr::new(core::ptr::null_mut()) }
+        Self::with_source_len(0, 0)
+    }
+
+    fn with_source_len(source_len: usize, extra_symbol_count: usize) -> SymbolIndices {
+        // Estimate one occupied slot per 128 source bytes. The table is kept at most half full;
+        // round up to a power of two for masking during probes. Small inputs stay lazy.
+        let estimated_slots = (source_len / 128).max(extra_symbol_count.saturating_mul(2));
+        let slots = estimated_slots.max(SYMBOL_INDICES_FIRST_SLOTS).next_power_of_two();
+        let current = AtomicPtr::new(core::ptr::null_mut());
+        if slots != SYMBOL_INDICES_FIRST_SLOTS {
+            let table =
+                Box::into_raw(Box::new(SymbolSlotTable::empty(slots, core::ptr::null_mut())));
+            current.store(table, Ordering::Release);
+        }
+        SymbolIndices { current }
     }
 
     /// The session index of `bytes` (hash `hash`), without any lock.
@@ -3437,7 +3449,14 @@ impl Interner {
     /// Creates an `Interner` with the predefined symbols from the `symbols!` macro and
     /// any extra symbols provided by external drivers such as Clippy.
     pub(crate) fn with_extra_symbols(extra_symbols: &[&'static str]) -> Self {
-        Interner::new(&PREDEFINED_SYMBOLS, extra_symbols)
+        Self::with_extra_symbols_and_source_len(extra_symbols, 0)
+    }
+
+    pub(crate) fn with_extra_symbols_and_source_len(
+        extra_symbols: &[&'static str],
+        source_len: usize,
+    ) -> Self {
+        Interner::new(&PREDEFINED_SYMBOLS, extra_symbols, source_len)
     }
 
     /// An interner over the predefined symbols `init` (indices from 0, in order) and then the
@@ -3446,21 +3465,25 @@ impl Interner {
     #[cfg(test)]
     fn prefill(init: &[&'static str], extra: &[&'static str]) -> Self {
         let strs: &'static [&'static str] = init.to_vec().leak();
-        let slots: &'static mut [u32] =
+        let slots: &'static mut [u64] =
             vec![EMPTY_PREDEFINED_SLOT; predefined_slot_count(init.len())].leak();
         fill_predefined_slots(strs, slots);
         let predefined: &'static PredefinedSymbols =
             Box::leak(Box::new(PredefinedSymbols { strs, slots }));
-        Interner::new(predefined, extra)
+        Interner::new(predefined, extra, 0)
     }
 
     // The extras are `&str`, but because of the sharing, we are effectively pre-interning them
     // for both `Symbol` and `ByteSymbol`.
-    fn new(predefined: &'static PredefinedSymbols, extra: &[&'static str]) -> Self {
+    fn new(
+        predefined: &'static PredefinedSymbols,
+        extra: &[&'static str],
+        source_len: usize,
+    ) -> Self {
         let mut conflicting_values: Vec<&[u8]> = Vec::new();
 
         let strs = SymbolStrs::new();
-        let indices = SymbolIndices::new();
+        let indices = SymbolIndices::with_source_len(source_len, extra.len());
 
         for v in extra.iter().map(|str| str.as_bytes()) {
             let hash = symbol_hash(v);

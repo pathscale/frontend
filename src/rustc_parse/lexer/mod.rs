@@ -1,13 +1,8 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
-use alloc::sync::Arc;
-use diagnostics::make_errors_for_mismatched_closing_delims;
-use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_ast::ast::{self, AttrStyle};
 use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
 use crate::rustc_ast::util::unicode::{TEXT_FLOW_CONTROL_CHARS, contains_text_flow_control_chars};
+use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, StashKey};
 use crate::rustc_lexer::{
@@ -17,10 +12,15 @@ use crate::rustc_lint_defs::builtin::{
     RUST_2021_PREFIXES_INCOMPATIBLE_SYNTAX, RUST_2024_GUARDED_STRING_INCOMPATIBLE_SYNTAX,
     TEXT_DIRECTION_CODEPOINT_IN_COMMENT, TEXT_DIRECTION_CODEPOINT_IN_LITERAL,
 };
-use rustc_literal_escaper::{EscapeError, Mode, check_for_errors};
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{BytePos, Pos, Span, Symbol, sym};
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use diagnostics::make_errors_for_mismatched_closing_delims;
+use rustc_literal_escaper::{EscapeError, Mode, check_for_errors};
 use tracing::debug;
 
 use crate::rustc_parse::lexer::diagnostics::TokenTreeDiagInfo;
@@ -201,6 +201,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
     /// Repeated occurrences do not need a gallery span.
     #[inline]
     fn record_symbol(&mut self, sym: Symbol, start: BytePos) {
+        if !self.psess.collects_symbol_gallery() {
+            return;
+        }
         let index = sym.as_u32() as usize;
         let (word, bit) = (index / 64, 1u64 << (index % 64));
         if word >= self.gallery_seen.len() {
@@ -332,7 +335,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         preceded_by_whitespace: &mut bool,
         swallow_next_invalid: &mut usize,
     ) -> Option<TokenKind> {
-            let kind = match token.kind {
+        let kind = match token.kind {
                 crate::rustc_lexer::TokenKind::LineComment { doc_style } => {
                     // Skip non-doc comments
                     let Some(doc_style) = doc_style else {
@@ -609,7 +612,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 }
                 _ => unreachable!("simple tokens are cooked in the cursor loop"),
             };
-            Some(kind)
+        Some(kind)
     }
 
     fn ident(&mut self, start: BytePos) -> TokenKind {
@@ -770,14 +773,18 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
         let label = label.to_string();
         let count = spans.len();
-        let labels =
-            point_at_inner_spans.then_some(crate::rustc_parse::diagnostics::HiddenUnicodeCodepointsDiagLabels {
+        let labels = point_at_inner_spans.then_some(
+            crate::rustc_parse::diagnostics::HiddenUnicodeCodepointsDiagLabels {
                 spans: spans.clone(),
-            });
+            },
+        );
         let sub = if point_at_inner_spans && !spans.is_empty() {
             crate::rustc_parse::diagnostics::HiddenUnicodeCodepointsDiagSub::Escape { spans }
         } else {
-            crate::rustc_parse::diagnostics::HiddenUnicodeCodepointsDiagSub::NoEscape { spans, is_doc_comment }
+            crate::rustc_parse::diagnostics::HiddenUnicodeCodepointsDiagSub::NoEscape {
+                spans,
+                is_doc_comment,
+            }
         };
 
         self.psess.buffer_lint(
@@ -813,10 +820,12 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 BytePos(s[..real_start].rfind("\n").map_or(0, |i| i as u32 + 1)) + start;
             let span = self.mk_sp(line_start, frontmatter_opening_end_pos);
             let label_span = self.mk_sp(line_start, frontmatter_opening_pos);
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::FrontmatterInvalidOpeningPrecedingWhitespace {
-                span,
-                note_span: label_span,
-            });
+            self.dcx().emit_err(
+                crate::rustc_parse::diagnostics::FrontmatterInvalidOpeningPrecedingWhitespace {
+                    span,
+                    note_span: label_span,
+                },
+            );
         }
 
         let line_end = real_s.find('\n').unwrap_or(real_s.len());
@@ -825,7 +834,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 frontmatter_opening_end_pos,
                 frontmatter_opening_pos + BytePos(line_end as u32),
             );
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::FrontmatterInvalidInfostring { span });
+            self.dcx()
+                .emit_err(crate::rustc_parse::diagnostics::FrontmatterInvalidInfostring { span });
         }
 
         let last_line_start = real_s.rfind('\n').map_or(line_end, |i| i + 1);
@@ -859,10 +869,12 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
             let whitespace_end =
                 last_line_start_pos + BytePos((last_line.len() - last_line_trimmed.len()) as u32);
             let label_span = self.mk_sp(last_line_start_pos, whitespace_end);
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::FrontmatterInvalidClosingPrecedingWhitespace {
-                span,
-                note_span: label_span,
-            });
+            self.dcx().emit_err(
+                crate::rustc_parse::diagnostics::FrontmatterInvalidClosingPrecedingWhitespace {
+                    span,
+                    note_span: label_span,
+                },
+            );
         }
 
         let rest = last_line_trimmed.trim_start_matches('-');
@@ -883,12 +895,16 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
         // Only up to 255 `-`s are allowed in code fences
         if u8::try_from(len_opening).is_err() {
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::FrontmatterTooManyDashes { len_opening });
+            self.dcx().emit_err(crate::rustc_parse::diagnostics::FrontmatterTooManyDashes {
+                len_opening,
+            });
         }
 
         if !rest.trim_matches(is_horizontal_whitespace).is_empty() {
             let span = self.mk_sp(last_line_start_pos, self.pos);
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::FrontmatterExtraCharactersAfterClose { span });
+            self.dcx().emit_err(
+                crate::rustc_parse::diagnostics::FrontmatterExtraCharactersAfterClose { span },
+            );
         }
     }
 
@@ -1028,7 +1044,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 let mut kind = token::Integer;
                 if empty_int {
                     let span = self.mk_sp(start, end);
-                    let guar = self.dcx().emit_err(crate::rustc_parse::diagnostics::NoDigitsLiteral { span });
+                    let guar = self
+                        .dcx()
+                        .emit_err(crate::rustc_parse::diagnostics::NoDigitsLiteral { span });
                     kind = token::Err(guar);
                 } else if matches!(base, Base::Binary | Base::Octal) {
                     let base = base as u32;
@@ -1039,9 +1057,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                             start + BytePos::from_usize(2 + idx + c.len_utf8()),
                         );
                         if c != '_' && c.to_digit(base).is_none() {
-                            let guar = self
-                                .dcx()
-                                .emit_err(crate::rustc_parse::diagnostics::InvalidDigitLiteral { span, base });
+                            let guar = self.dcx().emit_err(
+                                crate::rustc_parse::diagnostics::InvalidDigitLiteral { span, base },
+                            );
                             kind = token::Err(guar);
                         }
                     }
@@ -1052,7 +1070,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 let mut kind = token::Float;
                 if empty_exponent {
                     let span = self.mk_sp(start, self.pos);
-                    let guar = self.dcx().emit_err(crate::rustc_parse::diagnostics::EmptyExponentFloat { span });
+                    let guar = self
+                        .dcx()
+                        .emit_err(crate::rustc_parse::diagnostics::EmptyExponentFloat { span });
                     kind = token::Err(guar);
                 }
                 let base = match base {
@@ -1063,9 +1083,9 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 };
                 if let Some(base) = base {
                     let span = self.mk_sp(start, end);
-                    let guar = self
-                        .dcx()
-                        .emit_err(crate::rustc_parse::diagnostics::FloatLiteralUnsupportedBase { span, base });
+                    let guar = self.dcx().emit_err(
+                        crate::rustc_parse::diagnostics::FloatLiteralUnsupportedBase { span, base },
+                    );
                     kind = token::Err(guar)
                 }
                 (kind, self.symbol_from_to(start, end))
@@ -1231,7 +1251,10 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     // FIXME: An "unclosed `char`" error will be emitted already in some cases,
                     // but it's hard to silence this error while not also silencing important cases
                     // too. We should use the error stashing machinery instead.
-                    Some(crate::rustc_parse::diagnostics::UnknownPrefixSugg::MeantStr { start, end })
+                    Some(crate::rustc_parse::diagnostics::UnknownPrefixSugg::MeantStr {
+                        start,
+                        end,
+                    })
                 } else {
                     Some(crate::rustc_parse::diagnostics::UnknownPrefixSugg::Whitespace(
                         prefix_span.shrink_to_hi(),
@@ -1320,7 +1343,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
             let err = if is_string {
                 self.dcx().emit_err(crate::rustc_parse::diagnostics::ReservedString { span, sugg })
             } else {
-                self.dcx().emit_err(crate::rustc_parse::diagnostics::ReservedMultihash { span, sugg })
+                self.dcx()
+                    .emit_err(crate::rustc_parse::diagnostics::ReservedMultihash { span, sugg })
             };
 
             token::Literal(token::Lit {

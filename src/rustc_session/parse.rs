@@ -137,6 +137,7 @@ pub struct ParseSess {
     pub ambiguous_block_expr_parse: Lock<FxIndexMap<Span, Span>>,
     pub gated_spans: GatedSpans,
     pub symbol_gallery: SymbolGallery,
+    collect_symbol_gallery: bool,
     /// Used to generate new `AttrId`s. Every `AttrId` is unique.
     pub attr_id_generator: AttrIdGenerator,
 }
@@ -151,6 +152,21 @@ impl ParseSess {
     }
 
     pub fn with_dcx(dcx: DiagCtxt, source_map: Arc<SourceMap>) -> Self {
+        Self::with_dcx_and_symbol_gallery(dcx, source_map, true)
+    }
+
+    pub(crate) fn with_dcx_without_symbol_gallery(
+        dcx: DiagCtxt,
+        source_map: Arc<SourceMap>,
+    ) -> Self {
+        Self::with_dcx_and_symbol_gallery(dcx, source_map, false)
+    }
+
+    fn with_dcx_and_symbol_gallery(
+        dcx: DiagCtxt,
+        source_map: Arc<SourceMap>,
+        collect_symbol_gallery: bool,
+    ) -> Self {
         Self {
             dcx,
             edition: ExpnId::root().expn_data().edition,
@@ -161,8 +177,13 @@ impl ParseSess {
             ambiguous_block_expr_parse: Lock::new(Default::default()),
             gated_spans: GatedSpans::default(),
             symbol_gallery: SymbolGallery::default(),
+            collect_symbol_gallery,
             attr_id_generator: AttrIdGenerator::new(),
         }
+    }
+
+    pub(crate) fn collects_symbol_gallery(&self) -> bool {
+        self.collect_symbol_gallery
     }
 
     pub fn emitter_with_note(note: String) -> Self {
