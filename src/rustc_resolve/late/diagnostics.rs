@@ -4598,7 +4598,7 @@ fn mk_where_bound_predicate(
     let new_where_bound_predicate = ast::WhereBoundPredicate {
         bound_generic_params: ThinVec::new(),
         bounded_ty: P::new(ty.clone()),
-        bounds: thin_vec![ast::GenericBound::Trait(ast::PolyTraitRef {
+        bounds: core::iter::once(ast::GenericBound::Trait(ast::PolyTraitRef {
             bound_generic_params: ThinVec::new(),
             modifiers: ast::TraitBoundModifiers::NONE,
             trait_ref: ast::TraitRef {
@@ -4607,7 +4607,8 @@ fn mk_where_bound_predicate(
             },
             span: DUMMY_SP,
             parens: ast::Parens::No,
-        })],
+        }))
+        .collect(),
     };
 
     Some(new_where_bound_predicate)

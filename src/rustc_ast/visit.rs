@@ -417,6 +417,7 @@ macro_rules! common_visitor_and_walkers {
             ArenaVec<AngleBracketedArg>,
             ThinVec<Attribute>,
             ThinVec<GenericBound>,
+            ArenaVec<GenericBound>,
             ThinVec<Ident>,
             ThinVec<(Ident, Option<Ident>)>,
             ThinVec<(NodeId, Path)>,
@@ -1292,6 +1293,17 @@ macro_rules! generate_list_visit_fns {
                 V::Result::output()
             }
         )+
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<WherePredicate> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for predicate in self {
+            try_visit!(visitor.visit_where_predicate(predicate));
+        }
+        V::Result::output()
     }
 }
 

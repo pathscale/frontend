@@ -185,11 +185,9 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use core::iter;
 use core::ops::Not;
-use core::{iter};
 
-pub(crate) use StaticFields::*;
-pub(crate) use SubstructureFields::*;
 use crate::rustc_ast::token::{IdentIsRaw, LitKind, Token, TokenKind};
 use crate::rustc_ast::tokenstream::{DelimSpan, Spacing, TokenTree};
 use crate::rustc_ast::{
@@ -200,6 +198,8 @@ use crate::rustc_attr_ir::{Attribute, AttributeKind, ReprPacked};
 use crate::rustc_attr_parsing::AttributeParser;
 use crate::rustc_expand::base::{Annotatable, ExtCtxt};
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, respan, sym};
+pub(crate) use StaticFields::*;
+pub(crate) use SubstructureFields::*;
 pub(crate) use smallvec::{SmallVec, smallvec};
 use thin_vec::{ThinVec, thin_vec};
 use ty::{Bounds, Path, Ref, Self_, Ty};
@@ -625,7 +625,7 @@ impl<'a> TraitDef<'a> {
                     ident,
                     generics: Generics::default(),
                     after_where_clause: ast::WhereClause::default(),
-                    bounds: ThinVec::new(),
+                    bounds: ast::ArenaVec::new(),
                     ty: Some(type_def.to_ty(cx, self.span, type_ident, generics)),
                 })),
                 tokens: None,
@@ -647,7 +647,7 @@ impl<'a> TraitDef<'a> {
                     // Extra restrictions on the generics parameters to the
                     // type being derived upon.
                     let span = param.ident.span.with_ctxt(ctxt);
-                    let bounds: ThinVec<_> = self
+                    let bounds: ast::GenericBounds = self
                         .additional_bounds
                         .iter()
                         .map(|p| {
@@ -731,7 +731,7 @@ impl<'a> TraitDef<'a> {
                     {
                         continue;
                     }
-                    let mut bounds: ThinVec<_> = self
+                    let mut bounds: ast::GenericBounds = self
                         .additional_bounds
                         .iter()
                         .map(|p| {
@@ -1007,8 +1007,7 @@ impl<'a> MethodDef<'a> {
         trait_: &TraitDef<'_>,
         type_ident: Ident,
         generics: &Generics,
-    ) -> (Option<ast::ExplicitSelf>, ThinVec<P<Expr>>, Vec<P<Expr>>, Vec<(Ident, P<ast::Ty>)>)
-    {
+    ) -> (Option<ast::ExplicitSelf>, ThinVec<P<Expr>>, Vec<P<Expr>>, Vec<(Ident, P<ast::Ty>)>) {
         let mut selflike_args = ThinVec::new();
         let mut nonselflike_args = Vec::new();
         let mut nonself_arg_tys = Vec::new();

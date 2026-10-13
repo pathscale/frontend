@@ -188,7 +188,7 @@ impl Bounds {
             params,
             where_clause: ast::WhereClause {
                 has_where_token: false,
-                predicates: ThinVec::new(),
+                predicates: ast::ArenaVec::new(),
                 span,
             },
             span,

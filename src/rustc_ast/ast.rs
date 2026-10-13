@@ -848,7 +848,7 @@ impl GenericBound {
     }
 }
 
-pub type GenericBounds = ThinVec<GenericBound>;
+pub type GenericBounds = ArenaVec<GenericBound>;
 
 /// Specifies the enforced ordering for generic parameters. In the future,
 /// if we wanted to relax this order, we could override `PartialEq` and
@@ -925,7 +925,7 @@ pub struct WhereClause {
     /// This can happen if we parsed no predicates, e.g., `struct Foo where {}`.
     /// This allows us to pretty-print accurately and provide correct suggestion diagnostics.
     pub has_where_token: bool,
-    pub predicates: ThinVec<WherePredicate>,
+    pub predicates: ArenaVec<WherePredicate>,
     pub span: Span,
 }
 
@@ -1967,7 +1967,7 @@ impl Expr {
                 let (Some(lhs), Some(rhs)) = (lhs.to_bound(), rhs.to_bound()) else {
                     return None;
                 };
-                TyKind::TraitObject(thin_vec![lhs, rhs], TraitObjectSyntax::None)
+                TyKind::TraitObject([lhs, rhs].into_iter().collect(), TraitObjectSyntax::None)
             }
 
             ExprKind::Underscore => TyKind::Infer,
