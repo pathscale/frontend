@@ -1329,11 +1329,11 @@ pub enum PatKind {
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
     /// The path uses the node allocator to keep the common pattern variants small.
-    TupleStruct(Option<Box<QSelf>>, P<Path>, ThinVec<Pat>),
+    TupleStruct(Option<Box<QSelf>>, P<Path>, ArenaVec<Pat>),
 
     /// An or-pattern `A | B | C`.
     /// Invariant: `pats.len() >= 2`.
-    Or(ThinVec<Pat>),
+    Or(ArenaVec<Pat>),
 
     /// A possibly qualified path pattern.
     /// Unqualified path patterns `A::B::C` can legally refer to variants, structs, constants
@@ -1342,7 +1342,7 @@ pub enum PatKind {
     Path(Option<Box<QSelf>>, Path),
 
     /// A tuple pattern (`(a, b)`).
-    Tuple(ThinVec<Pat>),
+    Tuple(ArenaVec<Pat>),
 
     /// A `deref` pattern (currently `deref!()` macro-based syntax).
     Deref(P<Pat>),
@@ -1357,7 +1357,7 @@ pub enum PatKind {
     Range(Option<P<Expr>>, Option<P<Expr>>, Spanned<RangeEnd>),
 
     /// A slice pattern `[a, b, c]`.
-    Slice(ThinVec<Pat>),
+    Slice(ArenaVec<Pat>),
 
     /// A rest pattern `..`.
     ///
