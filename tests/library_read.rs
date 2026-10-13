@@ -493,7 +493,14 @@ fn read_chain(
             edition: Some(package.manifest.edition.as_str()),
             items_only: true,
             standard_library: true,
-            loaded: Loaded { dependencies: &dependencies, cfg: &cfg, env: &env },
+            loaded: Loaded {
+                dependencies: &dependencies,
+                cfg: &cfg,
+                env: &env,
+                rust_source_base_dir: Some(eko::path::Path::new(
+                    root.to_str().expect("rust-src root is UTF-8"),
+                )),
+            },
             write_metadata: Some(eko::path::Path::new(&metadata)),
             ..CrateRead::new(&crate_name, eko::path::Path::new(root_file.to_str().expect("UTF-8")))
         }

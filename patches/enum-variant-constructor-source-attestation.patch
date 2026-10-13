@@ -1,0 +1,30 @@
+diff --git a/src/frontend_facts/callable_source_attestation.rs b/src/frontend_facts/callable_source_attestation.rs
+--- a/src/frontend_facts/callable_source_attestation.rs
++++ b/src/frontend_facts/callable_source_attestation.rs
+@@ -15,7 +15,7 @@
+ use alloc::vec::Vec;
+ 
+ use crate::rustc_ast::visit::{self, AssocCtxt, Visitor};
+-use crate::rustc_ast::{AssocItem, AssocItemKind, Impl, Item, ItemKind};
++use crate::rustc_ast::{AssocItem, AssocItemKind, Impl, Item, ItemKind, Variant};
+ use crate::rustc_errors::DiagCtxt;
+ use crate::rustc_errors::emitter::SilentEmitter;
+ use crate::rustc_hir::def::DefKind;
+@@ -524,8 +524,15 @@ impl<'ast> Visitor<'ast> for DefinitionFinder {
+             _ => false,
+         };
+         if kind_matches {
+             self.item_matches(item.kind.ident(), item.span);
+         }
+         visit::walk_assoc_item(self, item, ctxt);
+     }
++
++    fn visit_variant(&mut self, variant: &'ast Variant) {
++        if matches!(self.kind, DefinitionSourceKind::Callable) {
++            self.item_matches(Some(variant.ident), variant.span);
++        }
++        visit::walk_variant(self, variant);
++    }
+ }
+ 
+ fn unknown<T>(why: &str) -> StaticFact<T> {

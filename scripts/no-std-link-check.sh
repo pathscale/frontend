@@ -21,6 +21,14 @@ set -eu
 cd "$(dirname "$0")/.."
 
 command -v cargo > /dev/null || { echo "no-std-link-check: no \`cargo\` on PATH" >&2; exit 2; }
+frontend_root=$(pwd -P)
+probe_manifest=$frontend_root/link-probe/Cargo.toml
+owning_target=$frontend_root/target
+if [ "${CARGO_TARGET_DIR:-$owning_target}" != "$owning_target" ]; then
+    echo "no-std-link-check: target must be the frontend repository's target directory" >&2
+    exit 2
+fi
+export CARGO_TARGET_DIR=$owning_target
 
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT INT TERM
@@ -28,7 +36,7 @@ trap 'rm -f "$err"' EXIT INT TERM
 # Keep cargo's exit status and its stderr, and treat them separately from an empty result. Those
 # are different failures: a build that broke has a message worth printing, and a tree that was
 # already built prints no link args at all because cargo never re-invokes rustc.
-args=$(cargo rustc --manifest-path link-probe/Cargo.toml --bin link-probe -- --print=link-args 2>"$err") || {
+args=$(cargo rustc --offline --locked --manifest-path "$probe_manifest" --bin link-probe -- --print=link-args 2>"$err") || {
     echo "no-std-link-check: the build failed, so there is no link line to read." >&2
     echo "cargo said:" >&2
     tail -30 "$err" >&2
@@ -36,9 +44,16 @@ args=$(cargo rustc --manifest-path link-probe/Cargo.toml --bin link-probe -- --p
 }
 
 if [ -z "$args" ]; then
-    # Nothing to rebuild. Dirty just the probe and ask again; it is one small file.
-    touch link-probe/src/main.rs
-    args=$(cargo rustc --manifest-path link-probe/Cargo.toml --bin link-probe -- --print=link-args 2>"$err") || {
+    # Cargo tracks this disposable probe output. Retire it to force the linker
+    # to report its inputs while preserving the source and the owning target.
+    probe_binary=$owning_target/debug/link-probe
+    if [ ! -f "$probe_binary" ] || [ -L "$probe_binary" ]; then
+        echo "no-std-link-check: cached probe output is not a regular owned file" >&2
+        exit 2
+    fi
+    shasum -a 256 "$probe_binary" >&2
+    unlink "$probe_binary"
+    args=$(cargo rustc --offline --locked --manifest-path "$probe_manifest" --bin link-probe -- --print=link-args 2>"$err") || {
         echo "no-std-link-check: the build failed on the forced relink." >&2
         tail -30 "$err" >&2
         exit 2

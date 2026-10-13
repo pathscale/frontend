@@ -1,0 +1,21 @@
+patches/history-before-cleanup-20261013.bundle is okay
+The bundle contains these 17 refs:
+9aeed044369f080af18165a397a276728b2a3679 refs/heads/arena-ast
+5bb739921e1607fa958c24230e715fd13c671077 refs/heads/codex/ac-trait-visibility
+9aeed044369f080af18165a397a276728b2a3679 refs/heads/master
+749498a94dfd72e2dfe9896549bb36d961b01928 refs/heads/parse-speed-2
+b74c53efc7fce9de994ffd7b682f12170b7a4e08 refs/heads/scratch/compound-1956029
+7367b7fe875b55b72502e83f0c8528e267a4767c refs/recovery/claude-501/frontend-fe-sweep-20261005
+ef4d46df22dc268b818f948623ece168b8295dce refs/remotes/origin/HEAD
+7fbd1697d9a53cf6fe1740fc8ba75e6485e65858 refs/remotes/origin/bump-0.5.2
+5c060f5b003b2068df1f9fadf1b3087baca7804f refs/remotes/origin/feat/body-type-facts
+6e510a3005c881151cbf21956763524cd56d5eaa refs/remotes/origin/fix/range-body-type-facts
+85a246fb862e353f630a9d04cac08620945e2c21 refs/remotes/origin/fix/recovered-stage-source
+ef4d46df22dc268b818f948623ece168b8295dce refs/remotes/origin/master
+85a246fb862e353f630a9d04cac08620945e2c21 refs/remotes/origin/pr13
+5bb739921e1607fa958c24230e715fd13c671077 HEAD
+9aeed044369f080af18165a397a276728b2a3679 worktrees/fe-base/HEAD
+749498a94dfd72e2dfe9896549bb36d961b01928 worktrees/fe-ps2/HEAD
+9aeed044369f080af18165a397a276728b2a3679 worktrees/frontend-parse-speed/HEAD
+The bundle records a complete history.
+The bundle uses this hash algorithm: sha1

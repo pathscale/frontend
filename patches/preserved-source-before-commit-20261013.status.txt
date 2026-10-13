@@ -1,0 +1,34 @@
+ M scripts/no-std-ban.sh
+ M scripts/no-std-link-check.sh
+ M src/bin/frontend_facts.rs
+ M src/frontend_facts/lang_item_stubs.rs
+ M src/frontend_facts/mod.rs
+ M src/rustc_builtin_macros/source_util.rs
+ M src/rustc_crate_store/cstore.rs
+ M src/rustc_hir_analysis/collect.rs
+ M src/rustc_metadata/rmeta/decoder/cstore_impl.rs
+ M src/rustc_privacy/mod.rs
+ M src/rustc_session/session.rs
+ M tests/body_type_facts.rs
+ M tests/library_read.rs
+?? patches/enum-variant-constructor-source-attestation.md
+?? patches/enum-variant-constructor-source-attestation.patch
+?? patches/history-before-cleanup-20261013.bundle
+?? patches/history-before-cleanup-20261013.sha256
+?? patches/history-before-cleanup-20261013.verify.log
+?? patches/impl-language-deref-identity-20261013.md
+?? patches/impl-language-deref-source-digest-normalization-20261013.md
+?? patches/karen-macro-provenance-20261012/REVIEW.md
+?? patches/karen-macro-provenance-20261012/macro-provenance.patch
+?? patches/preserved-source-before-commit-20261013.status.txt
+?? patches/synthetic-root-span-normalization-20261013.md
+?? patches/uncommitted-work-20261013.base.txt
+?? patches/uncommitted-work-20261013.check.exit
+?? patches/uncommitted-work-20261013.check.log
+?? patches/uncommitted-work-20261013.files.txt
+?? patches/uncommitted-work-20261013.patch
+?? patches/uncommitted-work-20261013.pre-clean.log
+?? patches/uncommitted-work-20261013.sha256
+?? src/frontend_facts/callable_source_attestation.rs
+?? src/frontend_facts/callable_trait_evidence.rs
+?? tests/callable_definition_attestation.rs

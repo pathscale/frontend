@@ -1570,13 +1570,13 @@ fn impl_trait_header(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::ImplTraitHeader
         .lowerer()
         .lower_impl_trait_ref(&of_trait.trait_ref, selfty)
         .unwrap_or_else(|| {
-            // The resolver already reports the bad path. Keep the required header query readable
-            // with an error-typed sentinel; impl_opt_trait_ref hides this impl from trait queries.
+            // An impl identity cannot stand in for a missing trait. Optional consumers must
+            // use impl_opt_trait_ref; this mandatory query refuses an unresolved header.
             let guar = tcx.dcx().span_err(
                 of_trait.trait_ref.path.span,
                 "the trait in this impl did not resolve",
             );
-            ty::TraitRef::new(tcx, def_id.to_def_id(), [Ty::new_error(tcx, guar)])
+            guar.raise_fatal()
         });
 
     ty::ImplTraitHeader {
