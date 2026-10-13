@@ -3452,6 +3452,11 @@ impl Interner {
         Self::with_extra_symbols_and_source_len(extra_symbols, 0)
     }
 
+    #[cfg(feature = "parallel")]
+    pub(crate) fn is_synchronized(&self) -> bool {
+        self.inner.is_synchronized()
+    }
+
     pub(crate) fn with_extra_symbols_and_source_len(
         extra_symbols: &[&'static str],
         source_len: usize,

@@ -102,6 +102,11 @@ pub struct Lock<T> {
 }
 
 impl<T> Lock<T> {
+    #[cfg(feature = "parallel")]
+    pub(crate) fn is_synchronized(&self) -> bool {
+        matches!(self.mode, Mode::Sync)
+    }
+
     #[inline(always)]
     pub fn new(inner: T) -> Self {
         let (mode, mode_union) = if mode::might_be_dyn_thread_safe() {
