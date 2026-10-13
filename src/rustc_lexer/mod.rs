@@ -446,6 +446,27 @@ const SWAR_ONES: u64 = 0x0101_0101_0101_0101;
 /// Every byte of a `u64` holding `0x80`.
 const SWAR_HIGH: u64 = 0x8080_8080_8080_8080;
 
+// Bit 0: ASCII XID_Continue. Bit 1: ASCII Pattern_White_Space. Bit 2: ASCII XID_Start
+// or underscore. High bytes have no class and must take the Unicode path.
+const ASCII_CLASSES: [u8; 256] = {
+    let mut classes = [0; 256];
+    let mut byte = 0;
+    while byte < 128 {
+        let b = byte as u8;
+        if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'_') {
+            classes[byte] |= 1 | 4;
+        }
+        if matches!(b, b'0'..=b'9') {
+            classes[byte] |= 1;
+        }
+        if matches!(b, b'\t'..=b'\r' | b' ') {
+            classes[byte] |= 2;
+        }
+        byte += 1;
+    }
+    classes
+};
+
 /// For each byte of `x`, the high bit of that byte of the result is set when the byte's low
 /// seven bits are `>= lo`; every other bit is clear. `lo <= 0x80`, so `x | SWAR_HIGH` is at
 /// least `lo` in every byte and no borrow crosses a byte.
@@ -569,6 +590,21 @@ impl<'a> Cursor<'a> {
         Some(c)
     }
 
+    /// Consume a nonempty first byte already known to be ASCII.
+    #[inline(always)]
+    fn bump_ascii(&mut self, byte: u8) {
+        let rest = self.as_str();
+        debug_assert!(byte.is_ascii());
+        debug_assert_eq!(rest.as_bytes().first(), Some(&byte));
+        #[cfg(debug_assertions)]
+        {
+            self.prev = byte as char;
+        }
+        // SAFETY: the caller supplied the first byte of a nonempty string and proved it
+        // ASCII. Removing that byte ends on a UTF-8 boundary.
+        self.chars = unsafe { rest.get_unchecked(1..) }.chars();
+    }
+
     /// Moves to a substring by a number of bytes.
     pub(crate) fn bump_bytes(&mut self, n: usize) {
         self.chars = self.as_str()[n..].chars();
@@ -610,13 +646,29 @@ impl<'a> Cursor<'a> {
         let rest = self.as_str();
         let bytes = rest.as_bytes();
         let mut i = 0;
-        loop {
+        'scan: loop {
+            // Short runs end before paying for a full SWAR classification.
+            for _ in 0..4 {
+                let Some(&b) = bytes.get(i) else { break 'scan };
+                if b >= 0x80 {
+                    break;
+                }
+                if !ascii(b) {
+                    break 'scan;
+                }
+                i += 1;
+            }
             while let Some(chunk) = bytes.get(i..i + 8) {
                 let x = u64::from_le_bytes(<[u8; 8]>::try_from(chunk).unwrap());
                 let stop = !block(x) & SWAR_HIGH;
                 if stop != 0 {
                     // Little endian: byte `k` of the chunk is bits `8k..8k + 8`.
                     i += (stop.trailing_zeros() / 8) as usize;
+                    // The exact mask already rejected this byte. Only a non-ASCII byte
+                    // can still pass the Unicode predicate; do not classify ASCII again.
+                    if bytes[i] < 0x80 {
+                        break 'scan;
+                    }
                     break;
                 }
                 i += 8;
@@ -644,7 +696,7 @@ impl<'a> Cursor<'a> {
     fn eat_whitespace(&mut self) {
         self.eat_while_ascii(
             swar_whitespace,
-            |b| matches!(b, b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' '),
+            |b| ASCII_CLASSES[b as usize] & 2 != 0,
             is_whitespace,
         );
     }
@@ -654,7 +706,7 @@ impl<'a> Cursor<'a> {
     fn eat_id_continue(&mut self) {
         self.eat_while_ascii(
             swar_id_continue,
-            |b| b.is_ascii_alphanumeric() || b == b'_',
+            |b| ASCII_CLASSES[b as usize] & 1 != 0,
             is_id_continue,
         );
     }
@@ -695,7 +747,7 @@ impl<'a> Cursor<'a> {
             && let Some(&b) = self.as_str().as_bytes().first()
             && b < 0x80
         {
-            self.bump();
+            self.bump_ascii(b);
             let token_kind = self.ascii_token(b);
             let res = Token::new(token_kind, self.pos_within_token());
             self.reset_pos_within_token();
@@ -710,9 +762,9 @@ impl<'a> Cursor<'a> {
     fn ascii_token(&mut self, b: u8) -> TokenKind {
         match b {
             // Slash, comment or block comment.
-            b'/' => match self.first() {
-                '/' => self.line_comment(),
-                '*' => self.block_comment(),
+            b'/' => match self.as_str().as_bytes().first().copied() {
+                Some(b'/') => self.line_comment(),
+                Some(b'*') => self.block_comment(),
                 _ => Slash,
             },
 
@@ -743,7 +795,7 @@ impl<'a> Cursor<'a> {
             b'0'..=b'9' => self.number_literal(b as char),
 
             // Guarded string literal prefix: `#"` or `##`
-            b'#' if matches!(self.first(), '"' | '#') => {
+            b'#' if matches!(self.as_str().as_bytes().first().copied(), Some(b'"' | b'#')) => {
                 self.bump();
                 TokenKind::GuardedStrPrefix
             }
@@ -790,9 +842,9 @@ impl<'a> Cursor<'a> {
     /// After `r`: a raw identifier, a raw string literal or an identifier.
     #[inline]
     fn r_prefixed(&mut self) -> TokenKind {
-        match (self.first(), self.second()) {
-            ('#', c1) if is_id_start(c1) => self.raw_ident(),
-            ('#', _) | ('"', _) => {
+        match self.as_str().as_bytes().first().copied() {
+            Some(b'#') if is_id_start(self.second()) => self.raw_ident(),
+            Some(b'#' | b'"') => {
                 let res = self.raw_double_quoted_string(1);
                 let suffix_start = self.pos_within_token();
                 if res.is_ok() {
@@ -1121,9 +1173,9 @@ impl<'a> Cursor<'a> {
         self.eat_id_continue();
         // Known prefixes must have been handled earlier. So if
         // we see a prefix here, it is definitely an unknown prefix.
-        match self.first() {
-            '#' | '"' | '\'' => UnknownPrefix,
-            c if !c.is_ascii() && c.is_emoji_char() => self.invalid_ident(),
+        match self.as_str().as_bytes().first().copied() {
+            Some(b'#' | b'"' | b'\'') => UnknownPrefix,
+            Some(b) if !b.is_ascii() && self.first().is_emoji_char() => self.invalid_ident(),
             _ => Ident,
         }
     }
@@ -1141,15 +1193,17 @@ impl<'a> Cursor<'a> {
         InvalidIdent
     }
 
+    #[inline]
     fn c_or_byte_string(
         &mut self,
         mk_kind: fn(bool) -> LiteralKind,
         mk_kind_raw: fn(Option<u8>) -> LiteralKind,
         single_quoted: Option<fn(bool) -> LiteralKind>,
     ) -> TokenKind {
-        match (self.first(), self.second(), single_quoted) {
-            ('\'', _, Some(single_quoted)) => {
-                self.bump();
+        match self.as_str().as_bytes().first().copied() {
+            Some(b'\'') if single_quoted.is_some() => {
+                let single_quoted = single_quoted.unwrap();
+                self.bump_ascii(b'\'');
                 let terminated = self.single_quoted_string();
                 let suffix_start = self.pos_within_token();
                 if terminated {
@@ -1158,8 +1212,8 @@ impl<'a> Cursor<'a> {
                 let kind = single_quoted(terminated);
                 Literal { kind, suffix_start }
             }
-            ('"', _, _) => {
-                self.bump();
+            Some(b'"') => {
+                self.bump_ascii(b'"');
                 let terminated = self.double_quoted_string();
                 let suffix_start = self.pos_within_token();
                 if terminated {
@@ -1168,8 +1222,10 @@ impl<'a> Cursor<'a> {
                 let kind = mk_kind(terminated);
                 Literal { kind, suffix_start }
             }
-            ('r', '"', _) | ('r', '#', _) => {
-                self.bump();
+            Some(b'r')
+                if matches!(self.as_str().as_bytes().get(1).copied(), Some(b'"' | b'#')) =>
+            {
+                self.bump_ascii(b'r');
                 let res = self.raw_double_quoted_string(2);
                 let suffix_start = self.pos_within_token();
                 if res.is_ok() {
@@ -1556,10 +1612,20 @@ impl<'a> Cursor<'a> {
     // Eats the identifier. Note: succeeds on `_`, which isn't a valid
     // identifier.
     fn eat_identifier(&mut self) {
-        if !is_id_start(self.first()) {
-            return;
+        match self.as_str().as_bytes().first().copied() {
+            Some(b) if b.is_ascii() => {
+                if ASCII_CLASSES[b as usize] & 4 == 0 {
+                    return;
+                }
+                self.bump_ascii(b);
+            }
+            _ => {
+                if !is_id_start(self.first()) {
+                    return;
+                }
+                self.bump();
+            }
         }
-        self.bump();
 
         self.eat_id_continue();
     }
