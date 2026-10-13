@@ -13,7 +13,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::rustc_ast::visit::{self, AssocCtxt, Visitor};
-use crate::rustc_ast::{AssocItem, AssocItemKind, Impl, Item, ItemKind};
+use crate::rustc_ast::{AssocItem, AssocItemKind, Impl, Item, ItemKind, Variant};
 use crate::rustc_errors::DiagCtxt;
 use crate::rustc_errors::emitter::SilentEmitter;
 use crate::rustc_hir::def::DefKind;
@@ -116,10 +116,9 @@ pub(super) fn attest_definition(
     definition_kind: DefinitionSourceKind,
 ) -> StaticFact<DefinitionSourceAttestation> {
     let kind_matches = match definition_kind {
-        DefinitionSourceKind::Callable => matches!(
-            tcx.def_kind(def_id),
-            DefKind::Fn | DefKind::AssocFn | DefKind::Ctor(..)
-        ),
+        DefinitionSourceKind::Callable => {
+            matches!(tcx.def_kind(def_id), DefKind::Fn | DefKind::AssocFn | DefKind::Ctor(..))
+        }
         DefinitionSourceKind::Trait => matches!(tcx.def_kind(def_id), DefKind::Trait),
         DefinitionSourceKind::TraitImplementation => {
             matches!(tcx.def_kind(def_id), DefKind::Impl { of_trait: true })
@@ -131,10 +130,9 @@ pub(super) fn attest_definition(
         DefinitionSourceKind::ImplementationMethod => tcx
             .opt_associated_item(def_id)
             .is_some_and(|item| matches!(item.container, AssocContainer::TraitImpl(Ok(_)))),
-        DefinitionSourceKind::NominalType => matches!(
-            tcx.def_kind(def_id),
-            DefKind::Struct | DefKind::Enum | DefKind::Union
-        ),
+        DefinitionSourceKind::NominalType => {
+            matches!(tcx.def_kind(def_id), DefKind::Struct | DefKind::Enum | DefKind::Union)
+        }
     };
     if !kind_matches {
         return unknown("definition_kind_mismatch");
@@ -180,9 +178,7 @@ pub(super) fn attest_definition(
             .ok_or(SpanSnippetError::IllFormedSpan(span))?;
             (item_start, item_end)
         };
-        let item = source
-            .get(item_start..item_end)
-            .ok_or(SpanSnippetError::IllFormedSpan(span))?;
+        let item = source.get(item_start..item_end).ok_or(SpanSnippetError::IllFormedSpan(span))?;
         let whole_file =
             SourceFileHash::new_in_memory(SourceFileHashAlgorithm::Blake3, source.as_bytes())
                 .to_string();
@@ -306,11 +302,7 @@ fn external_item_range(
     } else {
         None
     };
-    let expected_name = if own_ident.is_some() {
-        Some(tcx.opt_item_name(def_id)?)
-    } else {
-        None
-    };
+    let expected_name = if own_ident.is_some() { Some(tcx.opt_item_name(def_id)?) } else { None };
 
     // The external crate edition is carried in its existing metadata root. Parsing is strict:
     // the parser must accept the entire file with no errors in that defining edition.
@@ -395,12 +387,8 @@ struct DefinitionFinder {
 
 impl DefinitionFinder {
     fn anchor(&self, span: Span, expected: SourceRange) -> bool {
-        source_range(
-            span,
-            self.file_base,
-            BytePos(self.file_base.0.saturating_add(u32::MAX)),
-        )
-        .is_some_and(|actual| actual.start == expected.start && actual.end == expected.end)
+        source_range(span, self.file_base, BytePos(self.file_base.0.saturating_add(u32::MAX)))
+            .is_some_and(|actual| actual.start == expected.start && actual.end == expected.end)
     }
 
     fn item_matches(&mut self, ident: Option<crate::rustc_span::Ident>, span: Span) {
@@ -417,15 +405,12 @@ impl DefinitionFinder {
         if !span_contains(span, self.own_anchor, self.file_base) || !ident_matches {
             return;
         }
-        let Some(range) = source_range(
-            span,
-            self.file_base,
-            BytePos(self.file_base.0.saturating_add(u32::MAX)),
-        ) else {
+        let Some(range) =
+            source_range(span, self.file_base, BytePos(self.file_base.0.saturating_add(u32::MAX)))
+        else {
             return;
         };
-        self.candidates
-            .push((range.start as usize, range.end as usize));
+        self.candidates.push((range.start as usize, range.end as usize));
     }
 
     fn parent_item_matches(&self, item: &Item) -> bool {
@@ -455,10 +440,9 @@ impl DefinitionFinder {
             DefinitionSourceKind::TraitImplementation => {
                 matches!(&item.kind, ItemKind::Impl(imp) if imp.of_trait.is_some())
             }
-            DefinitionSourceKind::NominalType => matches!(
-                item.kind,
-                ItemKind::Struct(..) | ItemKind::Enum(..) | ItemKind::Union(..)
-            ),
+            DefinitionSourceKind::NominalType => {
+                matches!(item.kind, ItemKind::Struct(..) | ItemKind::Enum(..) | ItemKind::Union(..))
+            }
             DefinitionSourceKind::AssociatedType
             | DefinitionSourceKind::TraitMethod
             | DefinitionSourceKind::ImplementationMethod => false,
@@ -488,11 +472,8 @@ fn ast_impl_header_span(item: &Item, imp: &Impl) -> Span {
 }
 
 fn span_contains(span: Span, expected: SourceRange, file_base: BytePos) -> bool {
-    let Some(actual) = source_range(
-        span,
-        file_base,
-        BytePos(file_base.0.saturating_add(u32::MAX)),
-    ) else {
+    let Some(actual) = source_range(span, file_base, BytePos(file_base.0.saturating_add(u32::MAX)))
+    else {
         return false;
     };
     actual.start <= expected.start && expected.end <= actual.end
@@ -527,10 +508,15 @@ impl<'ast> Visitor<'ast> for DefinitionFinder {
         }
         visit::walk_assoc_item(self, item, ctxt);
     }
+
+    fn visit_variant(&mut self, variant: &'ast Variant) {
+        if matches!(self.kind, DefinitionSourceKind::Callable) {
+            self.item_matches(Some(variant.ident), variant.span);
+        }
+        visit::walk_variant(self, variant);
+    }
 }
 
 fn unknown<T>(why: &str) -> StaticFact<T> {
-    StaticFact::Unknown {
-        why: why.to_string(),
-    }
+    StaticFact::Unknown { why: why.to_string() }
 }
