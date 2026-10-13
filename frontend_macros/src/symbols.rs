@@ -273,7 +273,15 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
         // learns from the macro that this variable feeds the expansion, so changing it does not
         // by itself trigger a rebuild. A consumer that needs that declares
         // `cargo:rerun-if-env-changed` in its own build script.
-        let env_value = std::env::var(env_var.value());
+        let env_value = std::env::var(env_var.value()).or_else(|err| {
+            // Keep the release symbol in the environment-symbol tail even when the
+            // embedding build does not nominate a compiler release.
+            if env_var.value() == "CFG_RELEASE" {
+                Ok("0.0.0".to_owned())
+            } else {
+                Err(err)
+            }
+        });
 
         let value = match env_value {
             Ok(value) => value,
