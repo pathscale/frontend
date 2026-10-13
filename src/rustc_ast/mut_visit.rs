@@ -275,6 +275,14 @@ macro_rules! define_named_walk {
 
 super::common_visitor_and_walkers!((mut) MutVisitor);
 
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<Stmt> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|stmt| visitor.flat_map_stmt(stmt));
+    }
+}
+
 impl<V: MutVisitor> MutVisitable<V> for ArenaVec<P<Expr>> {
     type Extra = ();
 

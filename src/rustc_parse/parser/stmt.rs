@@ -1,12 +1,11 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::mem;
 use core::ops::Bound;
 
-use ast::Label;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::token::{self, Delimiter, InvisibleOrigin, MetaVarKind, TokenKind};
 use crate::rustc_ast::util::classify::{self, TrailingBrace};
@@ -17,6 +16,7 @@ use crate::rustc_ast::{
 };
 use crate::rustc_errors::{Applicability, Diag, PResult};
 use crate::rustc_span::{BytePos, ErrorGuaranteed, Ident, Span, kw, sym};
+use ast::Label;
 use thin_vec::{ThinVec, thin_vec};
 
 use super::attr::InnerAttrForbiddenReason;
@@ -27,8 +27,8 @@ use super::{
     AllowConstBlockItems, AttrWrapper, BlockMode, FnContext, FnParseMode, ForceCollect, Parser,
     Restrictions, SemiColonMode, Trailing, UsePreAttrPos,
 };
-use crate::rustc_parse::diagnostics::{self, MalformedLoopLabel};
 use crate::exp;
+use crate::rustc_parse::diagnostics::{self, MalformedLoopLabel};
 
 impl<'a> Parser<'a> {
     /// Parses a statement nonterminal, which has a peculiar syntax preserved for backward
@@ -736,7 +736,7 @@ impl<'a> Parser<'a> {
         s: BlockCheckMode,
         recover: AttemptLocalParseRecovery,
     ) -> PResult<'a, P<Block>> {
-        let mut stmts = ThinVec::new();
+        let mut stmts = ast::ArenaVec::new();
         let mut snapshot = None;
         while !self.eat(exp!(CloseBrace)) {
             if self.token == token::Eof {
@@ -793,7 +793,7 @@ impl<'a> Parser<'a> {
             };
             stmts.push(stmt);
         }
-        Ok(self.mk_block(stmts, s, lo.to(self.prev_token.span)))
+        Ok(P::new(Block { stmts, id: DUMMY_NODE_ID, rules: s, span: lo.to(self.prev_token.span) }))
     }
 
     fn recover_missing_let_else(&mut self, err: &mut Diag<'_>, pat: &ast::Pat, stmt_span: Span) {
@@ -1173,7 +1173,7 @@ impl<'a> Parser<'a> {
         rules: BlockCheckMode,
         span: Span,
     ) -> P<Block> {
-        P::new(Block { stmts, id: DUMMY_NODE_ID, rules, span })
+        P::new(Block { stmts: stmts.into(), id: DUMMY_NODE_ID, rules, span })
     }
 
     pub(super) fn mk_stmt(&self, span: Span, kind: StmtKind) -> Stmt {

@@ -1053,7 +1053,7 @@ pub enum MetaItemInner {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct Block {
     /// The statements in the block.
-    pub stmts: ThinVec<Stmt>,
+    pub stmts: ArenaVec<Stmt>,
     pub id: NodeId,
     /// Distinguishes between `unsafe { ... }` and `{ ... }`.
     pub rules: BlockCheckMode,

@@ -123,7 +123,7 @@ fn call_intrinsic(
 fn call_unreachable(cx: &ExtCtxt<'_>, span: Span) -> P<ast::Expr> {
     let call = call_intrinsic(cx, span, sym::unreachable, ThinVec::new());
     cx.expr_block(P::new(ast::Block {
-        stmts: thin_vec![cx.stmt_expr(call)],
+        stmts: core::iter::once(cx.stmt_expr(call)).collect(),
         id: ast::DUMMY_NODE_ID,
         rules: ast::BlockCheckMode::Unsafe(ast::CompilerGenerated),
         span,
