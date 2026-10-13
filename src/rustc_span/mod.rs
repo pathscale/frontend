@@ -196,6 +196,12 @@ impl SessionGlobals {
 
 #[cfg(feature = "parallel")]
 impl SessionGlobals {
+    pub(crate) fn can_share_for_parse(&self) -> bool {
+        self.symbol_interner.is_synchronized()
+            && self.span_interner.is_synchronized()
+            && self.hygiene_data.is_synchronized()
+    }
+
     /// An owned handle to the same immutable identities and synchronized session state.
     pub(crate) fn share_for_parse(&self) -> Self {
         Self {
@@ -305,6 +311,12 @@ pub fn session_globals_are_set() -> bool {
 /// Default edition, no source map.
 pub fn create_default_session_globals_then<R>(f: impl FnOnce() -> R) -> R {
     create_session_globals_then(edition::DEFAULT_EDITION, &[], None, f)
+}
+
+/// Parse and inspect source from another edition without carrying its identities out.
+pub(crate) fn with_source_edition_globals<R>(edition: Edition, f: impl FnOnce() -> R) -> R {
+    let globals = SessionGlobals::new(edition, &[], None);
+    SESSION_GLOBALS.set(&globals, f)
 }
 
 // If this ever becomes non thread-local, `decode_syntax_context`

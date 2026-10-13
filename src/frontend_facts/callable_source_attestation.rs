@@ -307,65 +307,74 @@ fn external_item_range(
     } else {
         None
     };
-    let expected_name = if own_ident.is_some() { Some(tcx.opt_item_name(def_id)?) } else { None };
+    let expected_name = if own_ident.is_some() {
+        Some(tcx.opt_item_name(def_id)?.as_str().to_string())
+    } else {
+        None
+    };
 
-    // The external crate edition is carried in its existing metadata root. Parsing is strict:
-    // the parser must accept the entire file with no errors in that defining edition.
+    // Source-token keyword classification reads the root edition from session globals.
+    // Keep the parsed AST and its symbols inside this temporary source-only session.
     let edition = tcx.cstore_untracked().crate_edition(def_id.krate);
-    let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
-    let psess = ParseSess::with_dcx(DiagCtxt::new(Box::new(SilentEmitter)), Arc::clone(&sm));
-    let mut psess = psess;
-    psess.edition = edition;
-    let krate = match crate::rustc_span::fatal_error::catch_fatal_errors(|| {
-        let mut parser = match new_parser_from_source_str(
-            &psess,
-            FileName::anon_source_code(source),
-            source.to_string(),
-            StripTokens::ShebangAndFrontmatter,
-        ) {
-            Ok(parser) => parser,
-            Err(diags) => {
-                for diag in diags {
-                    diag.cancel();
+    crate::rustc_span::with_source_edition_globals(edition, || {
+        let expected_name = expected_name
+            .as_deref()
+            .map(crate::rustc_span::Symbol::intern);
+        let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
+        let mut psess =
+            ParseSess::with_dcx(DiagCtxt::new(Box::new(SilentEmitter)), Arc::clone(&sm));
+        psess.edition = edition;
+        let krate = match crate::rustc_span::fatal_error::catch_fatal_errors(|| {
+            let mut parser = match new_parser_from_source_str(
+                &psess,
+                FileName::anon_source_code(source),
+                source.to_string(),
+                StripTokens::ShebangAndFrontmatter,
+            ) {
+                Ok(parser) => parser,
+                Err(diags) => {
+                    for diag in diags {
+                        diag.cancel();
+                    }
+                    return None;
                 }
-                return None;
+            };
+            match parser.parse_crate_mod() {
+                Ok(krate) => Some(krate),
+                Err(diag) => {
+                    diag.cancel();
+                    None
+                }
             }
+        }) {
+            Ok(Some(krate)) => krate,
+            _ => return None,
         };
-        match parser.parse_crate_mod() {
-            Ok(krate) => Some(krate),
-            Err(diag) => {
-                diag.cancel();
-                None
-            }
+        if psess.dcx().err_count() != 0 {
+            return None;
         }
-    }) {
-        Ok(Some(krate)) => krate,
-        _ => return None,
-    };
-    if psess.dcx().err_count() != 0 {
-        return None;
-    }
-    let files = sm.files();
-    let parsed_file = files.first()?;
-    let mut finder = DefinitionFinder {
-        kind: definition_kind,
-        name: expected_name,
-        own_ident,
-        own_anchor,
-        owner: parent,
-        owner_active: parent.is_none(),
-        owner_matches: 0,
-        candidates: Vec::new(),
-        file_base: parsed_file.start_pos,
-    };
-    visit::walk_crate(&mut finder, &krate);
-    if psess.dcx().err_count() != 0 || finder.owner_matches != usize::from(parent.is_some()) {
-        return None;
-    }
-    if finder.candidates.len() != 1 {
-        return None;
-    }
-    finder.candidates.first().copied()
+        let files = sm.files();
+        let parsed_file = files.first()?;
+        let mut finder = DefinitionFinder {
+            kind: definition_kind,
+            name: expected_name,
+            own_ident,
+            own_anchor,
+            owner: parent,
+            owner_active: parent.is_none(),
+            owner_matches: 0,
+            candidates: Vec::new(),
+            file_base: parsed_file.start_pos,
+        };
+        visit::walk_crate(&mut finder, &krate);
+        if psess.dcx().err_count() != 0 || finder.owner_matches != usize::from(parent.is_some()) {
+            return None;
+        }
+        if finder.candidates.len() != 1 {
+            return None;
+        }
+        finder.candidates.first().copied()
+    })
 }
 
 fn source_range(span: Span, file_base: BytePos, file_end: BytePos) -> Option<SourceRange> {
