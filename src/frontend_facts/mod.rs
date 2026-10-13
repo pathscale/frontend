@@ -3280,6 +3280,15 @@ pub struct BodyTypeIdentityFacts {
     pub callable_extraction_complete: bool,
     #[serde(default)]
     pub callable_coverage_gaps: Vec<BodyCallableIdentityCoverageGap>,
+    /// Source-authored macro call sites observed through this body's HIR expansions.
+    /// This is not a complete macro inventory: an absent call site is unknown, not absent.
+    /// Nested call sites that still carry expansion context are recorded as gaps; forwarded
+    /// source tokens are not claimed to have an independently recovered span.
+    /// These facts do not change expression or pattern extraction completeness.
+    #[serde(default)]
+    pub macro_invocations: Vec<BodyMacroInvocationIdentityFact>,
+    #[serde(default)]
+    pub macro_coverage_gaps: Vec<BodyMacroIdentityCoverageGap>,
 }
 
 /// Compiler-resolved identity for one source constructor or path pattern. The full source
@@ -3697,6 +3706,61 @@ pub enum BodyCallableIdentityCoverageGapKind {
 pub struct BodyCallableIdentityCoverageGap {
     pub kind: BodyCallableIdentityCoverageGapKind,
     pub span: Option<ByteSpan>,
+}
+
+/// The syntax form of a compiler-observed source macro invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyMacroInvocationKind {
+    Bang,
+    Attribute,
+    Derive,
+}
+
+/// Canonical compiler identity for a macro definition, bound to the defining crate context.
+/// A def-path hash without this context must not be joined across metadata sessions.
+/// Its target triple is the active analysis session's target, not a separate proof of an
+/// external macro crate's build target.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedMacroDefinitionIdentity {
+    pub definition: StableDefPathIdentity,
+    pub crate_context: ResolvedCallableSourceContext,
+}
+
+/// One source-authored macro invocation observed through a body expansion.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyMacroInvocationIdentityFact {
+    /// Exact original-source bytes occupied by this authored invocation.
+    pub callsite: ByteSpan,
+    /// Unknown only when expansions attributed to this same source range disagree.
+    pub kind: effects::StaticFact<BodyMacroInvocationKind>,
+    /// Unknown when rustc did not provide a macro definition identity.
+    pub definition: effects::StaticFact<ResolvedMacroDefinitionIdentity>,
+    /// Exact source digest for an external definition uniquely anchored as AST `MacroDef`.
+    /// Local, procedural-macro function, unsupported, and unavailable source stays Unknown.
+    #[serde(default = "unknown_macro_definition_source")]
+    pub definition_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+}
+
+/// A macro identity fact the HIR expansion walk could not safely project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyMacroIdentityCoverageGapKind {
+    CallsiteUnavailable,
+    CallsiteOutsideBody,
+    InvalidCallsite,
+    DefinitionUnavailable,
+    DefinitionNotMacro,
+    DefinitionSourceUnavailable,
+    ConflictingExpansionsAtCallsite,
+    CallsiteStillExpanded,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyMacroIdentityCoverageGap {
+    pub kind: BodyMacroIdentityCoverageGapKind,
+    /// Present only when an exact source-authored call site was recoverable.
+    pub callsite: Option<ByteSpan>,
 }
 
 /// Analyze exactly one function body in source with the public frontend's no-sysroot setup.
@@ -4127,6 +4191,23 @@ fn push_pattern_identity_gap(
     }
 }
 
+fn push_macro_identity_gap(
+    facts: &mut BodyTypeIdentityFacts,
+    kind: BodyMacroIdentityCoverageGapKind,
+    callsite: Option<ByteSpan>,
+) {
+    let gap = BodyMacroIdentityCoverageGap { kind, callsite };
+    if !facts.macro_coverage_gaps.contains(&gap) {
+        facts.macro_coverage_gaps.push(gap);
+    }
+}
+
+fn unknown_macro_definition_source() -> effects::StaticFact<DefinitionSourceAttestation> {
+    effects::StaticFact::Unknown {
+        why: "macro_definition_source_unavailable_in_legacy_facts".to_string(),
+    }
+}
+
 struct BodyTypeVisitor<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     input: &'a (Arc<SourceFile>, Arc<str>),
@@ -4151,11 +4232,168 @@ struct BodyExpressionParts {
     resolved_callable: Option<effects::StaticFact<Option<ResolvedCallableIdentity>>>,
 }
 
+impl BodyTypeVisitor<'_, '_> {
+    /// Record only expansion marks whose direct call site maps to authored bytes in this body.
+    /// The marks are root-to-leaf. Only direct call sites with an unexpanded span that maps
+    /// exactly into this body are emitted. A nested source invocation forwarded through an
+    /// outer macro can retain expansion context and becomes a gap rather than an exact fact.
+    /// The existing MacroExpansion type gap is deliberately untouched.
+    fn record_macro_invocations(&mut self, span: Span) {
+        let marks = span.ctxt().marks();
+        if marks.is_empty() {
+            return;
+        }
+        let tcx = self.tcx;
+        let input = self.input;
+        let body_span = self.body_span;
+        let Some(identity_facts) = self.identity_facts.as_deref_mut() else {
+            return;
+        };
+
+        for (expansion, _) in marks {
+            let data = expansion.expn_data();
+            let ExpnKind::Macro(macro_kind, _) = data.kind else {
+                continue;
+            };
+            let macro_kind = match macro_kind {
+                MacroKind::Bang => BodyMacroInvocationKind::Bang,
+                MacroKind::Attr => BodyMacroInvocationKind::Attribute,
+                MacroKind::Derive => BodyMacroInvocationKind::Derive,
+            };
+            if data.call_site.from_expansion() {
+                push_macro_identity_gap(
+                    identity_facts,
+                    BodyMacroIdentityCoverageGapKind::CallsiteStillExpanded,
+                    None,
+                );
+                continue;
+            }
+            let Some(callsite) = source_mapped_body_span(tcx, input, data.call_site) else {
+                push_macro_identity_gap(
+                    identity_facts,
+                    BodyMacroIdentityCoverageGapKind::CallsiteUnavailable,
+                    None,
+                );
+                continue;
+            };
+            if callsite.start >= callsite.end {
+                push_macro_identity_gap(
+                    identity_facts,
+                    BodyMacroIdentityCoverageGapKind::InvalidCallsite,
+                    Some(callsite),
+                );
+                continue;
+            }
+            if callsite.start < body_span.start || callsite.end > body_span.end {
+                push_macro_identity_gap(
+                    identity_facts,
+                    BodyMacroIdentityCoverageGapKind::CallsiteOutsideBody,
+                    Some(callsite),
+                );
+                continue;
+            }
+
+            let (definition, definition_source_attestation, gap) = match data.macro_def_id {
+                None => (
+                    effects::StaticFact::Unknown {
+                        why: "macro_definition_id_unavailable".to_string(),
+                    },
+                    effects::StaticFact::Unknown {
+                        why: "macro_definition_id_unavailable".to_string(),
+                    },
+                    Some(BodyMacroIdentityCoverageGapKind::DefinitionUnavailable),
+                ),
+                Some(def_id) if matches!(tcx.def_kind(def_id), DefKind::Macro(_)) => {
+                    let source_attestation = callable_source_attestation::attest_definition(
+                        tcx,
+                        def_id,
+                        DefinitionSourceKind::Macro,
+                    );
+                    let source_gap = if matches!(
+                        &source_attestation,
+                        effects::StaticFact::Known { .. }
+                    ) {
+                        None
+                    } else {
+                        Some(BodyMacroIdentityCoverageGapKind::DefinitionSourceUnavailable)
+                    };
+                    (
+                        effects::StaticFact::Known {
+                            value: ResolvedMacroDefinitionIdentity {
+                                definition: stable_def_path_identity(tcx, def_id),
+                                crate_context:
+                                    callable_source_attestation::source_context(tcx, def_id),
+                            },
+                        },
+                        source_attestation,
+                        source_gap,
+                    )
+                }
+                Some(_) => (
+                    effects::StaticFact::Unknown {
+                        why: "resolved_definition_is_not_a_macro".to_string(),
+                    },
+                    effects::StaticFact::Unknown {
+                        why: "resolved_definition_is_not_a_macro".to_string(),
+                    },
+                    Some(BodyMacroIdentityCoverageGapKind::DefinitionNotMacro),
+                ),
+            };
+            if let Some(gap) = gap {
+                push_macro_identity_gap(identity_facts, gap, Some(callsite.clone()));
+            }
+
+            let kind = effects::StaticFact::Known { value: macro_kind };
+            if let Some(index) = identity_facts
+                .macro_invocations
+                .iter()
+                .position(|fact| fact.callsite == callsite)
+            {
+                let conflict = {
+                    let previous = &mut identity_facts.macro_invocations[index];
+                    if previous.kind != kind
+                        || previous.definition != definition
+                        || previous.definition_source_attestation != definition_source_attestation
+                    {
+                        previous.kind = effects::StaticFact::Unknown {
+                            why: "conflicting_macro_kinds_at_callsite".to_string(),
+                        };
+                        previous.definition = effects::StaticFact::Unknown {
+                            why: "conflicting_macro_definitions_at_callsite".to_string(),
+                        };
+                        previous.definition_source_attestation = effects::StaticFact::Unknown {
+                            why: "conflicting_macro_definition_sources_at_callsite".to_string(),
+                        };
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if conflict {
+                    push_macro_identity_gap(
+                        identity_facts,
+                        BodyMacroIdentityCoverageGapKind::ConflictingExpansionsAtCallsite,
+                        Some(callsite),
+                    );
+                }
+            } else {
+                identity_facts.macro_invocations.push(BodyMacroInvocationIdentityFact {
+                    callsite,
+                    kind,
+                    definition,
+                    definition_source_attestation,
+                });
+            }
+        }
+    }
+}
+
 impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
     type NestedFilter = intravisit::IgnoreNested;
     type Result = ();
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
+        self.record_macro_invocations(expr.span);
         if expr.span.from_expansion() {
             let callsite = source_callsite_span(self.tcx, self.input, expr.span);
             match supported_body_desugaring(self.tcx, self.input, self.body_span, expr.span) {

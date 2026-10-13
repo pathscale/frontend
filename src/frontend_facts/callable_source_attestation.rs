@@ -66,6 +66,7 @@ pub struct ResolvedCallableSourceContext {
 #[serde(rename_all = "snake_case")]
 pub enum DefinitionSourceKind {
     Callable,
+    Macro,
     Trait,
     TraitImplementation,
     AssociatedType,
@@ -74,7 +75,7 @@ pub enum DefinitionSourceKind {
     NominalType,
 }
 
-/// Verifiable source identity for a callable or trait-related definition.
+/// Verifiable source identity for a callable, trait-related, or macro definition.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DefinitionSourceAttestation {
     pub definition: StableDefPathIdentity,
@@ -119,6 +120,7 @@ pub(super) fn attest_definition(
         DefinitionSourceKind::Callable => {
             matches!(tcx.def_kind(def_id), DefKind::Fn | DefKind::AssocFn | DefKind::Ctor(..))
         }
+        DefinitionSourceKind::Macro => matches!(tcx.def_kind(def_id), DefKind::Macro(_)),
         DefinitionSourceKind::Trait => matches!(tcx.def_kind(def_id), DefKind::Trait),
         DefinitionSourceKind::TraitImplementation => {
             matches!(tcx.def_kind(def_id), DefKind::Impl { of_trait: true })
@@ -139,6 +141,9 @@ pub(super) fn attest_definition(
     }
     let compiler_anchor = tcx.def_span(def_id);
     let span = if def_id.is_local() {
+        if matches!(definition_kind, DefinitionSourceKind::Macro) {
+            return unknown("local_macro_definition_source_not_attested");
+        }
         tcx.hir_span_with_body(tcx.local_def_id_to_hir_id(def_id.expect_local()))
     } else {
         compiler_anchor
@@ -432,10 +437,14 @@ impl DefinitionFinder {
             | ItemKind::Enum(ident, ..)
             | ItemKind::Union(ident, ..) => Some(*ident),
             ItemKind::Trait(trait_) => Some(trait_.ident),
+            ItemKind::MacroDef(ident, _) => Some(*ident),
             _ => None,
         };
         let kind_matches = match self.kind {
-            DefinitionSourceKind::Callable => ident.is_some(),
+            DefinitionSourceKind::Callable => {
+                ident.is_some() && !matches!(item.kind, ItemKind::MacroDef(..))
+            }
+            DefinitionSourceKind::Macro => matches!(item.kind, ItemKind::MacroDef(..)),
             DefinitionSourceKind::Trait => matches!(item.kind, ItemKind::Trait(_)),
             DefinitionSourceKind::TraitImplementation => {
                 matches!(&item.kind, ItemKind::Impl(imp) if imp.of_trait.is_some())
