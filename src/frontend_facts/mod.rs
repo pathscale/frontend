@@ -18,12 +18,17 @@
 //! These types serialize, so a caller can also take them as JSON from `frontend-facts`.
 //! Within-crate first. A sysroot is optional and is used only when a caller names one.
 
-pub mod syntax;
-mod emit;
-pub mod facts_api;
+mod callable_source_attestation;
+mod callable_trait_evidence;
 pub mod depend;
 pub mod effects;
+mod emit;
+pub mod facts_api;
 pub mod lang_item_stubs;
+pub mod syntax;
+pub use callable_source_attestation::CallableDefinitionSourceAttestation;
+pub use callable_source_attestation::ResolvedCallableSourceContext;
+pub use callable_source_attestation::{DefinitionSourceAttestation, DefinitionSourceKind};
 
 pub use emit::CapturedDiagnostics;
 use emit::FactEmitter;
@@ -46,11 +51,11 @@ use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, ExprKind, ItemKind, Node, UseKind};
 use crate::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
 use crate::rustc_middle::middle::privacy::EffectiveVisibilities;
-use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
+use crate::rustc_middle::ty::{self, RegionExt, TyCtxt, TypeVisitableExt};
 use crate::rustc_session::config::{Input, Options, Sysroot};
 use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::hygiene::{ExpnId, ExpnKind, MacroKind};
-use crate::rustc_span::{FileName, SourceFile, Span};
+use crate::rustc_span::{FileName, SourceFile, SourceFileHash, SourceFileHashAlgorithm, Span};
 use crate::rustc_structures::CrateType;
 use serde::{Deserialize, Serialize};
 pub mod site;
@@ -154,6 +159,10 @@ pub struct Definition {
     /// is retained when false so response-local joins still work.
     #[serde(default)]
     pub identity_complete: bool,
+    /// Verified nominal type identity, tied to its source and metadata context. `None` means
+    /// this is not a nominal type, its identity is tainted, or source evidence is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nominal_type_source_attestation: Option<DefinitionSourceAttestation>,
     pub name: String,
     pub kind: FactKind,
     pub span: ByteSpan,
@@ -279,6 +288,14 @@ pub struct ModuleName {
     /// does not establish a Cargo package, target or globally canonical identity.
     #[serde(default)]
     pub target_identity_complete: bool,
+    /// Whether this exact resolved target DefId is local to the current TyCtxt. Only
+    /// `Some(true)` supports a same-response join to a local Definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_is_local: Option<bool>,
+    /// Verified identity and source/metadata context when this resolved target is a nominal type.
+    /// `None` covers non-nominal targets and any missing, tainted, or unverifiable evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_nominal_type_source_attestation: Option<DefinitionSourceAttestation>,
     /// Visible outside the crate, as `pub` makes it.
     pub public: bool,
 }
@@ -415,6 +432,9 @@ pub struct Impl {
     #[serde(default)]
     pub identity_complete: bool,
     pub self_type: String,
+    /// Source-attested nominal identity for the resolved self type, when it is a direct ADT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_self_nominal_type_source_attestation: Option<DefinitionSourceAttestation>,
     /// Resolved trait identity, omitted when resolution only reached an analyzer-injected
     /// placeholder. `trait_ref` keeps the spelling written by the source.
     pub trait_def_path: Option<Arc<str>>,
@@ -424,6 +444,16 @@ pub struct Impl {
     /// canonical identity.
     #[serde(default)]
     pub trait_identity_complete: bool,
+    /// Whether compiler lang-item metadata proves the resolved trait is `Deref`. `Some(false)`
+    /// is a proven non-match; `None` means this session could not compare both identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_language_deref: Option<bool>,
+    /// Source-attested nominal identity of the exact implementation of `Deref::Target`, when
+    /// the associated item mapping resolves directly to an ADT. This does not encode generic
+    /// arguments; consumers must retain their complete receiver/type checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_deref_target_nominal_type_source_attestation:
+        Option<DefinitionSourceAttestation>,
     /// The trait as written, generic arguments included: `SliceIndex<str>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trait_ref: Option<String>,
@@ -513,6 +543,15 @@ pub struct Reference {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrateFacts {
     pub crate_name: String,
+    /// Exact compiler/cfg/target and local crate metadata context for this facts response.
+    /// This reuses callable source-attestation context; it is not a Cargo or global identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_context: Option<ResolvedCallableSourceContext>,
+    /// Digest of the rustc-normalized root input file; absent if the source bytes were unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_content_digest: Option<String>,
     /// Library feature gates enabled by this crate's root.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_features: Vec<String>,
@@ -595,6 +634,23 @@ fn true_when_absent() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+/// Hash source after the normalization used by rustc's `SourceFile`: remove a UTF-8 BOM and
+/// normalize CRLF, then return the same BLAKE3 text format used by source attestations.
+pub fn source_capture_digest(source: &str) -> Option<String> {
+    let normalized = SourceFile::new(
+        FileName::anon_source_code(source),
+        source.to_string(),
+        None,
+        None,
+    )
+    .ok()?;
+    let normalized = normalized.src.as_deref()?;
+    Some(
+        SourceFileHash::new_in_memory(SourceFileHashAlgorithm::Blake3, normalized.as_bytes())
+            .to_string(),
+    )
 }
 
 /// Map a rustc `DefKind` to a fact kind. `None` means handled by another list
@@ -691,20 +747,17 @@ pub fn extract_items(tcx: TyCtxt<'_>) -> CrateFacts {
 
 /// [`extract_items`] when the compiler input has an analyzer-appended source suffix.
 /// `original_end` is the exact byte boundary where that suffix begins in the input file.
-pub fn extract_items_with_synthetic_suffix(
-    tcx: TyCtxt<'_>,
-    original_end: usize,
-) -> CrateFacts {
+pub fn extract_items_with_synthetic_suffix(tcx: TyCtxt<'_>, original_end: usize) -> CrateFacts {
     extract_with(tcx, false, Some(original_end))
 }
 
-fn extract_with(
-    tcx: TyCtxt<'_>,
-    bodies: bool,
-    synthetic_start: Option<usize>,
-) -> CrateFacts {
+fn extract_with(tcx: TyCtxt<'_>, bodies: bool, synthetic_start: Option<usize>) -> CrateFacts {
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
-    let mut facts = CrateFacts { crate_name, ..CrateFacts::default() };
+    let mut facts = CrateFacts {
+        crate_name,
+        source_context: Some(callable_source_attestation::source_context(tcx, CRATE_DEF_ID.to_def_id())),
+        ..CrateFacts::default()
+    };
     facts.enabled_features = tcx
         .features()
         .enabled_features_iter_stable_order()
@@ -727,6 +780,17 @@ fn extract_with(
 
     // The input file's name, printed once and shared by every span in it.
     let input = input_file(tcx);
+    facts.source_content_digest = input.0.src.as_ref().map(|source| {
+        SourceFileHash::new_in_memory(
+            SourceFileHashAlgorithm::Blake3,
+            source.as_bytes(),
+        )
+        .to_string()
+    });
+    facts.source_digest_scheme = facts
+        .source_content_digest
+        .as_ref()
+        .map(|_| "rustc_normalized_source_blake3_v1".to_string());
 
     // What is reachable from outside the crate: rustc's own table, the `effective_visibilities`
     // query of `rustc_privacy`. The resolver's table, which it starts from, covers modules,
@@ -737,13 +801,12 @@ fn extract_with(
     // is, and associated items read as not exported.
     // In a strict `no_core` read, use that resolver table directly instead of forcing a query
     // that can require language items the input does not provide.
-    let exported = if tcx.features().enabled(crate::rustc_span::sym::no_core)
-        && !tcx.sess.is_library_read()
-    {
-        None
-    } else {
-        catch_fatal_errors(|| tcx.effective_visibilities(())).ok()
-    };
+    let exported =
+        if tcx.features().enabled(crate::rustc_span::sym::no_core) && !tcx.sess.is_library_read() {
+            None
+        } else {
+            catch_fatal_errors(|| tcx.effective_visibilities(())).ok()
+        };
     // A fallback is whole when this crate has no definitions whose exported status privacy adds.
     let exports_whole = exported.is_some()
         || (tcx.sess.is_library_read()
@@ -779,20 +842,16 @@ fn extract_with(
     let mut visibility_gaps: Vec<String> = def_facts
         .iter()
         .filter_map(|fact| match fact {
-            DefFact::Definition {
-                fact,
-                visibility_known: false,
-                ..
-            } => {
+            DefFact::Definition { fact, visibility_known: false, .. } => {
                 Some(fact.def_path.to_string())
             }
             DefFact::Impl(_) | DefFact::Definition { .. } | DefFact::Skipped => None,
         })
         .collect();
     visibility_gaps.sort();
-    let synthetic_impl_gap = def_facts.iter().any(|fact| {
-        matches!(fact, DefFact::Impl(pending) if pending.synthetic_trait)
-    });
+    let synthetic_impl_gap = def_facts
+        .iter()
+        .any(|fact| matches!(fact, DefFact::Impl(pending) if pending.synthetic_trait));
 
     // From here on a local definition's path is the one the stage above printed, handed
     // forward: `def_facts` is frozen, indexed by `DefIndex`, and read in place.
@@ -1125,14 +1184,27 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
     }
 
     /// The crate root's HIR span encloses analyzer-appended declarations. Keep its reported
-    /// container span at the exact original-input boundary; this special case does not clamp
-    /// spans from source items or expansions.
+    /// container span at the original-input boundary only when that raw byte offset maps to an
+    /// exact boundary in the normalized SourceFile. `synthetic_start` remains in original input
+    /// coordinates for taint checks; this special case does not clamp spans from items or
+    /// expansions.
     fn definition_span(&self, def_id: DefId, span: Span) -> ByteSpan {
         let mut reported = self.span(span);
         if def_id == CRATE_DEF_ID.to_def_id() {
             if let Some(original_end) = self.synthetic_start {
-                reported.end = u32::try_from(original_end)
-                    .expect("source map positions fit in a u32 byte offset");
+                if original_end <= self.input.0.unnormalized_source_len as usize {
+                    if let Ok(original_end) = u32::try_from(original_end) {
+                        let normalized_end = self.input.0.normalized_byte_pos(original_end);
+                        let normalized_end_relative =
+                            self.input.0.relative_position(normalized_end);
+                        if self.input.0.contains(normalized_end)
+                            && self.input.0.original_relative_byte_pos(normalized_end).0
+                                == original_end
+                        {
+                            reported.end = normalized_end_relative.0;
+                        }
+                    }
+                }
             }
         }
         reported
@@ -1170,6 +1242,8 @@ fn module_names<'tcx>(
                 namespace,
                 target_def_path: names.path(def_id),
                 target_identity_complete: def_path_identity_complete(tcx, names, def_id),
+                target_is_local: Some(def_id.is_local()),
+                target_nominal_type_source_attestation: nominal_type_source_attestation(tcx, names, def_id),
                 public: child.vis.is_public(),
             })
         })
@@ -1273,10 +1347,7 @@ impl PendingImpl {
 /// resolution, so the HIR member result alone is not enough to identify this case.
 fn trait_impl_visibility_unresolved(tcx: TyCtxt<'_>, local: LocalDefId) -> bool {
     let Node::ImplItem(item) = tcx.hir_node_by_def_id(local) else { return false };
-    if !matches!(
-        item.impl_kind,
-        hir::ImplItemImplKind::Trait { trait_item_def_id: Err(_), .. }
-    ) {
+    if !matches!(item.impl_kind, hir::ImplItemImplKind::Trait { trait_item_def_id: Err(_), .. }) {
         return false;
     }
     let parent = tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(local)).def_id;
@@ -1287,17 +1358,11 @@ fn trait_impl_visibility_unresolved(tcx: TyCtxt<'_>, local: LocalDefId) -> bool 
     };
     implementation
         .of_trait
-        .is_some_and(|header| {
-            matches!(header.trait_ref.path.res, crate::rustc_hir::def::Res::Err)
-        })
+        .is_some_and(|header| matches!(header.trait_ref.path.res, crate::rustc_hir::def::Res::Err))
 }
 
 /// Whether this impl's compiler identity depends on an injected trait placeholder.
-fn impl_uses_synthetic_trait(
-    tcx: TyCtxt<'_>,
-    names: &Names<'_, '_>,
-    local: LocalDefId,
-) -> bool {
+fn impl_uses_synthetic_trait(tcx: TyCtxt<'_>, names: &Names<'_, '_>, local: LocalDefId) -> bool {
     let Node::Item(hir::Item { kind: ItemKind::Impl(implementation), .. }) =
         tcx.hir_node_by_def_id(local)
     else {
@@ -1332,6 +1397,42 @@ fn def_path_identity_complete(tcx: TyCtxt<'_>, names: &Names<'_, '_>, def_id: De
     true
 }
 
+
+/// Return the existing source attestation only for an untainted nominal definition whose source
+/// rustc can verify. The attestation embeds the StableDefPathIdentity and its source context.
+fn nominal_type_source_attestation(
+    tcx: TyCtxt<'_>,
+    names: &Names<'_, '_>,
+    def_id: DefId,
+) -> Option<DefinitionSourceAttestation> {
+    if names.synthetic_def(def_id) || !def_path_identity_complete(tcx, names, def_id) {
+        return None;
+    }
+    match callable_source_attestation::attest_definition(
+        tcx,
+        def_id,
+        DefinitionSourceKind::NominalType,
+    ) {
+        effects::StaticFact::Known { value } => Some(value),
+        effects::StaticFact::Unknown { .. } => None,
+    }
+}
+
+/// Resolve just the nominal declaration of a direct ADT. Generic arguments are intentionally
+/// not discarded into a complete type proof; callers must preserve any separate type guards.
+fn nominal_type_source_attestation_for_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    names: &Names<'_, 'tcx>,
+    resolved: ty::Ty<'tcx>,
+) -> Option<DefinitionSourceAttestation> {
+    if resolved.references_error() {
+        return None;
+    }
+    let ty::TyKind::Adt(definition, _) = *resolved.kind() else {
+        return None;
+    };
+     nominal_type_source_attestation(tcx, names, definition.did())
+ }
 /// Whether a body owner is an unresolved trait-impl item or a closure/const nested inside one.
 /// Stop at another item boundary so a nested local item keeps its own type-check context.
 fn body_in_unresolved_trait_impl(tcx: TyCtxt<'_>, owner: LocalDefId) -> bool {
@@ -1375,6 +1476,7 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
     let mut definition = Definition {
         def_path: names.path(def_id),
         identity_complete,
+        nominal_type_source_attestation: nominal_type_source_attestation(tcx, names, def_id),
         name: name.to_string(),
         kind,
         span: names.definition_span(def_id, tcx.def_span(def_id)),
@@ -1411,10 +1513,7 @@ fn def_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId)
         definition.opaque.push("body".to_string());
     }
     describe_shape(tcx, local, &mut definition);
-    DefFact::Definition {
-        fact: definition,
-        visibility_known,
-    }
+    DefFact::Definition { fact: definition, visibility_known }
 }
 
 struct AssertVisitor<'tcx> {
@@ -1459,11 +1558,7 @@ fn is_indexed_assert_macro(tcx: TyCtxt<'_>, expansion: ExpnId) -> bool {
     let Some(name) = tcx.opt_item_name(def_id) else { return false };
     matches!(
         name.as_str(),
-        "assert"
-            | "assert_eq"
-            | "debug_assert"
-            | "debug_assert_eq"
-            | "debug_assert_ne"
+        "assert" | "assert_eq" | "debug_assert" | "debug_assert_eq" | "debug_assert_ne"
     )
 }
 
@@ -1531,8 +1626,7 @@ struct DocFacts {
 }
 
 fn doc_facts(tcx: TyCtxt<'_>, def_id: DefId) -> DocFacts {
-    catch_fatal_errors(|| doc_facts_from_attrs(tcx.get_all_attrs(def_id)))
-        .unwrap_or_default()
+    catch_fatal_errors(|| doc_facts_from_attrs(tcx.get_all_attrs(def_id))).unwrap_or_default()
 }
 
 fn doc_facts_from_attrs(attrs: &[hir::Attribute]) -> DocFacts {
@@ -1639,8 +1733,9 @@ fn generics_text(tcx: TyCtxt<'_>, generics: &hir::Generics<'_>) -> (Vec<String>,
             hir::WherePredicateKind::BoundPredicate(bound) => {
                 let bounds: Vec<String> =
                     bound.bounds.iter().filter_map(|b| source_text(tcx, b.span())).collect();
-                (!bounds.is_empty())
-                    .then(|| format!("{}: {}", type_text(tcx, bound.bounded_ty), bounds.join(" + ")))
+                (!bounds.is_empty()).then(|| {
+                    format!("{}: {}", type_text(tcx, bound.bounded_ty), bounds.join(" + "))
+                })
             }
             hir::WherePredicateKind::RegionPredicate(_) => source_text(tcx, predicate.span),
         })
@@ -1814,6 +1909,44 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
         hir_impl.map(|hir_impl| generics_text(tcx, hir_impl.generics)).unwrap_or_default();
     let local_trait = trait_id.and_then(DefId::as_local);
     let synthetic_trait = impl_uses_synthetic_trait(tcx, names, local);
+    let is_language_deref = if synthetic_trait {
+        None
+    } else {
+        match (trait_id, tcx.lang_items().deref_trait()) {
+            (Some(trait_id), Some(deref_trait)) => Some(trait_id == deref_trait),
+            _ => None,
+        }
+    };
+    let resolved_self_nominal_type_source_attestation = catch_fatal_errors(|| {
+        let resolved = tcx.type_of(def_id).instantiate_identity().skip_normalization();
+        nominal_type_source_attestation_for_ty(tcx, names, resolved)
+    })
+    .ok()
+    .flatten();
+    let resolved_deref_target_nominal_type_source_attestation =
+        if is_language_deref == Some(true) {
+            catch_fatal_errors(|| {
+                let target_def_id = tcx.lang_items().deref_target()?;
+                let item_def_id =
+                    *tcx.impl_item_implementor_ids(def_id).get(&target_def_id)?;
+                if tcx.def_kind(item_def_id) != DefKind::AssocTy {
+                    return None;
+                }
+                let maps_to_target = tcx.opt_associated_item(item_def_id).is_some_and(|item| {
+                    item.trait_item_def_id() == Some(target_def_id)
+                        && item.impl_container(tcx) == Some(def_id)
+                });
+                if !maps_to_target {
+                    return None;
+                }
+                let resolved = tcx.type_of(item_def_id).instantiate_identity().skip_normalization();
+                nominal_type_source_attestation_for_ty(tcx, names, resolved)
+            })
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
     let trait_identity_complete = !synthetic_trait
         && trait_id.is_none_or(|trait_id| def_path_identity_complete(tcx, names, trait_id));
     // A trait from another crate has no fact here to share, so it is printed now.
@@ -1847,8 +1980,11 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
             def_path: names.path(def_id),
             identity_complete: def_path_identity_complete(tcx, names, def_id),
             self_type,
+            resolved_self_nominal_type_source_attestation,
             trait_def_path,
             trait_identity_complete,
+            is_language_deref,
+            resolved_deref_target_nominal_type_source_attestation,
             trait_ref,
             generics,
             predicates,
@@ -1856,11 +1992,9 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
             origin: if tcx.sess.is_schema_transcriber_span(tcx.def_span(def_id))
                 || hir_impl.is_some_and(|hir_impl| {
                     hir_impl.items.iter().any(|item| {
-                        tcx.sess
-                            .is_schema_transcriber_span(tcx.def_span(item.owner_id.to_def_id()))
+                        tcx.sess.is_schema_transcriber_span(tcx.def_span(item.owner_id.to_def_id()))
                     })
-                })
-            {
+                }) {
                 FactOrigin::Schema
             } else if tcx.is_builtin_derived(def_id) {
                 FactOrigin::Builtin
@@ -2147,11 +2281,7 @@ pub struct Dependency {
 impl Dependency {
     /// A dependency the crate being read names.
     pub fn new(name: impl Into<String>, metadata: impl Into<String>) -> Self {
-        Dependency {
-            name: name.into(),
-            metadata: metadata.into(),
-            prelude: true,
-        }
+        Dependency { name: name.into(), metadata: metadata.into(), prelude: true }
     }
 
     /// A dependency only other dependencies name.
@@ -2175,6 +2305,10 @@ pub struct Loaded<'a> {
     /// What `env!` and `option_env!` read: `CARGO_PKG_VERSION` and a build script's
     /// `cargo:rustc-env`. rustc's `--env-set`: the process environment is not consulted for them.
     pub env: &'a [(String, String)],
+    /// The rust-src tree root containing `library/`, used only when imported
+    /// metadata names files under its virtual source root. This is supplied by
+    /// the caller; frontend never searches for a toolchain or guesses a path.
+    pub rust_source_base_dir: Option<&'a eko::path::Path>,
 }
 
 /// One crate on disk to read, and how. [`CrateRead::new`] is [`analyze_crate`]'s defaults:
@@ -2402,6 +2536,8 @@ impl<'a> Setup<'a> {
         opts.unstable_features = UnstableFeatures::Allow;
         opts.jobs.frontend = frontend_jobs(self.width);
         opts.unstable_opts.force_unstable_if_unmarked = self.standard_library;
+        opts.real_rust_source_base_dir =
+            self.loaded.rust_source_base_dir.map(eko::path::Path::to_path_buf);
         // The one switch a library read sets (`Session::is_library_read`), and the lint cap
         // that goes with it: no lint judges a library, whatever levels its source sets.
         if self.library {
@@ -2518,6 +2654,11 @@ fn analyze_input(
         other => (other, false, None),
     };
     let mut opts = setup.options(&input)?;
+    if write_metadata.is_some() && opts.unstable_opts.src_hash_algorithm.is_none() {
+        // Imported SourceFiles contain no source text. A hash lets their caller
+        // reload the named file while rejecting bytes from a stale or remapped path.
+        opts.unstable_opts.src_hash_algorithm = Some(SourceFileHashAlgorithm::Sha256);
+    }
     if inject_stubs {
         opts.unstable_opts
             .crate_attr
@@ -3139,6 +3280,12 @@ pub struct BodyTypeIdentityFacts {
     /// Includes `ExpressionTypeMissing` for any per-expression identity that is unknown.
     #[serde(default)]
     pub coverage_gaps: Vec<BodyTypeCoverageGap>,
+    /// Independent call-target coverage. This does not change type/pattern `extraction_complete`
+    /// and does not attest external callable behavior or source contents.
+    #[serde(default)]
+    pub callable_extraction_complete: bool,
+    #[serde(default)]
+    pub callable_coverage_gaps: Vec<BodyCallableIdentityCoverageGap>,
 }
 
 /// Compiler-resolved identity for one source constructor or path pattern. The full source
@@ -3178,13 +3325,27 @@ pub struct BodyExpressionIdentityFact {
     /// Known `None` means a resolved source expression that is not an enum variant.
     /// Unknown means variant resolution could not be established.
     pub resolved_variant: effects::StaticFact<Option<ResolvedVariantIdentity>>,
+    /// Absent on older wire responses. When present, known `None` means this expression is not
+    /// a call; a known identity is only the compiler-selected item, not a behavior proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_callable: Option<effects::StaticFact<Option<ResolvedCallableIdentity>>>,
 }
 
 /// A type identity derived from rustc's resolved `Ty`, never from its display spelling.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResolvedTypeIdentity {
-    Primitive { primitive: ResolvedPrimitive },
+    Primitive {
+        primitive: ResolvedPrimitive,
+    },
+    Tuple {
+        elements: Vec<ResolvedTypeIdentity>,
+    },
+    Reference {
+        mutability: ResolvedReferenceMutability,
+        region: ResolvedRegionIdentity,
+        referent: Box<ResolvedTypeIdentity>,
+    },
     Adt {
         definition: StableDefPathIdentity,
         arguments: Vec<ResolvedTypeIdentity>,
@@ -3198,6 +3359,218 @@ pub enum ResolvedTypeIdentity {
         variant: ResolvedVariantIdentity,
         arguments: Vec<ResolvedTypeIdentity>,
     },
+    /// A resolved function or associated-function item, distinct from a function pointer.
+    FunctionItem {
+        definition: StableDefPathIdentity,
+        arguments: Vec<ResolvedTypeIdentity>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedReferenceMutability {
+    Shared,
+    Mutable,
+}
+
+/// A compiler region identity. `Erased` records rustc's erasure explicitly; it is not evidence
+/// that two source lifetimes are equivalent. Inference and placeholder regions are unknown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedRegionIdentity {
+    Static,
+    Erased,
+    EarlyBound { parameter: StableDefPathIdentity },
+    Bound { debruijn: u32, variable: u32, region_kind: ResolvedBoundRegionKind },
+    LateParam { scope: StableDefPathIdentity, region_kind: ResolvedLateRegionKind },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedBoundRegionKind {
+    Anonymous,
+    Named { parameter: StableDefPathIdentity },
+    ClosureEnvironment,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedLateRegionKind {
+    Anonymous { index: u32 },
+    Named { parameter: StableDefPathIdentity },
+    ClosureEnvironment,
+}
+
+/// Compiler-selected call target identity. It is bound to the containing expression's source
+/// span and the caller's exact compiler/source context; the hash alone does not prove behavior.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableIdentity {
+    pub definition: StableDefPathIdentity,
+    pub kind: ResolvedCallableKind,
+    /// Source evidence for this exact compiler-selected definition. `Unknown` keeps the target
+    /// identity available while refusing to claim its implementation source was verified.
+    pub source_attestation: effects::StaticFact<CallableDefinitionSourceAttestation>,
+    /// Absent on legacy wire data. Unknown means extraction was unavailable; a known empty
+    /// vector means the callable has no generic substitutions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_substitutions:
+        Option<effects::StaticFact<Vec<ResolvedCallableGenericSubstitution>>>,
+    /// Declared predicates preserve canonical generic parameters. Known empty means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_trait_predicates:
+        Option<effects::StaticFact<Vec<ResolvedCallableDeclaredTraitPredicate>>>,
+    /// Relevant declared obligations and selection results. Known empty means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_trait_obligations:
+        Option<effects::StaticFact<Vec<ResolvedCallableTraitObligation>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableGenericSubstitution {
+    pub parameter: StableDefPathIdentity,
+    pub parameter_kind: ResolvedCallableGenericParameterKind,
+    pub argument: effects::StaticFact<ResolvedCallableGenericArgumentIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedCallableGenericParameterKind {
+    Lifetime,
+    Type,
+    Const,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedCallableGenericArgumentIdentity {
+    Type { value: Box<ResolvedCallableGenericTypeIdentity> },
+    Lifetime { value: ResolvedRegionIdentity },
+    Const { value: effects::StaticFact<ResolvedCallableConstIdentity> },
+}
+
+/// Canonical proof type identity. `Parameter` is for declared predicates; selection inputs
+/// must reject it before issuing a fully-monomorphized query. `Adt` is nominal and retains args.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedCallableGenericTypeIdentity {
+    Primitive {
+        primitive: ResolvedPrimitive,
+    },
+    Tuple {
+        elements: Vec<ResolvedCallableGenericTypeIdentity>,
+    },
+    Reference {
+        mutability: ResolvedReferenceMutability,
+        region: ResolvedRegionIdentity,
+        referent: Box<ResolvedCallableGenericTypeIdentity>,
+    },
+    Adt {
+        definition: StableDefPathIdentity,
+        /// Source attestation for the nominal type declaration. None means this was serialized
+        /// by a producer predating nominal declaration attestations; Some(Unknown) is explicit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_attestation: Option<effects::StaticFact<DefinitionSourceAttestation>>,
+        arguments: Vec<effects::StaticFact<ResolvedCallableGenericArgumentIdentity>>,
+    },
+    Parameter {
+        parameter: StableDefPathIdentity,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedCallableConstIdentity {
+    ScalarValue { ty: Box<ResolvedCallableGenericTypeIdentity>, scalar_bits_hex: String },
+    Parameter { parameter: StableDefPathIdentity, ty: Box<ResolvedCallableGenericTypeIdentity> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableDeclaredTraitPredicate {
+    pub ordinal: u32,
+    pub polarity: ResolvedCallableTraitPolarity,
+    pub has_bound_vars: bool,
+    pub trait_ref: effects::StaticFact<ResolvedCallableTraitRefIdentity>,
+}
+
+/// Positional trait arguments include Self at position zero.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableTraitRefIdentity {
+    pub definition: StableDefPathIdentity,
+    pub arguments: Vec<effects::StaticFact<ResolvedCallableGenericArgumentIdentity>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedCallableTraitPolarity {
+    Positive,
+    Negative,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableTraitObligation {
+    pub ordinal: u32,
+    pub polarity: ResolvedCallableTraitPolarity,
+    pub trait_ref: effects::StaticFact<ResolvedCallableTraitRefIdentity>,
+    pub trait_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+    pub selection: effects::StaticFact<ResolvedCallableTraitSelection>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResolvedCallableTraitSelection {
+    UserDefined {
+        implementation: StableDefPathIdentity,
+        implementation_arguments: effects::StaticFact<Vec<ResolvedCallableGenericSubstitution>>,
+        implemented_trait: effects::StaticFact<ResolvedCallableTraitRefIdentity>,
+        implementation_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+        associated_types: effects::StaticFact<Vec<ResolvedCallableAssociatedTypeProjection>>,
+        methods: effects::StaticFact<Vec<ResolvedCallableTraitMethodImplementation>>,
+    },
+    Param,
+    Builtin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableAssociatedTypeProjection {
+    pub trait_associated_type: StableDefPathIdentity,
+    pub trait_item_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+    pub projection_arguments: effects::StaticFact<Vec<ResolvedCallableGenericSubstitution>>,
+    pub implementation_item: effects::StaticFact<StableDefPathIdentity>,
+    pub implementation_item_arguments:
+        effects::StaticFact<Vec<ResolvedCallableGenericSubstitution>>,
+    pub implementation_item_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+    pub value: effects::StaticFact<ResolvedCallableGenericTypeIdentity>,
+    /// Bounds declared on this associated type and the compiler's selected proofs for them.
+    /// Known empty means the associated type has no trait bounds.
+    pub trait_obligations: effects::StaticFact<Vec<ResolvedCallableTraitObligation>>,
+}
+
+/// Compiler-selected body for one trait method. The actual body can be an impl item, an inherited
+/// impl item, or a trait default; unresolved, ambiguous, and non-item results remain Unknown.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableTraitMethodImplementation {
+    pub trait_method: StableDefPathIdentity,
+    pub trait_method_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+    pub selected_body: effects::StaticFact<ResolvedCallableTraitMethodBody>,
+}
+
+/// The exact item rustc resolves as the callable body for a selected trait method. `defining_owner`
+/// lets consumers distinguish the selected impl, an inherited impl, or a trait default.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedCallableTraitMethodBody {
+    pub definition: StableDefPathIdentity,
+    pub defining_owner: StableDefPathIdentity,
+    pub defining_owner_source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+    pub arguments: effects::StaticFact<Vec<ResolvedCallableGenericSubstitution>>,
+    pub source_attestation: effects::StaticFact<DefinitionSourceAttestation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedCallableKind {
+    DirectItem,
+    SelectedMethod,
+    Constructor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -3320,6 +3693,18 @@ pub struct BodyTypeCoverageGap {
     pub span: Option<ByteSpan>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyCallableIdentityCoverageGapKind {
+    TargetUnavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BodyCallableIdentityCoverageGap {
+    pub kind: BodyCallableIdentityCoverageGapKind,
+    pub span: Option<ByteSpan>,
+}
+
 /// Analyze exactly one function body in source with the public frontend's no-sysroot setup.
 ///
 /// body_span must be the full source range of that function's HIR body value, normally the
@@ -3437,10 +3822,8 @@ fn analyze_body_facts_internal(
     let mut opts = match setup.options(&input) {
         Ok(opts) => opts,
         Err(_) => {
-            let mut report = body_identity_report_with_gap(
-                BodyTypeCoverageGapKind::FrontendFatal,
-                None,
-            );
+            let mut report =
+                body_identity_report_with_gap(BodyTypeCoverageGapKind::FrontendFatal, None);
             report.type_facts.fatal = true;
             return report;
         }
@@ -3561,12 +3944,14 @@ fn extract_body_type_identity(
     report.type_facts.typeck_tainted_by_errors = Some(typeck.tainted_by_errors.is_some());
     if capture_identities {
         report.identity_facts.pattern_extraction_complete = true;
+        report.identity_facts.callable_extraction_complete = true;
     }
     {
         let mut visitor = BodyTypeVisitor {
             tcx,
             input: &input,
             body_span: &exact_span,
+            owner,
             typeck,
             facts: &mut report.type_facts,
             identity_facts: capture_identities.then_some(&mut report.identity_facts),
@@ -3604,15 +3989,20 @@ fn extract_body_type_identity(
         for gap in identity_gaps {
             push_identity_gap(&mut report.identity_facts, gap.kind, gap.span);
         }
-        let pattern_identity_complete = report.identity_facts.pattern_extraction_complete
-            && report.identity_facts.pattern_coverage_gaps.is_empty()
-            && report.identity_facts.patterns.iter().all(|fact| {
-                matches!(
-                    &fact.resolved_variant,
-                    effects::StaticFact::Known { .. }
-                )
-            });
+        let pattern_identity_complete =
+            report.identity_facts.pattern_extraction_complete
+                && report.identity_facts.pattern_coverage_gaps.is_empty()
+                && report.identity_facts.patterns.iter().all(|fact| {
+                    matches!(&fact.resolved_variant, effects::StaticFact::Known { .. })
+                });
+        let callable_identity_complete = report.identity_facts.expressions.len()
+            == report.type_facts.expressions.len()
+            && report.identity_facts.expressions.iter().all(|fact| {
+                matches!(&fact.resolved_callable, Some(effects::StaticFact::Known { .. }))
+            })
+            && report.identity_facts.callable_coverage_gaps.is_empty();
         report.identity_facts.pattern_extraction_complete = pattern_identity_complete;
+        report.identity_facts.callable_extraction_complete = callable_identity_complete;
         report.identity_facts.extraction_complete = report.type_facts.type_extraction_complete
             && report.type_facts.projection_gaps.is_empty()
             && report.identity_facts.coverage_gaps.is_empty()
@@ -3710,6 +4100,17 @@ fn push_identity_gap(
     }
 }
 
+fn push_callable_identity_gap(facts: &mut BodyTypeIdentityFacts, span: Option<ByteSpan>) {
+    facts.callable_extraction_complete = false;
+    let gap = BodyCallableIdentityCoverageGap {
+        kind: BodyCallableIdentityCoverageGapKind::TargetUnavailable,
+        span,
+    };
+    if !facts.callable_coverage_gaps.contains(&gap) {
+        facts.callable_coverage_gaps.push(gap);
+    }
+}
+
 fn push_optional_identity_gap(
     facts: &mut Option<&mut BodyTypeIdentityFacts>,
     kind: BodyTypeCoverageGapKind,
@@ -3736,6 +4137,7 @@ struct BodyTypeVisitor<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     input: &'a (Arc<SourceFile>, Arc<str>),
     body_span: &'a ByteSpan,
+    owner: LocalDefId,
     typeck: &'tcx crate::rustc_middle::ty::TypeckResults<'tcx>,
     facts: &'a mut BodyTypeFacts,
     identity_facts: Option<&'a mut BodyTypeIdentityFacts>,
@@ -3752,6 +4154,7 @@ struct BodyExpressionParts {
     resolved_ty: Option<effects::StaticFact<ResolvedTypeIdentity>>,
     resolved_adjusted_ty: Option<effects::StaticFact<ResolvedTypeIdentity>>,
     resolved_variant: Option<effects::StaticFact<Option<ResolvedVariantIdentity>>>,
+    resolved_callable: Option<effects::StaticFact<Option<ResolvedCallableIdentity>>>,
 }
 
 impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
@@ -3769,12 +4172,14 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                         expr,
                         self.synthetic_lang_items,
                         false,
+                        self.owner,
                         self.input,
                         self.original_source_len,
                     );
                     if !body_type_is_known(&parts.ty)
                         || !body_type_is_known(&parts.adjusted_ty)
-                        || parts.adjustments
+                        || parts
+                            .adjustments
                             .iter()
                             .any(|adjustment| !body_type_is_known(&adjustment.target_ty))
                     {
@@ -3834,12 +4239,14 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                         expr,
                         self.synthetic_lang_items,
                         self.identity_facts.is_some(),
+                        self.owner,
                         self.input,
                         self.original_source_len,
                     );
                     if !body_type_is_known(&parts.ty)
                         || !body_type_is_known(&parts.adjusted_ty)
-                        || parts.adjustments
+                        || parts
+                            .adjustments
                             .iter()
                             .any(|adjustment| !body_type_is_known(&adjustment.target_ty))
                     {
@@ -3861,16 +4268,19 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                             Some(resolved_ty),
                             Some(resolved_adjusted_ty),
                             Some(resolved_variant),
+                            Some(resolved_callable),
                         ) = (
                             parts.resolved_ty,
                             parts.resolved_adjusted_ty,
                             parts.resolved_variant,
+                            parts.resolved_callable,
                         ) {
                             let identity_fact = BodyExpressionIdentityFact {
                                 span,
                                 resolved_ty,
                                 resolved_adjusted_ty,
                                 resolved_variant,
+                                resolved_callable: Some(resolved_callable),
                             };
                             if matches!(
                                 &identity_fact.resolved_ty,
@@ -3885,6 +4295,15 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                                 push_identity_gap(
                                     identity_facts,
                                     BodyTypeCoverageGapKind::ExpressionTypeMissing,
+                                    Some(identity_fact.span.clone()),
+                                );
+                            }
+                            if matches!(
+                                &identity_fact.resolved_callable,
+                                Some(effects::StaticFact::Unknown { .. })
+                            ) {
+                                push_callable_identity_gap(
+                                    identity_facts,
                                     Some(identity_fact.span.clone()),
                                 );
                             }
@@ -3961,10 +4380,8 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                         Some(span),
                     );
                 } else {
-                    let duplicate = identity_facts
-                        .patterns
-                        .iter()
-                        .position(|fact| fact.span == span);
+                    let duplicate =
+                        identity_facts.patterns.iter().position(|fact| fact.span == span);
                     let resolved_variant = if let Some(previous) = duplicate {
                         identity_facts.patterns[previous].resolved_variant =
                             unknown_variant_identity("duplicate_pattern_span");
@@ -3985,20 +4402,16 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                             self.original_source_len,
                         )
                     };
-                    if matches!(
-                        &resolved_variant,
-                        effects::StaticFact::Unknown { .. }
-                    ) {
+                    if matches!(&resolved_variant, effects::StaticFact::Unknown { .. }) {
                         push_pattern_identity_gap(
                             identity_facts,
                             BodyPatternIdentityCoverageGapKind::PatternResolutionUnavailable,
                             Some(span.clone()),
                         );
                     }
-                    identity_facts.patterns.push(BodyPatternIdentityFact {
-                        span,
-                        resolved_variant,
-                    });
+                    identity_facts
+                        .patterns
+                        .push(BodyPatternIdentityFact { span, resolved_variant });
                 }
             } else {
                 push_pattern_identity_gap(
@@ -4059,12 +4472,13 @@ fn supported_body_desugaring(
     Ok((callsite, chain))
 }
 
-fn body_expression_type_parts(
-    tcx: TyCtxt<'_>,
-    typeck: &crate::rustc_middle::ty::TypeckResults<'_>,
+fn body_expression_type_parts<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typeck: &crate::rustc_middle::ty::TypeckResults<'tcx>,
     expr: &hir::Expr<'_>,
     synthetic_lang_items: bool,
     capture_identities: bool,
+    owner: LocalDefId,
     input: &(Arc<SourceFile>, Arc<str>),
     original_source_len: usize,
 ) -> BodyExpressionParts {
@@ -4075,6 +4489,7 @@ fn body_expression_type_parts(
                 resolved_type_identity(
                     tcx,
                     ty,
+                    owner,
                     synthetic_lang_items,
                     input,
                     original_source_len,
@@ -4093,6 +4508,7 @@ fn body_expression_type_parts(
                 resolved_type_identity(
                     tcx,
                     ty,
+                    owner,
                     synthetic_lang_items,
                     input,
                     original_source_len,
@@ -4130,12 +4546,154 @@ fn body_expression_type_parts(
                 original_source_len,
             )
         }),
+        resolved_callable: capture_identities.then(|| {
+            body_callable_identity(
+                tcx,
+                typeck,
+                expr,
+                owner,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+            )
+        }),
     }
 }
 
-fn resolved_type_identity(
+const MAX_RESOLVED_TYPE_IDENTITY_DEPTH: u8 = 4;
+const MAX_RESOLVED_TUPLE_ARITY: usize = 64;
+
+fn resolved_region_identity<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    region: ty::Region<'tcx>,
+    owner: LocalDefId,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> effects::StaticFact<ResolvedRegionIdentity> {
+    let identity = match region.kind() {
+        ty::ReStatic => ResolvedRegionIdentity::Static,
+        ty::ReErased => ResolvedRegionIdentity::Erased,
+        ty::ReEarlyParam(_) => {
+            let Some(parameter) = region.opt_param_def_id(tcx, owner.to_def_id()) else {
+                return effects::StaticFact::Unknown {
+                    why: "early_region_parameter_identity_unavailable".to_string(),
+                };
+            };
+            let Some(parameter) = source_region_def_identity(
+                tcx,
+                parameter,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+            ) else {
+                return effects::StaticFact::Unknown {
+                    why: "synthetic_region_parameter_identity".to_string(),
+                };
+            };
+            ResolvedRegionIdentity::EarlyBound { parameter }
+        }
+        ty::ReBound(ty::BoundVarIndexKind::Bound(debruijn), bound) => {
+            let kind = match bound.kind {
+                ty::BoundRegionKind::Anon | ty::BoundRegionKind::NamedForPrinting(_) => {
+                    ResolvedBoundRegionKind::Anonymous
+                }
+                ty::BoundRegionKind::Named(parameter) => {
+                    let Some(parameter) = source_region_def_identity(
+                        tcx,
+                        parameter,
+                        synthetic_lang_items,
+                        input,
+                        original_source_len,
+                    ) else {
+                        return effects::StaticFact::Unknown {
+                            why: "synthetic_region_parameter_identity".to_string(),
+                        };
+                    };
+                    ResolvedBoundRegionKind::Named { parameter }
+                }
+                ty::BoundRegionKind::ClosureEnv => ResolvedBoundRegionKind::ClosureEnvironment,
+            };
+            ResolvedRegionIdentity::Bound {
+                debruijn: debruijn.as_u32(),
+                variable: bound.var.as_u32(),
+                region_kind: kind,
+            }
+        }
+        ty::ReLateParam(late) => {
+            let kind = match late.kind {
+                ty::LateParamRegionKind::Anon(index)
+                | ty::LateParamRegionKind::NamedAnon(index, _) => {
+                    ResolvedLateRegionKind::Anonymous { index }
+                }
+                ty::LateParamRegionKind::Named(parameter) => {
+                    let Some(parameter) = source_region_def_identity(
+                        tcx,
+                        parameter,
+                        synthetic_lang_items,
+                        input,
+                        original_source_len,
+                    ) else {
+                        return effects::StaticFact::Unknown {
+                            why: "synthetic_region_parameter_identity".to_string(),
+                        };
+                    };
+                    ResolvedLateRegionKind::Named { parameter }
+                }
+                ty::LateParamRegionKind::ClosureEnv => ResolvedLateRegionKind::ClosureEnvironment,
+            };
+            let Some(scope) = source_region_def_identity(
+                tcx,
+                late.scope,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+            ) else {
+                return effects::StaticFact::Unknown {
+                    why: "synthetic_region_scope_identity".to_string(),
+                };
+            };
+            ResolvedRegionIdentity::LateParam { scope, region_kind: kind }
+        }
+        ty::ReBound(ty::BoundVarIndexKind::Canonical, _) => {
+            return effects::StaticFact::Unknown {
+                why: "canonical_bound_region_identity_unavailable".to_string(),
+            };
+        }
+        ty::ReVar(_) => {
+            return effects::StaticFact::Unknown { why: "unresolved_region_inference".to_string() };
+        }
+        ty::RePlaceholder(_) => {
+            return effects::StaticFact::Unknown {
+                why: "placeholder_region_identity_unavailable".to_string(),
+            };
+        }
+        ty::ReError(_) => {
+            return effects::StaticFact::Unknown { why: "region_error".to_string() };
+        }
+    };
+    effects::StaticFact::Known { value: identity }
+}
+
+fn source_region_def_identity(
     tcx: TyCtxt<'_>,
-    resolved: ty::Ty<'_>,
+    def_id: DefId,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> Option<StableDefPathIdentity> {
+    if synthetic_lang_items
+        && is_synthetic_local_definition(tcx, input, original_source_len, def_id)
+    {
+        return None;
+    }
+    Some(stable_def_path_identity(tcx, def_id))
+}
+
+fn resolved_type_identity<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    resolved: ty::Ty<'tcx>,
+    owner: LocalDefId,
     synthetic_lang_items: bool,
     input: &(Arc<SourceFile>, Arc<str>),
     original_source_len: usize,
@@ -4147,10 +4705,69 @@ fn resolved_type_identity(
     if resolved.has_infer() {
         return unknown_type_identity("unresolved_inference");
     }
-    if depth > 4 {
+    if depth > MAX_RESOLVED_TYPE_IDENTITY_DEPTH {
         return unknown_type_identity("identity_nesting_limit");
     }
     use ty::TyKind;
+    if let TyKind::Tuple(types) = *resolved.kind() {
+        if types.is_empty() {
+            return effects::StaticFact::Known {
+                value: ResolvedTypeIdentity::Primitive { primitive: ResolvedPrimitive::Unit },
+            };
+        }
+        if types.len() > MAX_RESOLVED_TUPLE_ARITY {
+            return unknown_type_identity("tuple_arity_limit");
+        }
+        let mut elements = Vec::with_capacity(types.len());
+        for element in types.iter() {
+            let effects::StaticFact::Known { value } = resolved_type_identity(
+                tcx,
+                element,
+                owner,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+                depth + 1,
+            ) else {
+                return unknown_type_identity("tuple_element_identity_unavailable");
+            };
+            elements.push(value);
+        }
+        return effects::StaticFact::Known { value: ResolvedTypeIdentity::Tuple { elements } };
+    }
+    if let TyKind::Ref(region, referent, mutability) = *resolved.kind() {
+        let effects::StaticFact::Known { value: region } = resolved_region_identity(
+            tcx,
+            region,
+            owner,
+            synthetic_lang_items,
+            input,
+            original_source_len,
+        ) else {
+            return unknown_type_identity("reference_region_identity_unavailable");
+        };
+        let effects::StaticFact::Known { value: referent } = resolved_type_identity(
+            tcx,
+            referent,
+            owner,
+            synthetic_lang_items,
+            input,
+            original_source_len,
+            depth + 1,
+        ) else {
+            return unknown_type_identity("reference_referent_identity_unavailable");
+        };
+        return effects::StaticFact::Known {
+            value: ResolvedTypeIdentity::Reference {
+                mutability: match mutability {
+                    ty::Mutability::Not => ResolvedReferenceMutability::Shared,
+                    ty::Mutability::Mut => ResolvedReferenceMutability::Mutable,
+                },
+                region,
+                referent: Box::new(referent),
+            },
+        };
+    }
     let primitive = match *resolved.kind() {
         TyKind::Bool => Some(ResolvedPrimitive::Bool),
         TyKind::Char => Some(ResolvedPrimitive::Char),
@@ -4172,45 +4789,71 @@ fn resolved_type_identity(
         TyKind::Float(ty::FloatTy::F128) => Some(ResolvedPrimitive::F128),
         TyKind::Str => Some(ResolvedPrimitive::Str),
         TyKind::Never => Some(ResolvedPrimitive::Never),
-        TyKind::Tuple(types) if types.is_empty() => Some(ResolvedPrimitive::Unit),
         _ => None,
     };
     if let Some(primitive) = primitive {
-        return effects::StaticFact::Known {
-            value: ResolvedTypeIdentity::Primitive { primitive },
-        };
+        return effects::StaticFact::Known { value: ResolvedTypeIdentity::Primitive { primitive } };
     }
     if let TyKind::FnDef(def_id, args) = *resolved.kind() {
         let kind = tcx.def_kind(def_id);
-        if !matches!(kind, DefKind::Variant | DefKind::Ctor(CtorOf::Variant, _)) {
-            return unknown_type_identity("unsupported_function_item_identity");
+        if matches!(kind, DefKind::Variant | DefKind::Ctor(CtorOf::Variant, _)) {
+            let Some(args) = args.no_bound_vars() else {
+                return unknown_type_identity("bound_variant_constructor_arguments");
+            };
+            let effects::StaticFact::Known { value: Some(variant) } = resolved_variant_identity(
+                tcx,
+                Res::Def(kind, def_id),
+                synthetic_lang_items,
+                input,
+                original_source_len,
+            ) else {
+                return unknown_type_identity("variant_constructor_identity_unavailable");
+            };
+            let arguments = match resolved_adt_arguments(
+                tcx,
+                args,
+                owner,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+                depth,
+            ) {
+                Ok(arguments) => arguments,
+                Err(why) => return unknown_type_identity(why),
+            };
+            return effects::StaticFact::Known {
+                value: ResolvedTypeIdentity::VariantConstructor { variant, arguments },
+            };
         }
-        let Some(args) = args.no_bound_vars() else {
-            return unknown_type_identity("bound_variant_constructor_arguments");
-        };
-        let effects::StaticFact::Known { value: Some(variant) } = resolved_variant_identity(
-            tcx,
-            Res::Def(kind, def_id),
-            synthetic_lang_items,
-            input,
-            original_source_len,
-        ) else {
-            return unknown_type_identity("variant_constructor_identity_unavailable");
-        };
-        let arguments = match resolved_adt_arguments(
-            tcx,
-            args,
-            synthetic_lang_items,
-            input,
-            original_source_len,
-            depth,
-        ) {
-            Ok(arguments) => arguments,
-            Err(why) => return unknown_type_identity(why),
-        };
-        return effects::StaticFact::Known {
-            value: ResolvedTypeIdentity::VariantConstructor { variant, arguments },
-        };
+        if matches!(kind, DefKind::Fn | DefKind::AssocFn) {
+            if synthetic_lang_items
+                && is_synthetic_local_definition(tcx, input, original_source_len, def_id)
+            {
+                return unknown_type_identity("synthetic_declaration_context");
+            }
+            let Some(args) = args.no_bound_vars() else {
+                return unknown_type_identity("bound_function_item_arguments");
+            };
+            let arguments = match resolved_adt_arguments(
+                tcx,
+                args,
+                owner,
+                synthetic_lang_items,
+                input,
+                original_source_len,
+                depth,
+            ) {
+                Ok(arguments) => arguments,
+                Err(why) => return unknown_type_identity(why),
+            };
+            return effects::StaticFact::Known {
+                value: ResolvedTypeIdentity::FunctionItem {
+                    definition: stable_def_path_identity(tcx, def_id),
+                    arguments,
+                },
+            };
+        }
+        return unknown_type_identity("unsupported_function_item_identity");
     }
     if let TyKind::Adt(definition, args) = *resolved.kind() {
         let def_id = definition.did();
@@ -4226,6 +4869,7 @@ fn resolved_type_identity(
             let arguments = match resolved_adt_arguments(
                 tcx,
                 args,
+                owner,
                 synthetic_lang_items,
                 input,
                 original_source_len,
@@ -4249,6 +4893,7 @@ fn resolved_type_identity(
         let arguments = match resolved_adt_arguments(
             tcx,
             args,
+            owner,
             synthetic_lang_items,
             input,
             original_source_len,
@@ -4271,9 +4916,10 @@ fn unknown_type_identity(why: &str) -> effects::StaticFact<ResolvedTypeIdentity>
     effects::StaticFact::Unknown { why: why.to_string() }
 }
 
-fn resolved_adt_arguments(
-    tcx: TyCtxt<'_>,
-    args: ty::GenericArgsRef<'_>,
+fn resolved_adt_arguments<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    args: ty::GenericArgsRef<'tcx>,
+    owner: LocalDefId,
     synthetic_lang_items: bool,
     input: &(Arc<SourceFile>, Arc<str>),
     original_source_len: usize,
@@ -4287,6 +4933,7 @@ fn resolved_adt_arguments(
         let effects::StaticFact::Known { value } = resolved_type_identity(
             tcx,
             argument_ty,
+            owner,
             synthetic_lang_items,
             input,
             original_source_len,
@@ -4329,13 +4976,7 @@ fn body_variant_identity(
         }
         _ => return known_non_variant(),
     };
-    resolved_variant_identity(
-        tcx,
-        resolved,
-        synthetic_lang_items,
-        input,
-        original_source_len,
-    )
+    resolved_variant_identity(tcx, resolved, synthetic_lang_items, input, original_source_len)
 }
 
 fn body_pattern_variant_identity(
@@ -4365,9 +5006,7 @@ fn resolved_variant_identity(
 ) -> effects::StaticFact<Option<ResolvedVariantIdentity>> {
     let variant = match resolved {
         Res::Err => {
-            return effects::StaticFact::Unknown {
-                why: "variant_path_unresolved".to_string(),
-            };
+            return effects::StaticFact::Unknown { why: "variant_path_unresolved".to_string() };
         }
         Res::Def(DefKind::Variant, variant) => variant,
         Res::Def(DefKind::Ctor(CtorOf::Variant, _), constructor) => tcx.parent(constructor),
@@ -4377,24 +5016,18 @@ fn resolved_variant_identity(
     if synthetic_lang_items
         && is_synthetic_local_definition(tcx, input, original_source_len, enum_definition)
     {
-        return effects::StaticFact::Unknown {
-            why: "synthetic_lang_item_context".to_string(),
-        };
+        return effects::StaticFact::Unknown { why: "synthetic_lang_item_context".to_string() };
     }
-    let option_role = if !enum_definition.is_local()
-        && tcx.lang_items().option_type() == Some(enum_definition)
-    {
-        match (
-            tcx.lang_items().option_some_variant(),
-            tcx.lang_items().option_none_variant(),
-        ) {
-            (Some(some), _) if variant == some => Some(ResolvedOptionVariantRole::Some),
-            (_, Some(none)) if variant == none => Some(ResolvedOptionVariantRole::None),
-            _ => None,
-        }
-    } else {
-        None
-    };
+    let option_role =
+        if !enum_definition.is_local() && tcx.lang_items().option_type() == Some(enum_definition) {
+            match (tcx.lang_items().option_some_variant(), tcx.lang_items().option_none_variant()) {
+                (Some(some), _) if variant == some => Some(ResolvedOptionVariantRole::Some),
+                (_, Some(none)) if variant == none => Some(ResolvedOptionVariantRole::None),
+                _ => None,
+            }
+        } else {
+            None
+        };
     effects::StaticFact::Known {
         value: Some(ResolvedVariantIdentity {
             parent_enum: stable_def_path_identity(tcx, enum_definition),
@@ -4434,29 +5067,11 @@ fn body_call_resolution(
     typeck: &crate::rustc_middle::ty::TypeckResults<'_>,
     expr: &hir::Expr<'_>,
 ) -> Option<BodyCallResolutionFact> {
-    let (def_id, method) = match expr.kind {
-        ExprKind::Call(callee, _) => {
-            let ExprKind::Path(qpath) = callee.kind else {
-                return Some(BodyCallResolutionFact::Unknown {
-                    reason: "indirect_call_target".to_string(),
-                });
-            };
-            let Some(def_id) = typeck.qpath_res(&qpath, callee.hir_id).opt_def_id() else {
-                return Some(BodyCallResolutionFact::Unknown {
-                    reason: "call_path_unresolved".to_string(),
-                });
-            };
-            (def_id, false)
+    let (def_id, method) = match body_call_target(typeck, expr)? {
+        Ok(target) => target,
+        Err(reason) => {
+            return Some(BodyCallResolutionFact::Unknown { reason: reason.to_string() });
         }
-        ExprKind::MethodCall(..) => {
-            let Some(def_id) = typeck.type_dependent_def_id(expr.hir_id) else {
-                return Some(BodyCallResolutionFact::Unknown {
-                    reason: "method_item_unresolved".to_string(),
-                });
-            };
-            (def_id, true)
-        }
-        _ => return None,
     };
     let kind = tcx.def_kind(def_id);
     if !matches!(kind, DefKind::Fn | DefKind::AssocFn | DefKind::Ctor(..))
@@ -4476,6 +5091,120 @@ fn body_call_resolution(
     } else {
         BodyCallResolutionFact::ResolvedDirectItem { def_path }
     })
+}
+
+fn body_callable_identity<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typeck: &crate::rustc_middle::ty::TypeckResults<'tcx>,
+    expr: &hir::Expr<'_>,
+    caller: LocalDefId,
+    synthetic_lang_items: bool,
+    input: &(Arc<SourceFile>, Arc<str>),
+    original_source_len: usize,
+) -> effects::StaticFact<Option<ResolvedCallableIdentity>> {
+    let Some(target) = body_call_target(typeck, expr) else {
+        return effects::StaticFact::Known { value: None };
+    };
+    let (def_id, method) = match target {
+        Ok(target) => target,
+        Err(reason) => return effects::StaticFact::Unknown { why: reason.to_string() },
+    };
+    let kind = tcx.def_kind(def_id);
+    if !matches!(kind, DefKind::Fn | DefKind::AssocFn | DefKind::Ctor(..))
+        || (method && !matches!(kind, DefKind::AssocFn))
+    {
+        return effects::StaticFact::Unknown {
+            why: "resolved_item_is_not_a_callable_function_item".to_string(),
+        };
+    }
+    if synthetic_lang_items
+        && is_synthetic_local_definition(tcx, input, original_source_len, def_id)
+    {
+        return effects::StaticFact::Unknown { why: "synthetic_declaration_context".to_string() };
+    }
+    let args_hir_id = match expr.kind {
+        ExprKind::Call(callee, _) => Some(callee.hir_id),
+        ExprKind::MethodCall(..) => Some(expr.hir_id),
+        _ => None,
+    };
+    let generic_substitutions = args_hir_id.map_or_else(
+        || effects::StaticFact::Unknown {
+            why: "call_generic_arguments_hir_id_unavailable".to_string(),
+        },
+        |args_hir_id| {
+            callable_trait_evidence::callable_substitutions(
+                tcx,
+                typeck,
+                def_id,
+                args_hir_id,
+                caller,
+            )
+        },
+    );
+    let declared_trait_predicates =
+        callable_trait_evidence::callable_declared_trait_predicates(tcx, def_id);
+    let declared_trait_obligations = args_hir_id.map_or_else(
+        || effects::StaticFact::Unknown {
+            why: "call_generic_arguments_hir_id_unavailable".to_string(),
+        },
+        |args_hir_id| {
+            callable_trait_evidence::callable_trait_obligations(
+                tcx,
+                typeck,
+                def_id,
+                args_hir_id,
+                caller,
+            )
+        },
+    );
+    effects::StaticFact::Known {
+        value: Some(ResolvedCallableIdentity {
+            definition: stable_def_path_identity(tcx, def_id),
+            kind: if method {
+                ResolvedCallableKind::SelectedMethod
+            } else if matches!(kind, DefKind::Ctor(..)) {
+                ResolvedCallableKind::Constructor
+            } else {
+                ResolvedCallableKind::DirectItem
+            },
+            source_attestation: callable_source_attestation::attest_callable_definition(
+                tcx, def_id,
+            ),
+            generic_substitutions: Some(generic_substitutions),
+            declared_trait_predicates: Some(declared_trait_predicates),
+            declared_trait_obligations: Some(declared_trait_obligations),
+        }),
+    }
+}
+
+/// Return the compiler-resolved target for syntactic calls. `None` means the expression is not
+/// a call; an error string means a call whose selected item is not available.
+fn body_call_target(
+    typeck: &crate::rustc_middle::ty::TypeckResults<'_>,
+    expr: &hir::Expr<'_>,
+) -> Option<Result<(DefId, bool), &'static str>> {
+    match expr.kind {
+        ExprKind::Call(callee, _) => {
+            let ExprKind::Path(qpath) = callee.kind else {
+                return Some(Err("indirect_call_target"));
+            };
+            let resolved = typeck.qpath_res(&qpath, callee.hir_id);
+            let Some(def_id) = resolved.opt_def_id() else {
+                return Some(Err(match resolved {
+                    Res::Local(_) => "indirect_call_target",
+                    _ => "call_path_unresolved",
+                }));
+            };
+            Some(Ok((def_id, false)))
+        }
+        ExprKind::MethodCall(..) => {
+            let Some(def_id) = typeck.type_dependent_def_id(expr.hir_id) else {
+                return Some(Err("method_item_unresolved"));
+            };
+            Some(Ok((def_id, true)))
+        }
+        _ => None,
+    }
 }
 
 fn body_type_fact(ty: ty::Ty<'_>) -> effects::StaticFact<String> {

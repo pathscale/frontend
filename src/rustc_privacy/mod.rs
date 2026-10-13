@@ -457,6 +457,11 @@ impl<'tcx, 'a> DefIdsToImplsCollector<'tcx, 'a> {
             let DefKind::Impl { of_trait } = tcx.def_kind(impl_def_id) else {
                 continue;
             };
+            // The written trait marker is not evidence that its path resolved. An unresolved
+            // trait impl provides no proven visibility edges or mandatory trait header.
+            if of_trait && !tcx.impl_is_of_trait(impl_def_id) {
+                continue;
+            }
 
             // This behavior should mirror `EffectiveVisibility::of_impl::<true>`.
             let mut visitor = DefIdsToImplsCollector {
@@ -642,6 +647,12 @@ impl<'tcx> EmbargoVisitor<'tcx> {
                 }
             }
             DefKind::Impl { of_trait } => {
+                // Its members retain unknown exported status. In particular, do not handle an
+                // unresolved trait impl as an inherent impl merely because its trait is absent.
+                if of_trait && !self.tcx.impl_is_of_trait(def_id) {
+                    return;
+                }
+
                 // Type inference is very smart sometimes. It can make an impl reachable even some
                 // components of its type or trait are unreachable. E.g. methods of
                 // `impl ReachableTrait<UnreachableTy> for ReachableTy<UnreachableTy> { ... }`

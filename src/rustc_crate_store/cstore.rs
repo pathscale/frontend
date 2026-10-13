@@ -17,6 +17,7 @@ use crate::rustc_span::def_id::{
     CrateNum, DefId, DefPathHash, LOCAL_CRATE, LocalDefId, StableCrateId, StableCrateIdMap,
 };
 use crate::rustc_span::{Span, Symbol};
+use crate::rustc_span::edition::Edition;
 use crate::rustc_structures::NativeLibKind;
 
 /// Where a crate came from on the local filesystem. One of these three options
@@ -212,6 +213,7 @@ pub trait CrateStore: core::fmt::Debug {
     // incr. comp. uses to identify a CrateNum.
     fn crate_name(&self, cnum: CrateNum) -> Symbol;
     fn stable_crate_id(&self, cnum: CrateNum) -> StableCrateId;
+    fn crate_edition(&self, cnum: CrateNum) -> Edition;
 }
 
 // `+ DynSync + DynSend` dropped: no longer auto traits, so a trait object cannot name them

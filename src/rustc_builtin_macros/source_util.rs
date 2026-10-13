@@ -233,6 +233,7 @@ pub(crate) fn expand_include_str(
                 MacEager::expr(cx.expr_str(cx.with_def_site_ctxt(bsp), interned_src))
             }
             Err(utf8err) => {
+                cx.sess.record_source_read_loss();
                 let mut err = cx.dcx().struct_span_err(sp, format!("`{path}` wasn't a utf-8 file"));
                 utf8_error(cx.source_map(), path.as_str(), None, &mut err, utf8err, &bytes[..]);
                 DummyResult::any(sp, err.emit())
@@ -280,6 +281,7 @@ fn load_binary_file(
     let resolved_path = match cx.sess.resolve_path(original_path, macro_span) {
         Ok(path) => path,
         Err(err) => {
+            cx.sess.record_source_read_loss();
             let guar = err.emit();
             return Err(DummyResult::any(macro_span, guar));
         }
@@ -294,6 +296,7 @@ fn load_binary_file(
             Ok(data)
         }
         Err(io_err) => {
+            cx.sess.record_source_read_loss();
             let mut err = cx.dcx().struct_span_err(
                 macro_span,
                 format!("couldn't read `{}`: {io_err}", resolved_path.display()),

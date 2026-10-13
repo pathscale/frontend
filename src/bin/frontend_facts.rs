@@ -14,6 +14,8 @@
 //!
 //! - `--extern NAME=PATH` loads a dependency from the metadata an earlier read wrote
 //!   (`noprelude:NAME=PATH` for one only other dependencies name). Repeatable.
+//! - `--rust-src PATH` names the rust-src tree root containing `library/`; no source root is
+//!   discovered or inferred.
 //! - `--cfg SPEC` (`feature="std"`) and `--env KEY=VALUE` (what `env!` reads) give the crate the
 //!   configuration its manifest and build script would. Repeatable.
 //! - `--emit-metadata PATH` writes the crate's metadata for the crates that depend on it, as
@@ -60,6 +62,7 @@ fn main() {
     let mut library = false;
     let mut emit_metadata: Option<String> = None;
     let mut disambiguator: Option<String> = None;
+    let mut rust_source_base_dir: Option<String> = None;
     let mut dependencies: Vec<Dependency> = Vec::new();
     let mut cfg: Vec<String> = Vec::new();
     let mut env: Vec<(String, String)> = Vec::new();
@@ -70,7 +73,7 @@ fn main() {
         match flag.as_str() {
             "--help" => {
                 println!(
-                    "Usage: frontend-facts [OPTIONS] [CRATE]\n\nRead crate facts as JSON. Source is read from stdin unless --root PATH is given.\n\nOptions: --root PATH, --target TUPLE, --edition YEAR, --items, --check, --test, --extern NAME=PATH, --cfg SPEC, --env KEY=VALUE, --emit-metadata PATH, --disambiguator VALUE, --proc-macro, --standard-library, --library, --help"
+                    "Usage: frontend-facts [OPTIONS] [CRATE]\n\nRead crate facts as JSON. Source is read from stdin unless --root PATH is given.\n\nOptions: --root PATH, --target TUPLE, --edition YEAR, --items, --check, --test, --extern NAME=PATH, --cfg SPEC, --env KEY=VALUE, --emit-metadata PATH, --disambiguator VALUE, --rust-src PATH, --proc-macro, --standard-library, --library, --help"
                 );
                 return;
             }
@@ -85,6 +88,9 @@ fn main() {
             "--library" => library = true,
             "--emit-metadata" => emit_metadata = Some(value("--emit-metadata")),
             "--disambiguator" => disambiguator = Some(value("--disambiguator")),
+            "--rust-src" => {
+                rust_source_base_dir = Some(value("--rust-src"));
+            }
             "--cfg" => cfg.push(value("--cfg")),
             "--env" => {
                 let pair = value("--env");
@@ -114,7 +120,14 @@ fn main() {
         usage("--test is for --check");
     }
     let crate_name = args.next().unwrap_or_else(|| "crate".to_string());
-    let loaded = Loaded { dependencies: &dependencies, cfg: &cfg, env: &env };
+    let loaded = Loaded {
+        dependencies: &dependencies,
+        cfg: &cfg,
+        env: &env,
+        rust_source_base_dir: rust_source_base_dir
+            .as_deref()
+            .map(eko::path::Path::new),
+    };
     if let Some(root) = root {
         if check {
             usage("--check reads stdin, not --root");
