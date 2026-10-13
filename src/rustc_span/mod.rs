@@ -1975,7 +1975,9 @@ impl Clone for SourceFile {
 impl<S: SpanEncoder> Encodable<S> for SourceFile {
     fn encode(&self, s: &mut S) {
         self.name.encode(s);
-        self.src_hash.encode(s);
+        // The optional in-memory hash must not change the upstream metadata format.
+        // Metadata-producing sessions select a hash algorithm before reading sources.
+        self.src_hash.expect("metadata source file requires a source hash").encode(s);
         self.checksum_hash.encode(s);
         // Do not encode `start_pos` as it's global state for this session.
         self.normalized_source_len.encode(s);
@@ -2050,7 +2052,7 @@ impl<S: SpanEncoder> Encodable<S> for SourceFile {
 impl<D: SpanDecoder> Decodable<D> for SourceFile {
     fn decode(d: &mut D) -> SourceFile {
         let name: FileName = Decodable::decode(d);
-        let src_hash: Option<SourceFileHash> = Decodable::decode(d);
+        let src_hash = Some(SourceFileHash::decode(d));
         let checksum_hash: Option<SourceFileHash> = Decodable::decode(d);
         let normalized_source_len: RelativeBytePos = Decodable::decode(d);
         let unnormalized_source_len = Decodable::decode(d);
