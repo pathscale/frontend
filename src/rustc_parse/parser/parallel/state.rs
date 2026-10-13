@@ -95,7 +95,9 @@ impl State {
         // Closure recovery state is cleared at the next statement or expression entry.
         // A different last closure does not change an accepted crate's AST or diagnostics.
         parser.restrictions.bits() == self.restrictions.bits()
-            && parser.expected_token_types.is_empty()
+            && (parser.expected_token_types.is_empty()
+                || self.expected_token_types.is_deferred()
+                    && parser.expected_token_types.is_deferred())
             && parser.break_last_token == 0
             && parser.unmatched_angle_bracket_count == self.unmatched_angle_bracket_count
             && parser.angle_bracket_nesting == self.angle_bracket_nesting
