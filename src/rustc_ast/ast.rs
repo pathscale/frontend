@@ -2177,7 +2177,7 @@ pub enum StructRest {
 pub struct StructExpr {
     pub qself: Option<Box<QSelf>>,
     pub path: Path,
-    pub fields: ThinVec<ExprField>,
+    pub fields: ArenaVec<ExprField>,
     pub rest: StructRest,
 }
 
@@ -2185,7 +2185,7 @@ pub struct StructExpr {
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub enum ExprKind {
     /// An array (e.g, `[a, b, c, d]`).
-    Array(ThinVec<P<Expr>>),
+    Array(ArenaVec<P<Expr>>),
     /// Allow anonymous constants from an inline `const` block.
     ConstBlock(AnonConst),
     /// A function call.
@@ -2198,7 +2198,7 @@ pub enum ExprKind {
     /// A method call (e.g., `x.foo::<Bar, Baz>(a, b, c)`).
     MethodCall(P<MethodCall>),
     /// A tuple (e.g., `(a, b, c, d)`).
-    Tup(ThinVec<P<Expr>>),
+    Tup(ArenaVec<P<Expr>>),
     /// A binary operation (e.g., `a + b`, `a * b`).
     Binary(BinOp, P<Expr>, P<Expr>),
     /// A unary operation (e.g., `!x`, `*x`).
@@ -2241,7 +2241,7 @@ pub enum ExprKind {
     /// `'label: loop { block }`
     Loop(P<Block>, Option<Label>, Span),
     /// A `match` block.
-    Match(P<Expr>, ThinVec<Arm>, MatchKind),
+    Match(P<Expr>, ArenaVec<Arm>, MatchKind),
     /// A closure (e.g., `move |a, b, c| a + b + c`).
     Closure(Box<Closure>),
     /// A block (`'label: { ... }`).

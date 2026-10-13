@@ -3,7 +3,6 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::mem;
 use core::ops::Bound;
 
 use crate::rustc_ast as ast;
@@ -358,7 +357,7 @@ impl<'a> Parser<'a> {
                     } else {
                         // Rewind to before attempting to parse the type and continue parsing.
                         let parser_snapshot_after_type =
-                            mem::replace(self, parser_snapshot_before_type);
+                            self.replace_parser(parser_snapshot_before_type);
                         Some((parser_snapshot_after_type, colon_sp, err))
                     };
                     (err, None, Some(colon_sp))
@@ -394,7 +393,7 @@ impl<'a> Parser<'a> {
                 // Couldn't parse the type nor the initializer, only raise the type error and
                 // return to the parser state before parsing the type as the initializer.
                 // let x: <parse_error>;
-                *self = snapshot;
+                self.replace_parser(snapshot);
                 return Err(ty_err);
             }
             (Err(err), None) => {
@@ -736,7 +735,7 @@ impl<'a> Parser<'a> {
         s: BlockCheckMode,
         recover: AttemptLocalParseRecovery,
     ) -> PResult<'a, P<Block>> {
-        let mut stmts = ast::ArenaVec::new();
+        let start = self.list_scratch.get_mut().stmts.len();
         let mut snapshot = None;
         while !self.eat(exp!(CloseBrace)) {
             if self.token == token::Eof {
@@ -789,10 +788,14 @@ impl<'a> Parser<'a> {
                     self.mk_stmt_err(self.token.span, guar)
                 }
                 Ok(stmt) => stmt,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    self.list_scratch.get_mut().stmts.truncate(start);
+                    return Err(err);
+                }
             };
-            stmts.push(stmt);
+            self.list_scratch.get_mut().stmts.push(stmt);
         }
+        let stmts: ast::ArenaVec<Stmt> = self.list_scratch.get_mut().stmts.drain(start..).collect();
         Ok(P::new(Block { stmts, id: DUMMY_NODE_ID, rules: s, span: lo.to(self.prev_token.span) }))
     }
 

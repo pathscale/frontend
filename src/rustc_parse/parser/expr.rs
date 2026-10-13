@@ -695,7 +695,7 @@ impl<'a> Parser<'a> {
                 // Rewind to before attempting to parse the type with generics, to recover
                 // from situations like `x as usize < y` in which we first tried to parse
                 // `usize < y` as a type with generic arguments.
-                let parser_snapshot_after_type = mem::replace(self, parser_snapshot_before_type);
+                let parser_snapshot_after_type = self.replace_parser(parser_snapshot_before_type);
 
                 // Check for typo of `'a: loop { break 'a }` with a missing `'`.
                 match (&lhs.kind, &self.token.kind) {
@@ -767,7 +767,7 @@ impl<'a> Parser<'a> {
                                 // example because `parse_ty_no_plus` returns `Err` on keywords,
                                 // but `parse_path` returns `Ok` on them due to error recovery.
                                 // Return original error and parser state.
-                                *self = parser_snapshot_after_type;
+                                self.replace_parser(parser_snapshot_after_type);
                                 return Err(type_err);
                             }
                         };
@@ -781,7 +781,7 @@ impl<'a> Parser<'a> {
                     Err(path_err) => {
                         // Couldn't parse as a path, return original error and parser state.
                         path_err.cancel();
-                        *self = parser_snapshot_after_type;
+                        self.replace_parser(parser_snapshot_after_type);
                         return Err(type_err);
                     }
                 }
@@ -1662,7 +1662,7 @@ impl<'a> Parser<'a> {
     fn parse_expr_tuple_parens(&mut self, restrictions: Restrictions) -> PResult<'a, P<Expr>> {
         let lo = self.token.span;
         self.expect(exp!(OpenParen))?;
-        let (es, trailing_comma) = match self.parse_seq_to_end(
+        let (es, trailing_comma) = match self.parse_seq_to_end_with::<_, ast::ArenaVec<P<Expr>>>(
             exp!(CloseParen),
             SeqSep::trailing_allowed(exp!(Comma)),
             |p| p.parse_expr_res(restrictions.intersection(Restrictions::ALLOW_LET)),
@@ -1694,7 +1694,7 @@ impl<'a> Parser<'a> {
 
         let kind = if self.eat(close) {
             // Empty vector
-            ExprKind::Array(ThinVec::new())
+            ExprKind::Array(ast::ArenaVec::new())
         } else {
             // Non-empty vector
             let first_expr = self.parse_expr()?;
@@ -1706,13 +1706,18 @@ impl<'a> Parser<'a> {
             } else if self.eat(exp!(Comma)) {
                 // Vector with two or more elements.
                 let sep = SeqSep::trailing_allowed(exp!(Comma));
-                let (mut exprs, _) = self.parse_seq_to_end(close, sep, |p| p.parse_expr())?;
+                let (mut exprs, _) =
+                    self.parse_seq_to_end_with::<_, ast::ArenaVec<P<Expr>>>(close, sep, |p| {
+                        p.parse_expr()
+                    })?;
                 exprs.insert(0, first_expr);
                 ExprKind::Array(exprs)
             } else {
                 // Vector with one element
                 self.expect(close)?;
-                ExprKind::Array(thin_vec![first_expr])
+                let mut exprs = ast::ArenaVec::with_capacity(1);
+                exprs.push(first_expr);
+                ExprKind::Array(exprs)
             }
         };
         let expr = self.mk_expr(lo.to(self.prev_token.span), kind);
@@ -3270,10 +3275,10 @@ impl<'a> Parser<'a> {
         }
         let attrs = self.parse_inner_attributes()?;
 
-        let mut arms = ThinVec::new();
+        let start = self.list_scratch.get_mut().match_arms.len();
         while self.token != token::CloseBrace {
             match self.parse_arm() {
-                Ok(arm) => arms.push(arm),
+                Ok(arm) => self.list_scratch.get_mut().match_arms.push(arm),
                 Err(e) => {
                     // Recover by skipping to the end of the block.
                     let guar = e.emit();
@@ -3283,7 +3288,7 @@ impl<'a> Parser<'a> {
                         self.bump();
                     }
                     // Always push at least one arm to make the match non-empty
-                    arms.push(Arm {
+                    let arm = Arm {
                         attrs: Default::default(),
                         pat: P::new(self.mk_pat(span, ast::PatKind::Err(guar))),
                         guard: None,
@@ -3291,7 +3296,10 @@ impl<'a> Parser<'a> {
                         span,
                         id: DUMMY_NODE_ID,
                         is_placeholder: false,
-                    });
+                    };
+                    self.list_scratch.get_mut().match_arms.push(arm);
+                    let arms =
+                        super::take_arena_vec(&mut self.list_scratch.get_mut().match_arms, start);
                     return Ok(self.mk_expr_with_attrs(
                         span,
                         ExprKind::Match(scrutinee, arms, match_kind),
@@ -3300,6 +3308,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        let arms = super::take_arena_vec(&mut self.list_scratch.get_mut().match_arms, start);
         let hi = self.token.span;
         self.bump();
         Ok(self.mk_expr_with_attrs(lo.to(hi), ExprKind::Match(scrutinee, arms, match_kind), attrs))
@@ -3898,12 +3907,12 @@ impl<'a> Parser<'a> {
     ) -> PResult<
         'a,
         (
-            ThinVec<ExprField>,
+            ast::ArenaVec<ExprField>,
             ast::StructRest,
             Option<ErrorGuaranteed>, /* async blocks are forbidden in Rust 2015 */
         ),
     > {
-        let mut fields = ThinVec::new();
+        let mut fields = ast::ArenaVec::new();
         let mut base = ast::StructRest::None;
         let mut recovered_async = None;
         let in_if_guard = self.restrictions.contains(Restrictions::IN_IF_GUARD);
@@ -4263,7 +4272,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn mk_unit_expr(&self, span: Span) -> P<Expr> {
-        self.mk_expr(span, ExprKind::Tup(Default::default()))
+        self.mk_expr(span, ExprKind::Tup(ast::ArenaVec::new()))
     }
 
     pub(crate) fn mk_closure_expr(&self, span: Span, body: P<Expr>) -> P<Expr> {

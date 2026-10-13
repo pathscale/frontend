@@ -781,7 +781,11 @@ impl<'a> Parser<'a> {
         let impl_items = if is_reuse {
             Default::default()
         } else {
-            self.parse_item_list(attrs, |p| p.parse_impl_item(ForceCollect::No))?
+            self.parse_item_list(
+                attrs,
+                |p| p.parse_impl_item(ForceCollect::No),
+                |p| &mut p.list_scratch.get_mut().assoc_items,
+            )?
         };
 
         let (of_trait, self_ty) = match ty_second {
@@ -969,6 +973,7 @@ impl<'a> Parser<'a> {
         &mut self,
         attrs: &mut AttrVec,
         mut parse_item: impl FnMut(&mut Parser<'a>) -> PResult<'a, Option<Option<T>>>,
+        scratch: for<'p> fn(&'p mut Parser<'a>) -> &'p mut Vec<T>,
     ) -> PResult<'a, ThinVec<T>> {
         let open_brace_span = self.token.span;
 
@@ -982,7 +987,8 @@ impl<'a> Parser<'a> {
         self.expect(exp!(OpenBrace))?;
         attrs.extend(self.parse_inner_attributes()?);
 
-        let mut items = ThinVec::new();
+        let start = scratch(self).len();
+        let mut has_item = false;
         while !self.eat(exp!(CloseBrace)) {
             if self.recover_doc_comment_before_brace() {
                 continue;
@@ -992,7 +998,7 @@ impl<'a> Parser<'a> {
                 Ok(None) => {
                     let mut is_unnecessary_semicolon = (self.token == token::Semi
                         && self.prev_token == token::Semi)
-                        || !items.is_empty()
+                        || has_item
                         // When the close delim is `)` in a case like the following, `token.kind`
                         // is expected to be `token::CloseParen`, but the actual `token.kind` is
                         // `token::CloseBrace`. This is because the `token.kind` of the close delim
@@ -1051,7 +1057,12 @@ impl<'a> Parser<'a> {
                     err.emit();
                     break;
                 }
-                Ok(Some(item)) => items.extend(item),
+                Ok(Some(item)) => {
+                    if let Some(item) = item {
+                        scratch(self).push(item);
+                        has_item = true;
+                    }
+                }
                 Err(err) => {
                     self.consume_block(exp!(OpenBrace), exp!(CloseBrace), ConsumeClosingDelim::Yes);
                     err.with_span_label(
@@ -1064,7 +1075,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Ok(items)
+        Ok(super::take_thin_vec(scratch(self), start))
     }
 
     /// Recover on a doc comment before `}`.
@@ -1242,7 +1253,11 @@ impl<'a> Parser<'a> {
         } else {
             // It's a normal trait.
             generics.where_clause = self.parse_where_clause()?;
-            let items = self.parse_item_list(attrs, |p| p.parse_trait_item(ForceCollect::No))?;
+            let items = self.parse_item_list(
+                attrs,
+                |p| p.parse_trait_item(ForceCollect::No),
+                |p| &mut p.list_scratch.get_mut().assoc_items,
+            )?;
             Ok(ItemKind::Trait(Box::new(Trait {
                 impl_restriction,
                 constness,
@@ -1609,7 +1624,11 @@ impl<'a> Parser<'a> {
             extern_span,
             safety,
             abi,
-            items: self.parse_item_list(attrs, |p| p.parse_foreign_item(ForceCollect::No))?,
+            items: self.parse_item_list(
+                attrs,
+                |p| p.parse_foreign_item(ForceCollect::No),
+                |p| &mut p.list_scratch.get_mut().foreign_items,
+            )?,
         }))
     }
 

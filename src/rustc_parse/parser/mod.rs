@@ -253,9 +253,48 @@ pub struct Parser<'a> {
     in_fn_body: bool,
     /// Whether we have detected a missing semicolon in function body.
     pub fn_body_missing_semi_guar: Option<ErrorGuaranteed>,
+    // List buffers are allocation scratch. Clones start empty; restores retain the live slot.
+    list_scratch: ParserListScratchSlot,
     #[cfg(feature = "parallel")]
     body_jobs:
         Option<alloc::sync::Arc<crate::rustc_data_structures::sync::Lock<Vec<parallel::BodyJob>>>>,
+}
+
+#[derive(Default)]
+struct ParserListScratch {
+    stmts: Vec<ast::Stmt>,
+    assoc_items: Vec<P<ast::AssocItem>>,
+    foreign_items: Vec<P<ast::ForeignItem>>,
+    match_arms: Vec<ast::Arm>,
+}
+
+#[derive(Default)]
+struct ParserListScratchSlot(Option<Box<ParserListScratch>>);
+
+impl Clone for ParserListScratchSlot {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl ParserListScratchSlot {
+    fn get_mut(&mut self) -> &mut ParserListScratch {
+        self.0.get_or_insert_with(|| Box::new(ParserListScratch::default()))
+    }
+}
+
+pub(super) fn take_thin_vec<T>(scratch: &mut Vec<T>, start: usize) -> ThinVec<T> {
+    let mut result = ThinVec::with_capacity(scratch.len() - start);
+    result.extend(scratch.drain(start..));
+    result
+}
+
+pub(super) fn take_arena_vec<T>(scratch: &mut Vec<T>, start: usize) -> ast::ArenaVec<T> {
+    let mut result = ast::ArenaVec::with_capacity(scratch.len() - start);
+    for value in scratch.drain(start..) {
+        result.push(value);
+    }
+    result
 }
 
 // This type is used a lot, e.g. it's cloned when matching many declarative macro rules with
@@ -266,13 +305,13 @@ pub struct Parser<'a> {
     target_pointer_width = "64",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-crate::static_assert_size!(Parser<'_>, 272);
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 288);
 #[cfg(all(
     feature = "parallel",
     target_pointer_width = "64",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 288);
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 304);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -367,6 +406,13 @@ pub fn token_descr(token: &Token) -> String {
 }
 
 impl<'a> Parser<'a> {
+    /// Replaces parser state without moving allocation scratch into the returned snapshot.
+    fn replace_parser(&mut self, mut parser: Self) -> Self {
+        parser.frame_spare.append(mem::take(&mut self.frame_spare));
+        parser.list_scratch = mem::take(&mut self.list_scratch);
+        mem::replace(self, parser)
+    }
+
     pub fn new(
         psess: &'a ParseSess,
         stream: TokenStream,
@@ -376,6 +422,7 @@ impl<'a> Parser<'a> {
             psess,
             token_cursor: TokenCursor::new(stream),
             frame_spare: FrameSpare::default(),
+            list_scratch: ParserListScratchSlot::default(),
             subparser_name,
             capture_state: CaptureState {
                 capturing: Capturing::No,
