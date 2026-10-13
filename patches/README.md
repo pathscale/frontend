@@ -23,3 +23,12 @@ Work from local master. Push only HEAD to the existing PR head with an explicit
 refspec. Keep no extra local branches or source worktrees. No merge or squash was
 performed during this preservation operation.
 
+
+## Prior PR13 stage/parser work
+
+`pending-pr13-stage-parser-20261013.mbox` preserves the one unique former PR13
+commit 85a246fb862e353f630a9d04cac08620945e2c21, based on
+630da40232621e3f2b3a560d2f205ccf1cd227b1. It includes stage/parser work and
+parallel timing material. It is not integrated or validated. Review overlap with
+current source before applying. This readable pending proposal replaces the
+removed opaque bundle; no alternate checkout or branch is needed.
