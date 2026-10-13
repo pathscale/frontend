@@ -1,40 +1,48 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-
-use core::any::Any;
-use eko::path::PathBuf;
-use core::str::FromStr;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::any::Any;
+use core::str::FromStr;
 use core::sync::atomic::{AtomicBool, AtomicUsize};
+
 // `JsonEmitter`'s sink is now `core::fmt::Write` rather than `std::io::Write`, and it
 // serialises each record into one `String` and writes it in a single call. A `BufWriter` in
 // front of stderr would therefore buy nothing, and would cost something: `eko`'s
 // flushes only at 64 KiB and on drop, and the compiler leaves through `exit(2)`, so a run
 // whose diagnostics fit in the buffer would print none of them. Stderr goes straight to fd 2.
 use eko::file::stderr;
+use eko::path::PathBuf;
+use rustc_macros::StableHash;
 
 use crate::rustc_data_structures::flock;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::profiling::SelfProfilerRef;
 use crate::rustc_data_structures::sync::{AppendOnlyVec, DynSend, DynSync, Lock};
-use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::emitter::{DynEmitter, HumanReadableErrorType};
 use crate::rustc_errors::json::JsonEmitter;
+use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::timings::TimingSectionHandler;
 use crate::rustc_errors::{
     Diag, DiagCtxt, DiagCtxtHandle, DiagMessage, Diagnostic, ErrorGuaranteed, FatalAbort, PResult,
     TerminalUrl,
 };
 use crate::rustc_feature::UnstableFeatures;
-use rustc_macros::StableHash;
+use crate::rustc_session::config::{
+    self, BranchProtection, Cfg, CheckCfg, CoverageLevel, CoverageOptions, DebugInfo,
+    ErrorOutputType, FunctionReturn, Input, InstrumentCoverage, InstrumentMcount, NATIVE_CPU,
+    OptLevel, OutFileName, OutputType, PAuthKey, PointerAuthOption, SwitchWithOptPath,
+};
+use crate::rustc_session::filesearch::FileSearch;
+use crate::rustc_session::lint::LintId;
+use crate::rustc_session::parse::ParseSess;
+use crate::rustc_session::search_paths::SearchPath;
+use crate::rustc_session::{diagnostics, filesearch, lint};
 pub use crate::rustc_span::def_id::StableCrateId;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::source_map::{FilePathMapping, SourceMap};
@@ -46,17 +54,6 @@ use crate::rustc_target::spec::{
     SanitizerSet, SmallDataThresholdSupport, SplitDebuginfo, StackProtector, SymbolVisibility,
     Target, TargetTuple, TlsModel, apple,
 };
-
-use crate::rustc_session::config::{
-    self, BranchProtection, Cfg, CheckCfg, CoverageLevel, CoverageOptions, DebugInfo,
-    ErrorOutputType, FunctionReturn, Input, InstrumentCoverage, InstrumentMcount, NATIVE_CPU,
-    OptLevel, OutFileName, OutputType, PAuthKey, PointerAuthOption, SwitchWithOptPath,
-};
-use crate::rustc_session::filesearch::FileSearch;
-use crate::rustc_session::lint::LintId;
-use crate::rustc_session::parse::ParseSess;
-use crate::rustc_session::search_paths::SearchPath;
-use crate::rustc_session::{diagnostics, filesearch, lint};
 
 /// The behavior of the CTFE engine when an error occurs with regards to backtraces.
 #[derive(Clone, Copy)]
@@ -628,7 +625,6 @@ impl Session {
     pub fn reset_uncomputed_consts(&self, common: &[String]) {
         *self.uncomputed_consts.lock() = common.to_vec();
     }
-
 
     /// Const definition paths whose symbolic terms were not fully compared.
     pub fn uncomputed_consts(&self) -> Vec<String> {
@@ -1355,10 +1351,7 @@ fn default_emitter(sopts: &config::Options, source_map: Arc<SourceMap>) -> Box<D
     let track_diagnostics = sopts.unstable_opts.track_diagnostics;
     let terminal_url = match sopts.unstable_opts.terminal_urls {
         TerminalUrl::Auto => {
-            match (
-                eko::env::var("COLORTERM").as_deref(),
-                eko::env::var("TERM").as_deref(),
-            ) {
+            match (eko::env::var("COLORTERM").as_deref(), eko::env::var("TERM").as_deref()) {
                 (Some("truecolor"), Some("xterm-256color"))
                     if sopts.unstable_features.is_nightly_build() =>
                 {
@@ -1373,7 +1366,7 @@ fn default_emitter(sopts: &config::Options, source_map: Arc<SourceMap>) -> Box<D
     let source_map = if sopts.unstable_opts.link_only { None } else { Some(source_map) };
 
     match sopts.error_format {
-        config::ErrorOutputType::HumanReadable { kind, color_config } => match kind {
+        config::ErrorOutputType::HumanReadable { kind, color_config: _ } => match kind {
             HumanReadableErrorType { short, unicode } => {
                 // Everything the snippet renderer took is gone with it: `diagnostic_width`
                 // wrapped the source line, `theme` picked box-drawing characters,
@@ -1387,21 +1380,15 @@ fn default_emitter(sopts: &config::Options, source_map: Arc<SourceMap>) -> Box<D
             }
         },
         config::ErrorOutputType::Json { pretty, json_rendered, color_config } => Box::new(
-            JsonEmitter::new(
-                Box::new(stderr()),
-                source_map,
-                pretty,
-                json_rendered,
-                color_config,
-            )
-            .ui_testing(sopts.unstable_opts.ui_testing)
-            .ignored_directories_in_source_blocks(
-                sopts.unstable_opts.ignore_directory_in_diagnostics_source_blocks.clone(),
-            )
-            .diagnostic_width(sopts.diagnostic_width)
-            .macro_backtrace(macro_backtrace)
-            .track_diagnostics(track_diagnostics)
-            .terminal_url(terminal_url),
+            JsonEmitter::new(Box::new(stderr()), source_map, pretty, json_rendered, color_config)
+                .ui_testing(sopts.unstable_opts.ui_testing)
+                .ignored_directories_in_source_blocks(
+                    sopts.unstable_opts.ignore_directory_in_diagnostics_source_blocks.clone(),
+                )
+                .diagnostic_width(sopts.diagnostic_width)
+                .macro_backtrace(macro_backtrace)
+                .track_diagnostics(track_diagnostics)
+                .terminal_url(terminal_url),
         ),
     }
 }
@@ -1485,9 +1472,10 @@ pub fn build_session(
         .sysroot
         .path()
         .map(|sysroot| SearchPath::from_sysroot_and_triple(sysroot, target_triple));
-    let wasm_proc_macro_tlib_path = sopts.sysroot.path().map(|sysroot| {
-        SearchPath::from_sysroot_and_triple(sysroot, wasm_proc_macro_tuple.tuple())
-    });
+    let wasm_proc_macro_tlib_path = sopts
+        .sysroot
+        .path()
+        .map(|sysroot| SearchPath::from_sysroot_and_triple(sysroot, wasm_proc_macro_tuple.tuple()));
 
     let prof = SelfProfilerRef::new(
         sopts.unstable_opts.time_passes.then(|| sopts.unstable_opts.time_passes_format),
@@ -1948,7 +1936,7 @@ impl EarlyDiagCtxt {
 
 fn mk_emitter(output: ErrorOutputType) -> Box<DynEmitter> {
     let emitter: Box<DynEmitter> = match output {
-        config::ErrorOutputType::HumanReadable { kind, color_config } => match kind {
+        config::ErrorOutputType::HumanReadable { kind, color_config: _ } => match kind {
             HumanReadableErrorType { short, unicode: _ } => {
                 Box::new(PlainEmitter::new().short_message(short))
             }

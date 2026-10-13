@@ -27,13 +27,6 @@ pub mod facts_api;
 pub mod lang_item_stubs;
 pub mod session;
 pub mod syntax;
-pub use callable_source_attestation::CallableDefinitionSourceAttestation;
-pub use callable_source_attestation::ResolvedCallableSourceContext;
-pub use callable_source_attestation::{DefinitionSourceAttestation, DefinitionSourceKind};
-
-pub use emit::CapturedDiagnostics;
-use emit::FactEmitter;
-
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
 use alloc::boxed::Box;
@@ -42,6 +35,14 @@ use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
+
+pub use callable_source_attestation::{
+    CallableDefinitionSourceAttestation, DefinitionSourceAttestation, DefinitionSourceKind,
+    ResolvedCallableSourceContext,
+};
+pub use emit::CapturedDiagnostics;
+use emit::FactEmitter;
+use serde::{Deserialize, Serialize};
 
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::sync::{cost, run_stage, run_stage_weighted};
@@ -58,7 +59,6 @@ use crate::rustc_span::fatal_error::{FatalError, catch_fatal_errors};
 use crate::rustc_span::hygiene::{ExpnId, ExpnKind, MacroKind};
 use crate::rustc_span::{FileName, SourceFile, SourceFileHash, SourceFileHashAlgorithm, Span};
 use crate::rustc_structures::CrateType;
-use serde::{Deserialize, Serialize};
 pub mod site;
 
 #[cfg(feature = "diagnostics")]
@@ -1185,21 +1185,17 @@ impl<'a, 'tcx> Names<'a, 'tcx> {
     /// expansions.
     fn definition_span(&self, def_id: DefId, span: Span) -> ByteSpan {
         let mut reported = self.span(span);
-        if def_id == CRATE_DEF_ID.to_def_id() {
-            if let Some(original_end) = self.synthetic_start {
-                if original_end <= self.input.0.unnormalized_source_len as usize {
-                    if let Ok(original_end) = u32::try_from(original_end) {
-                        let normalized_end = self.input.0.normalized_byte_pos(original_end);
-                        let normalized_end_relative =
-                            self.input.0.relative_position(normalized_end);
-                        if self.input.0.contains(normalized_end)
-                            && self.input.0.original_relative_byte_pos(normalized_end).0
-                                == original_end
-                        {
-                            reported.end = normalized_end_relative.0;
-                        }
-                    }
-                }
+        if def_id == CRATE_DEF_ID.to_def_id()
+            && let Some(original_end) = self.synthetic_start
+            && original_end <= self.input.0.unnormalized_source_len as usize
+            && let Ok(original_end) = u32::try_from(original_end)
+        {
+            let normalized_end = self.input.0.normalized_byte_pos(original_end);
+            let normalized_end_relative = self.input.0.relative_position(normalized_end);
+            if self.input.0.contains(normalized_end)
+                && self.input.0.original_relative_byte_pos(normalized_end).0 == original_end
+            {
+                reported.end = normalized_end_relative.0;
             }
         }
         reported
@@ -1622,7 +1618,10 @@ struct DocFacts {
 }
 
 fn doc_facts(tcx: TyCtxt<'_>, def_id: DefId) -> DocFacts {
-    catch_fatal_errors(|| doc_facts_from_attrs(tcx.get_all_attrs(def_id))).unwrap_or_default()
+    catch_fatal_errors(|| {
+        doc_facts_from_attrs(crate::rustc_attr_ir::HasAttrs::get_attrs(def_id, &tcx))
+    })
+    .unwrap_or_default()
 }
 
 fn doc_facts_from_attrs(attrs: &[hir::Attribute]) -> DocFacts {
@@ -2591,9 +2590,10 @@ impl<'a> Setup<'a> {
 /// lookup by name finds them, which is how an injected `std` or an `extern crate core` of a
 /// `noprelude` crate is found, as in rustc.
 fn externs(dependencies: &[Dependency]) -> crate::rustc_session::config::Externs {
+    use alloc::collections::{BTreeMap, BTreeSet};
+
     use crate::rustc_session::config::{ExternEntry, ExternLocation, Externs};
     use crate::rustc_session::utils::CanonicalizedPath;
-    use alloc::collections::{BTreeMap, BTreeSet};
     // Per name: its prelude files, then its `noprelude` ones.
     let mut by_name: BTreeMap<String, (BTreeSet<CanonicalizedPath>, BTreeSet<CanonicalizedPath>)> =
         BTreeMap::new();
@@ -4485,20 +4485,19 @@ impl BodyTypeVisitor<'_, '_> {
                         def_id,
                         DefinitionSourceKind::Macro,
                     );
-                    let source_gap = if matches!(
-                        &source_attestation,
-                        effects::StaticFact::Known { .. }
-                    ) {
-                        None
-                    } else {
-                        Some(BodyMacroIdentityCoverageGapKind::DefinitionSourceUnavailable)
-                    };
+                    let source_gap =
+                        if matches!(&source_attestation, effects::StaticFact::Known { .. }) {
+                            None
+                        } else {
+                            Some(BodyMacroIdentityCoverageGapKind::DefinitionSourceUnavailable)
+                        };
                     (
                         effects::StaticFact::Known {
                             value: ResolvedMacroDefinitionIdentity {
                                 definition: stable_def_path_identity(tcx, def_id),
-                                crate_context:
-                                    callable_source_attestation::source_context(tcx, def_id),
+                                crate_context: callable_source_attestation::source_context(
+                                    tcx, def_id,
+                                ),
                             },
                         },
                         source_attestation,
@@ -4520,10 +4519,8 @@ impl BodyTypeVisitor<'_, '_> {
             }
 
             let kind = effects::StaticFact::Known { value: macro_kind };
-            if let Some(index) = identity_facts
-                .macro_invocations
-                .iter()
-                .position(|fact| fact.callsite == callsite)
+            if let Some(index) =
+                identity_facts.macro_invocations.iter().position(|fact| fact.callsite == callsite)
             {
                 let conflict = {
                     let previous = &mut identity_facts.macro_invocations[index];
