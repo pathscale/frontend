@@ -1,9 +1,12 @@
+use alloc::format;
+
 use crate::rustc_hir::def_id::LocalDefId;
+use crate::rustc_middle::mir::ConstValue;
 use crate::rustc_middle::mir::interpret::{
     ErrorHandled, EvalStaticInitializerRawResult, EvalToAllocationRawResult,
-    EvalToConstValueResult, GlobalId,
+    EvalToConstValueResult, GlobalId, ReportedErrorInfo,
 };
-use crate::rustc_middle::ty::{self, TyCtxt};
+use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use tracing::instrument;
 
 #[instrument(skip(tcx), level = "debug")]
@@ -11,11 +14,26 @@ pub fn eval_to_const_value_raw_provider<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: ty::PseudoCanonicalInput<'tcx, GlobalId<'tcx>>,
 ) -> EvalToConstValueResult<'tcx> {
-    if let Some((value, _ty)) = tcx.trivial_const(key.value.instance.def_id()) {
+    let def_id = key.value.instance.def_id();
+    if let Some((value, _ty)) = tcx.trivial_const(def_id) {
         return Ok(value);
     }
 
-    Err(ErrorHandled::TooGeneric(tcx.def_span(key.value.instance.def_id())))
+    if key.value.instance.args.has_non_region_param() {
+        return Err(ErrorHandled::TooGeneric(tcx.def_span(def_id)));
+    }
+
+    match super::static_fold::fold_scalar(tcx, key.typing_env, key.value) {
+        Ok(value) => Ok(ConstValue::Scalar(value)),
+        Err(reason) => {
+            let span = tcx.def_span(def_id);
+            let error = tcx.dcx().span_err(
+                span,
+                format!("cannot statically fold constant `{}`: {reason}", key.value.display(tcx)),
+            );
+            Err(ErrorHandled::Reported(ReportedErrorInfo::const_eval_error(error), span))
+        }
+    }
 }
 
 #[instrument(skip(tcx), level = "debug")]
