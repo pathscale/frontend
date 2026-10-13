@@ -54,6 +54,30 @@ impl AttrIdGenerator {
         AttrIdGenerator(AtomicU32::new(0))
     }
 
+    #[cfg(feature = "parallel")]
+    pub(crate) fn at(start: u32) -> Self {
+        Self(AtomicU32::new(start))
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(crate) fn position(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(crate) fn reserve(&self, count: u32) -> Option<u32> {
+        self.0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |start| {
+                start.checked_add(count).filter(|end| *end < u32::MAX)
+            })
+            .ok()
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(crate) fn commit(&self, start: u32, end: u32) -> bool {
+        self.0.compare_exchange(start, end, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    }
+
     pub fn mk_attr_id(&self) -> AttrId {
         let id = self.0.fetch_add(1, Ordering::Relaxed);
         assert!(id != u32::MAX);

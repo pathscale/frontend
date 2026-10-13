@@ -85,6 +85,14 @@ pub fn parses_as(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
         crate::unwind_janky::unwinding_is_enabled(),
         "parses_as needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
+    #[cfg(feature = "parallel")]
+    let _parse_mode = if kind == Fragment::Items && !crate::rustc_span::session_globals_are_set() {
+        Some(crate::rustc_data_structures::sync::enter_session_width(
+            crate::rustc_data_structures::sync::parse_pool_width(),
+        ))
+    } else {
+        None
+    };
     create_session_if_not_set_then(Edition::Edition2024, |_| parse_in_session(source, kind))
 }
 
@@ -215,20 +223,30 @@ mod tests {
 /// analysis would report as the crate's own. An unreadable or unparsable root answers `false`:
 /// the session then reads it and reports whatever is wrong.
 pub(crate) fn declares_no_core(root: &eko::path::Path) -> bool {
-    no_core_declared(|psess| crate::rustc_parse::new_parser_from_file(psess, root, StripTokens::Shebang, None))
+    no_core_declared(|psess| {
+        crate::rustc_parse::new_parser_from_file(psess, root, StripTokens::Shebang, None)
+    })
 }
 
 /// Whether crate source text declares `#![no_core]` itself.
 pub fn declares_no_core_source(source: &str) -> bool {
     no_core_declared(|psess| {
-        new_parser_from_source_str(psess, FileName::anon_source_code(source), source.to_string(), StripTokens::Shebang)
+        new_parser_from_source_str(
+            psess,
+            FileName::anon_source_code(source),
+            source.to_string(),
+            StripTokens::Shebang,
+        )
     })
 }
 
 fn no_core_declared(
     open: impl for<'p> FnOnce(
         &'p ParseSess,
-    ) -> Result<crate::rustc_parse::parser::Parser<'p>, Vec<crate::rustc_errors::Diag<'p>>>,
+    ) -> Result<
+        crate::rustc_parse::parser::Parser<'p>,
+        Vec<crate::rustc_errors::Diag<'p>>,
+    >,
 ) -> bool {
     create_session_if_not_set_then(Edition::Edition2024, |_| {
         let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
@@ -241,17 +259,18 @@ fn no_core_declared(
         let mut declared = false;
         let _ = catch_fatal_errors(|| {
             let mut parser = match open(&psess) {
-                    Ok(parser) => parser,
-                    Err(diags) => {
-                        for diag in diags {
-                            diag.cancel();
-                        }
-                        return;
+                Ok(parser) => parser,
+                Err(diags) => {
+                    for diag in diags {
+                        diag.cancel();
                     }
-                };
+                    return;
+                }
+            };
             match parser.parse_inner_attributes() {
                 Ok(attrs) => {
-                    declared = attrs.iter().any(|attr| attr.has_name(crate::rustc_span::sym::no_core));
+                    declared =
+                        attrs.iter().any(|attr| attr.has_name(crate::rustc_span::sym::no_core));
                 }
                 Err(diag) => diag.cancel(),
             }

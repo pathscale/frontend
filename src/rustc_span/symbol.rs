@@ -19,7 +19,9 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::{fmt, str};
 
 use crate::rustc_arena::DroplessArena;
-use crate::rustc_data_structures::stable_hash::{StableCompare, StableHash, StableHashCtxt, StableHasher};
+use crate::rustc_data_structures::stable_hash::{
+    StableCompare, StableHash, StableHashCtxt, StableHasher,
+};
 use crate::rustc_data_structures::sync::{AtomicU64, Lock};
 use rustc_macros::{Decodable, Encodable, StableHash, symbols};
 
@@ -2830,7 +2832,9 @@ impl ByteSymbol {
     /// Like `Symbol::as_str`.
     pub fn as_byte_str(&self) -> &[u8] {
         with_session_globals(|session_globals| unsafe {
-            core::mem::transmute::<&[u8], &[u8]>(session_globals.symbol_interner.get_byte_str(*self))
+            core::mem::transmute::<&[u8], &[u8]>(
+                session_globals.symbol_interner.get_byte_str(*self),
+            )
         })
     }
 
@@ -3254,6 +3258,8 @@ impl SymbolIndices {
             }
         };
 
+        #[cfg(feature = "parallel")]
+        super::parse_transaction::symbol_insert();
         // Absent. Every session symbol is in the current table, so it holds `strs.len()`
         // entries; keep it at most half full after this insert.
         let count = strs.len.load(Ordering::Relaxed);
@@ -3541,7 +3547,11 @@ impl Interner {
         owner: Option<&Arc<String>>,
     ) -> u32 {
         self.inner.with_lock(|inner| {
-            let store = || inner.store(byte_str, owner);
+            let store = || {
+                #[cfg(feature = "parallel")]
+                super::parse_transaction::symbol_insert();
+                inner.store(byte_str, owner)
+            };
             // SAFETY: under the lock, so this is the one writer of `indices` and `strs`.
             let local =
                 unsafe { self.indices.find_or_insert(byte_str, hash, &self.strs, miss, store) };

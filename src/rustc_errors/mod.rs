@@ -32,16 +32,16 @@ use alloc::vec::Vec;
 
 extern crate self as rustc_errors;
 
+use crate::assert_matches;
 pub use alloc::borrow::Cow;
 use core::cell::Cell;
+use core::fmt::Write as _;
 use core::hash::Hash;
 use core::num::NonZero;
 use core::ops::DerefMut;
+use core::{fmt, mem};
 use eko::path::{Path, PathBuf};
 use eko::thread::ThreadId;
-use core::fmt::Write as _;
-use core::{fmt, mem};
-use crate::assert_matches;
 
 use Level::*;
 // The `anstyle` re-export went with the colouring. It was here for external consumers such as
@@ -53,16 +53,6 @@ pub use decorate_diag::{BufferedEarlyLint, DecorateDiagCompat, LintBuffer};
 // attribute, and that crate can name `alloc::borrow::Cow` only if it declared `extern crate
 // alloc`, or `alloc::borrow::Cow` only if it links std - neither holds for every crate that
 // derives. Naming it through `rustc_errors` costs the deriving crate nothing.
-pub use diagnostic::{
-    BugAbort, Diag, DiagDecorator, DiagInner, DiagLocation, DiagStyledString, Diagnostic,
-    EmissionGuarantee, FatalAbort, StringPart, Subdiag, Subdiagnostic,
-};
-pub use diagnostic_impls::{
-    DiagSymbolList, ElidedLifetimeInPathSubdiag, ExpectedLifetimeParameter,
-    IndicateAnonymousLifetime, SingleLabelManySpans,
-};
-pub use emitter::ColorConfig;
-use emitter::{DynEmitter, Emitter};
 use crate::rustc_ast::attr::version::RustcVersion;
 use crate::rustc_data_structures::AtomicRef;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
@@ -75,23 +65,34 @@ pub use crate::rustc_error_messages::{
 use crate::rustc_hashes::Hash128;
 use crate::rustc_lint_defs::LintExpectationId;
 pub use crate::rustc_lint_defs::{Applicability, listify, pluralize};
-pub use rustc_macros::msg;
-use rustc_macros::{Decodable, Encodable};
 pub use crate::rustc_span::ErrorGuaranteed;
 pub use crate::rustc_span::fatal_error::{FatalError, FatalErrorMarker, catch_fatal_errors};
 use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{DUMMY_SP, Span};
+pub use diagnostic::{
+    BugAbort, Diag, DiagDecorator, DiagInner, DiagLocation, DiagStyledString, Diagnostic,
+    EmissionGuarantee, FatalAbort, StringPart, Subdiag, Subdiagnostic,
+};
+pub use diagnostic_impls::{
+    DiagSymbolList, ElidedLifetimeInPathSubdiag, ExpectedLifetimeParameter,
+    IndicateAnonymousLifetime, SingleLabelManySpans,
+};
+pub use emitter::ColorConfig;
+use emitter::{DynEmitter, Emitter};
+pub use rustc_macros::msg;
+use rustc_macros::{Decodable, Encodable};
 use tracing::debug;
 
 use crate::rustc_errors::emitter::TimingEvent;
 use crate::rustc_errors::formatting::DiagMessageAddArg;
-pub use crate::rustc_errors::formatting::{diag_message_source, format_diag_message, try_format_diag_message};
+pub use crate::rustc_errors::formatting::{
+    diag_message_source, format_diag_message, try_format_diag_message,
+};
 use crate::rustc_errors::timings::TimingRecord;
 
 // The snippet emitter is gone. This compiler is built to be driven by a program rather than read
 // under source lines in colour had no consumer, and it was what pulled in `annotate-snippets`,
 // `anstream`, `anstyle` and `termize`. `plain_emitter` is what remains.
-pub mod plain_emitter;
 pub mod codes;
 mod decorate_diag;
 mod diagnostic;
@@ -100,15 +101,16 @@ pub mod emitter;
 pub mod formatting;
 pub mod json;
 mod lock;
+pub mod plain_emitter;
 // A par item's diagnostics as its owned output, and a query's as its own: collected while they
 // run, forwarded with their results, replayed in serial order. See its module docs for the
 // whole design.
 mod item_scope;
+use item_scope::{DcxRef, EventKind, StashOp, StashReplay};
 pub use item_scope::{
     ItemDiagnostics, ItemRun, OrderedReplay, QueryDiagnostics, QueryFrame,
     consume_query_diagnostics,
 };
-use item_scope::{DcxRef, EventKind, StashOp, StashReplay};
 // `markdown` rendered the long error explanations for `--explain`, a command-line feature this
 // compiler does not have - the note further down already records that its 518 markdown files
 // went. The renderer outlived them by an oversight.
@@ -452,6 +454,17 @@ pub enum StashKey {
 
 fn default_track_diagnostic<R>(diag: DiagInner, f: &mut dyn FnMut(DiagInner) -> R) -> R {
     (*f)(diag)
+}
+
+fn track_diagnostic(
+    diagnostic: DiagInner,
+    emit: &mut dyn FnMut(DiagInner) -> Option<ErrorGuaranteed>,
+) -> Option<ErrorGuaranteed> {
+    #[cfg(feature = "parallel")]
+    if crate::rustc_span::parse_transaction::active() {
+        return emit(diagnostic);
+    }
+    TRACK_DIAGNOSTIC(diagnostic, emit)
 }
 
 /// Diagnostics emitted by `DiagCtxtInner::emit_diagnostic` are passed through this function. Used
@@ -1472,7 +1485,7 @@ impl DiagCtxtInner {
                     // We are not emitting warnings.
                     if diagnostic.has_future_breakage() {
                         // The side-effect is at the top of this method.
-                        TRACK_DIAGNOSTIC(diagnostic, &mut |_| None);
+                        track_diagnostic(diagnostic, &mut |_| None);
                     }
                     return None;
                 }
@@ -1483,7 +1496,7 @@ impl DiagCtxtInner {
                 // Nothing emitted for allowed lints.
                 if diagnostic.has_future_breakage() {
                     // The side-effect is at the top of this method.
-                    TRACK_DIAGNOSTIC(diagnostic, &mut |_| None);
+                    track_diagnostic(diagnostic, &mut |_| None);
                     self.suppressed_expected_diag = true;
                 }
                 return None;
@@ -1492,7 +1505,7 @@ impl DiagCtxtInner {
                 self.fulfilled_expectations.insert(diagnostic.lint_id.unwrap());
                 if let Expect = diagnostic.level {
                     // Nothing emitted here for expected lints.
-                    TRACK_DIAGNOSTIC(diagnostic, &mut |_| None);
+                    track_diagnostic(diagnostic, &mut |_| None);
                     self.suppressed_expected_diag = true;
                     return None;
                 }
@@ -1505,7 +1518,7 @@ impl DiagCtxtInner {
             return None;
         }
 
-        TRACK_DIAGNOSTIC(diagnostic, &mut |diagnostic| {
+        track_diagnostic(diagnostic, &mut |diagnostic| {
             if let Some(code) = diagnostic.code {
                 self.emitted_diagnostic_codes.insert(code);
             }
@@ -1623,10 +1636,7 @@ impl DiagCtxtInner {
 
         let backtrace = eko::env::var_os("RUST_BACKTRACE").as_deref() != Some(b"0".as_slice());
         let decorate = backtrace || self.ice_file.is_none();
-        let mut out = self
-            .ice_file
-            .as_ref()
-            .and_then(|file| eko::file::File::append(file).ok());
+        let mut out = self.ice_file.as_ref().and_then(|file| eko::file::File::append(file).ok());
 
         // Put the overall explanation before the `DelayedBug`s, to frame them
         // better (e.g. separate warnings from them). Also, use notes, which
@@ -1726,9 +1736,8 @@ impl DelayedDiagInner {
         let mut diag = self.inner;
         // This used to branch on whether the backtrace was captured, and interpolate it as
         // `{$note}`. With no backtrace there is one message and no note argument.
-        let msg = msg!("delayed at {$emitted_at}")
-            .arg("emitted_at", diag.emitted_at.clone())
-            .format();
+        let msg =
+            msg!("delayed at {$emitted_at}").arg("emitted_at", diag.emitted_at.clone()).format();
         diag.sub(Note, msg, diag.span.primary_span().unwrap_or(DUMMY_SP).into());
         diag
     }
