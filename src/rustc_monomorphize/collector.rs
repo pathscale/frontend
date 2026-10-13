@@ -206,8 +206,9 @@
 //! regardless of whether it is actually needed or not.
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::format;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::cell::OnceCell;
 use core::ops::ControlFlow;
 
@@ -223,7 +224,9 @@ use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::mir::interpret::{AllocId, ErrorHandled, GlobalAlloc, Scalar};
 use crate::rustc_middle::mir::visit::Visitor as MirVisitor;
 use crate::rustc_middle::mir::{self, Body, Location, MentionedItem, traversal};
-use crate::rustc_middle::mono::{CollectionMode, InstantiationMode, MonoItem, NormalizationErrorInMono};
+use crate::rustc_middle::mono::{
+    CollectionMode, InstantiationMode, MonoItem, NormalizationErrorInMono,
+};
 use crate::rustc_middle::query::TyCtxtAt;
 use crate::rustc_middle::ty::adjustment::{CustomCoerceUnsized, PointerCoercion};
 use crate::rustc_middle::ty::layout::ValidityRequirement;
@@ -726,11 +729,15 @@ impl<'a, 'tcx> MirUsedCollector<'a, 'tcx> {
         // (codegen relies on this and ICEs will happen if this is violated.)
         match const_.eval(self.tcx, ty::TypingEnv::fully_monomorphized(), constant.span) {
             Ok(v) => Some(v),
-            Err(ErrorHandled::TooGeneric(..)) => span_bug!(
-                constant.span,
-                "collection encountered polymorphic constant: {:?}",
-                const_
-            ),
+            Err(ErrorHandled::TooGeneric(_)) => {
+                self.tcx.dcx().span_err(
+                    constant.span,
+                    format!(
+                        "constant `{const_}` still has generic parameters after monomorphization"
+                    ),
+                );
+                None
+            }
             Err(err @ ErrorHandled::Reported(..)) => {
                 err.emit_note(self.tcx);
                 return None;
@@ -1201,7 +1208,9 @@ fn find_tails_for_unsizing<'tcx>(
         (&ty::Adt(source_adt_def, source_args), &ty::Adt(target_adt_def, target_args)) => {
             assert_eq!(source_adt_def, target_adt_def);
             let CustomCoerceUnsized::Struct(coerce_index) =
-                match crate::rustc_monomorphize::custom_coerce_unsize_info(tcx, source_ty, target_ty) {
+                match crate::rustc_monomorphize::custom_coerce_unsize_info(
+                    tcx, source_ty, target_ty,
+                ) {
                     Ok(ccu) => ccu,
                     Err(e) => {
                         let e = Ty::new_error(tcx.tcx, e);
@@ -1506,7 +1515,10 @@ fn collect_roots(tcx: TyCtxt<'_>, mode: MonoItemCollectionStrategy) -> Vec<MonoI
         }
     }) {
         tcx.sess.file_depinfo.borrow_mut().insert(Symbol::intern(manifest_path));
-        match crate::rustc_monomorphize::offload::manifest::read_manifest(eko::path::Path::new(manifest_path), tcx) {
+        match crate::rustc_monomorphize::offload::manifest::read_manifest(
+            eko::path::Path::new(manifest_path),
+            tcx,
+        ) {
             Ok(instances) => {
                 for instance in instances {
                     if instance.def_id().is_local() {
@@ -1515,10 +1527,12 @@ fn collect_roots(tcx: TyCtxt<'_>, mode: MonoItemCollectionStrategy) -> Vec<MonoI
                 }
             }
             Err(e) => {
-                tcx.dcx().emit_err(crate::rustc_monomorphize::diagnostics::OffloadManifestReadError {
-                    path: manifest_path.clone(),
-                    err: e.to_string(),
-                });
+                tcx.dcx().emit_err(
+                    crate::rustc_monomorphize::diagnostics::OffloadManifestReadError {
+                        path: manifest_path.clone(),
+                        err: e.to_string(),
+                    },
+                );
             }
         }
     }

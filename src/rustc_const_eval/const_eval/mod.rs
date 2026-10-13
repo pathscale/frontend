@@ -5,6 +5,7 @@ use crate::rustc_middle::ty::{self, ScalarInt, Ty, TyCtxt};
 
 mod eval_queries;
 mod fn_queries;
+mod static_fold;
 mod valtrees;
 
 pub use self::eval_queries::*;
