@@ -141,7 +141,13 @@ fn alloc_node(layout: Layout) -> NonNull<u8> {
             };
             cur.next = offset + layout.size();
             // SAFETY: the current chunk is alive while it holds the current-chunk count.
-            unsafe { chunk.as_ref() }.live.fetch_add(1, Ordering::Relaxed);
+            // Zero-sized nodes can keep using this chunk without consuming bytes.
+            unsafe { chunk.as_ref() }
+                .live
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    (count < isize::MAX as usize).then(|| count + 1)
+                })
+                .expect("AST chunk count overflow");
             // SAFETY: `offset + size` is within the chunk, and strictly below its end, so even a
             // zero-sized node masks back to this chunk.
             unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(offset)) }
@@ -271,11 +277,16 @@ impl<T> DerefMut for P<T> {
 impl<T> Drop for P<T> {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: the node is owned and initialized, dropped once; then its count goes.
-        unsafe {
-            ptr::drop_in_place(self.ptr.as_ptr());
-            release(chunk_of(self.ptr));
+        struct Count(NonNull<ChunkHeader>);
+        impl Drop for Count {
+            fn drop(&mut self) {
+                // SAFETY: this guard owns the node's chunk count.
+                unsafe { release(self.0) };
+            }
         }
+        let _count = Count(chunk_of(self.ptr));
+        // SAFETY: the node is owned and initialized, dropped once; then its count goes.
+        unsafe { ptr::drop_in_place(self.ptr.as_ptr()) };
     }
 }
 
