@@ -262,8 +262,11 @@ impl LazyAttrTokenStreamInner {
                 // produce an empty `TokenStream` if no calls were made, and omit the
                 // final token otherwise.
                 let mut cursor_snapshot = cursor_snapshot.clone();
+                let mut spare = FrameSpare::default();
                 let tokens = iter::once(FlatToken::Token(*start_token))
-                    .chain(iter::repeat_with(|| FlatToken::Token(cursor_snapshot.next_and_bump())))
+                    .chain(iter::repeat_with(|| {
+                        FlatToken::Token(cursor_snapshot.inlined_next_and_bump_reusing(&mut spare))
+                    }))
                     .take(*num_calls as usize);
 
                 if node_replacements.is_empty() {
@@ -1027,6 +1030,29 @@ pub struct FrameSpare(Option<TokenCursorFrameRef>);
 impl Clone for FrameSpare {
     fn clone(&self) -> Self {
         FrameSpare(None)
+    }
+}
+
+impl FrameSpare {
+    /// Appends another list of reusable frames after this one.
+    pub fn append(&mut self, mut other: Self) {
+        if other.0.is_none() {
+            return;
+        }
+        let Some(mut head) = self.0.take() else {
+            self.0 = other.0.take();
+            return;
+        };
+        let mut tail = &mut head;
+        loop {
+            let frame = tail.get_mut().expect("FrameSpare frames must be uniquely owned");
+            if frame.parent.is_none() {
+                frame.parent = other.0.take();
+                break;
+            }
+            tail = frame.parent.as_mut().unwrap();
+        }
+        self.0 = Some(head);
     }
 }
 
