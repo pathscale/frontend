@@ -63,6 +63,40 @@ crate can read as clean and stop compiling the moment the attribute lands.
 Update the source snapshot recorded above when rebasing. No sysroot build or version setting is
 needed for parsing.
 
+### Stable-hash memo ownership (DR10)
+
+**Preserve this fork delta on every toolchain bump.** Address-keyed stable-hash memos belong to
+one hashing computation, never to the process, a worker or a thread. Each
+`TyCtxt::with_stable_hashing_context` call creates a fresh `StableHashState`, which owns its
+`address_memo: FxHashMap<(usize, StableHashControls), Fingerprint>`. Entries die with that
+computation, are never shared between threads and are never reused across hashing calls.
+
+An interned `RawList` or `AdtDefData` has one value at its address while its arena lives.
+Every address in this memo remains alive throughout the computation, so the address is a safe
+identity key within that scope; `StableHashControls` distinguishes fingerprints computed under
+different controls. After an arena dies, its address can name a different value. Carrying an
+entry into a later computation can therefore return the wrong fingerprint. Memoizing within
+the computation still avoids exponential re-hashing of shared nodes in an interned type DAG.
+A context without memo support remains correct by hashing the value again.
+
+This replaced thread-local address memos and the process-wide `ADDRESS_CACHE_GENERATION`
+counter, formerly bumped for each `GlobalCtxt`. With sessions sharing nagoya workers, a worker
+could hash a live session's value at an address still named by a dead session's memo entry,
+without a new context being created in between. The counter did not prevent that wrong
+fingerprint, and each new session also invalidated other sessions' worker memos. The counter
+and its accessors are gone. Do not restore them as an alternative to computation ownership.
+
+The contract is carried by these files; review all of them when rebasing:
+
+- `src/rustc_data_structures/stable_hash.rs`: `StableHashCtxt::memoized_address_hash` and
+  `memoize_address_hash`, their default no-memo behavior and the retired-generation comment.
+- `src/rustc_middle/ich.rs`: `StableHashState::address_memo`, its empty initialization and
+  lookup/insertion keyed by address and current `StableHashControls`.
+- `src/rustc_middle/ty/impls_ty.rs`: `RawList` hashes through the supplied hashing context.
+- `src/rustc_middle/ty/adt.rs`: `AdtDefData` hashes through the supplied hashing context.
+- `src/rustc_middle/ty/context.rs`: fresh state in `with_stable_hashing_context` and the comment
+  where the per-`GlobalCtxt` generation bump was removed.
+
 ## rust-analyzer
 
 ```
@@ -76,7 +110,7 @@ rust-analyzer's `ide-diagnostics` onto `rustc_ast`, with their codes, severities
 tests. From `crates/ide-diagnostics/src/handlers`: `break_outside_of_loop.rs`,
 `return_outside_function.rs`, `await_outside_of_async.rs`, `undeclared_label.rs`,
 `unreachable_label.rs`, `incorrect_case.rs`, `useless_braces.rs`, `remove_trailing_return.rs`,
-`remove_unnecessary_else.rs`, `field_shorthand.rs`, `missing_body.rs`, `duplicate_field.rs` and
+`remove_unnecessary_else.rs`, `field_shorthand.rs`, `duplicate_field.rs` and
 `union_expr_must_have_exactly_one_field.rs`. The detection logic behind them comes from
 `crates/hir-def/src/expr_store/lower.rs` (label ribs and `await` contexts), `crates/hir-ty/src/infer`
 (breakable contexts, `return` outside a body, duplicate and union fields),
@@ -87,3 +121,4 @@ reader in its tests follows `crates/test-utils/src/lib.rs`.
 
 Where a check needs name resolution or types in rust-analyzer, the port keeps the part the syntax
 decides; the module header of `structure.rs` lists each narrowing.
+
