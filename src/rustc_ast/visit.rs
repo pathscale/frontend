@@ -334,7 +334,7 @@ macro_rules! common_visitor_and_walkers {
             Closure(
                 &'a $($mut)? ClosureBinder,
                 &'a $($mut)? Option<CoroutineMarker>,
-                &'a $($mut)? Box<FnDecl>,
+                &'a $($mut)? P<FnDecl>,
                 &'a $($mut)? P<Expr>
             ),
         }

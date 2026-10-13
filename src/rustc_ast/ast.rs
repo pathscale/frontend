@@ -2117,7 +2117,7 @@ pub struct Closure {
     pub constness: Const,
     pub coroutine_marker: Option<CoroutineMarker>,
     pub movability: Movability,
-    pub fn_decl: Box<FnDecl>,
+    pub fn_decl: P<FnDecl>,
     pub body: P<Expr>,
     /// The span of the declaration block: 'move |...| -> ...'
     pub fn_decl_span: Span,
@@ -2786,7 +2786,7 @@ pub struct MutTy {
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub struct FnSig {
     pub header: FnHeader,
-    pub decl: Box<FnDecl>,
+    pub decl: P<FnDecl>,
     pub span: Span,
 }
 
@@ -2928,7 +2928,7 @@ pub struct FnPtrTy {
     pub safety: Safety,
     pub ext: Extern,
     pub generic_params: ThinVec<GenericParam>,
-    pub decl: Box<FnDecl>,
+    pub decl: P<FnDecl>,
     /// Span of the `[unsafe] [extern] fn(...) -> ...` part, i.e. everything
     /// after the generic params (if there are any, e.g. `for<'a>`).
     pub decl_span: Span,
