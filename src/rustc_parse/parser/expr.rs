@@ -1755,7 +1755,7 @@ impl<'a> Parser<'a> {
                 self.dcx().emit_err(diagnostics::MacroInvocationWithQualifiedPath(path.span));
             }
             let lo = path.span;
-            let mac = Box::new(MacCall { path, args: self.parse_delim_args()? });
+            let mac = P::new(MacCall { path, args: self.parse_delim_args()? });
             (lo.to(self.prev_token.span), ExprKind::MacCall(mac))
         } else if self.check(exp!(OpenBrace)) {
             let is_qualified = qself.is_some();
@@ -2567,7 +2567,7 @@ impl<'a> Parser<'a> {
 
         let closure = self.mk_expr(
             lo.to(body.span),
-            ExprKind::Closure(Box::new(ast::Closure {
+            ExprKind::Closure(P::new(ast::Closure {
                 binder,
                 capture_clause,
                 constness,
@@ -3100,7 +3100,7 @@ impl<'a> Parser<'a> {
             let block = self.mk_block(thin_vec![], BlockCheckMode::Default, self.prev_token.span);
             return Ok(self.mk_expr(
                 lo.to(self.prev_token.span),
-                ExprKind::ForLoop(Box::new(ForLoop {
+                ExprKind::ForLoop(P::new(ForLoop {
                     pat,
                     iter: err_expr,
                     body: block,
@@ -3116,7 +3116,7 @@ impl<'a> Parser<'a> {
             opt_label.is_none().then_some(lo),
         )?;
 
-        let kind = ExprKind::ForLoop(Box::new(ForLoop {
+        let kind = ExprKind::ForLoop(P::new(ForLoop {
             pat,
             iter: expr,
             body: loop_block,
@@ -3585,13 +3585,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(crate) fn eat_metavar_guard(&mut self) -> Option<Box<Guard>> {
+    pub(crate) fn eat_metavar_guard(&mut self) -> Option<P<Guard>> {
         self.eat_metavar_seq(MetaVarKind::Guard, |this| {
             this.expect_match_arm_guard(ForceCollect::Yes)
         })
     }
 
-    fn parse_match_arm_guard(&mut self) -> PResult<'a, Option<Box<Guard>>> {
+    fn parse_match_arm_guard(&mut self) -> PResult<'a, Option<P<Guard>>> {
         if let Some(guard) = self.eat_metavar_guard() {
             return Ok(Some(guard));
         }
@@ -3606,7 +3606,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn expect_match_arm_guard(
         &mut self,
         force_collect: ForceCollect,
-    ) -> PResult<'a, Box<Guard>> {
+    ) -> PResult<'a, P<Guard>> {
         if let Some(guard) = self.eat_metavar_guard() {
             return Ok(guard);
         }
@@ -3618,7 +3618,7 @@ impl<'a> Parser<'a> {
     fn expect_match_arm_guard_cond(
         &mut self,
         force_collect: ForceCollect,
-    ) -> PResult<'a, Box<Guard>> {
+    ) -> PResult<'a, P<Guard>> {
         let leading_if_span = self.prev_token.span;
 
         let mut cond = self.parse_match_guard_condition(force_collect)?;
@@ -3628,10 +3628,10 @@ impl<'a> Parser<'a> {
 
         let guard =
             Guard { cond: cond.into_inner(), span_with_leading_if: leading_if_span.to(cond_span) };
-        Ok(Box::new(guard))
+        Ok(P::new(guard))
     }
 
-    fn parse_match_arm_pat_and_guard(&mut self) -> PResult<'a, (Pat, Option<Box<Guard>>)> {
+    fn parse_match_arm_pat_and_guard(&mut self) -> PResult<'a, (Pat, Option<P<Guard>>)> {
         if self.token == token::OpenParen {
             let left = self.token.span;
             let pat = self.parse_pat_no_top_guard(
@@ -3810,9 +3810,9 @@ impl<'a> Parser<'a> {
     /// accepted literal takes the path by move, with no copy.
     fn maybe_parse_struct_expr(
         &mut self,
-        qself: Option<Box<ast::QSelf>>,
+        qself: Option<P<ast::QSelf>>,
         path: ast::Path,
-    ) -> Result<PResult<'a, P<Expr>>, (Option<Box<ast::QSelf>>, ast::Path)> {
+    ) -> Result<PResult<'a, P<Expr>>, (Option<P<ast::QSelf>>, ast::Path)> {
         let struct_allowed = !self.restrictions.contains(Restrictions::NO_STRUCT_LITERAL);
         match (struct_allowed, self.is_likely_struct_lit()) {
             // A struct literal isn't expected and one is pretty much assured not to be present. The
@@ -4084,7 +4084,7 @@ impl<'a> Parser<'a> {
     /// Precondition: already parsed the '{'.
     pub(super) fn parse_expr_struct(
         &mut self,
-        qself: Option<Box<ast::QSelf>>,
+        qself: Option<P<ast::QSelf>>,
         pth: ast::Path,
         recover: bool,
     ) -> PResult<'a, P<Expr>> {
@@ -4096,7 +4096,7 @@ impl<'a> Parser<'a> {
         let expr = if let Some(guar) = recovered_async {
             ExprKind::Err(guar)
         } else {
-            ExprKind::Struct(Box::new(ast::StructExpr { qself, path: pth, fields, rest: base }))
+            ExprKind::Struct(P::new(ast::StructExpr { qself, path: pth, fields, rest: base }))
         };
         Ok(self.mk_expr(span, expr))
     }
@@ -4278,7 +4278,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn mk_closure_expr(&self, span: Span, body: P<Expr>) -> P<Expr> {
         self.mk_expr(
             span,
-            ast::ExprKind::Closure(Box::new(ast::Closure {
+            ast::ExprKind::Closure(P::new(ast::Closure {
                 binder: crate::rustc_ast::ClosureBinder::NotPresent,
                 constness: crate::rustc_ast::Const::No,
                 movability: crate::rustc_ast::Movability::Movable,

@@ -102,7 +102,7 @@ pub(crate) fn expand_kernel(
 
     let device_item = {
         let mut item =
-            ecx.item(span, thin_vec![rustc_offload_kernel.clone()], ast::ItemKind::Fn(device_fn));
+            ecx.item(span, core::iter::once(rustc_offload_kernel.clone()).collect(), ast::ItemKind::Fn(device_fn));
         item.vis = vis.clone();
         Annotatable::Item(item)
     };
@@ -165,7 +165,7 @@ pub(crate) fn expand_kernel(
     let host_item = {
         let mut item = ecx.item(
             span,
-            thin_vec![rustc_offload_kernel, inline_never],
+            [rustc_offload_kernel, inline_never].into_iter().collect(),
             ast::ItemKind::Fn(host_fn),
         );
         item.vis = vis;

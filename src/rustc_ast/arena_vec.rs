@@ -74,6 +74,10 @@ impl<T> ArenaVec<T> {
         }
     }
 
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        self.flat_map_in_place(|value| if keep(&value) { Some(value) } else { None });
+    }
+
     pub fn flat_map_in_place<F, I>(&mut self, f: F)
     where
         F: FnMut(T) -> I,

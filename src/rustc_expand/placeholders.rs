@@ -17,10 +17,10 @@ pub(crate) fn placeholder(
     id: ast::NodeId,
     vis: Option<ast::Visibility>,
 ) -> AstFragment {
-    fn mac_placeholder() -> Box<ast::MacCall> {
-        Box::new(ast::MacCall {
+    fn mac_placeholder() -> P<ast::MacCall> {
+        P::new(ast::MacCall {
             path: ast::Path { span: DUMMY_SP, segments: ast::PathSegments::new() },
-            args: Box::new(ast::DelimArgs {
+            args: P::new(ast::DelimArgs {
                 dspan: ast::tokenstream::DelimSpan::dummy(),
                 delim: Delimiter::Parenthesis,
                 tokens: ast::tokenstream::TokenStream::new(Vec::new()),
@@ -113,7 +113,7 @@ pub(crate) fn placeholder(
             kind: ast::TyKind::MacCall(mac_placeholder()),
         })),
         AstFragmentKind::Stmts => AstFragment::Stmts(smallvec![{
-            let mac = Box::new(ast::MacCallStmt {
+            let mac = P::new(ast::MacCallStmt {
                 mac: mac_placeholder(),
                 style: ast::MacStmtStyle::Braces,
                 attrs: ast::AttrVec::new(),

@@ -1,3 +1,4 @@
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::string::String;
 use core::iter;
@@ -68,7 +69,7 @@ pub(crate) fn update_bang_macro_stats(
     ecx: &mut ExtCtxt<'_>,
     fragment_kind: AstFragmentKind,
     span: Span,
-    mac: Box<ast::MacCall>,
+    mac: P<ast::MacCall>,
     fragment: &AstFragment,
 ) {
     // Does this path match any of the include macros, e.g. `include!`?

@@ -4818,7 +4818,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     fn smart_resolve_path(
         &mut self,
         id: NodeId,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &Path,
         source: PathSource<'_, 'ast, 'ra>,
     ) {
@@ -4837,7 +4837,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
 
     fn smart_resolve_path_fragment(
         &mut self,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &[Segment],
         source: PathSource<'_, 'ast, 'ra>,
         finalize: Finalize,
@@ -5153,7 +5153,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     // Resolve in alternative namespaces if resolution in the primary namespace fails.
     fn resolve_qpath_anywhere(
         &mut self,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &[Segment],
         primary_ns: Namespace,
         defer_to_typeck: bool,
@@ -5193,7 +5193,7 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
     /// Handles paths that may refer to associated items.
     fn resolve_qpath(
         &mut self,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &[Segment],
         ns: Namespace,
         finalize: Finalize,

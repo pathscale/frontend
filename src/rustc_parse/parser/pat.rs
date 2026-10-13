@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
                 let leading_if_span = self.prev_token.span;
                 let cond = self.parse_expr()?;
                 let cond_span = cond.span;
-                Box::new(Guard {
+                P::new(Guard {
                     cond: cond.into_inner(),
                     span_with_leading_if: leading_if_span.to(cond_span),
                 })
@@ -1336,7 +1336,7 @@ impl<'a> Parser<'a> {
     fn parse_pat_mac_invoc(&mut self, path: Path) -> PResult<'a, PatKind> {
         self.bump();
         let args = self.parse_delim_args()?;
-        let mac = Box::new(MacCall { path, args });
+        let mac = P::new(MacCall { path, args });
         Ok(PatKind::MacCall(mac))
     }
 
@@ -1573,7 +1573,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a struct ("record") pattern (e.g. `Foo { ... }` or `Foo::Bar { ... }`).
-    fn parse_pat_struct(&mut self, qself: Option<Box<QSelf>>, path: Path) -> PResult<'a, PatKind> {
+    fn parse_pat_struct(&mut self, qself: Option<P<QSelf>>, path: Path) -> PResult<'a, PatKind> {
         if qself.is_some() {
             // Feature gate the use of qualified paths in patterns
             self.psess.gated_spans.gate(sym::more_qualified_paths, path.span);
@@ -1593,7 +1593,7 @@ impl<'a> Parser<'a> {
     /// Parse tuple struct or tuple variant pattern (e.g. `Foo(...)` or `Foo::Bar(...)`).
     fn parse_pat_tuple_struct(
         &mut self,
-        qself: Option<Box<QSelf>>,
+        qself: Option<P<QSelf>>,
         path: Path,
     ) -> PResult<'a, PatKind> {
         let (fields, _) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Pat>>(

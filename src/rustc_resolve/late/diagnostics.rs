@@ -4596,10 +4596,10 @@ fn mk_where_bound_predicate(
     };
 
     let new_where_bound_predicate = ast::WhereBoundPredicate {
-        bound_generic_params: ThinVec::new(),
+        bound_generic_params: crate::rustc_ast::ArenaVec::new(),
         bounded_ty: P::new(ty.clone()),
         bounds: core::iter::once(ast::GenericBound::Trait(ast::PolyTraitRef {
-            bound_generic_params: ThinVec::new(),
+            bound_generic_params: crate::rustc_ast::ArenaVec::new(),
             modifiers: ast::TraitBoundModifiers::NONE,
             trait_ref: ast::TraitRef {
                 path: ast::Path { segments: modified_segments, span: DUMMY_SP },

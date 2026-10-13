@@ -702,7 +702,7 @@ impl<'a> State<'a> {
         &mut self,
         attrs: &[ast::Attribute],
         vis: &ast::Visibility,
-        qself: &Option<Box<ast::QSelf>>,
+        qself: &Option<P<ast::QSelf>>,
         path: &ast::Path,
         kind: DelegationKind<'_>,
         body: &Option<P<ast::Block>>,

@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -108,7 +109,7 @@ pub(crate) fn expand_deriving_coerce_pointee(
 
     // Declare helper function that adds implementation blocks.
     // FIXME(dingxiangfei2009): Investigate the set of attributes on target struct to be propagated to impls
-    let attrs = thin_vec![cx.attr_word(sym::automatically_derived, span),];
+    let attrs: ast::AttrVec = core::iter::once(cx.attr_word(sym::automatically_derived, span)).collect();
     // # Validity assertion which will be checked later in `crate::rustc_hir_analysis::coherence::builtins`.
     {
         let trait_path =
@@ -143,7 +144,7 @@ pub(crate) fn expand_deriving_coerce_pointee(
                         where_clause: generics.where_clause.clone(),
                         span: generics.span,
                     },
-                    of_trait: Some(Box::new(ast::TraitImplHeader {
+                    of_trait: Some(P::new(ast::TraitImplHeader {
                         safety: ast::Safety::Default,
                         polarity: ast::ImplPolarity::Positive,
                         defaultness: ast::Defaultness::Implicit,
@@ -166,7 +167,7 @@ pub(crate) fn expand_deriving_coerce_pointee(
             attrs.clone(),
             ast::ItemKind::Impl(ast::Impl {
                 generics,
-                of_trait: Some(Box::new(ast::TraitImplHeader {
+                of_trait: Some(P::new(ast::TraitImplHeader {
                     safety: ast::Safety::Default,
                     polarity: ast::ImplPolarity::Positive,
                     defaultness: ast::Defaultness::Implicit,

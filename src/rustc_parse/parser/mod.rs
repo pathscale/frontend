@@ -1499,9 +1499,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_delim_args(&mut self) -> PResult<'a, Box<DelimArgs>> {
+    fn parse_delim_args(&mut self) -> PResult<'a, P<DelimArgs>> {
         if let Some(args) = self.parse_delim_args_inner() {
-            Ok(Box::new(args))
+            Ok(P::new(args))
         } else {
             self.unexpected_any()
         }
@@ -1637,7 +1637,7 @@ impl<'a> Parser<'a> {
                 let path = self.parse_path(PathStyle::Mod)?; // `path`
                 self.expect(exp!(CloseParen))?; // `)`
                 let vis = VisibilityKind::Restricted {
-                    path: Box::new(path),
+                    path: P::new(path),
                     id: ast::DUMMY_NODE_ID,
                     shorthand: false,
                 };
@@ -1650,7 +1650,7 @@ impl<'a> Parser<'a> {
                 let path = self.parse_path(PathStyle::Mod)?; // `crate`/`super`/`self`
                 self.expect(exp!(CloseParen))?; // `)`
                 let vis = VisibilityKind::Restricted {
-                    path: Box::new(path),
+                    path: P::new(path),
                     id: ast::DUMMY_NODE_ID,
                     shorthand: true,
                 };
@@ -1722,7 +1722,7 @@ impl<'a> Parser<'a> {
             let path = self.parse_path(PathStyle::Mod)?; // `in path`
             self.expect(exp!(CloseParen))?; // `)`
             let restriction = RestrictionKind::Restricted {
-                path: Box::new(path),
+                path: P::new(path),
                 id: ast::DUMMY_NODE_ID,
                 shorthand: false,
             };
@@ -1734,7 +1734,7 @@ impl<'a> Parser<'a> {
             let path = self.parse_path(PathStyle::Mod)?; // `crate`/`super`/`self`
             self.expect(exp!(CloseParen))?; // `)`
             let restriction = RestrictionKind::Restricted {
-                path: Box::new(path),
+                path: P::new(path),
                 id: ast::DUMMY_NODE_ID,
                 shorthand: true,
             };
@@ -1980,5 +1980,5 @@ pub enum ParseNtResult {
     Meta(WithTokens<Box<ast::AttrItem>>),
     Path(WithTokens<Box<ast::Path>>),
     Vis(WithTokens<Box<ast::Visibility>>),
-    Guard(Box<ast::Guard>),
+    Guard(P<ast::Guard>),
 }

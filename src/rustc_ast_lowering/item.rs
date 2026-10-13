@@ -565,7 +565,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             }
             ItemKind::MacroDef(ident, MacroDef { body, macro_rules, eii_declaration: _ }) => {
                 let ident = self.lower_ident(*ident);
-                let body = Box::new(self.lower_delim_args(body));
+                let body = crate::rustc_ast::ptr::P::new(self.lower_delim_args(body));
                 let def_id = self.owner.def_id;
                 let def_kind = self.tcx.def_kind(def_id);
                 let DefKind::Macro(macro_kinds) = def_kind else {

@@ -133,10 +133,12 @@ impl AllocFnFactory<'_, '_> {
             sym::alloc_zeroed => sym::rustc_allocator_zeroed,
             _ => unreachable!("Unknown allocator method!"),
         };
-        thin_vec![
+        [
             self.cx.attr_word(sym::rustc_std_internal_symbol, self.span),
-            self.cx.attr_word(alloc_attr, self.span)
+            self.cx.attr_word(alloc_attr, self.span),
         ]
+        .into_iter()
+        .collect()
     }
 
     fn arg_ty(&self, input: &AllocatorMethodInput, args: &mut ThinVec<Param>) -> P<Expr> {

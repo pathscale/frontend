@@ -364,7 +364,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
     }));
 
     let main = P::new(ast::Item {
-        attrs: thin_vec![main_attr, coverage_attr, doc_hidden_attr],
+        attrs: [main_attr, coverage_attr, doc_hidden_attr].into_iter().collect(),
         id: ast::DUMMY_NODE_ID,
         kind: main,
         vis: ast::Visibility { span: sp, kind: ast::VisibilityKind::Public },

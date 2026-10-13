@@ -333,7 +333,7 @@ impl<'a> Parser<'a> {
             self.recover_const_mut(const_span);
             self.recover_missing_kw_before_item()?;
             let (ident, generics, ty, body) = self.parse_const_item(const_span)?;
-            ItemKind::Const(Box::new(ConstItem {
+            ItemKind::Const(P::new(ConstItem {
                 defaultness: def_(),
                 ident,
                 generics,
@@ -358,7 +358,7 @@ impl<'a> Parser<'a> {
                 // Make sure this is only allowed if the feature gate is enabled.
                 // #![feature(mgca_type_const_syntax)]
                 self.psess.gated_spans.gate(sym::mgca_type_const_syntax, lo.to(const_span));
-                ItemKind::Const(Box::new(ConstItem {
+                ItemKind::Const(P::new(ConstItem {
                     defaultness: def_(),
                     ident,
                     generics,
@@ -419,7 +419,7 @@ impl<'a> Parser<'a> {
                 self.recover_missing_kw_before_item()?;
             }
             // MACRO INVOCATION ITEM
-            ItemKind::MacCall(Box::new(self.parse_item_macro(vis)?))
+            ItemKind::MacCall(P::new(self.parse_item_macro(vis)?))
         } else {
             return Ok(None);
         };
@@ -826,7 +826,7 @@ impl<'a> Parser<'a> {
                 let trait_ref = TraitRef { path, ref_id: ty_first.id };
 
                 let of_trait =
-                    Some(Box::new(TraitImplHeader { defaultness, safety, polarity, trait_ref }));
+                    Some(P::new(TraitImplHeader { defaultness, safety, polarity, trait_ref }));
                 (of_trait, ty_second)
             }
             None => {
@@ -1258,7 +1258,7 @@ impl<'a> Parser<'a> {
                 |p| p.parse_trait_item(ForceCollect::No),
                 |p| &mut p.list_scratch.get_mut().assoc_items,
             )?;
-            Ok(ItemKind::Trait(Box::new(Trait {
+            Ok(ItemKind::Trait(P::new(Trait {
                 impl_restriction,
                 constness,
                 is_auto,
@@ -1317,10 +1317,10 @@ impl<'a> Parser<'a> {
                                 expr,
                                 define_opaque,
                                 eii_impl: _,
-                            } = *st;
+                            } = st.into_inner();
                             self.dcx()
                                 .emit_err(diagnostics::AssociatedStaticItemNotAllowed { span });
-                            AssocItemKind::Const(Box::new(ConstItem {
+                            AssocItemKind::Const(P::new(ConstItem {
                                 defaultness: Defaultness::Implicit,
                                 ident,
                                 generics: Generics::default(),
@@ -1357,7 +1357,7 @@ impl<'a> Parser<'a> {
 
         self.expect_semi()?;
 
-        Ok(ItemKind::TyAlias(Box::new(TyAlias {
+        Ok(ItemKind::TyAlias(P::new(TyAlias {
             defaultness,
             ident,
             generics,
@@ -1447,8 +1447,8 @@ impl<'a> Parser<'a> {
         &mut self,
         use_token_span: Span,
         prefix: Option<&'b UsePathList<'b>>,
-    ) -> PResult<'a, ThinVec<(UseTree, ast::NodeId)>> {
-        self.parse_delim_comma_seq(exp!(OpenBrace), exp!(CloseBrace), |p| {
+    ) -> PResult<'a, ast::ArenaVec<(UseTree, ast::NodeId)>> {
+        self.parse_delim_comma_seq_with(exp!(OpenBrace), exp!(CloseBrace), |p| {
             p.recover_vcs_conflict_marker();
 
             let mut attr_span = None;
@@ -1653,14 +1653,14 @@ impl<'a> Parser<'a> {
                     Ok(kind) => kind,
                     Err(kind) => match kind {
                         ItemKind::Const(c) => {
-                            let ConstItem { ident, ty, body, .. } = *c;
+                            let ConstItem { ident, ty, body, .. } = c.into_inner();
                             let const_span = Some(span.with_hi(ident.span.lo()))
                                 .filter(|span| span.can_be_used_for_suggestions());
                             self.dcx().emit_err(diagnostics::ExternItemCannotBeConst {
                                 ident_span: ident.span,
                                 const_span,
                             });
-                            ForeignItemKind::Static(Box::new(StaticItem {
+                            ForeignItemKind::Static(P::new(StaticItem {
                                 ident,
                                 ty,
                                 mutability: Mutability::Not,
@@ -1808,7 +1808,7 @@ impl<'a> Parser<'a> {
 
         let item =
             StaticItem { ident, ty, safety, mutability, expr, define_opaque: None, eii_impl: None };
-        Ok(ItemKind::Static(Box::new(item)))
+        Ok(ItemKind::Static(P::new(item)))
     }
 
     /// Parse a constant item with the prefix `"const"` already parsed.
@@ -1963,11 +1963,13 @@ impl<'a> Parser<'a> {
         let (variants, _) = if self.token == TokenKind::Semi {
             self.dcx().emit_err(diagnostics::UseEmptyBlockNotSemi { span: self.token.span });
             self.bump();
-            (thin_vec![], Trailing::No)
+            (ast::ArenaVec::new(), Trailing::No)
         } else {
-            self.parse_delim_comma_seq(exp!(OpenBrace), exp!(CloseBrace), |p| {
-                p.parse_enum_variant(ident.span)
-            })
+            self.parse_delim_comma_seq_with::<_, ast::ArenaVec<_>>(
+                exp!(OpenBrace),
+                exp!(CloseBrace),
+                |p| p.parse_enum_variant(ident.span),
+            )
             .map_err(|mut err| {
                 err.span_label(ident.span, "while parsing this enum");
                 // Try to recover `enum Foo { ident : Ty }`.
@@ -2040,7 +2042,7 @@ impl<'a> Parser<'a> {
                             err.span_label(span, "while parsing this enum");
                             err.help(help);
                             let guar = err.emit();
-                            (thin_vec![], Recovered::Yes(guar))
+                            (ast::ArenaVec::new(), Recovered::Yes(guar))
                         }
                     };
                 VariantData::Struct { fields, recovered }
@@ -2057,7 +2059,7 @@ impl<'a> Parser<'a> {
                         err.span_label(span, "while parsing this enum");
                         err.help(help);
                         err.emit();
-                        thin_vec![]
+                        ast::ArenaVec::new()
                     }
                 };
                 VariantData::Tuple(body, DUMMY_NODE_ID)
@@ -2199,8 +2201,8 @@ impl<'a> Parser<'a> {
         adt_ty: &str,
         ident_span: Span,
         parsed_where: bool,
-    ) -> PResult<'a, (ThinVec<FieldDef>, Recovered)> {
-        let mut fields = ThinVec::new();
+    ) -> PResult<'a, (crate::rustc_ast::ArenaVec<FieldDef>, Recovered)> {
+        let mut fields = ast::ArenaVec::new();
         let mut recovered = Recovered::No;
         if self.eat(exp!(OpenBrace)) {
             while self.token != token::CloseBrace {
@@ -2246,10 +2248,10 @@ impl<'a> Parser<'a> {
     }
     /// This is the case where we find `struct Foo<T>(T) where T: Copy;`
     /// Unit like structs are handled in parse_item_struct function
-    pub(super) fn parse_tuple_struct_body(&mut self) -> PResult<'a, ThinVec<FieldDef>> {
+    pub(super) fn parse_tuple_struct_body(&mut self) -> PResult<'a, crate::rustc_ast::ArenaVec<FieldDef>> {
         let openparen_span = self.token.span;
         let mut encountered_colon = false;
-        self.parse_paren_comma_seq(|p| {
+        self.parse_delim_comma_seq_with(exp!(OpenParen), exp!(CloseParen), |p| {
             let attrs = p.parse_outer_attributes()?;
             p.collect_tokens(None, attrs, ForceCollect::No, |p, attrs| {
                 let mut snapshot = None;
@@ -2668,7 +2670,7 @@ impl<'a> Parser<'a> {
             let arrow = TokenTree::token_alone(token::FatArrow, pspan.between(bspan)); // `=>`
             let tokens = TokenStream::new(vec![params, arrow, body]);
             let dspan = DelimSpan::from_pair(pspan.shrink_to_lo(), bspan.shrink_to_hi());
-            Box::new(DelimArgs { dspan, delim: Delimiter::Brace, tokens })
+            P::new(DelimArgs { dspan, delim: Delimiter::Brace, tokens })
         } else {
             self.unexpected_any()?
         };

@@ -152,7 +152,7 @@ impl<'a> State<'a> {
 
     fn print_expr_struct(
         &mut self,
-        qself: &Option<Box<ast::QSelf>>,
+        qself: &Option<P<ast::QSelf>>,
         path: &ast::Path,
         fields: &[ast::ExprField],
         rest: &ast::StructRest,

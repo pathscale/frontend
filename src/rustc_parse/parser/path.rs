@@ -79,7 +79,7 @@ impl<'a> Parser<'a> {
     /// `<T as U>::a`
     /// `<T as U>::F::a<S>` (without disambiguator)
     /// `<T as U>::F::a::<S>` (with disambiguator)
-    pub(super) fn parse_qpath(&mut self, style: PathStyle) -> PResult<'a, (Box<QSelf>, Path)> {
+    pub(super) fn parse_qpath(&mut self, style: PathStyle) -> PResult<'a, (P<QSelf>, Path)> {
         let lo = self.prev_token.span;
         let ty = self.parse_ty()?;
 
@@ -109,7 +109,7 @@ impl<'a> Parser<'a> {
             self.expect(exp!(PathSep))?;
         }
 
-        let qself = Box::new(QSelf { ty, path_span, position: path.segments.len() });
+        let qself = P::new(QSelf { ty, path_span, position: path.segments.len() });
         if !is_import_coupler {
             self.parse_path_segments(&mut path.segments, style, None)?;
         }
@@ -402,7 +402,10 @@ impl<'a> Parser<'a> {
                     }
 
                     let dcx = self.dcx();
-                    let parse_params_result = self.parse_paren_comma_seq(|p| {
+                    let parse_params_result = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<_>>(
+                        exp!(OpenParen),
+                        exp!(CloseParen),
+                        |p| {
                         // Inside parenthesized type arguments, we want types only, not names.
                         let mode = FnParseMode {
                             context: FnContext::Free,

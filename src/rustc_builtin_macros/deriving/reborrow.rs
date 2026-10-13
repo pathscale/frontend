@@ -167,10 +167,10 @@ fn push_marker_impl(
 
     push(Annotatable::Item(cx.item(
         span,
-        thin_vec::thin_vec![cx.attr_word(sym::automatically_derived, span)],
+        core::iter::once(cx.attr_word(sym::automatically_derived, span)).collect(),
         ast::ItemKind::Impl(ast::Impl {
             generics: impl_generics(cx, generics),
-            of_trait: Some(Box::new(ast::TraitImplHeader {
+            of_trait: Some(P::new(ast::TraitImplHeader {
                 safety: ast::Safety::Default,
                 polarity: ast::ImplPolarity::Positive,
                 defaultness: ast::Defaultness::Implicit,

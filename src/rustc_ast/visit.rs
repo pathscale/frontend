@@ -416,6 +416,7 @@ macro_rules! common_visitor_and_walkers {
             ThinVec<AngleBracketedArg>,
             ArenaVec<AngleBracketedArg>,
             ThinVec<Attribute>,
+            ArenaVec<Attribute>,
             ThinVec<GenericBound>,
             ArenaVec<GenericBound>,
             ThinVec<Ident>,
@@ -837,13 +838,13 @@ macro_rules! common_visitor_and_walkers {
             }
         )?
 
-        $(impl_visitable!(|&$lt self: ThinVec<(UseTree, NodeId)>, vis: &mut V, _extra: ()| {
+        $(impl_visitable!(|&$lt self: ArenaVec<(UseTree, NodeId)>, vis: &mut V, _extra: ()| {
             for (nested_tree, nested_id) in self {
                 try_visit!(vis.visit_nested_use_tree(nested_tree, *nested_id));
             }
             V::Result::output()
         });)?
-        $(impl_visitable_list!(<$mut> ThinVec<(UseTree, NodeId)>,);)?
+        $(impl_visitable_list!(<$mut> ArenaVec<(UseTree, NodeId)>,);)?
 
         fn walk_item_inner<$($lt,)? K: WalkItemKind, V: $Visitor$(<$lt>)?>(
             visitor: &mut V,
@@ -1243,12 +1244,34 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<Stmt> {
     }
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<Variant> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for variant in self {
+            try_visit!(visitor.visit_variant(variant));
+        }
+        V::Result::output()
+    }
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<P<Expr>> {
     type Extra = ();
 
     fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
         for expr in self {
             try_visit!(visitor.visit_expr(expr));
+        }
+        V::Result::output()
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<FieldDef> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for field in self {
+            try_visit!(visitor.visit_field_def(field));
         }
         V::Result::output()
     }
@@ -1315,6 +1338,17 @@ macro_rules! generate_list_visit_fns {
                 V::Result::output()
             }
         )+
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<GenericParam> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for param in self {
+            try_visit!(visitor.visit_generic_param(param));
+        }
+        V::Result::output()
     }
 }
 

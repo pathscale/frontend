@@ -74,7 +74,7 @@ pub(super) fn dummy_arg(ident: Ident, guar: ErrorGuaranteed) -> Param {
 pub(super) trait RecoverQPath: Sized + 'static {
     const PATH_STYLE: PathStyle = PathStyle::Expr;
     fn to_ty(&self) -> Option<P<Ty>>;
-    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self;
+    fn recovered(qself: Option<P<QSelf>>, path: ast::Path) -> Self;
 }
 
 impl<T: RecoverQPath> RecoverQPath for Box<T> {
@@ -82,7 +82,7 @@ impl<T: RecoverQPath> RecoverQPath for Box<T> {
     fn to_ty(&self) -> Option<P<Ty>> {
         T::to_ty(self)
     }
-    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
+    fn recovered(qself: Option<P<QSelf>>, path: ast::Path) -> Self {
         Box::new(T::recovered(qself, path))
     }
 }
@@ -92,7 +92,7 @@ impl<T: RecoverQPath> RecoverQPath for P<T> {
     fn to_ty(&self) -> Option<P<Ty>> {
         T::to_ty(self)
     }
-    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
+    fn recovered(qself: Option<P<QSelf>>, path: ast::Path) -> Self {
         P::new(T::recovered(qself, path))
     }
 }
@@ -102,7 +102,7 @@ impl RecoverQPath for Ty {
     fn to_ty(&self) -> Option<P<Ty>> {
         Some(P::new(self.clone()))
     }
-    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
+    fn recovered(qself: Option<P<QSelf>>, path: ast::Path) -> Self {
         Self { span: path.span, kind: TyKind::Path(qself, path), id: ast::DUMMY_NODE_ID }
     }
 }
@@ -112,7 +112,7 @@ impl RecoverQPath for Pat {
     fn to_ty(&self) -> Option<P<Ty>> {
         self.to_ty()
     }
-    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
+    fn recovered(qself: Option<P<QSelf>>, path: ast::Path) -> Self {
         Self { span: path.span, kind: PatKind::Path(qself, path), id: ast::DUMMY_NODE_ID }
     }
 }
@@ -121,7 +121,7 @@ impl RecoverQPath for Expr {
     fn to_ty(&self) -> Option<P<Ty>> {
         self.to_ty()
     }
-    fn recovered(qself: Option<Box<QSelf>>, path: ast::Path) -> Self {
+    fn recovered(qself: Option<P<QSelf>>, path: ast::Path) -> Self {
         Self {
             span: path.span,
             kind: ExprKind::Path(qself, path),
@@ -1882,7 +1882,7 @@ impl<'a> Parser<'a> {
         });
 
         let path_span = ty_span.shrink_to_hi(); // Use an empty path since `position == 0`.
-        Ok(T::recovered(Some(Box::new(QSelf { ty, path_span, position: 0 })), path))
+        Ok(T::recovered(Some(P::new(QSelf { ty, path_span, position: 0 })), path))
     }
 
     /// This function gets called in places where a semicolon is NOT expected and if there's a

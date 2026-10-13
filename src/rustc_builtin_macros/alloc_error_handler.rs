@@ -110,7 +110,7 @@ fn generate_handler(cx: &ExtCtxt<'_>, handler: Ident, span: Span, sig_span: Span
         eii_impl: None,
     }));
 
-    let attrs = thin_vec![cx.attr_word(sym::rustc_std_internal_symbol, span)];
+    let attrs = core::iter::once(cx.attr_word(sym::rustc_std_internal_symbol, span)).collect();
 
     let item = cx.item(span, attrs, kind);
     cx.stmt_item(sig_span, item)

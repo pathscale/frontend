@@ -64,9 +64,9 @@ pub(crate) fn expand_assert<'cx>(
     let expr = if let Some(tokens) = custom_message {
         let then = cx.expr(
             call_site_span,
-            ExprKind::MacCall(Box::new(MacCall {
+            ExprKind::MacCall(P::new(MacCall {
                 path: panic_path(),
-                args: Box::new(DelimArgs {
+                args: P::new(DelimArgs {
                     dspan: DelimSpan::from_single(call_site_span),
                     delim: Delimiter::Parenthesis,
                     tokens,

@@ -539,7 +539,7 @@ fn index_ast<'tcx>(
             &mut self,
             id: NodeId,
             span: Span,
-            dummy: impl FnOnce(Box<MacCall>) -> K,
+            dummy: impl FnOnce(P<MacCall>) -> K,
         ) -> Item<K> {
             use crate::rustc_ast::token::Delimiter;
             use crate::rustc_ast::tokenstream::DelimSpan;
@@ -552,9 +552,9 @@ fn index_ast<'tcx>(
                 vis: Visibility { kind: VisibilityKind::Public, span },
                 // Lacking a better choice, we replace the contents with a macro call.
                 // Unexpanded macros should never reach lowering, so this is not confusing.
-                kind: dummy(Box::new(MacCall {
+                kind: dummy(P::new(MacCall {
                     path: Path { span, segments: ast::PathSegments::new() },
-                    args: Box::new(DelimArgs {
+                    args: P::new(DelimArgs {
                         dspan: DelimSpan::from_single(span),
                         delim: Delimiter::Parenthesis,
                         tokens: self.empty_tokens.clone(),
@@ -568,7 +568,7 @@ fn index_ast<'tcx>(
         fn replace_with_dummy<K>(
             &mut self,
             item: &mut ast::Item<K>,
-            dummy: impl FnOnce(Box<MacCall>) -> K,
+            dummy: impl FnOnce(P<MacCall>) -> K,
             node: impl FnOnce(P<Item<K>>) -> AstOwner,
         ) {
             let dummy = self.make_dummy(item.id, item.span, dummy);
@@ -581,7 +581,7 @@ fn index_ast<'tcx>(
         fn take_boxed<K>(
             &mut self,
             item: P<Item<K>>,
-            dummy: impl FnOnce(Box<MacCall>) -> K,
+            dummy: impl FnOnce(P<MacCall>) -> K,
             node: impl FnOnce(P<Item<K>>) -> AstOwner,
         ) -> P<Item<K>> {
             let (id, span) = (item.id, item.span);
@@ -1650,7 +1650,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_path_ty(
         &mut self,
         t: &Ty,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &Path,
         param_mode: ParamMode,
         itctx: ImplTraitContext,
@@ -1667,7 +1667,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             let (bounds, lifetime_bound) = self.with_dyn_type_scope(true, |this| {
                 let bound = this.lower_poly_trait_ref(
                     &PolyTraitRef {
-                        bound_generic_params: ThinVec::new(),
+                        bound_generic_params: crate::rustc_ast::ArenaVec::new(),
                         modifiers: TraitBoundModifiers::NONE,
                         trait_ref: TraitRef { path: path.clone(), ref_id: t.id },
                         span: t.span,
@@ -2767,7 +2767,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     #[instrument(level = "debug", skip(self))]
     fn lower_const_path_to_const_arg(
         &mut self,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &Path,
         res: Res<NodeId>,
         id: NodeId,
@@ -2859,7 +2859,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     fn can_lower_path_to_const_arg_direct(
         &self,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &Path,
         span: Span,
         res: Option<Res<NodeId>>,
@@ -2949,7 +2949,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         &mut self,
         id: NodeId,
         id_override: Option<NodeId>,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         path: &Path,
         span: Span,
     ) -> hir::ConstArg<'hir> {

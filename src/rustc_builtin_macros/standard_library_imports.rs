@@ -75,7 +75,7 @@ pub fn inject(
     // Inject the relevant crate's prelude.
     let use_item = cx.item(
         span,
-        thin_vec![cx.attr_word(sym::prelude_import, span)],
+        core::iter::once(cx.attr_word(sym::prelude_import, span)).collect(),
         ast::ItemKind::Use(ast::UseTree {
             prefix: cx.path(span, import_path),
             kind: ast::UseTreeKind::Glob(span),

@@ -292,7 +292,7 @@ pub(crate) fn expand_test_or_bench(
                 cx.attr_name_value_str(sym::rustc_test_marker, test_path_symbol, attr_sp),
                 // #[doc(hidden)]
                 cx.attr_nested_word(sym::doc, sym::hidden, attr_sp),
-            ],
+            ].into(),
             // const $ident: test::TestDescAndFn =
             ast::ItemKind::Const(
                 ast::ConstItem {
