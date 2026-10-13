@@ -706,7 +706,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_fn_params(
         &mut self,
         fn_parse_mode: &FnParseMode,
-    ) -> PResult<'a, ThinVec<Param>> {
+    ) -> PResult<'a, ast::ArenaVec<Param>> {
         let mut first_param = true;
         // Parse the arguments, starting out with `self` being allowed...
         if self.token != TokenKind::OpenParen
@@ -717,32 +717,36 @@ impl<'a> Parser<'a> {
             self.dcx().emit_err(diagnostics::MissingFnParams {
                 span: self.prev_token.span.shrink_to_hi(),
             });
-            return Ok(ThinVec::new());
+            return Ok(ast::ArenaVec::new());
         }
 
-        let (mut params, _) = self.parse_paren_comma_seq(|p| {
-            p.recover_vcs_conflict_marker();
-            let snapshot = p.create_snapshot_for_diagnostic();
-            let param = p.parse_param_general(fn_parse_mode, first_param, true).or_else(|e| {
-                let guar = e.emit();
-                // When parsing a param failed, we should check to make the span of the param
-                // not contain '(' before it.
-                // For example when parsing `*mut Self` in function `fn oof(*mut Self)`.
-                let lo = if let TokenKind::OpenParen = p.prev_token.kind {
-                    p.prev_token.span.shrink_to_hi()
-                } else {
-                    p.prev_token.span
-                };
-                p.restore_snapshot(snapshot);
-                // Skip every token until next possible arg or end.
-                p.eat_to_tokens(&[exp!(Comma), exp!(CloseParen)]);
-                // Create a placeholder argument for proper arg count (issue #34264).
-                Ok(dummy_arg(Ident::new(sym::dummy, lo.to(p.prev_token.span)), guar))
-            });
-            // ...now that we've parsed the first argument, `self` is no longer allowed.
-            first_param = false;
-            param
-        })?;
+        let (mut params, _) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Param>>(
+            exp!(OpenParen),
+            exp!(CloseParen),
+            |p| {
+                p.recover_vcs_conflict_marker();
+                let snapshot = p.create_snapshot_for_diagnostic();
+                let param = p.parse_param_general(fn_parse_mode, first_param, true).or_else(|e| {
+                    let guar = e.emit();
+                    // When parsing a param failed, we should check to make the span of the param
+                    // not contain '(' before it.
+                    // For example when parsing `*mut Self` in function `fn oof(*mut Self)`.
+                    let lo = if let TokenKind::OpenParen = p.prev_token.kind {
+                        p.prev_token.span.shrink_to_hi()
+                    } else {
+                        p.prev_token.span
+                    };
+                    p.restore_snapshot(snapshot);
+                    // Skip every token until next possible arg or end.
+                    p.eat_to_tokens(&[exp!(Comma), exp!(CloseParen)]);
+                    // Create a placeholder argument for proper arg count (issue #34264).
+                    Ok(dummy_arg(Ident::new(sym::dummy, lo.to(p.prev_token.span)), guar))
+                });
+                // ...now that we've parsed the first argument, `self` is no longer allowed.
+                first_param = false;
+                param
+            },
+        )?;
         // Replace duplicated recovered params with `_` pattern to avoid unnecessary errors.
         self.deduplicate_recovered_params_names(&mut params);
         Ok(params)

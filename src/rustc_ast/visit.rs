@@ -1219,6 +1219,17 @@ macro_rules! common_visitor_and_walkers {
 
 common_visitor_and_walkers!(Visitor<'a>);
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<Param> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for param in self {
+            try_visit!(visitor.visit_param(param));
+        }
+        V::Result::output()
+    }
+}
+
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<Stmt> {
     type Extra = ();
 

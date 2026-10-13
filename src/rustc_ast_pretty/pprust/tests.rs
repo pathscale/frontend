@@ -1,9 +1,9 @@
+use crate::rustc_ast as ast;
 #[allow(unused_imports)]
 use crate::rustc_ast::ptr::P;
-use {alloc::boxed::Box, alloc::string::String};
-use crate::rustc_ast as ast;
 use crate::rustc_span::{DUMMY_SP, Ident, create_default_session_globals_then};
 use thin_vec::{ThinVec, thin_vec};
+use {alloc::boxed::Box, alloc::string::String};
 
 use super::*;
 
@@ -36,7 +36,8 @@ fn test_fun_to_string() {
     create_default_session_globals_then(|| {
         let abba_ident = Ident::from_str("abba");
 
-        let decl = ast::FnDecl { inputs: ThinVec::new(), output: ast::FnRetTy::Default(DUMMY_SP) };
+        let decl =
+            ast::FnDecl { inputs: ast::ArenaVec::new(), output: ast::FnRetTy::Default(DUMMY_SP) };
         let generics = ast::Generics::default();
         assert_eq!(
             fun_to_string(&decl, ast::FnHeader::default(), abba_ident, &generics),
