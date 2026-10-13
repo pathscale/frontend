@@ -776,6 +776,10 @@ impl CrateStore for CStore {
         self.get_crate_data(cnum).root.stable_crate_id
     }
 
+    fn crate_edition(&self, cnum: CrateNum) -> crate::rustc_span::edition::Edition {
+        self.get_crate_data(cnum).root.edition
+    }
+
     /// Returns the `DefKey` for a given `DefId`. This indicates the
     /// parent `DefId` as well as some idea of what kind of data the
     /// `DefId` refers to.

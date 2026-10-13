@@ -443,6 +443,8 @@ pub struct Session {
     /// How many times a library read lost part of its input: counted by [`Session::record_loss`]
     /// and read by [`Session::losses`]. Always zero outside a library read.
     lost: AtomicUsize,
+    /// Parser or file-load failures, separate from unresolved imports and macros.
+    source_read_losses: AtomicUsize,
     /// Const definitions whose symbolic term could not be compared exactly.
     uncomputed_consts: Lock<Vec<String>>,
     /// Macro expansions whose tokens came from a stored proc-macro schema.
@@ -600,6 +602,18 @@ impl Session {
         self.lost.load(core::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Record a parser or file-load failure without conflating it with name resolution.
+    /// Existing library-read completeness also retains this loss.
+    pub fn record_source_read_loss(&self) {
+        self.source_read_losses.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.record_loss();
+    }
+
+    /// Parser or file-load failures recorded by this session.
+    pub fn source_read_losses(&self) -> usize {
+        self.source_read_losses.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Records a const definition whose expression was opaque or needed arithmetic.
     pub fn record_uncomputed_const(&self, def_path: String) {
         let mut consts = self.uncomputed_consts.lock();
@@ -652,7 +666,7 @@ impl Session {
         if let Some(mark) = mark
             && self.dcx().err_count() > mark
         {
-            self.record_loss();
+            self.record_source_read_loss();
         }
     }
 
@@ -1546,6 +1560,7 @@ pub fn build_session(
         removed_rustc_main_attr: AtomicBool::new(false),
         pointer_auth_config,
         lost: AtomicUsize::new(0),
+        source_read_losses: AtomicUsize::new(0),
         uncomputed_consts: Lock::new(Vec::new()),
         schema_transcriber_expansions: Lock::new(Vec::new()),
     };

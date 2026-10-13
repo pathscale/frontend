@@ -125,6 +125,37 @@ mod __analysis_lang_items {
         type TryType: [const] Try<Output = O, Residual = Self>;
     }
 
+    pub enum Infallible {}
+
+    const impl<T> Try for Option<T> {
+        type Output = T;
+        type Residual = Option<Infallible>;
+
+        fn from_output(output: T) -> Self {
+            Option::Some(output)
+        }
+
+        fn branch(self) -> ControlFlow<Self::Residual, Self::Output> {
+            match self {
+                Option::Some(value) => ControlFlow::Continue(value),
+                Option::None => ControlFlow::Break(Option::None),
+            }
+        }
+    }
+
+    const impl<T> FromResidual<Option<Infallible>> for Option<T> {
+        fn from_residual(residual: Option<Infallible>) -> Self {
+            match residual {
+                Option::None => Option::None,
+                Option::Some(value) => match value {},
+            }
+        }
+    }
+
+    const impl<T> Residual<T> for Option<Infallible> {
+        type TryType = Option<T>;
+    }
+
     #[lang = "into_try_type"]
     pub const fn residual_into_try_type<R: [const] Residual<O>, O>(
         residual: R,

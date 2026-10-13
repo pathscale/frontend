@@ -40,8 +40,24 @@ if grep -rn --include='*.rs' '^[[:space:]]*extern crate std;' $SCAN 2>/dev/null;
 fi
 
 # ---- 2. a `std::` path in code ----------------------------------------------------------------
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+scratch_root=${TMPDIR:-"$PWD/target"}
+mkdir -p "$scratch_root"
+scratch_root=$(CDPATH= cd "$scratch_root" && pwd -P)
+work=$(mktemp -d "$scratch_root/no-std-ban.XXXXXX")
+cleanup_work() {
+    test -d "$work" && test ! -L "$work" || return 1
+    test "${work%/*}" = "$scratch_root" || return 1
+    find "$work" -depth -delete
+}
+finish() {
+    status=$?
+    trap - EXIT INT TERM
+    cleanup_work || status=1
+    exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 : > "$work/hits"
 
 find $SCAN -name '*.rs' 2>/dev/null > "$work/files" || true
