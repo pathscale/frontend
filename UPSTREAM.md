@@ -63,7 +63,7 @@ crate can read as clean and stop compiling the moment the attribute lands.
 Update the source snapshot recorded above when rebasing. No sysroot build or version setting is
 needed for parsing.
 
-### Stable-hash memo ownership (DR10)
+### Stable-hash memo ownership
 
 **Preserve this fork delta on every toolchain bump.** Address-keyed stable-hash memos belong to
 one hashing computation, never to the process, a worker or a thread. Each
