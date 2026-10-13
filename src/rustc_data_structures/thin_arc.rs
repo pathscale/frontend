@@ -23,6 +23,34 @@ struct Header {
     len: usize,
 }
 
+struct Storage {
+    ptr: NonNull<u8>,
+    layout: Layout,
+}
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        // SAFETY: this guard owns storage after its initialized elements are gone.
+        unsafe { dealloc_list_bytes(self.ptr, self.layout) };
+    }
+}
+
+struct Initialization<T> {
+    _storage: Storage,
+    data: *mut T,
+    initialized: usize,
+}
+
+impl<T> Drop for Initialization<T> {
+    fn drop(&mut self) {
+        // SAFETY: only this prefix was initialized, and the guard owns every element.
+        // The storage field is dropped after the elements, including during unwind.
+        unsafe {
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.data, self.initialized));
+        }
+    }
+}
+
 /// The shared header of every empty slice. Its count is never read or written.
 static EMPTY: Header = Header { count: AtomicUsize::new(1), len: 0 };
 
@@ -77,20 +105,21 @@ impl<T> ThinArcSlice<T> {
         let raw = storage.as_ptr();
         let ptr = storage.cast::<Header>();
         // SAFETY: `ptr` is fresh and aligned for `Header`; elements go at `offset`.
-        unsafe {
-            ptr.as_ptr().write(Header { count: AtomicUsize::new(1), len });
-            let data = raw.add(offset).cast::<T>();
-            for i in 0..len {
-                match iter.next() {
-                    Some(item) => data.add(i).write(item),
-                    None => {
-                        ptr::drop_in_place(ptr::slice_from_raw_parts_mut(data, i));
-                        dealloc_list_bytes(storage, layout);
-                        panic!("ExactSizeIterator yielded fewer items than its len");
-                    }
-                }
-            }
+        let data = unsafe { raw.add(offset).cast::<T>() };
+        let mut initialization = Initialization {
+            _storage: Storage { ptr: storage, layout },
+            data,
+            initialized: 0,
+        };
+        unsafe { ptr.as_ptr().write(Header { count: AtomicUsize::new(1), len }) };
+        for i in 0..len {
+            let item = iter.next().expect("ExactSizeIterator yielded fewer items than its len");
+            // SAFETY: each slot is in the allocation and written exactly once.
+            unsafe { data.add(i).write(item) };
+            initialization.initialized += 1;
         }
+        // The completed handle takes ownership of the initialized elements and storage.
+        mem::forget(initialization);
         ThinArcSlice { ptr, _owns: PhantomData }
     }
 
@@ -132,10 +161,12 @@ impl<T> Clone for ThinArcSlice<T> {
     #[inline]
     fn clone(&self) -> Self {
         if self.header().len != 0 {
-            let old = self.header().count.fetch_add(1, Ordering::Relaxed);
-            if old > isize::MAX as usize {
-                panic!("ThinArcSlice count overflow");
-            }
+            self.header()
+                .count
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    (count < isize::MAX as usize).then(|| count + 1)
+                })
+                .expect("ThinArcSlice count overflow");
         }
         ThinArcSlice { ptr: self.ptr, _owns: PhantomData }
     }
@@ -150,10 +181,10 @@ impl<T> Drop for ThinArcSlice<T> {
         }
         fence(Ordering::Acquire);
         let (layout, _) = Self::layout(len);
+        let _storage = Storage { ptr: self.ptr.cast(), layout };
         // SAFETY: the last handle; the elements are initialized and dropped once.
         unsafe {
             ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.data(), len));
-            dealloc_list_bytes(self.ptr.cast(), layout);
         }
     }
 }
