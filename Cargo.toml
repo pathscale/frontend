@@ -9,7 +9,7 @@
 [package]
 name = "frontend"
 # Required by the additive resolved type identity report API.
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 description = "rustc's frontend with no LLVM and no std: parsing through MIR, as a library"
