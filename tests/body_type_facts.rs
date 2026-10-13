@@ -942,7 +942,7 @@ fn body_range_cannot_select_appended_synthetic_declarations() {
 }
 
 #[test]
-fn nested_closure_patterns_are_an_explicit_identity_coverage_gap() {
+fn nested_closure_patterns_are_covered_with_strict_identity_refusals() {
     ready();
     let source = "enum Choice { Some(u8), None } fn outer(input: Choice) -> i32 { let classify = || match input { Choice::Some(value) => value as i32, Choice::None => 0 }; classify() }";
     let body = range(
@@ -950,17 +950,60 @@ fn nested_closure_patterns_are_an_explicit_identity_coverage_gap() {
         "{ let classify = || match input { Choice::Some(value) => value as i32, Choice::None => 0 }; classify() }",
     );
     let report = analyze_body_type_identity("body_identity_nested_patterns", source, body);
-    assert!(report.type_facts.coverage_gaps.iter().any(|gap| {
-        gap.kind == BodyTypeCoverageGapKind::NestedBodyNotVisited && gap.span.is_some()
-    }));
+    assert!(report.type_facts.type_extraction_complete, "{:?}", report.type_facts);
+    assert!(report.type_facts.coverage_gaps.is_empty(), "{:?}", report.type_facts);
+    assert_eq!(report.type_facts.typeck_tainted_by_errors, Some(false), "{:?}", report.type_facts);
+    assert!(!report.type_facts.fatal, "{:?}", report.type_facts);
+    assert!(report.identity_facts.pattern_extraction_complete, "{:?}", report.identity_facts);
+    assert!(report.identity_facts.pattern_coverage_gaps.is_empty(), "{:?}", report.identity_facts);
+    assert_eq!(report.identity_facts.patterns.len(), 2, "{:?}", report.identity_facts.patterns);
+    let pattern_at = |text: &str| {
+        let expected = range(source, text);
+        let fact = report
+            .identity_facts
+            .patterns
+            .iter()
+            .find(|fact| fact.span.start == expected.start && fact.span.end == expected.end)
+            .expect("exact source-mapped closure pattern");
+        match &fact.resolved_variant {
+            StaticFact::Known { value: Some(variant) } => variant,
+            other => panic!("closure pattern {text} lacks a variant identity: {other:?}"),
+        }
+    };
+    let some = pattern_at("Choice::Some(value)");
+    let none = pattern_at("Choice::None");
+    assert_eq!(some.parent_enum, none.parent_enum);
+    assert_ne!(some.variant, none.variant);
+    assert_eq!(some.option_role, None);
+    assert_eq!(none.option_role, None);
+    let closure =
+        range(source, "|| match input { Choice::Some(value) => value as i32, Choice::None => 0 }");
     assert!(
-        !report.identity_facts.pattern_extraction_complete,
-        "nested constructor patterns were not visited: {:?}",
+        report.identity_facts.expressions.iter().any(|fact| {
+            fact.span.start == closure.start
+                && fact.span.end == closure.end
+                && matches!(
+                    &fact.resolved_ty,
+                    StaticFact::Unknown { why } if why == "unsupported_resolved_type_form"
+                )
+        }),
+        "{:?}",
+        report.identity_facts
+    );
+    assert!(
+        report.identity_facts.coverage_gaps.iter().any(|gap| {
+            gap.kind == BodyTypeCoverageGapKind::ExpressionTypeMissing
+                && gap
+                    .span
+                    .as_ref()
+                    .is_some_and(|span| span.start == closure.start && span.end == closure.end)
+        }),
+        "{:?}",
         report.identity_facts
     );
     assert!(
         !report.identity_facts.extraction_complete,
-        "the body has an explicit nested-owner coverage gap: {:?}",
+        "unsupported closure identities remain an explicit refusal: {:?}",
         report.identity_facts
     );
 }
