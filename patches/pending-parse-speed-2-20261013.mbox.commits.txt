@@ -1,0 +1,23 @@
+749498a94dfd72e2dfe9896549bb36d961b01928 Reuse token cursor frames instead of allocating a new Arc per delimiter
+5fce29b4ffc294d2b0f2dc289255084979272a00 Store normal attributes in AST chunks instead of a separate Box
+a37d99b0cd5d73ca1032e6689652bc6c90c567f6 Store function declarations in AST chunks instead of a separate Box
+c2cc6349b047b6779f74c10cd550e5429ca7d051 Store path segment generic args in AST chunks instead of a separate Box
+d936ffa09728660eab327ecd2a466c659f6e520c Store method call payloads in AST chunks instead of a separate Box
+fbf32eb3a562a00e5d67304521d1cbdc6d9500a9 Store let statement locals in AST chunks instead of a separate Box
+25460f7f9e264314c3953f11c7d9a8961d85730e Borrow float components when splitting tuple field chains instead of copying them
+7590b37119fbf5400968dc3381386de16a5f2092 Keep paths of up to four segments inline instead of in a growing ThinVec
+3f5dd4100ff4a4ce4a0d508239efc34c77b7befa Store small token tree groups in shared AST chunks instead of one allocation each
+aa7b2b65d1fb007ebd298507486a4f657e7f3a3c Box the path in struct and tuple struct patterns to shrink Pat from 88 to 64 bytes
+eed0ca693cb5bbcb089ec4f427b524bce82eca15 Reserve symbol gallery capacity before inserting a lexer batch
+6f100e61bee2d742c273ff99668fb8059ca12fa7 Look up and insert NFC-normalized identifiers with one cache probe
+9aeed044369f080af18165a397a276728b2a3679 Bump-allocate AST nodes in counted 64 KiB chunks instead of one allocation each
+97089ef6ccd19654376703fe9a8c94835cb6cf75 Make P<T> an owning handle type instead of a Box alias
+c5ba3d7574189a533a5110875da688b79790b00d Add a default-off rusty_alloc feature that sets ps-rusty_alloc as the frontend-facts allocator
+30057488661f5babd84ca02a49f8ab2d504c0b43 Skip whitespace runs in place in the lexer instead of building Whitespace tokens
+7bd19015d143e34172b18e9d1e3fa88196fbd345 Name anonymous source files with FxHash instead of SipHash over the whole text
+1956029c83aca38c21690b8b2d0f00b716ad9237 Store single-segment AST paths inline instead of in a ThinVec
+0378c955f9f07dee7f5235dd53dd557930ebc458 Name boxed AST nodes through a P<T> alias
+dd43c75344da69485f8398c6baba8728a73cb884 Store token stream trees in one thin refcounted allocation
+ff01d4d39ac016d11e7c0496c905c71984b97d8f Cache each identifier spelling's symbol per lexer to skip repeat interning
+636c53f1fe1f4c9dcc2e86377c39cba28b653218 Skip token capture in the parse-only syntax check, which discards the AST
+ff81e1d19f6ed73fa7b1eebee965e7e2b0e674a5 Share one empty token stream per lexer instead of allocating each

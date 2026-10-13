@@ -1,0 +1,9 @@
+b74c53efc7fce9de994ffd7b682f12170b7a4e08 Start the session symbol table at 4096 slots
+5f82f41fe08f9b2bfa6e89369dd91e7e746c76b1 Collect parser lists in reusable scratch buffers before building exact ThinVecs
+2a65c4d21baf44651765ce72de88b1f595b36250 Reuse token cursor frames in lazy token replay and across snapshot restores
+1956029c83aca38c21690b8b2d0f00b716ad9237 Store single-segment AST paths inline instead of in a ThinVec
+0378c955f9f07dee7f5235dd53dd557930ebc458 Name boxed AST nodes through a P<T> alias
+dd43c75344da69485f8398c6baba8728a73cb884 Store token stream trees in one thin refcounted allocation
+ff01d4d39ac016d11e7c0496c905c71984b97d8f Cache each identifier spelling's symbol per lexer to skip repeat interning
+636c53f1fe1f4c9dcc2e86377c39cba28b653218 Skip token capture in the parse-only syntax check, which discards the AST
+ff81e1d19f6ed73fa7b1eebee965e7e2b0e674a5 Share one empty token stream per lexer instead of allocating each
