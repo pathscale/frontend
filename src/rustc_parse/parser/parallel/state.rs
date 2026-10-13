@@ -54,6 +54,7 @@ macro_rules! parser_state {
                 Parser {
                     psess,
                     frame_spare: FrameSpare::default(),
+                    list_scratch: Default::default(),
                     body_jobs: None,
                     capture_state: self.capture_state,
                     $($field: self.$field,)+

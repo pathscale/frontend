@@ -273,7 +273,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Replace `self` with `snapshot.parser`.
-    pub fn restore_snapshot(&mut self, snapshot: SnapshotParser<'a>) {
+    pub fn restore_snapshot(&mut self, mut snapshot: SnapshotParser<'a>) {
+        snapshot.parser.frame_spare.append(take(&mut self.frame_spare));
+        snapshot.parser.list_scratch = take(&mut self.list_scratch);
         *self = snapshot.parser;
     }
 

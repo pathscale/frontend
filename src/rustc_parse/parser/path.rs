@@ -1,7 +1,6 @@
 use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::mem;
 
 use crate::rustc_ast::token::{self, MetaVarKind, Token, TokenKind};
 use crate::rustc_ast::{
@@ -637,7 +636,7 @@ impl<'a> Parser<'a> {
 
                 // Swap `self` with our backup of the parser state before attempting to parse
                 // generic arguments.
-                let snapshot = mem::replace(self, snapshot.unwrap());
+                let snapshot = self.replace_parser(snapshot.unwrap());
 
                 // Eat the unmatched angle brackets.
                 let all_angle_brackets = (0..snapshot.unmatched_angle_bracket_count)
@@ -647,7 +646,7 @@ impl<'a> Parser<'a> {
                     // If there are other tokens in between the extraneous `<`s, we cannot simply
                     // suggest to remove them. This check also prevents us from accidentally ending
                     // up in the middle of a multibyte character (issue #84104).
-                    let _ = mem::replace(self, snapshot);
+                    let _ = self.replace_parser(snapshot);
                     Err(e)
                 } else {
                     // Cancel error from being unable to find `>`. We know the error

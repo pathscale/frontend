@@ -1265,6 +1265,28 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<PatField> {
     }
 }
 
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<ExprField> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for field in self {
+            try_visit!(visitor.visit_expr_field(field));
+        }
+        V::Result::output()
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<Arm> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for arm in self {
+            try_visit!(visitor.visit_arm(arm));
+        }
+        V::Result::output()
+    }
+}
+
 macro_rules! generate_list_visit_fns {
     ($($name:ident, $Ty:ty, $visit_fn:ident$(, $param:ident: $ParamTy:ty)*;)+) => {
         $(

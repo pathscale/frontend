@@ -420,7 +420,7 @@ impl<'a> ExtCtxt<'a> {
             ast::ExprKind::Struct(Box::new(ast::StructExpr {
                 qself: None,
                 path,
-                fields,
+                fields: fields.into(),
                 rest: ast::StructRest::None,
             })),
         )
@@ -463,7 +463,7 @@ impl<'a> ExtCtxt<'a> {
 
     /// `[expr1, expr2, ...]`
     pub fn expr_array(&self, sp: Span, exprs: ThinVec<P<ast::Expr>>) -> P<ast::Expr> {
-        self.expr(sp, ast::ExprKind::Array(exprs))
+        self.expr(sp, ast::ExprKind::Array(exprs.into()))
     }
 
     /// `&[expr1, expr2, ...]`
@@ -481,7 +481,7 @@ impl<'a> ExtCtxt<'a> {
         self.expr_path(self.path_global(sp, none))
     }
     pub fn expr_tuple(&self, sp: Span, exprs: ThinVec<P<ast::Expr>>) -> P<ast::Expr> {
-        self.expr(sp, ast::ExprKind::Tup(exprs))
+        self.expr(sp, ast::ExprKind::Tup(exprs.into()))
     }
 
     pub fn expr_unreachable(&self, span: Span) -> P<ast::Expr> {
@@ -604,7 +604,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn expr_match(&self, span: Span, arg: P<ast::Expr>, arms: ThinVec<ast::Arm>) -> P<Expr> {
-        self.expr(span, ast::ExprKind::Match(arg, arms, MatchKind::Prefix))
+        self.expr(span, ast::ExprKind::Match(arg, arms.into(), MatchKind::Prefix))
     }
 
     pub fn expr_if(

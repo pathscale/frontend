@@ -1407,7 +1407,7 @@ impl<'a> MethodDef<'a> {
             let match_arg = if selflike_args.len() == 1 {
                 selflike_args.pop().unwrap()
             } else {
-                cx.expr(span, ast::ExprKind::Tup(selflike_args))
+                cx.expr(span, ast::ExprKind::Tup(selflike_args.into()))
             };
             cx.expr_match(span, match_arg, match_arms)
         };

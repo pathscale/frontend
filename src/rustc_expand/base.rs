@@ -592,7 +592,7 @@ impl DummyResult {
             kind: if let Some(guar) = guar {
                 ast::ExprKind::Err(guar)
             } else {
-                ast::ExprKind::Tup(ThinVec::new())
+                ast::ExprKind::Tup(ast::ArenaVec::new())
             },
             span: sp,
             attrs: ast::AttrVec::new(),
