@@ -3115,9 +3115,9 @@ impl InternerInner {
     }
 }
 
-/// The first table of a session's [`SymbolIndices`]: 2 KiB, enough for a typical file's
+/// The first table of a session's [`SymbolIndices`]: 32 KiB, enough for a large file's
 /// identifiers without growing, and a power of two as the probing needs.
-const SYMBOL_INDICES_FIRST_SLOTS: usize = 256;
+const SYMBOL_INDICES_FIRST_SLOTS: usize = 4096;
 
 /// One open-addressed table of [`SymbolIndices`]. A slot is `0` when empty, else
 /// `(hash >> 32) << 32 | (local + 1)` for the session symbol `local` (its `SymbolStrs` index)
