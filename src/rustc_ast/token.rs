@@ -944,12 +944,22 @@ impl Token {
         matches!(self.kind, Lt | Shl)
     }
 
+    #[inline]
     pub fn is_path_start(&self) -> bool {
-        self.kind == PathSep
-            || self.is_qpath_start()
-            || matches!(self.is_metavar_seq(), Some(MetaVarKind::Path))
-            || self.is_path_segment_keyword()
-            || self.is_non_reserved_ident()
+        match self.kind {
+            PathSep | Lt | Shl | OpenInvisible(InvisibleOrigin::MetaVar(MetaVarKind::Path)) => true,
+            Ident(name, raw) => {
+                raw == IdentIsRaw::Yes
+                    || name.is_path_segment_keyword()
+                    || !name.is_reserved(|| self.span.edition())
+            }
+            NtIdent(ident, raw) => {
+                raw == IdentIsRaw::Yes
+                    || ident.is_path_segment_keyword()
+                    || !ident.is_reserved()
+            }
+            _ => false,
+        }
     }
 
     /// Returns `true` if the token is a given keyword, `kw`.

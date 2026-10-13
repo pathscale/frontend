@@ -1,6 +1,6 @@
 use core::mem;
 
-use crate::rustc_ast::token::Token;
+use crate::rustc_ast::token::{self, Token};
 use crate::rustc_ast::tokenstream::{
     AttrsTarget, LazyAttrTokenStream, NodeRange, ParserRange, Spacing, TokenCursor,
 };
@@ -17,7 +17,9 @@ use super::{Capturing, ForceCollect, Parser, Trailing};
 #[derive(Clone, Debug)]
 pub(super) struct CollectPos {
     start_token: (Token, Spacing),
-    cursor_snapshot: TokenCursor,
+    // Disabled collection still passes positions through the parse callbacks,
+    // but never observes their cursor snapshots.
+    cursor_snapshot: Option<TokenCursor>,
     start_pos: u32,
 }
 
@@ -88,12 +90,38 @@ fn has_cfg_or_cfg_attr<'a>(mut attrs: impl Iterator<Item = &'a Attribute>) -> bo
 }
 
 impl<'a> Parser<'a> {
+    #[inline]
     pub(super) fn collect_pos(&self) -> CollectPos {
         CollectPos {
             start_token: (self.token, self.token_spacing),
-            cursor_snapshot: self.token_cursor.clone(),
+            cursor_snapshot: (!matches!(self.capture_state.capturing, Capturing::Disabled))
+                .then(|| self.token_cursor.clone()),
             start_pos: self.num_bump_calls,
         }
+    }
+
+    #[inline]
+    pub(super) fn collect_tokens_for_expr(
+        &mut self,
+        attrs: AttrWrapper,
+        f: impl FnOnce(&mut Self, ast::AttrVec) -> PResult<'a, crate::rustc_ast::ptr::P<ast::Expr>>,
+    ) -> PResult<'a, crate::rustc_ast::ptr::P<ast::Expr>> {
+        if matches!(self.capture_state.capturing, Capturing::Disabled) {
+            return f(self, attrs.attrs);
+        }
+
+        self.collect_tokens(None, attrs, ForceCollect::No, |this, attrs| {
+            let res = f(this, attrs)?;
+            let trailing = Trailing::from(
+                this.restrictions.contains(super::Restrictions::STMT_EXPR)
+                     && this.token == token::Semi
+                // FIXME: pass an additional condition through from the place
+                // where we know we need a comma, rather than assuming that
+                // `#[attr] expr,` always captures a trailing comma.
+                || this.token == token::Comma,
+            );
+            Ok((res, trailing, UsePreAttrPos::No))
+        })
     }
 
     /// Parses code with `f`. If appropriate, it records the tokens (in
@@ -328,7 +356,7 @@ impl<'a> Parser<'a> {
 
         let tokens = LazyAttrTokenStream::new_pending(
             collect_pos.start_token,
-            collect_pos.cursor_snapshot,
+            collect_pos.cursor_snapshot.expect("enabled token capture has a cursor snapshot"),
             num_calls,
             self.break_last_token,
             node_replacements,
