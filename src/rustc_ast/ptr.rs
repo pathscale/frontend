@@ -158,6 +158,33 @@ pub(crate) unsafe fn dealloc_bytes(ptr: NonNull<u8>, layout: Layout) {
     }
 }
 
+/// List buffers use the same chunks up to the largest layout that fits after a header.
+#[inline]
+pub(crate) fn alloc_list_bytes(layout: Layout) -> NonNull<u8> {
+    assert!(layout.size() != 0);
+    if layout.size() < CHUNK_BYTES - HEADER_BYTES && layout.align() <= HEADER_BYTES {
+        alloc_node(layout)
+    } else {
+        alloc_bytes(layout)
+    }
+}
+
+/// Releases an initialized or uninitialized list buffer after its elements are gone.
+///
+/// # Safety
+///
+/// The pointer and layout must describe a live allocation from alloc_list_bytes.
+#[inline]
+pub(crate) unsafe fn dealloc_list_bytes(ptr: NonNull<u8>, layout: Layout) {
+    if layout.size() < CHUNK_BYTES - HEADER_BYTES && layout.align() <= HEADER_BYTES {
+        // SAFETY: the allocation owns one count of its chunk.
+        unsafe { release(chunk_of(ptr)) };
+    } else {
+        // SAFETY: the allocation used alloc_bytes with this layout.
+        unsafe { dealloc_bytes(ptr, layout) };
+    }
+}
+
 pub struct P<T> {
     ptr: NonNull<T>,
     _owns: PhantomData<T>,

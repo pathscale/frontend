@@ -30,6 +30,7 @@ pub mod util {
     pub mod unicode;
 }
 
+mod arena_buffer;
 pub mod arena_vec;
 pub mod ast;
 pub mod ast_traits;

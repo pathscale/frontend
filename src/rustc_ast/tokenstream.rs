@@ -4,26 +4,26 @@
 //! A `TokenStream` is, roughly speaking, a sequence of [`TokenTree`]s,
 //! which are themselves a single [`Token`] or a `Delimited` subsequence of tokens.
 
-use alloc::vec::Vec;
-use alloc::borrow::Cow;
 use crate::rustc_data_structures::iter_ext::{IterExt as _, SliceExt as _};
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::hash::Hash;
 use core::ops::Range;
-use alloc::sync::Arc;
 use core::{cmp, fmt, iter, mem};
 
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_data_structures::sync;
 use crate::rustc_data_structures::thin_arc::ThinArcSlice;
-use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
 use crate::rustc_serialize::{Decodable, Encodable};
 use crate::rustc_span::{DUMMY_SP, Span, SpanDecoder, SpanEncoder, Symbol, sym};
+use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
 use thin_vec::ThinVec;
 
 use crate::rustc_ast::ast::AttrStyle;
 use crate::rustc_ast::ast_traits::HasTokens;
 use crate::rustc_ast::token::{self, Delimiter, Token, TokenKind};
-use crate::rustc_ast::{AttrVec, Attribute};
+use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 
 #[cfg(test)]
 mod tests;
@@ -114,11 +114,13 @@ impl<T> WithTokens<T> {
 /// A lazy version of [`AttrTokenStream`], which defers creation of an actual
 /// `AttrTokenStream` until it is needed.
 #[derive(Clone)]
-pub struct LazyAttrTokenStream(Arc<LazyAttrTokenStreamInner>);
+pub struct LazyAttrTokenStream(ThinArcSlice<LazyAttrTokenStreamInner>);
 
 impl LazyAttrTokenStream {
     pub fn new_direct(stream: AttrTokenStream) -> LazyAttrTokenStream {
-        LazyAttrTokenStream(Arc::new(LazyAttrTokenStreamInner::Direct(stream)))
+        LazyAttrTokenStream(ThinArcSlice::from_exact(iter::once(LazyAttrTokenStreamInner::Direct(
+            stream,
+        ))))
     }
 
     pub fn new_pending(
@@ -126,19 +128,21 @@ impl LazyAttrTokenStream {
         cursor_snapshot: TokenCursor,
         num_calls: u32,
         break_last_token: u32,
-        node_replacements: ThinVec<NodeReplacement>,
+        node_replacements: ArenaVec<NodeReplacement>,
     ) -> LazyAttrTokenStream {
-        LazyAttrTokenStream(Arc::new(LazyAttrTokenStreamInner::Pending {
-            start_token,
-            cursor_snapshot,
-            num_calls,
-            break_last_token,
-            node_replacements,
-        }))
+        LazyAttrTokenStream(ThinArcSlice::from_exact(iter::once(
+            LazyAttrTokenStreamInner::Pending {
+                start_token,
+                cursor_snapshot,
+                num_calls,
+                break_last_token,
+                node_replacements,
+            },
+        )))
     }
 
     pub fn to_attr_token_stream(&self) -> AttrTokenStream {
-        self.0.to_attr_token_stream()
+        self.0[0].to_attr_token_stream()
     }
 }
 
@@ -237,7 +241,7 @@ enum LazyAttrTokenStreamInner {
         cursor_snapshot: TokenCursor,
         num_calls: u32,
         break_last_token: u32,
-        node_replacements: ThinVec<NodeReplacement>,
+        node_replacements: ArenaVec<NodeReplacement>,
     },
 }
 
@@ -479,7 +483,8 @@ fn attrs_and_tokens_to_token_trees(
     target_tokens: &LazyAttrTokenStream,
     res: &mut Vec<TokenTree>,
 ) {
-    let idx = attrs.partition_point(|attr| matches!(attr.style, crate::rustc_ast::AttrStyle::Outer));
+    let idx =
+        attrs.partition_point(|attr| matches!(attr.style, crate::rustc_ast::AttrStyle::Outer));
     let (outer_attrs, inner_attrs) = attrs.split_at(idx);
 
     // Add outer attribute tokens.

@@ -1,24 +1,33 @@
-//! One-word AST lists whose first four elements live in the P arena.
+//! One-word AST lists with inline elements and spill buffers in the AST chunks.
 
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
-use smallvec::SmallVec;
+use crate::rustc_ast::arena_buffer::ArenaBuffer;
+pub use crate::rustc_ast::arena_buffer::IntoIter;
 use thin_vec::ThinVec;
 
 use crate::rustc_ast::ptr::P;
 use crate::rustc_data_structures::flat_map_in_place::FlatMapInPlace;
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 
-/// Empty lists have no storage. Nonempty lists own an arena-allocated SmallVec,
-/// keeping the handle one word and using the global allocator only past four elements.
+/// Empty lists have no storage. Nonempty lists own an arena-allocated inline buffer.
+/// Spill buffers share AST chunks; only buffers too large for a chunk allocate globally.
 #[derive(Clone)]
-pub struct ArenaVec<T>(Option<P<SmallVec<[T; 4]>>>);
+pub struct ArenaVec<T>(Option<P<ArenaBuffer<T>>>);
 
 impl<T> ArenaVec<T> {
     pub fn new() -> Self {
         Self(None)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        if capacity == 0 {
+            Self::new()
+        } else {
+            Self(Some(P::new(ArenaBuffer::with_capacity(capacity))))
+        }
     }
 
     pub fn as_slice(&self) -> &[T] {
@@ -36,12 +45,12 @@ impl<T> ArenaVec<T> {
     }
 
     pub fn push(&mut self, value: T) {
-        self.0.get_or_insert_with(|| P::new(SmallVec::new())).push(value);
+        self.0.get_or_insert_with(|| P::new(ArenaBuffer::new())).push(value);
     }
 
     pub fn insert(&mut self, index: usize, value: T) {
         assert!(index <= self.len());
-        self.0.get_or_insert_with(|| P::new(SmallVec::new())).insert(index, value);
+        self.0.get_or_insert_with(|| P::new(ArenaBuffer::new())).insert(index, value);
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -106,7 +115,7 @@ impl<T> Extend<T> for ArenaVec<T> {
 
 impl<T> FromIterator<T> for ArenaVec<T> {
     fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
-        let values: SmallVec<[T; 4]> = values.into_iter().collect();
+        let values: ArenaBuffer<T> = values.into_iter().collect();
         if values.is_empty() { Self::new() } else { Self(Some(P::new(values))) }
     }
 }
@@ -125,10 +134,10 @@ impl<T> From<Vec<T>> for ArenaVec<T> {
 
 impl<T> IntoIterator for ArenaVec<T> {
     type Item = T;
-    type IntoIter = smallvec::IntoIter<[T; 4]>;
+    type IntoIter = IntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.map_or_else(SmallVec::new, P::into_inner).into_iter()
+        self.0.map_or_else(ArenaBuffer::new, P::into_inner).into_iter()
     }
 }
 

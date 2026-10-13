@@ -1,12 +1,14 @@
-use alloc::vec::Vec;
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
 use crate::rustc_ast::util::classify;
 use crate::rustc_ast::{AttrKind, token};
 use crate::rustc_errors::PResult;
 use crate::rustc_span::Span;
+use alloc::vec::Vec;
 
 use crate::exp;
-use crate::rustc_parse::parser::{AttrWrapper, ForceCollect, Parser, Restrictions, Trailing, UsePreAttrPos};
+use crate::rustc_parse::parser::{
+    AttrWrapper, ForceCollect, Parser, Restrictions, Trailing, UsePreAttrPos,
+};
 
 #[derive(Default)]
 pub struct CfgSelectBranchAttrSpans {
@@ -67,12 +69,12 @@ impl<'a> Parser<'a> {
                 // `parse_outer_attributes` already emitted E0753 for inner doc comments before
                 // recovering them as outer doc-comment attributes.
                 AttrKind::DocComment(comment_kind, _)
-                    if self.span_to_snippet(attr.span).ok().is_some_and(
-                        |snippet| match comment_kind {
+                    if self
+                        .with_snippet(attr.span, |snippet| match comment_kind {
                             token::CommentKind::Line => snippet.starts_with("//!"),
                             token::CommentKind::Block => snippet.starts_with("/*!"),
-                        },
-                    ) => {}
+                        })
+                        .unwrap_or(false) => {}
                 AttrKind::DocComment(..) => spans.doc_comments.push(attr.span),
             }
         }

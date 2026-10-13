@@ -257,7 +257,7 @@ pub struct Parser<'a> {
 // nonterminals. Make sure it doesn't unintentionally get bigger. We only check a few arches
 // though, because `TokenTypeSet(u128)` alignment varies on others, changing the total size.
 #[cfg(all(target_pointer_width = "64", any(target_arch = "aarch64", target_arch = "x86_64")))]
-crate::static_assert_size!(Parser<'_>, 288);
+crate::static_assert_size!(Parser<'_>, 272);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -284,7 +284,7 @@ enum Capturing {
 #[derive(Clone, Debug)]
 struct CaptureState {
     capturing: Capturing,
-    parser_replacements: Vec<ParserReplacement>,
+    parser_replacements: ast::ArenaVec<ParserReplacement>,
     inner_attr_parser_ranges: FxHashMap<AttrId, ParserRange>,
     // `IntervalSet` is good for perf because attrs are mostly added to this
     // set in contiguous ranges.
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
             subparser_name,
             capture_state: CaptureState {
                 capturing: Capturing::No,
-                parser_replacements: Vec::new(),
+                parser_replacements: ast::ArenaVec::new(),
                 inner_attr_parser_ranges: Default::default(),
                 seen_attrs: IntervalSet::new(u32::MAX as usize),
             },
