@@ -64,7 +64,7 @@ pub(crate) fn expand(
     let stmts = ALLOCATOR_METHODS.iter().map(|method| f.allocator_fn(method)).collect();
 
     // Generate anonymous constant serving as container for the allocator methods.
-    let const_ty = ecx.ty(ty_span, TyKind::Tup(ThinVec::new()));
+    let const_ty = ecx.ty(ty_span, TyKind::Tup(ast::ArenaVec::new()));
     let const_body = ecx.expr_block(ecx.block(span, stmts));
     let const_item = ecx.item_const(
         span,
@@ -190,7 +190,7 @@ impl AllocFnFactory<'_, '_> {
         match *ty {
             AllocatorTy::ResultPtr => self.ptr_u8(),
 
-            AllocatorTy::Unit => self.cx.ty(self.span, TyKind::Tup(ThinVec::new())),
+            AllocatorTy::Unit => self.cx.ty(self.span, TyKind::Tup(ast::ArenaVec::new())),
 
             AllocatorTy::Layout | AllocatorTy::Never | AllocatorTy::Usize | AllocatorTy::Ptr => {
                 panic!("can't convert `AllocatorTy` to an output")

@@ -827,7 +827,7 @@ mod llvm_enzyme {
                 FnRetTy::Ty(ref ty) => ty.clone(),
                 FnRetTy::Default(span) => {
                     // We want to return core::hint::black_box(()).
-                    let kind = TyKind::Tup(ThinVec::new());
+                    let kind = TyKind::Tup(ast::ArenaVec::new());
                     let ty = P::new(crate::rustc_ast::Ty { kind, id: ast::DUMMY_NODE_ID, span });
                     d_decl.output = FnRetTy::Ty(ty.clone());
                     assert!(matches!(x.ret_activity, DiffActivity::None));
@@ -840,7 +840,7 @@ mod llvm_enzyme {
                 let kind = if x.width == 1 || matches!(x.ret_activity, DiffActivity::Dualv) {
                     // Dual can only be used for f32/f64 ret.
                     // In that case we return now a tuple with two floats.
-                    TyKind::Tup(thin_vec![ty.clone(), ty.clone()])
+                    TyKind::Tup(thin_vec![ty.clone(), ty.clone()].into())
                 } else {
                     // We have to return [T; width+1], +1 for the primal return.
                     let anon_const = crate::rustc_ast::AnonConst {
@@ -883,14 +883,14 @@ mod llvm_enzyme {
                     if !active_only_ret {
                         act_ret.insert(0, ty.clone());
                     }
-                    let kind = TyKind::Tup(act_ret);
+                    let kind = TyKind::Tup(act_ret.into());
                     P::new(crate::rustc_ast::Ty { kind, id: ty.id, span: ty.span })
                 }
                 FnRetTy::Default(span) => {
                     if act_ret.len() == 1 {
                         act_ret[0].clone()
                     } else {
-                        let kind = TyKind::Tup(act_ret);
+                        let kind = TyKind::Tup(act_ret.into());
                         P::new(crate::rustc_ast::Ty { kind, id: ast::DUMMY_NODE_ID, span })
                     }
                 }

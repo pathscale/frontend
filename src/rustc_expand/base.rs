@@ -1,13 +1,13 @@
 use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::any::Any;
 use core::default::Default;
 use core::iter;
 use eko::path::PathBuf;
-use alloc::rc::Rc;
-use alloc::sync::Arc;
 
 use crate::rustc_ast::attr::MarkedAttrs;
 use crate::rustc_ast::tokenstream::TokenStream;
@@ -648,7 +648,7 @@ impl MacResult for DummyResult {
         // support, so we use an empty tuple instead.
         Some(P::new(ast::Ty {
             id: ast::DUMMY_NODE_ID,
-            kind: ast::TyKind::Tup(ThinVec::new()),
+            kind: ast::TyKind::Tup(ast::ArenaVec::new()),
             span: self.span,
         }))
     }

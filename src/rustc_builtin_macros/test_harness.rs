@@ -333,7 +333,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
     let doc_hidden_attr = ecx.attr_nested_word(sym::doc, sym::hidden, sp);
 
     // pub fn main() { ... }
-    let main_ret_ty = ecx.ty(sp, ast::TyKind::Tup(ThinVec::new()));
+    let main_ret_ty = ecx.ty(sp, ast::TyKind::Tup(ast::ArenaVec::new()));
 
     // If no test runner is provided we need to import the test crate
     let main_body = if cx.test_runner.is_none() {
@@ -405,7 +405,9 @@ fn get_test_name(i: &ast::Item) -> Option<Symbol> {
 
 fn get_test_runner(sess: &Session, krate: &ast::Crate) -> Option<ast::Path> {
     match AttributeParser::parse_limited_sym(sess, &krate.attrs, &[sym::test_runner]) {
-        Some(crate::rustc_attr_ir::Attribute::Parsed(AttributeKind::TestRunner(path))) => Some(path),
+        Some(crate::rustc_attr_ir::Attribute::Parsed(AttributeKind::TestRunner(path))) => {
+            Some(path)
+        }
         _ => None,
     }
 }
