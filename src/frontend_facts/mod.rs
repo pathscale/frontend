@@ -3652,6 +3652,8 @@ pub enum BodyTypeDesugaringKind {
     WhileLoop,
     /// A source-written range expression lowered by the compiler.
     RangeExpr,
+    /// Typed macro-generated HIR, with callsite provenance only.
+    MacroExpansion,
 }
 
 /// A typeck-selected call item, not proof of trait obligations or runtime dispatch.
@@ -4016,10 +4018,11 @@ fn extract_body_type_identity(
             synthetic_lang_items,
             original_source_len,
             generated_visit_order: 0,
+            visited_bodies: vec![owner],
         };
         visitor.visit_expr(body.value);
+        nested_body_gaps(tcx, &visitor.visited_bodies, &input, &exact_span, visitor.facts);
     }
-    nested_body_gaps(tcx, owner, &input, &exact_span, &mut report.type_facts);
     let nested_body_not_visited = report
         .type_facts
         .coverage_gaps
@@ -4219,6 +4222,7 @@ struct BodyTypeVisitor<'a, 'tcx> {
     synthetic_lang_items: bool,
     original_source_len: usize,
     generated_visit_order: u32,
+    visited_bodies: Vec<LocalDefId>,
 }
 
 struct BodyExpressionParts {
@@ -4392,6 +4396,33 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
     type NestedFilter = intravisit::IgnoreNested;
     type Result = ();
 
+    fn visit_nested_body(&mut self, id: hir::BodyId) {
+        let owner = self.tcx.hir_body_owner_def_id(id);
+        if self.visited_bodies.contains(&owner) {
+            return;
+        }
+        let body = self.tcx.hir_body(id);
+        let previous_owner = self.owner;
+        let previous_typeck = self.typeck;
+        let typeck = match catch_fatal_errors(|| self.tcx.typeck(owner)) {
+            Ok(typeck) => typeck,
+            Err(_) => {
+                push_body_type_gap(
+                    self.facts,
+                    BodyTypeCoverageGapKind::TypeckFatal,
+                    source_callsite_span(self.tcx, self.input, body.value.span),
+                );
+                return;
+            }
+        };
+        self.visited_bodies.push(owner);
+        self.owner = owner;
+        self.typeck = typeck;
+        self.visit_body(body);
+        self.owner = previous_owner;
+        self.typeck = previous_typeck;
+    }
+
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
         self.record_macro_invocations(expr.span);
         if expr.span.from_expansion() {
@@ -4434,14 +4465,21 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
                     });
                     // HIR types are present, but the callsite does not identify one source
                     // expression among the generated nodes.
-                    push_body_projection_gap(
-                        self.facts,
-                        BodyTypeCoverageGapKind::DesugaredExpression,
-                        Some(callsite.clone()),
-                    );
+                    let projection_kind = if expr
+                        .span
+                        .ctxt()
+                        .marks()
+                        .iter()
+                        .any(|(mark, _)| matches!(mark.expn_data().kind, ExpnKind::Macro(..)))
+                    {
+                        BodyTypeCoverageGapKind::MacroExpansion
+                    } else {
+                        BodyTypeCoverageGapKind::DesugaredExpression
+                    };
+                    push_body_projection_gap(self.facts, projection_kind, Some(callsite.clone()));
                     push_optional_identity_gap(
                         &mut self.identity_facts,
-                        BodyTypeCoverageGapKind::DesugaredExpression,
+                        projection_kind,
                         Some(callsite),
                     );
                 }
@@ -4579,6 +4617,19 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
     }
 
     fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
+        // Include closure binding, reference and tuple patterns in the strict type gate.
+        let ty = self
+            .typeck
+            .node_type_opt(pat.hir_id)
+            .map_or_else(|| unknown_body_type("pattern_type_not_recorded"), body_type_fact);
+        if !body_type_is_known(&ty) {
+            push_body_type_gap(
+                self.facts,
+                BodyTypeCoverageGapKind::ExpressionTypeMissing,
+                source_mapped_body_span(self.tcx, self.input, pat.span)
+                    .or_else(|| source_callsite_span(self.tcx, self.input, pat.span)),
+            );
+        }
         let path = match &pat.kind {
             hir::PatKind::TupleStruct(qpath, ..) | hir::PatKind::Struct(qpath, ..) => {
                 Some((qpath, pat.hir_id))
@@ -4658,7 +4709,8 @@ impl<'tcx> Visitor<'tcx> for BodyTypeVisitor<'_, 'tcx> {
 }
 
 /// Require every hygiene mark to be an allowed source syntax lowering and the full callsite to be
-/// inside the exact selected body. Macro, mixed, unknown, and unmapped chains remain gaps.
+/// inside the exact selected body. Macro nodes are typed but retain projection gaps;
+/// unknown compiler lowerings and unmapped chains remain type coverage gaps.
 fn supported_body_desugaring(
     tcx: TyCtxt<'_>,
     input: &(Arc<SourceFile>, Arc<str>),
@@ -4684,7 +4736,7 @@ fn supported_body_desugaring(
             ExpnKind::Desugaring(crate::rustc_span::hygiene::DesugaringKind::RangeExpr) => {
                 BodyTypeDesugaringKind::RangeExpr
             }
-            ExpnKind::Macro(..) => return Err(BodyTypeCoverageGapKind::MacroExpansion),
+            ExpnKind::Macro(..) => BodyTypeDesugaringKind::MacroExpansion,
             ExpnKind::AstPass(..) => {
                 return Err(BodyTypeCoverageGapKind::CompilerGeneratedExpression);
             }
@@ -5459,16 +5511,16 @@ fn body_type_is_known(fact: &effects::StaticFact<String>) -> bool {
     matches!(fact, effects::StaticFact::Known { .. })
 }
 
-/// The visitor ignores nested owners; list each source-contained owner as a coverage gap.
+/// Retain gaps for source-contained owners not reached by nested-body traversal.
 fn nested_body_gaps(
     tcx: TyCtxt<'_>,
-    owner: LocalDefId,
+    visited: &[LocalDefId],
     input: &(Arc<SourceFile>, Arc<str>),
     outer: &ByteSpan,
     facts: &mut BodyTypeFacts,
 ) {
     for nested_owner in tcx.hir_body_owner_ids().iter().copied() {
-        if nested_owner == owner {
+        if visited.contains(&nested_owner) {
             continue;
         }
         let Some(body) = tcx.hir_maybe_body_owned_by(nested_owner) else { continue };
