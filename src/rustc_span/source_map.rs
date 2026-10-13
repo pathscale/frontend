@@ -358,10 +358,7 @@ impl SourceMap {
         let file = Arc::new(file);
         files.source_files.push(Arc::clone(&file));
         // Under the write lock, so the index gets the files in `source_files` order.
-        self.index.push(FileAt {
-            start: file.start_pos,
-            file: core::ptr::NonNull::from(&*file),
-        });
+        self.index.push(FileAt { start: file.start_pos, file: core::ptr::NonNull::from(&*file) });
         files.stable_id_to_source_file.insert(file_id, Arc::clone(&file));
 
         Ok(file)
@@ -491,7 +488,8 @@ impl SourceMap {
                 hi = mid;
             }
         }
-        self.index.get(lo.checked_sub(1).expect("a position before the first file"))
+        self.index
+            .get(lo.checked_sub(1).expect("a position before the first file"))
             .expect("below the published length")
     }
 
@@ -707,6 +705,18 @@ impl SourceMap {
         .is_ok_and(|is_accessible| is_accessible)
     }
 
+    /// Inspects a source slice while its file or external-source read guard remains alive.
+    pub fn with_snippet<T>(
+        &self,
+        sp: Span,
+        mut inspect: impl FnMut(&str) -> T,
+    ) -> Result<T, SpanSnippetError> {
+        self.span_to_source(sp, |src, start, end| {
+            let snippet = src.get(start..end).ok_or(SpanSnippetError::IllFormedSpan(sp))?;
+            Ok(inspect(snippet))
+        })
+    }
+
     /// Returns the source snippet as `String` corresponding to the given `Span`.
     pub fn span_to_snippet(&self, sp: Span) -> Result<String, SpanSnippetError> {
         self.span_to_source(sp, |src, start_index, end_index| {
@@ -868,17 +878,15 @@ impl SourceMap {
     /// Given a `Span`, tries to get a shorter span ending before the first occurrence of `char`
     /// `c`.
     pub fn span_until_char(&self, sp: Span, c: char) -> Span {
-        match self.span_to_snippet(sp) {
-            Ok(snippet) => {
-                let snippet = snippet.split(c).next().unwrap_or("").trim_end();
-                if !snippet.is_empty() && !snippet.contains('\n') {
-                    sp.with_hi(BytePos(sp.lo().0 + snippet.len() as u32))
-                } else {
-                    sp
-                }
+        self.with_snippet(sp, |snippet| {
+            let snippet = snippet.split(c).next().unwrap_or("").trim_end();
+            if !snippet.is_empty() && !snippet.contains('\n') {
+                sp.with_hi(BytePos(sp.lo().0 + snippet.len() as u32))
+            } else {
+                sp
             }
-            _ => sp,
-        }
+        })
+        .unwrap_or(sp)
     }
 
     /// Given a 'Span', tries to tell if it's wrapped by "<>" or "()"
@@ -945,12 +953,12 @@ impl SourceMap {
     /// Given a `Span`, tries to get a shorter span ending just after the first occurrence of `char`
     /// `c`.
     pub fn span_through_char(&self, sp: Span, c: char) -> Span {
-        if let Ok(snippet) = self.span_to_snippet(sp)
-            && let Some(offset) = snippet.find(c)
-        {
-            return sp.with_hi(BytePos(sp.lo().0 + (offset + c.len_utf8()) as u32));
-        }
-        sp
+        self.with_snippet(sp, |snippet| {
+            snippet.find(c).map_or(sp, |offset| {
+                sp.with_hi(BytePos(sp.lo().0 + (offset + c.len_utf8()) as u32))
+            })
+        })
+        .unwrap_or(sp)
     }
 
     /// Given a `Span`, gets a new `Span` covering the first token and all its trailing whitespace
@@ -978,17 +986,16 @@ impl SourceMap {
     }
 
     /// Given a `Span`, gets a shorter one until `predicate` yields `false`.
-    pub fn span_take_while<P>(&self, sp: Span, predicate: P) -> Span
+    pub fn span_take_while<P>(&self, sp: Span, mut predicate: P) -> Span
     where
         P: for<'r> FnMut(&'r char) -> bool,
     {
-        if let Ok(snippet) = self.span_to_snippet(sp) {
-            let offset = snippet.chars().take_while(predicate).map(|c| c.len_utf8()).sum::<usize>();
-
+        self.with_snippet(sp, |snippet| {
+            let offset =
+                snippet.chars().take_while(&mut predicate).map(|c| c.len_utf8()).sum::<usize>();
             sp.with_hi(BytePos(sp.lo().0 + (offset as u32)))
-        } else {
-            sp
-        }
+        })
+        .unwrap_or(sp)
     }
 
     /// Given a `Span`, return a span ending in the closest `{`. This is useful when you have a
@@ -1223,7 +1230,7 @@ impl SourceMap {
     pub fn mac_call_stmt_semi_span(&self, mac_call: Span) -> Option<Span> {
         let span = self.span_extend_while_whitespace(mac_call);
         let span = self.next_point(span);
-        if self.span_to_snippet(span).as_deref() == Ok(";") { Some(span) } else { None }
+        self.with_snippet(span, |snippet| snippet == ";").unwrap_or(false).then_some(span)
     }
 }
 

@@ -1,13 +1,12 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
+use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::fmt::Write;
 use core::mem;
 
-use ast::token::IdentIsRaw;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::ast::*;
 use crate::rustc_ast::token::{self, Delimiter, MetaVarKind, TokenKind};
@@ -19,6 +18,7 @@ use crate::rustc_errors::{Applicability, PResult, StashKey, msg, struct_span_cod
 use crate::rustc_span::edit_distance::edit_distance;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
+use ast::token::IdentIsRaw;
 use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
 
@@ -27,10 +27,10 @@ use super::{
     AllowConstBlockItems, AttrWrapper, ExpTokenPair, FnContext, FnParseMode, FollowedByType,
     ForceCollect, IsDotDotDot, Parser, PathStyle, Recovered, Trailing, UsePreAttrPos,
 };
+use crate::exp;
 use crate::rustc_parse::diagnostics::{
     self, MacroExpandsToAdtField, UseDoubleColonSuggestion, UseRegularStructSuggestion,
 };
-use crate::exp;
 
 impl<'a> Parser<'a> {
     /// Parses a source module as a crate. This is the main entry point for the parser.
@@ -205,9 +205,10 @@ impl<'a> Parser<'a> {
                 });
                 if let Some((ident, _)) = this.token.ident()
                     && !ident.is_used_keyword()
-                    && let Some((similar_kw, is_incorrect_case)) = ident
-                        .name
-                        .find_similar(&crate::rustc_span::symbol::used_keywords(|| ident.span.edition()))
+                    && let Some((similar_kw, is_incorrect_case)) =
+                        ident.name.find_similar(&crate::rustc_span::symbol::used_keywords(|| {
+                            ident.span.edition()
+                        }))
                 {
                     err.subdiagnostic(diagnostics::MisspelledKw {
                         similar_kw: similar_kw.to_string(),
@@ -1006,8 +1007,8 @@ impl<'a> Parser<'a> {
                         //     }
                         // ```
                         && self
-                            .span_to_snippet(self.prev_token.span)
-                            .is_ok_and(|snippet| snippet == "}")
+                            .with_snippet(self.prev_token.span, |snippet| snippet == "}")
+                            .unwrap_or(false)
                         && self.token == token::Semi;
                     let mut semicolon_span = self.token.span;
                     if !is_unnecessary_semicolon {
@@ -2849,8 +2850,11 @@ impl<'a> Parser<'a> {
                 && path.segments.first().is_some_and(|seg| seg.ident.name == sym::macro_rules)
                 && args.delim == Delimiter::Parenthesis
             {
-                let replace =
-                    if path.span.hi() + crate::rustc_span::BytePos(1) < open.lo() { "" } else { " " };
+                let replace = if path.span.hi() + crate::rustc_span::BytePos(1) < open.lo() {
+                    ""
+                } else {
+                    " "
+                };
                 err.multipart_suggestion(
                     "to define a macro, remove the parentheses around the macro name",
                     vec![(open, replace.to_string()), (close, String::new())],

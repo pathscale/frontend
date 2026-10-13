@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-use alloc::borrow::Cow;
 use core::mem;
 
 use crate::rustc_ast::token::Token;
@@ -7,11 +5,10 @@ use crate::rustc_ast::tokenstream::{
     AttrsTarget, LazyAttrTokenStream, NodeRange, ParserRange, Spacing, TokenCursor,
 };
 use crate::rustc_ast::{self as ast, AttrKind, AttrVec, Attribute, HasTokens};
-use crate::rustc_data_structures::fx::FxHashSet;
+
 use crate::rustc_errors::PResult;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::{DUMMY_SP, sym};
-use thin_vec::ThinVec;
 
 use super::{Capturing, ForceCollect, Parser, Trailing};
 
@@ -83,13 +80,11 @@ impl AttrWrapper {
 }
 
 /// Returns `true` if `attrs` contains a `cfg` or `cfg_attr` attribute
-fn has_cfg_or_cfg_attr(attrs: &[Attribute]) -> bool {
+fn has_cfg_or_cfg_attr<'a>(mut attrs: impl Iterator<Item = &'a Attribute>) -> bool {
     // NOTE: Builtin attributes like `cfg` and `cfg_attr` cannot be renamed via imports.
     // Therefore, the absence of a literal `cfg` or `cfg_attr` guarantees that
     // we don't need to do any eager expansion.
-    attrs
-        .iter()
-        .any(|attr| attr.name().is_some_and(|ident| ident == sym::cfg || ident == sym::cfg_attr))
+    attrs.any(|attr| attr.name().is_some_and(|ident| ident == sym::cfg || ident == sym::cfg_attr))
 }
 
 impl<'a> Parser<'a> {
@@ -173,7 +168,7 @@ impl<'a> Parser<'a> {
         //   tokens by definition).
         let needs_collection = matches!(force_collect, ForceCollect::Yes)
             // - Any of our outer attributes require tokens.
-            || needs_tokens(&attrs.attrs)
+            || needs_tokens(attrs.attrs.iter())
             // - Our target supports custom inner attributes (custom
             //   inner attribute invocation might require token capturing).
             || R::SUPPORTS_CUSTOM_INNER_ATTRS
@@ -210,27 +205,12 @@ impl<'a> Parser<'a> {
         // an inner call to `collect_tokens` returns an AST node and then an
         // outer call ends up with the same AST node without any additional
         // wrapping layer.
-        let mut seen_indices = FxHashSet::default();
-        for (i, attr) in ret.attrs().iter().enumerate() {
-            let is_unseen = self.capture_state.seen_attrs.insert(attr.id);
-            if !is_unseen {
-                seen_indices.insert(i);
+        let mut ret_attrs = ast::ArenaVec::<&Attribute>::new();
+        for attr in ret.attrs() {
+            if self.capture_state.seen_attrs.insert(attr.id) {
+                ret_attrs.push(attr);
             }
         }
-        let ret_attrs: Cow<'_, [Attribute]> =
-            if seen_indices.is_empty() {
-                Cow::Borrowed(ret.attrs())
-            } else {
-                let ret_attrs =
-                    ret.attrs()
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, attr)| {
-                            if seen_indices.contains(&i) { None } else { Some(attr.clone()) }
-                        })
-                        .collect();
-                Cow::Owned(ret_attrs)
-            };
 
         // When we're not in "definite capture mode", then skip collecting and
         // return early if `ret` doesn't support tokens or already has some.
@@ -240,8 +220,9 @@ impl<'a> Parser<'a> {
         // tokens.
         let definite_capture_mode = self.capture_cfg
             && matches!(self.capture_state.capturing, Capturing::Yes)
-            && has_cfg_or_cfg_attr(&ret_attrs);
+            && has_cfg_or_cfg_attr(ret_attrs.iter().copied());
         if !definite_capture_mode && !ret_can_hold_tokens {
+            drop(ret_attrs);
             return Ok(ret);
         }
 
@@ -260,13 +241,14 @@ impl<'a> Parser<'a> {
             //   outer and inner attributes. So this check is more precise than
             //   the earlier `needs_tokens` check, and we don't need to
             //   check `R::SUPPORTS_CUSTOM_INNER_ATTRS`.)
-            || needs_tokens(&ret_attrs)
+            || needs_tokens(ret_attrs.iter().copied())
             // - We are in "definite capture mode", which requires that there
             //   are `#[cfg]` or `#[cfg_attr]` attributes. (During normal
             //   non-`capture_cfg` parsing, we don't need any special capturing
             //   for those attributes, because they're builtin.)
             || definite_capture_mode;
         if !needs_collection {
+            drop(ret_attrs);
             return Ok(ret);
         }
 
@@ -298,43 +280,29 @@ impl<'a> Parser<'a> {
 
         let num_calls = end_pos - collect_pos.start_pos;
 
-        // Take the captured `ParserRange`s for any inner attributes that we parsed in
-        // `Parser::parse_inner_attributes`, and pair them in a `ParserReplacement` with `None`,
-        // which means the relevant tokens will be removed. (More details below.)
-        let mut inner_attr_parser_replacements = Vec::new();
-        for attr in ret_attrs.iter() {
+        // Reserve exactly the nested replacements and inner-attribute deletions.
+        // Keep references to attributes until a retained AttrsTarget needs ownership.
+        let inner_attr_count =
+            ret_attrs.iter().filter(|attr| attr.style == ast::AttrStyle::Inner).count();
+        let replacement_count =
+            parser_replacements_end - parser_replacements_start + inner_attr_count;
+        let mut node_replacements = ast::ArenaVec::with_capacity(replacement_count);
+        node_replacements.extend(
+            self.capture_state.parser_replacements
+                [parser_replacements_start..parser_replacements_end]
+                .iter()
+                .cloned()
+                .map(|(range, data)| (NodeRange::new(range, collect_pos.start_pos), data)),
+        );
+        for attr in &ret_attrs {
             if attr.style == ast::AttrStyle::Inner {
-                if let Some(inner_attr_parser_range) =
-                    self.capture_state.inner_attr_parser_ranges.remove(&attr.id)
-                {
-                    inner_attr_parser_replacements.push((inner_attr_parser_range, None));
+                if let Some(range) = self.capture_state.inner_attr_parser_ranges.remove(&attr.id) {
+                    node_replacements.push((NodeRange::new(range, collect_pos.start_pos), None));
                 } else {
                     self.dcx().span_delayed_bug(attr.span, "Missing token range for attribute");
                 }
             }
         }
-
-        // This is hot enough for `deep-vector` that checking the conditions for an empty iterator
-        // is measurably faster than actually executing the iterator.
-        let node_replacements = if parser_replacements_start == parser_replacements_end
-            && inner_attr_parser_replacements.is_empty()
-        {
-            ThinVec::new()
-        } else {
-            // Grab any replace ranges that occur *inside* the current AST node. Convert them
-            // from `ParserRange` form to `NodeRange` form. We will perform the actual
-            // replacement only when we convert the `LazyAttrTokenStream` to an
-            // `AttrTokenStream`.
-            self.capture_state.parser_replacements
-                [parser_replacements_start..parser_replacements_end]
-                .iter()
-                .cloned()
-                .chain(inner_attr_parser_replacements)
-                .map(|(parser_range, data)| {
-                    (NodeRange::new(parser_range, collect_pos.start_pos), data)
-                })
-                .collect()
-        };
 
         // What is the status here when parsing the example code at the top of this method?
         //
@@ -387,8 +355,10 @@ impl<'a> Parser<'a> {
             // cfg-expand this AST node.
             let start_pos =
                 if has_outer_attrs { attrs.start_pos.unwrap() } else { collect_pos.start_pos };
-            let target =
-                AttrsTarget { attrs: ret_attrs.iter().cloned().collect(), tokens: tokens.clone() };
+            let target = AttrsTarget {
+                attrs: ret_attrs.iter().map(|attr| (*attr).clone()).collect(),
+                tokens: tokens.clone(),
+            };
             tokens_used = true;
             self.capture_state
                 .parser_replacements
@@ -401,6 +371,8 @@ impl<'a> Parser<'a> {
             self.capture_state.seen_attrs.clear();
         }
 
+        drop(ret_attrs);
+
         // If we support tokens and don't already have them, store the newly captured tokens.
         if let Some(target_tokens @ None) = ret.tokens_mut() {
             tokens_used = true;
@@ -412,16 +384,18 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn needs_tokens(attrs: &[ast::Attribute]) -> bool {
+fn needs_tokens<'a>(mut attrs: impl Iterator<Item = &'a Attribute>) -> bool {
     // Tokens are needed if...
-    attrs.iter().any(|attr| match &attr.kind {
+    attrs.any(|attr| match &attr.kind {
         AttrKind::Normal(normal) => {
             match normal.item.name() {
                 // ... a multi-segment attribute is present, e.g. `rustfmt::skip`.
                 None => true,
                 // ... `cfg_attr` or a single-segment non-builtin attribute is present, e.g.
                 // `derive`, `test`, `global_allocator`.
-                Some(name) => name == sym::cfg_attr || !crate::rustc_feature::is_builtin_attr_name(name),
+                Some(name) => {
+                    name == sym::cfg_attr || !crate::rustc_feature::is_builtin_attr_name(name)
+                }
             }
         }
         // Synthetic attributes are created only during expansion, and can't re-enter the parser

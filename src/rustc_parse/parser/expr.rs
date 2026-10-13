@@ -1029,8 +1029,11 @@ impl<'a> Parser<'a> {
         let span = self.token.span;
         let sm = self.psess.source_map();
         let (span, actual) = match (&self.token.kind, self.subparser_name) {
-            (token::Eof, Some(_)) if let Ok(snippet) = sm.span_to_snippet(sm.next_point(span)) => {
-                (span.shrink_to_hi(), format!("`{}`", snippet))
+            (token::Eof, Some(_))
+                if let Ok(actual) =
+                    sm.with_snippet(sm.next_point(span), |snippet| format!("`{snippet}`")) =>
+            {
+                (span.shrink_to_hi(), actual)
             }
             (token::CloseInvisible(InvisibleOrigin::MetaVar(_)), _) => {
                 // No need to report an error. This case will only occur when parsing a pasted
@@ -1360,7 +1363,7 @@ impl<'a> Parser<'a> {
                             // This is because the `snapshot.token.kind` is treated as the same as
                             // that of the open delim in `TokenTreesReader::parse_token_tree`, even
                             // if they are different.
-                            self.span_to_snippet(close_paren).is_ok_and(|snippet| snippet == ")")
+                            self.with_snippet(close_paren, |snippet| snippet == ")").unwrap_or(false)
                         {
                             err.cancel();
                             let type_str = pprust::path_to_string(&path);
@@ -3490,8 +3493,7 @@ impl<'a> Parser<'a> {
                                     let comma_span = arm_start_span
                                         .shrink_to_hi()
                                         .with_hi(arm_start_span.hi() + crate::rustc_span::BytePos(1));
-                                    if let Ok(res) = sm.span_to_snippet(comma_span)
-                                        && (res == "." || res == "/")
+                                    if sm.with_snippet(comma_span, |snippet| snippet == "." || snippet == "/").unwrap_or(false)
                                     {
                                         err.span_suggestion_short(
                                             comma_span,

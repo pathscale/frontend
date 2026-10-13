@@ -287,6 +287,14 @@ impl<'a> Parser<'a> {
         self.psess.source_map().span_to_snippet(span)
     }
 
+    pub(super) fn with_snippet<T>(
+        &self,
+        span: Span,
+        inspect: impl FnMut(&str) -> T,
+    ) -> Result<T, SpanSnippetError> {
+        self.psess.source_map().with_snippet(span, inspect)
+    }
+
     /// Emits an error with suggestions if an identifier was expected but not found.
     ///
     /// Returns a possibly recovered identifier.
@@ -2995,7 +3003,7 @@ impl<'a> Parser<'a> {
             if let [a, b] = segments {
                 let (a_span, b_span) = (a.span(), b.span());
                 let between_span = a_span.shrink_to_hi().to(b_span.shrink_to_lo());
-                if self.span_to_snippet(between_span).as_deref() == Ok(":: ") {
+                if self.with_snippet(between_span, |snippet| snippet == ":: ").unwrap_or(false) {
                     return Err(self.dcx().create_err(DoubleColonInBound {
                         span: path.span.shrink_to_hi(),
                         between: between_span,
