@@ -1,9 +1,9 @@
 use crate::rustc_ast::ptr::P;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 use core::ops::Bound;
 
 use crate::rustc_ast::mut_visit::{self, MutVisitor};
@@ -19,7 +19,7 @@ use crate::rustc_ast::{
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Applicability, Diag, DiagArgValue, PResult, StashKey};
 use crate::rustc_span::{BytePos, ErrorGuaranteed, Ident, Span, Spanned, kw, respan, sym};
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::ThinVec;
 
 use super::{ForceCollect, Parser, PathStyle, Restrictions, Trailing, UsePreAttrPos};
 use crate::rustc_parse::diagnostics::{
@@ -122,7 +122,10 @@ impl<'a> Parser<'a> {
                 let leading_if_span = self.prev_token.span;
                 let cond = self.parse_expr()?;
                 let cond_span = cond.span;
-                Box::new(Guard { cond: cond.into_inner(), span_with_leading_if: leading_if_span.to(cond_span) })
+                Box::new(Guard {
+                    cond: cond.into_inner(),
+                    span_with_leading_if: leading_if_span.to(cond_span),
+                })
             };
 
             // Feature-gate guard patterns
@@ -220,7 +223,8 @@ impl<'a> Parser<'a> {
                 // If there was a leading vert, treat this as an or-pattern. This improves
                 // diagnostics.
                 let span = leading_vert_span.to(self.prev_token.span);
-                return Ok((self.mk_pat(span, PatKind::Or(thin_vec![first_pat])), trailing_vert));
+                let pats = core::iter::once(first_pat).collect();
+                return Ok((self.mk_pat(span, PatKind::Or(pats)), trailing_vert));
             }
 
             return Ok((first_pat, trailing_vert));
@@ -228,7 +232,8 @@ impl<'a> Parser<'a> {
 
         // Parse the patterns `p_1 | ... | p_n` where `n > 0`.
         let lo = leading_vert_span.unwrap_or(first_pat.span);
-        let mut pats = thin_vec![first_pat];
+        let mut pats = ast::ArenaVec::new();
+        pats.push(first_pat);
         loop {
             match self.eat_or_separator(Some(lo)) {
                 EatOrResult::AteOr => {}
@@ -758,15 +763,18 @@ impl<'a> Parser<'a> {
             self.parse_pat_tuple_or_parens(syntax_loc)?
         } else if self.check(exp!(OpenBracket)) {
             // Parse `[pat, pat,...]` as a slice pattern.
-            let (pats, _) =
-                self.parse_delim_comma_seq(exp!(OpenBracket), exp!(CloseBracket), |p| {
+            let (pats, _) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Pat>>(
+                exp!(OpenBracket),
+                exp!(CloseBracket),
+                |p| {
                     p.parse_pat_allow_top_guard(
                         None,
                         RecoverComma::No,
                         RecoverColon::No,
                         CommaRecoveryMode::EitherTupleOrPipe,
                     )
-                })?;
+                },
+            )?;
             PatKind::Slice(pats)
         } else if self.check(exp!(DotDot)) && !self.is_pat_range_end_start(1) {
             // A rest pattern `..`.
@@ -1028,29 +1036,33 @@ impl<'a> Parser<'a> {
         let mut tys: Vec<(usize, Span, P<Ty>)> = Vec::new();
         let mut index = 0;
 
-        let (fields, trailing_comma) = self.parse_paren_comma_seq(|p| {
-            let pat = p.parse_pat_allow_top_guard(
-                None,
-                RecoverComma::No,
-                RecoverColon::No,
-                CommaRecoveryMode::LikelyTuple,
-            )?;
-            // Recover from an inline `: <ty>` type annotation. We only do this
-            // when there is whitespace after the colon, so that `(a:b)` keeps
-            // the existing "maybe write a path separator here" (`a::b`)
-            // suggestion, which is the more likely intent when the two are
-            // written next to each other.
-            if p.may_recover()
-                && p.token == token::Colon
-                && let colon = p.token.span
-                && p.look_ahead(1, |next| next.span.lo() > colon.hi())
-            {
-                p.bump(); // eat the `:`
-                tys.push((index, colon, p.parse_ty()?));
-            }
-            index += 1;
-            Ok(pat)
-        })?;
+        let (fields, trailing_comma) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Pat>>(
+            exp!(OpenParen),
+            exp!(CloseParen),
+            |p| {
+                let pat = p.parse_pat_allow_top_guard(
+                    None,
+                    RecoverComma::No,
+                    RecoverColon::No,
+                    CommaRecoveryMode::LikelyTuple,
+                )?;
+                // Recover from an inline `: <ty>` type annotation. We only do this
+                // when there is whitespace after the colon, so that `(a:b)` keeps
+                // the existing "maybe write a path separator here" (`a::b`)
+                // suggestion, which is the more likely intent when the two are
+                // written next to each other.
+                if p.may_recover()
+                    && p.token == token::Colon
+                    && let colon = p.token.span
+                    && p.look_ahead(1, |next| next.span.lo() > colon.hi())
+                {
+                    p.bump(); // eat the `:`
+                    tys.push((index, colon, p.parse_ty()?));
+                }
+                index += 1;
+                Ok(pat)
+            },
+        )?;
 
         // If any element carried an inline type annotation then this is the
         // invalid `(a: bool, b: u8)` form; report it and suggest the correct
@@ -1584,14 +1596,18 @@ impl<'a> Parser<'a> {
         qself: Option<Box<QSelf>>,
         path: Path,
     ) -> PResult<'a, PatKind> {
-        let (fields, _) = self.parse_paren_comma_seq(|p| {
-            p.parse_pat_allow_top_guard(
-                None,
-                RecoverComma::No,
-                RecoverColon::No,
-                CommaRecoveryMode::EitherTupleOrPipe,
-            )
-        })?;
+        let (fields, _) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Pat>>(
+            exp!(OpenParen),
+            exp!(CloseParen),
+            |p| {
+                p.parse_pat_allow_top_guard(
+                    None,
+                    RecoverComma::No,
+                    RecoverColon::No,
+                    CommaRecoveryMode::EitherTupleOrPipe,
+                )
+            },
+        )?;
         if qself.is_some() {
             self.psess.gated_spans.gate(sym::more_qualified_paths, path.span);
         }
@@ -1620,14 +1636,12 @@ impl<'a> Parser<'a> {
         self.parse_builtin(|self_, _lo, ident| {
             Ok(match ident.name {
                 // builtin#deref(PAT)
-                sym::deref => {
-                    Some(ast::PatKind::Deref(P::new(self_.parse_pat_allow_top_guard(
-                        None,
-                        RecoverComma::Yes,
-                        RecoverColon::Yes,
-                        CommaRecoveryMode::LikelyTuple,
-                    )?)))
-                }
+                sym::deref => Some(ast::PatKind::Deref(P::new(self_.parse_pat_allow_top_guard(
+                    None,
+                    RecoverComma::Yes,
+                    RecoverColon::Yes,
+                    CommaRecoveryMode::LikelyTuple,
+                )?))),
                 _ => None,
             })
         })

@@ -423,6 +423,7 @@ macro_rules! common_visitor_and_walkers {
             PathSegments,
             ThinVec<PreciseCapturingArg>,
             ThinVec<Pat>,
+            ArenaVec<Pat>,
             ThinVec<TestBinderConstraint>,
             ThinVec<TestBinderExists>,
             ThinVec<TestBinderForall>,

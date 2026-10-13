@@ -564,7 +564,7 @@ impl<'a> ExtCtxt<'a> {
         path: ast::Path,
         subpats: ThinVec<ast::Pat>,
     ) -> ast::Pat {
-        self.pat(span, PatKind::TupleStruct(None, P::new(path), subpats))
+        self.pat(span, PatKind::TupleStruct(None, P::new(path), subpats.into()))
     }
     pub fn pat_struct(
         &self,
@@ -575,7 +575,7 @@ impl<'a> ExtCtxt<'a> {
         self.pat(span, PatKind::Struct(None, P::new(path), field_pats, ast::PatFieldsRest::None))
     }
     pub fn pat_tuple(&self, span: Span, pats: ThinVec<ast::Pat>) -> ast::Pat {
-        self.pat(span, PatKind::Tuple(pats))
+        self.pat(span, PatKind::Tuple(pats.into()))
     }
 
     pub fn pat_some(&self, span: Span, pat: ast::Pat) -> ast::Pat {

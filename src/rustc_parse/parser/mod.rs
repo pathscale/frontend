@@ -1149,6 +1149,16 @@ impl<'a> Parser<'a> {
         self.parse_unspanned_seq(open, close, SeqSep::trailing_allowed(exp!(Comma)), f)
     }
 
+    fn parse_delim_comma_seq_with<T, L: Default + Extend<T>>(
+        &mut self,
+        open: ExpTokenPair,
+        close: ExpTokenPair,
+        f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
+    ) -> PResult<'a, (L, Trailing)> {
+        self.expect(open)?;
+        self.parse_seq_to_end_with(close, SeqSep::trailing_allowed(exp!(Comma)), f)
+    }
+
     /// Parses a comma-separated sequence delimited by parentheses (e.g. `(x, y)`).
     /// The function `f` must consume tokens until reaching the next separator or
     /// closing bracket.
