@@ -25,6 +25,7 @@ pub mod effects;
 mod emit;
 pub mod facts_api;
 pub mod lang_item_stubs;
+pub mod session;
 pub mod syntax;
 pub use callable_source_attestation::CallableDefinitionSourceAttestation;
 pub use callable_source_attestation::ResolvedCallableSourceContext;
@@ -452,8 +453,7 @@ pub struct Impl {
     /// the associated item mapping resolves directly to an ADT. This does not encode generic
     /// arguments; consumers must retain their complete receiver/type checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_deref_target_nominal_type_source_attestation:
-        Option<DefinitionSourceAttestation>,
+    pub resolved_deref_target_nominal_type_source_attestation: Option<DefinitionSourceAttestation>,
     /// The trait as written, generic arguments included: `SliceIndex<str>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trait_ref: Option<String>,
@@ -639,13 +639,8 @@ fn is_true(value: &bool) -> bool {
 /// Hash source after the normalization used by rustc's `SourceFile`: remove a UTF-8 BOM and
 /// normalize CRLF, then return the same BLAKE3 text format used by source attestations.
 pub fn source_capture_digest(source: &str) -> Option<String> {
-    let normalized = SourceFile::new(
-        FileName::anon_source_code(source),
-        source.to_string(),
-        None,
-        None,
-    )
-    .ok()?;
+    let normalized =
+        SourceFile::new(FileName::anon_source_code(source), source.to_string(), None, None).ok()?;
     let normalized = normalized.src.as_deref()?;
     Some(
         SourceFileHash::new_in_memory(SourceFileHashAlgorithm::Blake3, normalized.as_bytes())
@@ -755,7 +750,10 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool, synthetic_start: Option<usize>) -
     let crate_name = tcx.crate_name(LOCAL_CRATE).to_string();
     let mut facts = CrateFacts {
         crate_name,
-        source_context: Some(callable_source_attestation::source_context(tcx, CRATE_DEF_ID.to_def_id())),
+        source_context: Some(callable_source_attestation::source_context(
+            tcx,
+            CRATE_DEF_ID.to_def_id(),
+        )),
         ..CrateFacts::default()
     };
     facts.enabled_features = tcx
@@ -781,11 +779,8 @@ fn extract_with(tcx: TyCtxt<'_>, bodies: bool, synthetic_start: Option<usize>) -
     // The input file's name, printed once and shared by every span in it.
     let input = input_file(tcx);
     facts.source_content_digest = input.0.src.as_ref().map(|source| {
-        SourceFileHash::new_in_memory(
-            SourceFileHashAlgorithm::Blake3,
-            source.as_bytes(),
-        )
-        .to_string()
+        SourceFileHash::new_in_memory(SourceFileHashAlgorithm::Blake3, source.as_bytes())
+            .to_string()
     });
     facts.source_digest_scheme = facts
         .source_content_digest
@@ -1243,7 +1238,9 @@ fn module_names<'tcx>(
                 target_def_path: names.path(def_id),
                 target_identity_complete: def_path_identity_complete(tcx, names, def_id),
                 target_is_local: Some(def_id.is_local()),
-                target_nominal_type_source_attestation: nominal_type_source_attestation(tcx, names, def_id),
+                target_nominal_type_source_attestation: nominal_type_source_attestation(
+                    tcx, names, def_id,
+                ),
                 public: child.vis.is_public(),
             })
         })
@@ -1397,7 +1394,6 @@ fn def_path_identity_complete(tcx: TyCtxt<'_>, names: &Names<'_, '_>, def_id: De
     true
 }
 
-
 /// Return the existing source attestation only for an untainted nominal definition whose source
 /// rustc can verify. The attestation embeds the StableDefPathIdentity and its source context.
 fn nominal_type_source_attestation(
@@ -1431,8 +1427,8 @@ fn nominal_type_source_attestation_for_ty<'tcx>(
     let ty::TyKind::Adt(definition, _) = *resolved.kind() else {
         return None;
     };
-     nominal_type_source_attestation(tcx, names, definition.did())
- }
+    nominal_type_source_attestation(tcx, names, definition.did())
+}
 /// Whether a body owner is an unresolved trait-impl item or a closure/const nested inside one.
 /// Stop at another item boundary so a nested local item keeps its own type-check context.
 fn body_in_unresolved_trait_impl(tcx: TyCtxt<'_>, owner: LocalDefId) -> bool {
@@ -1923,30 +1919,28 @@ fn impl_fact<'tcx>(tcx: TyCtxt<'tcx>, names: &Names<'_, 'tcx>, local: LocalDefId
     })
     .ok()
     .flatten();
-    let resolved_deref_target_nominal_type_source_attestation =
-        if is_language_deref == Some(true) {
-            catch_fatal_errors(|| {
-                let target_def_id = tcx.lang_items().deref_target()?;
-                let item_def_id =
-                    *tcx.impl_item_implementor_ids(def_id).get(&target_def_id)?;
-                if tcx.def_kind(item_def_id) != DefKind::AssocTy {
-                    return None;
-                }
-                let maps_to_target = tcx.opt_associated_item(item_def_id).is_some_and(|item| {
-                    item.trait_item_def_id() == Some(target_def_id)
-                        && item.impl_container(tcx) == Some(def_id)
-                });
-                if !maps_to_target {
-                    return None;
-                }
-                let resolved = tcx.type_of(item_def_id).instantiate_identity().skip_normalization();
-                nominal_type_source_attestation_for_ty(tcx, names, resolved)
-            })
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
+    let resolved_deref_target_nominal_type_source_attestation = if is_language_deref == Some(true) {
+        catch_fatal_errors(|| {
+            let target_def_id = tcx.lang_items().deref_target()?;
+            let item_def_id = *tcx.impl_item_implementor_ids(def_id).get(&target_def_id)?;
+            if tcx.def_kind(item_def_id) != DefKind::AssocTy {
+                return None;
+            }
+            let maps_to_target = tcx.opt_associated_item(item_def_id).is_some_and(|item| {
+                item.trait_item_def_id() == Some(target_def_id)
+                    && item.impl_container(tcx) == Some(def_id)
+            });
+            if !maps_to_target {
+                return None;
+            }
+            let resolved = tcx.type_of(item_def_id).instantiate_identity().skip_normalization();
+            nominal_type_source_attestation_for_ty(tcx, names, resolved)
+        })
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
     let trait_identity_complete = !synthetic_trait
         && trait_id.is_none_or(|trait_id| def_path_identity_complete(tcx, names, trait_id));
     // A trait from another crate has no fact here to share, so it is printed now.

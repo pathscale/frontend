@@ -187,10 +187,7 @@ pub struct Binding {
 }
 
 /// Add resolved names without replacing a written binding, filling only its missing item facts.
-pub fn extend_scope(
-    scope: &mut Vec<Binding>,
-    supplied: impl IntoIterator<Item = Binding>,
-) {
+pub fn extend_scope(scope: &mut Vec<Binding>, supplied: impl IntoIterator<Item = Binding>) {
     for binding in supplied {
         if let Some(existing) = scope.iter_mut().find(|existing| existing.name == binding.name) {
             if matches!(existing.kind, BindingKind::Import | BindingKind::Item(_)) {
@@ -252,6 +249,30 @@ pub fn site_at(source: &str, offset: u32) -> Result<Site, Vec<String>> {
             Err(errors)
         }
     }
+}
+
+/// [`site_at`] for each `(source, offset)` of `inputs`, in order, with the session setup shared.
+///
+/// One result per input, in input order, each exactly what [`site_at`] returns for that pair on
+/// its own: every offset in a [`Site`] is into that input's own source, because each call still
+/// parses into a source map of its own. The calls run on the caller's thread under one set of
+/// session globals, rebuilt every [`super::session::RECYCLE_EVERY`] calls. Spawns nothing. See
+/// [`super::session`] for why sharing the globals cannot change an answer.
+///
+/// Many offsets into one source are many parses of it; this shares the setup, not the parse.
+///
+/// Needs the same catcher as [`site_at`], asserted up front.
+pub fn site_at_many<'a, I>(inputs: I) -> Vec<Result<Site, Vec<String>>>
+where
+    I: IntoIterator<Item = (&'a str, u32)>,
+{
+    assert!(
+        crate::unwind_janky::unwinding_is_enabled(),
+        "site_at_many needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
+    );
+    super::session::run_batch(inputs, super::session::RECYCLE_EVERY, |(source, offset)| {
+        site_at(source, offset)
+    })
 }
 
 /// [`site_at`] without the fatal-error catch. Diagnostics go into `captured`, so that a caller
@@ -473,7 +494,10 @@ impl<'s> Finder<'s> {
         if self.frames.is_empty() {
             self.push_frame();
         }
-        self.frames.last_mut().expect("a frame was just pushed").insert(binding.name.clone(), binding);
+        self.frames
+            .last_mut()
+            .expect("a frame was just pushed")
+            .insert(binding.name.clone(), binding);
     }
 
     /// Crossing into a module: nothing outside it is visible by bare name, except
@@ -643,7 +667,8 @@ impl<'s> Finder<'s> {
 
     fn set_enclosing(&mut self, name: String, span: Span) {
         self.path.push(name);
-        self.enclosing_item = Some(EnclosingItem { path: self.path.join("::"), span: self.range(span) });
+        self.enclosing_item =
+            Some(EnclosingItem { path: self.path.join("::"), span: self.range(span) });
     }
 
     fn crate_root(&mut self, krate: &Crate) {
@@ -680,9 +705,11 @@ impl<'s> Finder<'s> {
                 self.push_frame();
                 self.bind_generics(&imp.generics);
                 if self.in_body_after(imp.self_ty.span, item.span) {
-                    self.assoc_body(&imp.items, Position::ImplItem, AssocCtxt::Impl {
-                        of_trait: imp.of_trait.is_some(),
-                    });
+                    self.assoc_body(
+                        &imp.items,
+                        Position::ImplItem,
+                        AssocCtxt::Impl { of_trait: imp.of_trait.is_some() },
+                    );
                 }
             }
             ItemKind::Trait(t) => {
@@ -769,7 +796,8 @@ impl<'s> Finder<'s> {
                 });
                 continue;
             }
-            params.push(FnParam { pattern: self.text(param.pat.span), ty: self.text(param.ty.span) });
+            params
+                .push(FnParam { pattern: self.text(param.pat.span), ty: self.text(param.ty.span) });
         }
         let generics = &f.generics;
         FnSignature {
@@ -1103,7 +1131,10 @@ mod tests {
         assert_eq!(s.kind, BindingKind::Param);
         assert_eq!(s.ty.as_deref(), Some("&str"));
         assert_eq!(find(&site, "n").map(|b| b.kind), Some(BindingKind::Local));
-        assert_eq!(find(&site, "is_vowel").map(|b| b.kind), Some(BindingKind::Item(ItemCategory::Fn)));
+        assert_eq!(
+            find(&site, "is_vowel").map(|b| b.kind),
+            Some(BindingKind::Item(ItemCategory::Fn))
+        );
         assert_eq!(find(&site, "count").map(|b| b.kind), Some(BindingKind::Item(ItemCategory::Fn)));
         assert!(find(&site, "c").is_none(), "another fn's param is not in scope");
 
@@ -1118,7 +1149,8 @@ mod tests {
 
     #[test]
     fn a_let_in_a_closed_block_is_gone_and_a_later_let_is_not_yet_here() {
-        let site = at_marker("fn f() { { let hidden = 1; } let seen = 2; /*HERE*/ let later = 3; }");
+        let site =
+            at_marker("fn f() { { let hidden = 1; } let seen = 2; /*HERE*/ let later = 3; }");
         assert!(find(&site, "hidden").is_none());
         assert!(find(&site, "seen").is_some());
         assert!(find(&site, "later").is_none());
@@ -1144,7 +1176,10 @@ mod tests {
         let site = at_marker(
             "mod outer { struct Thing; impl<T> Thing { fn method(&self, x: u8) -> Self { /*HERE*/ loop {} } } }",
         );
-        assert_eq!(site.enclosing_item.as_ref().map(|i| i.path.as_str()), Some("outer::Thing::method"));
+        assert_eq!(
+            site.enclosing_item.as_ref().map(|i| i.path.as_str()),
+            Some("outer::Thing::method")
+        );
         let sig = site.enclosing_fn.as_ref().expect("inside a method");
         assert_eq!(sig.receiver, Some(Receiver::Ref));
         assert_eq!(sig.params, alloc::vec![FnParam { pattern: "x".into(), ty: "u8".into() }]);
@@ -1152,7 +1187,10 @@ mod tests {
         assert_eq!(find(&site, "T").map(|b| b.kind), Some(BindingKind::GenericParam));
         assert_eq!(find(&site, "x").and_then(|b| b.ty.as_deref()), Some("u8"));
         assert_eq!(find(&site, "self").map(|b| b.kind), Some(BindingKind::Param));
-        assert_eq!(find(&site, "Thing").map(|b| b.kind), Some(BindingKind::Item(ItemCategory::Struct)));
+        assert_eq!(
+            find(&site, "Thing").map(|b| b.kind),
+            Some(BindingKind::Item(ItemCategory::Struct))
+        );
     }
 
     #[test]
@@ -1166,7 +1204,10 @@ mod tests {
     fn positions() {
         assert_eq!(at_marker("fn a() {}\n/*HERE*/\nfn b() {}").position, Position::Item);
         assert_eq!(at_marker("fn f() { let x = /*HERE*/1; }").position, Position::LetInit);
-        assert_eq!(at_marker("fn g(a: u8) {}\nfn f() { let x = g(/*HERE*/); }").position, Position::CallArg);
+        assert_eq!(
+            at_marker("fn g(a: u8) {}\nfn f() { let x = g(/*HERE*/); }").position,
+            Position::CallArg
+        );
         assert_eq!(at_marker("fn f(v: u8) { v.max(/*HERE*/); }").position, Position::CallArg);
         assert_eq!(at_marker("struct S; impl S { /*HERE*/ }").position, Position::ImplItem);
         assert_eq!(at_marker("trait T { /*HERE*/ }").position, Position::TraitItem);
@@ -1182,7 +1223,8 @@ mod tests {
         assert_eq!(k.ty.as_deref(), Some("u8"));
         assert!(find(&site, "add").is_none(), "a let is not in scope in its own initializer");
 
-        let site = at_marker("fn f(o: Option<u8>) { match o { Some(v) => { /*HERE*/ } None => {} } }");
+        let site =
+            at_marker("fn f(o: Option<u8>) { match o { Some(v) => { /*HERE*/ } None => {} } }");
         assert_eq!(find(&site, "v").map(|b| b.kind), Some(BindingKind::Local));
     }
 
