@@ -171,8 +171,20 @@ impl SessionGlobals {
         extra_symbols: &[&'static str],
         sm_inputs: Option<SourceMapInputs>,
     ) -> SessionGlobals {
+        Self::new_with_symbol_source_len(edition, extra_symbols, sm_inputs, 0)
+    }
+
+    pub(crate) fn new_with_symbol_source_len(
+        edition: Edition,
+        extra_symbols: &[&'static str],
+        sm_inputs: Option<SourceMapInputs>,
+        source_len: usize,
+    ) -> SessionGlobals {
         SessionGlobals {
-            symbol_interner: shared_global(symbol::Interner::with_extra_symbols(extra_symbols)),
+            symbol_interner: shared_global(symbol::Interner::with_extra_symbols_and_source_len(
+                extra_symbols,
+                source_len,
+            )),
             span_interner: shared_global(Lock::new(span_encoding::SpanInterner::default())),
             metavar_spans: shared_global(MetavarSpansMap::default()),
             hygiene_data: shared_global(Lock::new(hygiene::HygieneData::new(edition))),
@@ -251,8 +263,20 @@ pub fn create_session_if_not_set_then<R, F>(edition: Edition, f: F) -> R
 where
     F: FnOnce(&SessionGlobals) -> R,
 {
+    create_session_if_not_set_then_with_source_len(edition, 0, f)
+}
+
+pub(crate) fn create_session_if_not_set_then_with_source_len<R, F>(
+    edition: Edition,
+    source_len: usize,
+    f: F,
+) -> R
+where
+    F: FnOnce(&SessionGlobals) -> R,
+{
     if !SESSION_GLOBALS.is_set() {
-        let session_globals = SessionGlobals::new(edition, &[], None);
+        let session_globals =
+            SessionGlobals::new_with_symbol_source_len(edition, &[], None, source_len);
         SESSION_GLOBALS.set(&session_globals, || SESSION_GLOBALS.with(f))
     } else {
         SESSION_GLOBALS.with(f)
