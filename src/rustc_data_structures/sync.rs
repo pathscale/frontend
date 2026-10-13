@@ -57,7 +57,8 @@ pub(crate) use self::pool::{parse_pool_width, retry_parse_serial, speculate_pars
 pub use self::stage::{
     Chain, ReadySlot, Slots, StageScope, cost, run_stage, run_stage_weighted, stages,
 };
-/// A stage over owned input only. Neither its function nor its output may borrow a caller.
+/// Execute owned parse jobs on the caller, returning results in input order.
+/// The general stage executor captures borrowed compiler context even for static input.
 #[cfg(feature = "parallel")]
 pub(crate) fn run_owned_stage<In, O>(
     input: alloc::sync::Arc<In>,
@@ -73,7 +74,8 @@ where
         + crate::rustc_data_structures::marker::DynSync
         + 'static,
 {
-    run_stage_weighted(input, len, move |input, i| weight(input, i), move |input, i| run(input, i))
+    let _ = weight;
+    (0..len).map(|index| run(&input, index)).collect()
 }
 
 pub use self::vec::{AppendOnlyIndexVec, AppendOnlyVec, LockFreeAppendOnlyVec};
