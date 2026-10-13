@@ -469,6 +469,13 @@ impl<'a> Parser<'a> {
         self
     }
 
+    /// Defers expected-token recording for an optimistic syntax check.
+    /// The caller must repeat every failed check with a fresh normal parser.
+    pub(crate) fn with_deferred_diagnostics(mut self) -> Self {
+        self.expected_token_types = TokenTypeSet::deferred();
+        self
+    }
+
     #[inline]
     pub fn recovery(mut self, recovery: Recovery) -> Self {
         self.recovery = recovery;
@@ -512,13 +519,11 @@ impl<'a> Parser<'a> {
 
     /// Expects and consumes the token `t`. Signals an error if the next token is not `t`.
     pub fn expect(&mut self, exp: ExpTokenPair) -> PResult<'a, Recovered> {
-        if self.expected_token_types.is_empty() {
-            if self.token == exp.tok {
-                self.bump();
-                Ok(Recovered::No)
-            } else {
-                Err(self.unexpected_err(&exp.tok))
-            }
+        if self.token == exp.tok {
+            self.bump();
+            Ok(Recovered::No)
+        } else if self.expected_token_types.is_empty() {
+            Err(self.unexpected_err(&exp.tok))
         } else {
             self.expect_one_of(slice::from_ref(&exp), &[])
         }
@@ -527,6 +532,7 @@ impl<'a> Parser<'a> {
     /// Expect next token to be edible or inedible token. If edible,
     /// then consume it; if inedible, then return without consuming
     /// anything. Signal a fatal error if next token is unexpected.
+    #[inline(always)]
     fn expect_one_of(
         &mut self,
         edible: &[ExpTokenPair],
@@ -538,7 +544,19 @@ impl<'a> Parser<'a> {
         } else if inedible.iter().any(|exp| exp.tok == self.token.kind) {
             // leave it in the input
             Ok(Recovered::No)
-        } else if self.token != token::Eof
+        } else {
+            self.expect_one_of_failed(edible, inedible)
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn expect_one_of_failed(
+        &mut self,
+        edible: &[ExpTokenPair],
+        inedible: &[ExpTokenPair],
+    ) -> PResult<'a, Recovered> {
+        if self.token != token::Eof
             && self.last_unexpected_token_span == Some(self.token.span)
         {
             FatalError.raise();
@@ -579,7 +597,7 @@ impl<'a> Parser<'a> {
     ///
     /// This method will automatically add `tok` to `expected_token_types` if `tok` is not
     /// encountered.
-    #[inline]
+    #[inline(always)]
     pub fn check(&mut self, exp: ExpTokenPair) -> bool {
         let is_present = self.token == exp.tok;
         self.expected_token_types.insert_unless(is_present, exp.token_type);
@@ -620,7 +638,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes a token 'tok' if it exists. Returns whether the given token was present.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub fn eat(&mut self, exp: ExpTokenPair) -> bool {
         let is_present = self.check(exp);
@@ -632,7 +650,7 @@ impl<'a> Parser<'a> {
 
     /// If the next token is the given keyword, returns `true` without eating it.
     /// An expectation is also added for diagnostics purposes.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     fn check_keyword(&mut self, exp: ExpKeywordPair) -> bool {
         let is_keyword = self.token.is_keyword(exp.kw);
@@ -659,7 +677,7 @@ impl<'a> Parser<'a> {
     /// If the next token is the given keyword, eats it and returns `true`.
     /// Otherwise, returns `false`. An expectation is also added for diagnostics purposes.
     // Public for rustc_builtin_macros and rustfmt usage.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub fn eat_keyword(&mut self, exp: ExpKeywordPair) -> bool {
         let is_keyword = self.check_keyword(exp);
@@ -672,13 +690,22 @@ impl<'a> Parser<'a> {
     /// Eats a keyword, optionally ignoring the case.
     /// If the case differs (and is ignored) an error is issued.
     /// This is useful for recovery.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     fn eat_keyword_case(&mut self, exp: ExpKeywordPair, case: Case) -> bool {
         if self.eat_keyword(exp) {
             true
-        } else if case == Case::Insensitive
-            && let Some((ident, IdentIsRaw::No)) = self.token.ident()
+        } else if case == Case::Insensitive {
+            self.eat_keyword_wrong_case(exp)
+        } else {
+            false
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn eat_keyword_wrong_case(&mut self, exp: ExpKeywordPair) -> bool {
+        if let Some((ident, IdentIsRaw::No)) = self.token.ident()
             // Do an ASCII case-insensitive match, because all keywords are ASCII.
             && ident.as_str().eq_ignore_ascii_case(exp.kw.as_str())
         {
@@ -922,6 +949,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Checks if the next token is contained within `closes`, and returns `true` if so.
+    #[inline(always)]
     fn expect_any_with_type(
         &mut self,
         closes_expected: &[ExpTokenPair],
@@ -1254,7 +1282,7 @@ impl<'a> Parser<'a> {
     /// Inlined: the common step is a plain token in the current stream (see
     /// `TokenCursor::inlined_next_and_bump`), and the rare work (delimiters,
     /// dummy spans) is out of line.
-    #[inline]
+    #[inline(always)]
     pub fn bump(&mut self) {
         // Note: destructuring here would give nicer code, but it was found in #96210 to be slower
         // than `.0`/`.1` access.

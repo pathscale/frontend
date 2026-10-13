@@ -102,6 +102,21 @@ pub fn parses(source: &str) -> Result<(), Vec<String>> {
 }
 
 fn parse_in_session(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
+    // Accepted syntax never reads its expected-token history. Build that history
+    // only when a failed attempt makes diagnostics part of the answer. Each
+    // attempt owns a fresh session, so recovery and stashed errors cannot leak
+    // from the optimistic attempt into the reported diagnostics.
+    match parse_in_session_with_diagnostics(source, kind, true) {
+        Ok(()) => Ok(()),
+        Err(_) => parse_in_session_with_diagnostics(source, kind, false),
+    }
+}
+
+fn parse_in_session_with_diagnostics(
+    source: &str,
+    kind: Fragment,
+    defer_diagnostics: bool,
+) -> Result<(), Vec<String>> {
     // The diagnostics are the answer, so they go to a buffer rather than stderr. Same sink and
     // same emitter settings as `check_source`, so one line format serves both.
     let text = Arc::new(eko::thread::Mutex::new(String::new()));
@@ -112,7 +127,7 @@ fn parse_in_session(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
         .dst(Box::new(super::Sink(Arc::clone(&text))));
     let psess = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), sm);
 
-    let finished = catch_fatal_errors(|| parse_all(&psess, source, kind));
+    let finished = catch_fatal_errors(|| parse_all(&psess, source, kind, defer_diagnostics));
     // A stashed diagnostic is otherwise emitted when the session drops, after the buffer has
     // been read, and would be lost from the answer.
     let _ = psess.dcx().emit_stashed_diagnostics();
@@ -135,7 +150,7 @@ fn parse_in_session(source: &str, kind: Fragment) -> Result<(), Vec<String>> {
 
 /// Lex `source`, run the entry point for `kind`, and insist on end of input. Every error ends
 /// up emitted into the session: a `Diag` dropped unemitted is a panic, not a silent loss.
-fn parse_all(psess: &ParseSess, source: &str, kind: Fragment) {
+fn parse_all(psess: &ParseSess, source: &str, kind: Fragment, defer_diagnostics: bool) {
     // Only a file can start with a shebang. In a fragment `#!` is the start of an inner
     // attribute, and stripping it would hide exactly the text being asked about.
     let strip = if kind == Fragment::Items { StripTokens::Shebang } else { StripTokens::Nothing };
@@ -150,6 +165,9 @@ fn parse_all(psess: &ParseSess, source: &str, kind: Fragment) {
             return;
         }
     };
+    if defer_diagnostics {
+        parser = parser.with_deferred_diagnostics();
+    }
     let result = match parse_fragment(&mut parser, kind) {
         Ok(()) if parser.token == token::Eof => Ok(()),
         // The fragment ended early. `unexpected` names the token it stopped at, which is the

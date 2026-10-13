@@ -682,15 +682,20 @@ impl<'a> Parser<'a> {
             this.mk_expr(this.mk_expr_sp(&lhs, lhs_span, op_span, rhs.span), expr_kind(lhs, rhs))
         };
 
-        // Save the state of the parser before parsing type normally, in case there is a
-        // LessThan comparison after this cast.
-        let parser_snapshot_before_type = self.clone();
+        // Save recovery state only when this attempt will report diagnostics.
+        // A failed optimistic syntax attempt is parsed again by its caller.
+        let parser_snapshot_before_type =
+            (self.may_recover() && !self.expected_token_types.is_deferred())
+                .then(|| self.clone());
         let cast_expr = match self.parse_as_cast_ty() {
             Ok(rhs) => mk_expr(self, lhs, rhs),
             Err(type_err) => {
                 if !self.may_recover() {
                     return Err(type_err);
                 }
+                let Some(parser_snapshot_before_type) = parser_snapshot_before_type else {
+                    return Err(type_err);
+                };
 
                 // Rewind to before attempting to parse the type with generics, to recover
                 // from situations like `x as usize < y` in which we first tried to parse
@@ -1283,7 +1288,10 @@ impl<'a> Parser<'a> {
     /// instead of being cloned up front for every call.
     fn parse_expr_fn_call(&mut self, lo: Span, fun: P<Expr>) -> P<Expr> {
         let snapshot =
-            if self.token == token::OpenParen && matches!(fun.kind, ExprKind::Path(None, _)) {
+            if !self.expected_token_types.is_deferred()
+                && self.token == token::OpenParen
+                && matches!(fun.kind, ExprKind::Path(None, _))
+            {
                 Some(self.create_snapshot_for_diagnostic())
             } else {
                 None
@@ -4306,24 +4314,7 @@ impl<'a> Parser<'a> {
             .to(rhs_span)
     }
 
-    fn collect_tokens_for_expr(
-        &mut self,
-        attrs: AttrWrapper,
-        f: impl FnOnce(&mut Self, ast::AttrVec) -> PResult<'a, P<Expr>>,
-    ) -> PResult<'a, P<Expr>> {
-        self.collect_tokens(None, attrs, ForceCollect::No, |this, attrs| {
-            let res = f(this, attrs)?;
-            let trailing = Trailing::from(
-                this.restrictions.contains(Restrictions::STMT_EXPR)
-                     && this.token == token::Semi
-                // FIXME: pass an additional condition through from the place
-                // where we know we need a comma, rather than assuming that
-                // `#[attr] expr,` always captures a trailing comma.
-                || this.token == token::Comma,
-            );
-            Ok((res, trailing, UsePreAttrPos::No))
-        })
-    }
+
 }
 
 /// Could this lifetime/label be an unclosed char literal? For example, `'a`

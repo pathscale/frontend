@@ -319,6 +319,14 @@ impl<'a> Parser<'a> {
             exp!(Safe),
             exp!(Extern),
         ];
+        const EXPECTED_QUALS: u128 = (1u128 << exp!(Fn).token_type as u32)
+            | (1u128 << exp!(Pub).token_type as u32)
+            | (1u128 << exp!(Gen).token_type as u32)
+            | (1u128 << exp!(Const).token_type as u32)
+            | (1u128 << exp!(Async).token_type as u32)
+            | (1u128 << exp!(Unsafe).token_type as u32)
+            | (1u128 << exp!(Safe).token_type as u32)
+            | (1u128 << exp!(Extern).token_type as u32);
 
         // We use an over-approximation here.
         // `const const`, `fn const` won't parse, but we're not stepping over other syntax either.
@@ -339,17 +347,21 @@ impl<'a> Parser<'a> {
         let may_match = match self.token.ident() {
             Some((ident, IdentIsRaw::No)) => {
                 case == Case::Insensitive
-                    || ident.name == kw::Fn
-                    || quals.iter().any(|exp| exp.kw == ident.name)
+                    || matches!(
+                        ident.name,
+                        kw::Fn | kw::Gen | kw::Const | kw::Async | kw::Unsafe | kw::Safe | kw::Extern
+                    )
+                    || check_pub && ident.name == kw::Pub
             }
             _ => false,
         };
         if !may_match {
-            self.expected_token_types.insert(exp!(Fn).token_type);
-            for exp in quals {
-                self.expected_token_types.insert(exp.token_type);
-            }
-            self.expected_token_types.insert(exp!(Extern).token_type);
+            let mask = if check_pub {
+                EXPECTED_QUALS
+            } else {
+                EXPECTED_QUALS & !(1u128 << exp!(Pub).token_type as u32)
+            };
+            self.expected_token_types.insert_mask(mask);
             return false;
         }
 

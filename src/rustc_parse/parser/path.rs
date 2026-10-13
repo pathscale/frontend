@@ -252,7 +252,7 @@ impl<'a> Parser<'a> {
             }
             segments.push(segment);
 
-            if self.is_import_coupler() || !self.eat_path_sep() {
+            if !self.check(exp!(PathSep)) || self.is_import_coupler() {
                 // IMPORTANT: We can *only ever* treat single colons as typo'ed double colons in
                 // expression contexts (!) since only there paths cannot possibly be followed by
                 // a colon and still form a syntactically valid construct. In pattern contexts,
@@ -279,6 +279,7 @@ impl<'a> Parser<'a> {
 
                 return Ok(());
             }
+            let _ = self.eat_path_sep();
         }
     }
 
@@ -304,8 +305,9 @@ impl<'a> Parser<'a> {
             matches!(token.kind, token::Lt | token::Shl | token::OpenParen | token::LArrow)
         };
         let check_args_start = |this: &mut Self| {
-            this.expected_token_types.insert(TokenType::Lt);
-            this.expected_token_types.insert(TokenType::OpenParen);
+            const EXPECTED_ARGS: u128 =
+                (1u128 << TokenType::Lt as u32) | (1u128 << TokenType::OpenParen as u32);
+            this.expected_token_types.insert_mask(EXPECTED_ARGS);
             is_args_start(&this.token)
         };
 
@@ -391,6 +393,7 @@ impl<'a> Parser<'a> {
                     let token_before_parsing = self.token;
                     let mut snapshot = None;
                     if self.may_recover()
+                        && !self.expected_token_types.is_deferred()
                         && prev_token_before_parsing == token::PathSep
                         && (style == PathStyle::Expr && self.token.can_begin_expr()
                             || style == PathStyle::Pat
@@ -617,8 +620,9 @@ impl<'a> Parser<'a> {
         // this happens, it isn't an issue.
 
         let is_first_invocation = style == PathStyle::Expr;
-        // Take a snapshot before attempting to parse - we can restore this later.
-        let snapshot = is_first_invocation.then(|| self.clone());
+        // Recovery state is only observed by a failed diagnostic attempt.
+        let snapshot = (is_first_invocation && !self.expected_token_types.is_deferred())
+            .then(|| self.clone());
 
         self.angle_bracket_nesting += 1;
         debug!("parse_generic_args_with_leading_angle_bracket_recovery: (snapshotting)");
@@ -634,7 +638,11 @@ impl<'a> Parser<'a> {
                 // behavior by bailing out earlier (#117080).
                 e.emit().raise_fatal();
             }
-            Err(e) if is_first_invocation && self.unmatched_angle_bracket_count > 0 => {
+            Err(e)
+                if is_first_invocation
+                    && snapshot.is_some()
+                    && self.unmatched_angle_bracket_count > 0 =>
+            {
                 self.angle_bracket_nesting -= 1;
 
                 // Swap `self` with our backup of the parser state before attempting to parse
@@ -939,7 +947,10 @@ impl<'a> Parser<'a> {
             // input as a const expression in case we fail to parse a type. If we successfully
             // do so, we will report an error that it needs to be wrapped in braces.
             let mut snapshot = None;
-            if self.may_recover() && self.token.can_begin_expr() {
+            if self.may_recover()
+                && !self.expected_token_types.is_deferred()
+                && self.token.can_begin_expr()
+            {
                 snapshot = Some(self.create_snapshot_for_diagnostic());
             }
 
@@ -985,6 +996,11 @@ impl<'a> Parser<'a> {
         } else if let Some(attr_span) = attr_span {
             let diag = self.dcx().create_err(AttributeOnEmptyType { span: attr_span });
             return Err(diag);
+        } else if self.expected_token_types.is_deferred() && !self.token.can_begin_expr() {
+            // Empty argument lists and trailing commas commonly reach a closing
+            // angle here. A token that cannot start an expression needs no
+            // speculative expression parse or cursor snapshot on this attempt.
+            return Ok(None);
         } else {
             // Fall back by trying to parse a const-expr expression. If we successfully do so,
             // then we should report an error that it needs to be wrapped in braces.

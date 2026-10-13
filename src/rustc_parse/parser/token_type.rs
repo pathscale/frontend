@@ -595,9 +595,24 @@ macro_rules! exp {
 #[derive(Clone, Copy)]
 pub(super) struct TokenTypeSet(u128);
 
+// Keep the deferred mode in the existing word so parser snapshots do not grow.
+// A deferred set never records token bits. Its caller must repeat failed parses
+// with a normal set before exposing diagnostics.
+const DEFERRED_EXPECTATIONS: u128 = 1u128 << 127;
+const _: () = assert!((TokenType::SymSym as u32) < 127);
+
 impl TokenTypeSet {
     pub(super) const fn new() -> TokenTypeSet {
         TokenTypeSet(0)
+    }
+
+    pub(super) const fn deferred() -> TokenTypeSet {
+        TokenTypeSet(DEFERRED_EXPECTATIONS)
+    }
+
+    #[inline(always)]
+    pub(super) fn is_deferred(&self) -> bool {
+        self.0 & DEFERRED_EXPECTATIONS != 0
     }
 
     #[inline]
@@ -605,21 +620,35 @@ impl TokenTypeSet {
         self.0 == 0
     }
 
-    #[inline]
+    #[inline(always)]
     pub(super) fn insert(&mut self, token_type: TokenType) {
-        self.0 = self.0 | (1u128 << token_type as u32)
+        if !self.is_deferred() {
+            self.0 |= 1u128 << token_type as u32;
+        }
     }
 
-    /// `if !present { self.insert(token_type) }`, without a branch: every failed
-    /// `check`/`eat` on the parser's hot path records one bit.
+    /// Successful checks leave the diagnostic set untouched. Deferred checks
+    /// also avoid the runtime shift and store on a failed alternative.
     #[inline(always)]
     pub(super) fn insert_unless(&mut self, present: bool, token_type: TokenType) {
-        self.0 |= ((!present) as u128) << token_type as u32
+        if !present {
+            self.insert(token_type);
+        }
     }
 
-    #[inline]
+    #[inline(always)]
     pub(super) fn clear(&mut self) {
-        self.0 = 0
+        if !self.is_deferred() {
+            self.0 = 0;
+        }
+    }
+
+    /// Record a set known at the call site with a single union.
+    #[inline(always)]
+    pub(super) fn insert_mask(&mut self, mask: u128) {
+        if !self.is_deferred() {
+            self.0 |= mask;
+        }
     }
 
     #[inline]
@@ -628,7 +657,7 @@ impl TokenTypeSet {
     }
 
     pub(super) fn iter(&self) -> TokenTypeSetIter {
-        TokenTypeSetIter(*self)
+        TokenTypeSetIter(TokenTypeSet(self.0 & !DEFERRED_EXPECTATIONS))
     }
 }
 
