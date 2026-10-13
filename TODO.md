@@ -3,7 +3,7 @@
 Read `AGENTS.md` first. Rule zero: this is a parser and a plain library. It needs no
 sysroot, `std` is parsed like any other code, and nothing depends on nightly.
 
-## 1. Build on stable 1.97.1 with no unstable features: done (`feat/stable-toolchain`)
+## 1. Build on stable 1.97.1 with no unstable features: done
 
 Owner ruling, 2026-09-23: nothing may depend on nightly. `RUSTC_BOOTSTRAP`, every
 `#![feature]` and the nightly pin are gone, and `rust-toolchain.toml` is 1.97.1.
@@ -17,7 +17,7 @@ to make an error go away: port the code.
   `alloc::panicking`), and stable gives a `no_std` binary no way to unwind. A binary on stable
   links `std`, which brings unwinding and `catch_unwind`, or sets `panic = "abort"` and supplies
   a `#[panic_handler]`, as `link-probe/` does. The published 0.1.0 stays on crates.io for
-  EKOPathRS, which is still on a nightly toolchain.
+  consumers that still use a nightly toolchain.
 - About 3,700 warnings remain, nearly all unused imports. The one real defect they
   pointed at, `Allocation::as_mut_ptr` recursing, is fixed. Treat
   `unconditional_recursion` and `unreachable` warnings as bugs.

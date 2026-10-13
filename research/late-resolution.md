@@ -6,9 +6,9 @@ to 5 of "Turning the loop into a stage" below are all in the tree. When external
 reachable or doc links are on, the same units run through the same function in a serial loop
 instead (see "When it stays serial").
 
-Nothing here has been built or measured by the agent that wrote it (building is the main
-session's job, and this pass was source only). "Unsure it compiles" lists every place worth a
-first look when the build fails; "Checking it" says what to run.
+This source review does not establish that the changes build or improve performance.
+"Unsure it compiles" lists every place worth a first look when the build fails;
+"Checking it" says what to run.
 
 ## Why
 

@@ -1,7 +1,7 @@
 # What a stage costs per item and per stage, and what was cut
 
-Status: source changed, not built or measured by the agent that wrote this (building is the main
-session's job). "Checking it" at the end says what to run. Line numbers under "Before" are the
+Status: source changed; this source review does not establish a successful build or new
+measurements. "Checking it" at the end says what to run. Line numbers under "Before" are the
 tree at `727e510`; under "After" they are the working tree this note was written with.
 
 ## The measurements this starts from
