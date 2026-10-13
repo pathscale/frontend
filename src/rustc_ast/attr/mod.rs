@@ -746,7 +746,7 @@ pub fn mk_attr_from_item(
     span: Span,
 ) -> Attribute {
     Attribute {
-        kind: AttrKind::Normal(Box::new(NormalAttr { item, tokens })),
+        kind: AttrKind::Normal(P::new(NormalAttr { item, tokens })),
         id: g.mk_attr_id(),
         style,
         span,

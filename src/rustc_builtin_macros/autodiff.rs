@@ -42,7 +42,7 @@ mod llvm_enzyme {
     use crate::rustc_builtin_macros::diagnostics;
 
     pub(crate) fn outer_normal_attr(
-        kind: &Box<crate::rustc_ast::NormalAttr>,
+        kind: &P<crate::rustc_ast::NormalAttr>,
         id: crate::rustc_ast::AttrId,
         span: Span,
     ) -> crate::rustc_ast::Attribute {
@@ -344,7 +344,7 @@ mod llvm_enzyme {
             eii_impl: None,
         });
         let mut rustc_ad_attr =
-            Box::new(ast::NormalAttr::from_ident(Ident::with_dummy_span(sym::rustc_autodiff)));
+            P::new(ast::NormalAttr::from_ident(Ident::with_dummy_span(sym::rustc_autodiff)));
 
         let ts2: Vec<TokenTree> = vec![TokenTree::Token(
             Token::new(TokenKind::Ident(sym::never, false.into()), span),
@@ -361,7 +361,7 @@ mod llvm_enzyme {
             args: ast::AttrArgs::Delimited(never_arg),
             span: DUMMY_SP,
         };
-        let inline_never_attr = Box::new(ast::NormalAttr { item: inline_item, tokens: None });
+        let inline_never_attr = P::new(ast::NormalAttr { item: inline_item, tokens: None });
         let new_id = ecx.sess.psess.attr_id_generator.mk_attr_id();
         let attr = outer_normal_attr(&rustc_ad_attr, new_id, span);
         let new_id = ecx.sess.psess.attr_id_generator.mk_attr_id();
