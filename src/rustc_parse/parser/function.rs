@@ -1,8 +1,6 @@
-use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use ast::token::IdentIsRaw;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::ast::*;
+use crate::rustc_ast::ptr::P;
 use crate::rustc_ast::token::{self, InvisibleOrigin, MetaVarKind, TokenKind};
 use crate::rustc_ast::tokenstream::TokenTree;
 use crate::rustc_ast::util::case::Case;
@@ -11,6 +9,8 @@ use crate::rustc_errors::{Applicability, PResult};
 use crate::rustc_lint_defs::builtin::VARARGS_WITHOUT_PATTERN;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, kw, respan, sym};
+use alloc::boxed::Box;
+use ast::token::IdentIsRaw;
 use thin_vec::ThinVec;
 use tracing::debug;
 
@@ -19,8 +19,8 @@ use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{
     ExpKeywordPair, FollowedByType, ForceCollect, Parser, Recovered, Trailing, UsePreAttrPos,
 };
-use crate::rustc_parse::diagnostics::{self, FnPointerCannotBeAsync, FnPointerCannotBeConst};
 use crate::exp;
+use crate::rustc_parse::diagnostics::{self, FnPointerCannotBeAsync, FnPointerCannotBeConst};
 
 /// The parsing configuration used to parse a parameter list (see `parse_fn_params`).
 ///
@@ -261,6 +261,11 @@ impl<'a> Parser<'a> {
             *sig_hi = self.prev_token.span;
             (AttrVec::new(), None)
         } else if self.check(exp!(OpenBrace)) || self.token.is_metavar_block() {
+            #[cfg(feature = "parallel")]
+            if let Some(inner_attrs) = self.defer_function_body(*ident)? {
+                attrs.extend(inner_attrs);
+                return Ok(None);
+            }
             let prev_in_fn_body = self.in_fn_body;
             self.in_fn_body = true;
             let res = self.parse_block_common(self.token.span, BlockCheckMode::Default, None).map(

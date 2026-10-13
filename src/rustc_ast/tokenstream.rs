@@ -1036,6 +1036,12 @@ impl TokenCursor {
         TokenCursor { curr: TokenTreeCursor::new(stream), stack: None }
     }
 
+    /// Read the complete source stream before an owned parse transaction starts.
+    #[cfg(feature = "parallel")]
+    pub(crate) fn source_stream(&self) -> Option<&TokenStream> {
+        self.stack.is_none().then_some(&self.curr.stream)
+    }
+
     /// The cursor of the innermost enclosing token stream, if any.
     #[inline]
     fn parent(&self) -> Option<&TokenTreeCursor> {

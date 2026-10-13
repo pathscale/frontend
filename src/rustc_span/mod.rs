@@ -43,8 +43,8 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -53,13 +53,13 @@ use alloc::vec::Vec;
 
 extern crate self as rustc_span;
 
-use derive_where::derive_where;
 use crate::rustc_data_structures::stable_hash::StableHashCtxt;
 use crate::rustc_data_structures::{AtomicRef, outline};
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_serialize::opaque::mem_encoder::MemEncoder;
 use crate::rustc_serialize::opaque::{FileEncoder, MemDecoder};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use derive_where::derive_where;
+use rustc_macros::{Decodable, Encodable, StableHash};
 use tracing::debug;
 pub use unicode_width::UNICODE_VERSION;
 
@@ -80,7 +80,23 @@ pub use hygiene::{
 pub mod def_id;
 use def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE, LocalDefId, StableCrateId};
 pub mod edit_distance;
+#[cfg(feature = "parallel")]
+pub(crate) mod parse_transaction;
 mod span_encoding;
+
+#[cfg(feature = "parallel")]
+type SharedGlobal<T> = Arc<T>;
+#[cfg(not(feature = "parallel"))]
+type SharedGlobal<T> = T;
+
+#[cfg(feature = "parallel")]
+fn shared_global<T>(value: T) -> SharedGlobal<T> {
+    Arc::new(value)
+}
+#[cfg(not(feature = "parallel"))]
+fn shared_global<T>(value: T) -> SharedGlobal<T> {
+    value
+}
 pub use span_encoding::{DUMMY_SP, Span};
 
 pub mod symbol;
@@ -94,20 +110,20 @@ pub mod fatal_error;
 pub mod profiling;
 
 use alloc::borrow::Cow;
+use alloc::sync::Arc;
 use core::cmp::{self, Ordering};
 use core::fmt::Display;
 use core::hash::Hash;
 use core::ops::{Add, Range, Sub};
-use eko::path::{Path, PathBuf};
 use core::str::FromStr;
-use alloc::sync::Arc;
 use core::{fmt, iter};
+use eko::path::{Path, PathBuf};
 
-use md5::{Digest, Md5};
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use crate::rustc_data_structures::sync::{FreezeLock, FreezeWriteGuard, Lock};
 use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_hashes::{Hash64, Hash128};
+use md5::{Digest, Md5};
 use sha1::Sha1;
 use sha2::Sha256;
 
@@ -133,12 +149,12 @@ pub fn dummy_spanned<T>(t: T) -> Spanned<T> {
 /// threads within the compilation session, but is not accessible outside the
 /// session.
 pub struct SessionGlobals {
-    symbol_interner: symbol::Interner,
-    span_interner: Lock<span_encoding::SpanInterner>,
+    symbol_interner: SharedGlobal<symbol::Interner>,
+    span_interner: SharedGlobal<Lock<span_encoding::SpanInterner>>,
     /// Maps a macro argument token into use of the corresponding metavariable in the macro body.
     /// Collisions are possible and processed in `maybe_use_metavar_location` on best effort basis.
-    metavar_spans: MetavarSpansMap,
-    hygiene_data: Lock<hygiene::HygieneData>,
+    metavar_spans: SharedGlobal<MetavarSpansMap>,
+    hygiene_data: SharedGlobal<Lock<hygiene::HygieneData>>,
     /// The edition `hygiene_data`'s root expansion was created with, which never changes: read
     /// by `SyntaxContext::edition` for the root context without taking the lock.
     root_edition: Edition,
@@ -156,14 +172,54 @@ impl SessionGlobals {
         sm_inputs: Option<SourceMapInputs>,
     ) -> SessionGlobals {
         SessionGlobals {
-            symbol_interner: symbol::Interner::with_extra_symbols(extra_symbols),
-            span_interner: Lock::new(span_encoding::SpanInterner::default()),
-            metavar_spans: Default::default(),
-            hygiene_data: Lock::new(hygiene::HygieneData::new(edition)),
+            symbol_interner: shared_global(symbol::Interner::with_extra_symbols(extra_symbols)),
+            span_interner: shared_global(Lock::new(span_encoding::SpanInterner::default())),
+            metavar_spans: shared_global(MetavarSpansMap::default()),
+            hygiene_data: shared_global(Lock::new(hygiene::HygieneData::new(edition))),
             root_edition: edition,
             source_map: sm_inputs.map(|inputs| Arc::new(SourceMap::with_inputs(inputs))),
         }
     }
+}
+
+#[cfg(feature = "parallel")]
+impl SessionGlobals {
+    /// An owned handle to the same immutable identities and synchronized session state.
+    pub(crate) fn share_for_parse(&self) -> Self {
+        Self {
+            symbol_interner: Arc::clone(&self.symbol_interner),
+            span_interner: Arc::clone(&self.span_interner),
+            metavar_spans: Arc::clone(&self.metavar_spans),
+            hygiene_data: Arc::clone(&self.hygiene_data),
+            root_edition: self.root_edition,
+            source_map: self.source_map.clone(),
+        }
+    }
+
+    /// Isolate compressed-span allocation until the parse has been validated.
+    pub(crate) fn fork_for_parse(&self) -> (Self, usize) {
+        let spans = self.span_interner.lock().clone();
+        let baseline = spans.len();
+        let mut fork = self.share_for_parse();
+        fork.span_interner = Arc::new(Lock::new(spans));
+        (fork, baseline)
+    }
+
+    /// Workers have finished; transfer the table without relocating AST nodes.
+    pub(crate) fn commit_parse_spans(&self, fork: &Self, baseline: usize) -> bool {
+        let mut original = self.span_interner.lock();
+        if original.len() != baseline {
+            return false;
+        }
+        *original = core::mem::take(&mut *fork.span_interner.lock());
+        true
+    }
+}
+
+/// Temporarily install an owned parse fork. Symbols and hygiene retain the same identities.
+#[cfg(feature = "parallel")]
+pub(crate) fn with_parse_globals<R>(globals: &SessionGlobals, f: impl FnOnce() -> R) -> R {
+    SESSION_GLOBALS.set(globals, f)
 }
 
 pub fn create_session_globals_then<R>(

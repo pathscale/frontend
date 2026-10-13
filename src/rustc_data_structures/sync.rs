@@ -34,8 +34,8 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use hashbrown::HashMap;
 use core::hash::{BuildHasher, Hash};
+use hashbrown::HashMap;
 
 pub use parking_lot::{
     MappedRwLockReadGuard as MappedReadGuard, MappedRwLockWriteGuard as MappedWriteGuard,
@@ -48,14 +48,34 @@ pub use self::freeze::{FreezeLock, FreezeReadGuard, FreezeWriteGuard};
 pub use self::lock::{Lock, LockGuard, Mode};
 pub use self::mode::{
     FromDyn, SessionMode, check_dyn_thread_safe, enter_session_width, is_dyn_thread_safe,
-    is_parallel_here,
-    set_dyn_thread_safe_mode,
+    is_parallel_here, set_dyn_thread_safe_mode,
 };
 #[cfg(feature = "parallel")]
 pub use self::pool::set_parallel_executor;
+#[cfg(feature = "parallel")]
+pub(crate) use self::pool::{parse_pool_width, retry_parse_serial, speculate_parse};
 pub use self::stage::{
     Chain, ReadySlot, Slots, StageScope, cost, run_stage, run_stage_weighted, stages,
 };
+/// A stage over owned input only. Neither its function nor its output may borrow a caller.
+#[cfg(feature = "parallel")]
+pub(crate) fn run_owned_stage<In, O>(
+    input: alloc::sync::Arc<In>,
+    len: usize,
+    weight: fn(&In, usize) -> u32,
+    run: fn(&In, usize) -> O,
+) -> Vec<O>
+where
+    In: crate::rustc_data_structures::marker::DynSend
+        + crate::rustc_data_structures::marker::DynSync
+        + 'static,
+    O: crate::rustc_data_structures::marker::DynSend
+        + crate::rustc_data_structures::marker::DynSync
+        + 'static,
+{
+    run_stage_weighted(input, len, move |input, i| weight(input, i), move |input, i| run(input, i))
+}
+
 pub use self::vec::{AppendOnlyIndexVec, AppendOnlyVec, LockFreeAppendOnlyVec};
 pub use self::worker_local::{Registry, RegistryScope, RegistrySlot, WorkerLocal};
 pub use crate::rustc_data_structures::marker::*;

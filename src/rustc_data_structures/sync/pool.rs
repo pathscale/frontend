@@ -161,6 +161,38 @@ pub(crate) fn catch<R>(f: impl FnOnce() -> R) -> Result<R, Payload> {
     std::panic::catch_unwind(core::panic::AssertUnwindSafe(f))
 }
 
+/// Width for a fresh parse-only session. Existing compiler sessions keep their own width.
+pub(crate) fn parse_pool_width() -> usize {
+    match mode::session_width() {
+        0 => workers() + 1,
+        width => width,
+    }
+}
+
+struct RetryParseSerial;
+
+/// Abandon an uncommitted parser transaction without invoking the panic hook.
+pub(crate) fn retry_parse_serial() -> ! {
+    std::panic::resume_unwind(alloc::boxed::Box::new(RetryParseSerial))
+}
+
+/// Catch only parser retry requests and the compiler's fatal sentinel.
+pub(crate) fn speculate_parse<R>(f: impl FnOnce() -> R) -> Option<R> {
+    match catch(f) {
+        Ok(value) => Some(value),
+        Err(payload) => {
+            let fatal = payload
+                .downcast_ref::<&'static str>()
+                .is_some_and(|s| *s == "rustc fatal error (compilation refused)")
+                || payload
+                    .downcast_ref::<alloc::string::String>()
+                    .is_some_and(|s| s == "rustc fatal error (compilation refused)");
+            let message = crate::unwind_janky::take_last_panic();
+            if payload.is::<RetryParseSerial>() || fatal { None } else { resume(payload, message) }
+        }
+    }
+}
+
 /// Re-raise a caught panic with its original payload, on this thread.
 ///
 /// `message` is what the panic handler recorded on the thread that panicked (see

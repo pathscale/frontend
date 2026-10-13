@@ -17,8 +17,8 @@ use crate::rustc_ast::attr::AttrIdGenerator;
 use crate::rustc_ast::node_id::NodeId;
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexMap};
 use crate::rustc_data_structures::sync::{AppendOnlyVec, DynSend, DynSync, Lock};
-use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::emitter::EmitterWithNote;
+use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::{
     BufferedEarlyLint, ColorConfig, DecorateDiagCompat, Diag, DiagCtxt, DiagCtxtHandle, Level,
     MultiSpan,
@@ -86,6 +86,34 @@ impl SymbolGallery {
         symbols.reserve(pairs.size_hint().0);
         for (symbol, span) in pairs {
             symbols.entry(symbol).or_insert(span);
+        }
+    }
+}
+
+/// Parser effects carried alongside an owned body, in their original insertion order.
+#[cfg(feature = "parallel")]
+pub(crate) struct ParseEffects {
+    pub lints: Vec<BufferedEarlyLint>,
+    pub ambiguous: FxIndexMap<Span, Span>,
+    pub gates: FxHashMap<Symbol, Vec<Span>>,
+}
+
+#[cfg(feature = "parallel")]
+impl ParseSess {
+    pub(crate) fn take_parse_effects(&self) -> ParseEffects {
+        ParseEffects {
+            lints: core::mem::take(&mut *self.buffered_lints.lock()),
+            ambiguous: core::mem::take(&mut *self.ambiguous_block_expr_parse.lock()),
+            gates: core::mem::take(&mut *self.gated_spans.spans.lock()),
+        }
+    }
+
+    pub(crate) fn append_parse_effects(&self, mut effects: ParseEffects) {
+        self.buffered_lints.lock().append(&mut effects.lints);
+        self.ambiguous_block_expr_parse.lock().extend(effects.ambiguous);
+        let mut gates = self.gated_spans.spans.lock();
+        for (feature, mut spans) in effects.gates {
+            gates.entry(feature).or_default().append(&mut spans);
         }
     }
 }

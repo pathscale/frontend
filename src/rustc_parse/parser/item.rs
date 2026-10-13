@@ -35,6 +35,10 @@ use crate::rustc_parse::diagnostics::{
 impl<'a> Parser<'a> {
     /// Parses a source module as a crate. This is the main entry point for the parser.
     pub fn parse_crate_mod(&mut self) -> PResult<'a, ast::Crate> {
+        #[cfg(feature = "parallel")]
+        if let Some(krate) = self.parse_parallel_bodies() {
+            return Ok(krate);
+        }
         let (attrs, items, spans) = self.parse_mod(exp!(Eof))?;
         Ok(ast::Crate { attrs, items, spans, id: DUMMY_NODE_ID, is_placeholder: false })
     }

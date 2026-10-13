@@ -11,6 +11,8 @@ mod function;
 mod generics;
 mod item;
 mod nonterminal;
+#[cfg(feature = "parallel")]
+mod parallel;
 mod pat;
 mod path;
 mod stmt;
@@ -251,13 +253,26 @@ pub struct Parser<'a> {
     in_fn_body: bool,
     /// Whether we have detected a missing semicolon in function body.
     pub fn_body_missing_semi_guar: Option<ErrorGuaranteed>,
+    #[cfg(feature = "parallel")]
+    body_jobs:
+        Option<alloc::sync::Arc<crate::rustc_data_structures::sync::Lock<Vec<parallel::BodyJob>>>>,
 }
 
 // This type is used a lot, e.g. it's cloned when matching many declarative macro rules with
 // nonterminals. Make sure it doesn't unintentionally get bigger. We only check a few arches
 // though, because `TokenTypeSet(u128)` alignment varies on others, changing the total size.
-#[cfg(all(target_pointer_width = "64", any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[cfg(all(
+    not(feature = "parallel"),
+    target_pointer_width = "64",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
 crate::static_assert_size!(Parser<'_>, 272);
+#[cfg(all(
+    feature = "parallel",
+    target_pointer_width = "64",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 288);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -386,6 +401,8 @@ impl<'a> Parser<'a> {
             recovery: Recovery::Allowed,
             in_fn_body: false,
             fn_body_missing_semi_guar: None,
+            #[cfg(feature = "parallel")]
+            body_jobs: None,
         };
 
         // Make parser point to the first token.

@@ -494,13 +494,25 @@ impl Span {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SpanInterner {
     spans: FxIndexSet<SpanData>,
 }
 
 impl SpanInterner {
+    #[cfg(feature = "parallel")]
+    pub(super) fn len(&self) -> usize {
+        self.spans.len()
+    }
+
     fn intern(&mut self, span_data: &SpanData) -> u32 {
+        #[cfg(feature = "parallel")]
+        {
+            if let Some(index) = self.spans.get_index_of(span_data) {
+                return index as u32;
+            }
+            super::parse_transaction::span_insert();
+        }
         let (index, _) = self.spans.insert_full(*span_data);
         index as u32
     }
@@ -509,5 +521,7 @@ impl SpanInterner {
 // If an interner exists, return it. Otherwise, prepare a fresh one.
 #[inline]
 fn with_span_interner<T, F: FnOnce(&mut SpanInterner) -> T>(f: F) -> T {
-    crate::rustc_span::with_session_globals(|session_globals| f(&mut session_globals.span_interner.lock()))
+    crate::rustc_span::with_session_globals(|session_globals| {
+        f(&mut session_globals.span_interner.lock())
+    })
 }

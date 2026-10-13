@@ -91,6 +91,33 @@ impl Drop for Current {
 
 static CURRENT: eko::thread::ThreadLocal<Current> = eko::thread::ThreadLocal::new();
 
+/// An owned parsing job's allocation epoch. Returned nodes retain their own chunk counts.
+#[cfg(feature = "parallel")]
+pub(crate) struct ParseArena(Option<Current>);
+
+#[cfg(feature = "parallel")]
+impl ParseArena {
+    pub(crate) fn enter() -> Self {
+        Self(CURRENT.with(
+            || Current { chunk: None, next: CHUNK_BYTES },
+            |current| core::mem::replace(current, Current { chunk: None, next: CHUNK_BYTES }),
+        ))
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl Drop for ParseArena {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take() {
+            let retired = CURRENT.with(
+                || Current { chunk: None, next: CHUNK_BYTES },
+                |current| core::mem::replace(current, previous),
+            );
+            drop(retired);
+        }
+    }
+}
+
 /// Room for one node of `layout`, with a count taken on its chunk for the node.
 #[inline]
 fn alloc_node(layout: Layout) -> NonNull<u8> {
