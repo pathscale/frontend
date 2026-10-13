@@ -106,6 +106,7 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         diag_info: TokenTreeDiagInfo::default(),
         tree_buf: Vec::new(),
         nfc_cache: FxHashMap::default(),
+        ident_cache: alloc::vec![(0, sym::empty); 512],
         empty_stream: None,
         gallery_seen: Vec::new(),
         gallery_new: Vec::new(),
@@ -168,6 +169,10 @@ struct Lexer<'psess, 'src> {
     /// Symbols of source spellings already normalized, keyed by the borrowed source text.
     nfc_cache: FxHashMap<&'src str, Symbol>,
 
+    /// Exact packed spellings of short ordinary identifiers and their normalized symbols.
+    /// Zero is empty: an ordinary identifier never contains a NUL byte.
+    ident_cache: Vec<(u64, Symbol)>,
+
     /// Shared backing stream for empty groups.
     empty_stream: Option<TokenStream>,
 
@@ -192,10 +197,10 @@ impl Drop for Lexer<'_, '_> {
 }
 
 impl<'psess, 'src> Lexer<'psess, 'src> {
-    /// `self.psess.symbol_gallery.insert(sym, span)`, deferred to the lexer's drop; see
-    /// `gallery_seen`.
+    /// Record a symbol's first occurrence, deferring the gallery insert to drop.
+    /// Repeated occurrences do not need a gallery span.
     #[inline]
-    fn record_symbol(&mut self, sym: Symbol, span: Span) {
+    fn record_symbol(&mut self, sym: Symbol, start: BytePos) {
         let index = sym.as_u32() as usize;
         let (word, bit) = (index / 64, 1u64 << (index % 64));
         if word >= self.gallery_seen.len() {
@@ -204,6 +209,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         let seen = &mut self.gallery_seen[word];
         if *seen & bit == 0 {
             *seen |= bit;
+            let span = self.mk_sp(start, self.pos);
             self.gallery_new.push((sym, span));
         }
     }
@@ -264,16 +270,75 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 self.last_lifetime = None;
             }
 
-            // Now "cook" the token, converting the simple `crate::rustc_lexer::TokenKind` enum into a
-            // rich `crate::rustc_ast::TokenKind`. This turns strings into interned symbols and runs
-            // additional validation.
+            // Cook simple tokens in this loop; keep diagnostic and literal state in the helper.
+            let kind = match token.kind {
+                crate::rustc_lexer::TokenKind::Ident => {
+                    self.ident_text(start, &str_before[..token.len as usize])
+                }
+                crate::rustc_lexer::TokenKind::Semi => token::Semi,
+                crate::rustc_lexer::TokenKind::Comma => token::Comma,
+                crate::rustc_lexer::TokenKind::Dot => token::Dot,
+                crate::rustc_lexer::TokenKind::OpenParen => token::OpenParen,
+                crate::rustc_lexer::TokenKind::CloseParen => token::CloseParen,
+                crate::rustc_lexer::TokenKind::OpenBrace => token::OpenBrace,
+                crate::rustc_lexer::TokenKind::CloseBrace => token::CloseBrace,
+                crate::rustc_lexer::TokenKind::OpenBracket => token::OpenBracket,
+                crate::rustc_lexer::TokenKind::CloseBracket => token::CloseBracket,
+                crate::rustc_lexer::TokenKind::At => token::At,
+                crate::rustc_lexer::TokenKind::Pound => token::Pound,
+                crate::rustc_lexer::TokenKind::Tilde => token::Tilde,
+                crate::rustc_lexer::TokenKind::Question => token::Question,
+                crate::rustc_lexer::TokenKind::Colon => token::Colon,
+                crate::rustc_lexer::TokenKind::Dollar => token::Dollar,
+                crate::rustc_lexer::TokenKind::Eq => token::Eq,
+                crate::rustc_lexer::TokenKind::Bang => token::Bang,
+                crate::rustc_lexer::TokenKind::Lt => token::Lt,
+                crate::rustc_lexer::TokenKind::Gt => token::Gt,
+                crate::rustc_lexer::TokenKind::Minus => token::Minus,
+                crate::rustc_lexer::TokenKind::And => token::And,
+                crate::rustc_lexer::TokenKind::Or => token::Or,
+                crate::rustc_lexer::TokenKind::Plus => token::Plus,
+                crate::rustc_lexer::TokenKind::Star => token::Star,
+                crate::rustc_lexer::TokenKind::Slash => token::Slash,
+                crate::rustc_lexer::TokenKind::Caret => token::Caret,
+                crate::rustc_lexer::TokenKind::Percent => token::Percent,
+                crate::rustc_lexer::TokenKind::Eof => token::Eof,
+                _ => {
+                    let Some(kind) = self.cook_token_slow(
+                        token,
+                        str_before,
+                        start,
+                        &mut preceded_by_whitespace,
+                        &mut swallow_next_invalid,
+                    ) else {
+                        continue;
+                    };
+                    kind
+                }
+            };
+            let span = self.mk_sp(start, self.pos);
+            return (Token::new(kind, span), preceded_by_whitespace);
+        }
+    }
+
+    /// Cook tokens that need comment handling, literal validation, or error recovery.
+    /// None has the same effect as continuing the cursor loop.
+    #[inline(never)]
+    fn cook_token_slow(
+        &mut self,
+        token: crate::rustc_lexer::Token,
+        str_before: &'src str,
+        start: BytePos,
+        preceded_by_whitespace: &mut bool,
+        swallow_next_invalid: &mut usize,
+    ) -> Option<TokenKind> {
             let kind = match token.kind {
                 crate::rustc_lexer::TokenKind::LineComment { doc_style } => {
                     // Skip non-doc comments
                     let Some(doc_style) = doc_style else {
                         self.lint_unicode_text_flow(start);
-                        preceded_by_whitespace = true;
-                        continue;
+                        *preceded_by_whitespace = true;
+                        return None;
                     };
 
                     // Opening delimiter of the length 3 is not included into the symbol.
@@ -290,8 +355,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     // Skip non-doc comments
                     let Some(doc_style) = doc_style else {
                         self.lint_unicode_text_flow(start);
-                        preceded_by_whitespace = true;
-                        continue;
+                        *preceded_by_whitespace = true;
+                        return None;
                     };
 
                     // Opening delimiter of the length 3 and closing delimiter of the length 2
@@ -304,22 +369,18 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 }
                 crate::rustc_lexer::TokenKind::Frontmatter { has_invalid_preceding_whitespace, invalid_infostring } => {
                     self.validate_frontmatter(start, has_invalid_preceding_whitespace, invalid_infostring);
-                    preceded_by_whitespace = true;
-                    continue;
+                    *preceded_by_whitespace = true;
+                    return None;
                 }
                 crate::rustc_lexer::TokenKind::Whitespace => {
-                    preceded_by_whitespace = true;
-                    continue;
+                    *preceded_by_whitespace = true;
+                    return None;
                 }
-                // The token's text is the first `token.len` bytes the cursor had left, the
-                // same slice `str_from(start)` takes out of `src`.
-                crate::rustc_lexer::TokenKind::Ident => {
-                    self.ident_text(start, &str_before[..token.len as usize])
-                }
+                // Ordinary identifiers are cooked in the cursor loop.
                 crate::rustc_lexer::TokenKind::RawIdent => {
                     let sym = self.nfc_normalize_src(self.str_from(start + BytePos(2)));
                     let span = self.mk_sp(start, self.pos);
-                    self.record_symbol(sym, span);
+                    self.record_symbol(sym, start);
                     if !sym.can_be_raw() {
                         self.dcx().emit_err(crate::rustc_parse::diagnostics::CannotBeRawIdent { span, ident: sym });
                     }
@@ -496,39 +557,13 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                         token::Lifetime(lifetime_name, IdentIsRaw::No)
                     }
                 }
-                crate::rustc_lexer::TokenKind::Semi => token::Semi,
-                crate::rustc_lexer::TokenKind::Comma => token::Comma,
-                crate::rustc_lexer::TokenKind::Dot => token::Dot,
-                crate::rustc_lexer::TokenKind::OpenParen => token::OpenParen,
-                crate::rustc_lexer::TokenKind::CloseParen => token::CloseParen,
-                crate::rustc_lexer::TokenKind::OpenBrace => token::OpenBrace,
-                crate::rustc_lexer::TokenKind::CloseBrace => token::CloseBrace,
-                crate::rustc_lexer::TokenKind::OpenBracket => token::OpenBracket,
-                crate::rustc_lexer::TokenKind::CloseBracket => token::CloseBracket,
-                crate::rustc_lexer::TokenKind::At => token::At,
-                crate::rustc_lexer::TokenKind::Pound => token::Pound,
-                crate::rustc_lexer::TokenKind::Tilde => token::Tilde,
-                crate::rustc_lexer::TokenKind::Question => token::Question,
-                crate::rustc_lexer::TokenKind::Colon => token::Colon,
-                crate::rustc_lexer::TokenKind::Dollar => token::Dollar,
-                crate::rustc_lexer::TokenKind::Eq => token::Eq,
-                crate::rustc_lexer::TokenKind::Bang => token::Bang,
-                crate::rustc_lexer::TokenKind::Lt => token::Lt,
-                crate::rustc_lexer::TokenKind::Gt => token::Gt,
-                crate::rustc_lexer::TokenKind::Minus => token::Minus,
-                crate::rustc_lexer::TokenKind::And => token::And,
-                crate::rustc_lexer::TokenKind::Or => token::Or,
-                crate::rustc_lexer::TokenKind::Plus => token::Plus,
-                crate::rustc_lexer::TokenKind::Star => token::Star,
-                crate::rustc_lexer::TokenKind::Slash => token::Slash,
-                crate::rustc_lexer::TokenKind::Caret => token::Caret,
-                crate::rustc_lexer::TokenKind::Percent => token::Percent,
+                // Punctuation is cooked in the cursor loop.
 
                 crate::rustc_lexer::TokenKind::Unknown | crate::rustc_lexer::TokenKind::InvalidIdent => {
                     // Don't emit diagnostics for sequences of the same invalid token
-                    if swallow_next_invalid > 0 {
-                        swallow_next_invalid -= 1;
-                        continue;
+                    if *swallow_next_invalid > 0 {
+                        *swallow_next_invalid -= 1;
+                        return None;
                     }
                     let mut it = self.str_from_to_end(start).chars();
                     let c = it.next().unwrap();
@@ -537,8 +572,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                         // space characters earlier in the file, treat all
                         // subsequent occurrences as whitespace.
                         if self.nbsp_is_whitespace {
-                            preceded_by_whitespace = true;
-                            continue;
+                            *preceded_by_whitespace = true;
+                            return None;
                         }
                         self.nbsp_is_whitespace = true;
                     }
@@ -558,7 +593,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                         null: c == '\x00',
                         invisible: INVISIBLE_CHARACTERS.contains(&c),
                         repeat: if repeats > 0 {
-                            swallow_next_invalid = repeats;
+                            *swallow_next_invalid = repeats;
                             Some(crate::rustc_parse::diagnostics::UnknownTokenRepeat { repeats })
                         } else {
                             None
@@ -568,15 +603,13 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     if let Some(token) = token {
                         token
                     } else {
-                        preceded_by_whitespace = true;
-                        continue;
+                        *preceded_by_whitespace = true;
+                        return None;
                     }
                 }
-                crate::rustc_lexer::TokenKind::Eof => token::Eof,
+                _ => unreachable!("simple tokens are cooked in the cursor loop"),
             };
-            let span = self.mk_sp(start, self.pos);
-            return (Token::new(kind, span), preceded_by_whitespace);
-        }
+            Some(kind)
     }
 
     fn ident(&mut self, start: BytePos) -> TokenKind {
@@ -584,12 +617,39 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         self.ident_text(start, text)
     }
 
+    /// Normalize an ordinary identifier, memoizing exact spellings of up to eight bytes.
+    /// No identifier contains NUL, so zero padding makes these keys injective across lengths.
+    #[inline]
+    fn ident_symbol(&mut self, text: &'src str) -> Symbol {
+        let bytes = text.as_bytes();
+        let key = match bytes.len() {
+            1 => u64::from(bytes[0]),
+            2..=3 => {
+                let first = u16::from_le_bytes(bytes[..2].try_into().unwrap());
+                u64::from(first) | (u64::from(bytes[bytes.len() - 1]) << ((bytes.len() - 1) * 8))
+            }
+            4..=8 => {
+                let first = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+                let last = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
+                u64::from(first) | (u64::from(last) << ((bytes.len() - 4) * 8))
+            }
+            _ => return self.nfc_normalize_src(text),
+        };
+        let slot = (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 55) as usize;
+        let (cached_key, sym) = self.ident_cache[slot];
+        if cached_key == key {
+            return sym;
+        }
+        let sym = self.nfc_normalize_src(text);
+        self.ident_cache[slot] = (key, sym);
+        sym
+    }
+
     /// `ident(start)` given its text, `self.str_from(start)`.
     #[inline]
     fn ident_text(&mut self, start: BytePos, text: &'src str) -> TokenKind {
-        let sym = self.nfc_normalize_src(text);
-        let span = self.mk_sp(start, self.pos);
-        self.record_symbol(sym, span);
+        let sym = self.ident_symbol(text);
+        self.record_symbol(sym, start);
         token::Ident(sym, IdentIsRaw::No)
     }
 
