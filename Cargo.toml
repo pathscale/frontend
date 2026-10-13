@@ -107,7 +107,6 @@ itertools = { version = "^0.15.0", default-features = false, features = ["use_al
 itoa = "^1.0.18"
 libc = { version = "^0.2.189", default-features = false }
 libm = "^0.2.16"
-log = { version = "0.4", default-features = false }
 md5 = { package = "md-5", version = "0.10.0", default-features = false }
 memchr = { version = "2.7.6", default-features = false, features = ["alloc"] }
 object = { version = "0.39.1", default-features = false, features = ["read_core", "archive", "elf", "macho", "pe", "xcoff", "unaligned"] }

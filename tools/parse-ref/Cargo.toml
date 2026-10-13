@@ -9,7 +9,6 @@ publish = false
 frontend = { path = "../..", features = ["diagnostics"] }
 ra_ap_syntax = "^0.0.349"
 syn = { version = "2", features = ["full", "parsing"], default-features = false }
-proc-macro2 = { version = "1", default-features = false }
 
 [profile.release]
 debug = false
