@@ -511,7 +511,7 @@ mod llvm_enzyme {
         let primal_path_expr = gen_turbofish_expr(ecx, primal, generics, span, is_impl);
 
         let self_ty = || ecx.ty_path(ast::Path::from_ident(Ident::with_dummy_span(kw::SelfUpper)));
-        let fn_ptr_params: ThinVec<ast::Param> = p_sig
+        let fn_ptr_params: ast::ArenaVec<ast::Param> = p_sig
             .decl
             .inputs
             .iter()

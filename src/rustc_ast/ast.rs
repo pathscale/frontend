@@ -3491,7 +3491,7 @@ impl Param {
 /// which contains metadata about function safety, asyncness, constness and ABI.
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct FnDecl {
-    pub inputs: ThinVec<Param>,
+    pub inputs: ArenaVec<Param>,
     pub output: FnRetTy,
 }
 

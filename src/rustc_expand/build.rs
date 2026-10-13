@@ -674,7 +674,7 @@ impl<'a> ExtCtxt<'a> {
 
     // `self` is unused but keep it as method for the convenience use.
     pub fn fn_decl(&self, inputs: ThinVec<ast::Param>, output: ast::FnRetTy) -> P<ast::FnDecl> {
-        P::new(ast::FnDecl { inputs, output })
+        P::new(ast::FnDecl { inputs: inputs.into(), output })
     }
 
     pub fn item(&self, span: Span, attrs: ast::AttrVec, kind: ast::ItemKind) -> P<ast::Item> {

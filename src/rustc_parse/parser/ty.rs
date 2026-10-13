@@ -1,10 +1,4 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::string::ToString;
-use alloc::borrow::ToOwned;
 use crate::rustc_ast::token::{self, IdentIsRaw, MetaVarKind, Token, TokenKind};
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast::{
@@ -13,8 +7,14 @@ use crate::rustc_ast::{
     Pinnedness, PolyTraitRef, PreciseCapturingArg, TraitBoundModifiers, TraitObjectSyntax, Ty,
     TyKind, UnsafeBinderTy,
 };
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_errors::{Applicability, Diag, E0516, PResult};
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, kw, sym};
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use thin_vec::{ThinVec, thin_vec};
 
 use super::{Parser, PathStyle, SeqSep, TokenType, Trailing};
@@ -1469,11 +1469,11 @@ impl<'a> Parser<'a> {
                             id: DUMMY_NODE_ID,
                             args: Some(P::new(ast::GenericArgs::Parenthesized(
                                 ast::ParenthesizedArgs {
-                                span: args_lo.to(self.prev_token.span),
-                                inputs: decl.inputs.iter().map(|a| a.clone()).collect(),
-                                inputs_span: args_lo.until(decl.output.span()),
-                                output: decl.output.clone(),
-                                }
+                                    span: args_lo.to(self.prev_token.span),
+                                    inputs: decl.inputs.iter().map(|a| a.clone()).collect(),
+                                    inputs_span: args_lo.until(decl.output.span()),
+                                    output: decl.output.clone(),
+                                },
                             ))),
                         },
                         1,
@@ -1587,7 +1587,7 @@ impl<'a> Parser<'a> {
         };
         let args = ast::ParenthesizedArgs {
             span: fn_path_segment.span().to(self.prev_token.span),
-            inputs,
+            inputs: inputs.into_iter().collect(),
             inputs_span,
             output,
         }

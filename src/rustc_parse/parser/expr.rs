@@ -2661,11 +2661,11 @@ impl<'a> Parser<'a> {
         let arg_start = self.token.span.lo();
 
         let inputs = if self.eat(exp!(OrOr)) {
-            ThinVec::new()
+            ast::ArenaVec::new()
         } else {
             self.expect(exp!(Or))?;
             let args = self
-                .parse_seq_to_before_tokens(
+                .parse_seq_to_before_tokens_with::<_, ast::ArenaVec<Param>>(
                     &[exp!(Or)],
                     &[&token::OrOr],
                     SeqSep::trailing_allowed(exp!(Comma)),
