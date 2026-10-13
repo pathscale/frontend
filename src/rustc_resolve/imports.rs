@@ -7,6 +7,7 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -16,6 +17,7 @@ use core::mem;
 use crate::rustc_ast::NodeId;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
+use crate::rustc_data_structures::sync::run_stage;
 use crate::rustc_errors::{Applicability, BufferedEarlyLint, Diagnostic};
 use crate::rustc_expand::base::SyntaxExtensionKind;
 use crate::rustc_hir::def::{self, DefKind, PartialRes};
@@ -1850,27 +1852,61 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         imported_module: ModuleOrUniformRoot<'ra>,
     ) -> ImportResolutionKind<'ra> {
         let import_bindings = match imported_module {
-            ModuleOrUniformRoot::Module(module) if module != import.parent_scope.module => self
-                .resolutions(module)
-                .iter()
-                .filter_map(|(key, resolution)| {
+            ModuleOrUniformRoot::Module(module) if module != import.parent_scope.module => {
+                let mut candidates = Vec::new();
+                let mut snapshot = Vec::new();
+                // Resolve hygiene and read declaration visibility on the caller's thread.
+                // Arena handles stay here; workers receive only owned visibility facts.
+                for (key, resolution) in self.resolutions(module).iter() {
                     let res = resolution.borrow_checked(self);
-                    let decl = res.determined_decl()?;
+                    let Some(decl) = res.determined_decl() else { continue };
                     let mut key = *key;
                     let scope = match key.ident.ctxt.update_unchecked(|ctxt| {
                         ctxt.reverse_glob_adjust(module.expansion, import.span)
                     }) {
                         Some(Some(def)) => self.expn_def_scope(def),
                         Some(None) => import.parent_scope.module,
-                        None => return None,
+                        None => continue,
                     };
-                    self.is_accessible_from(decl.vis(), scope).then_some((
-                        decl,
-                        key,
-                        res.orig_ident_span,
-                    ))
-                })
-                .collect::<Vec<_>>(),
+                    let vis = decl.vis().map_id(|id| id.to_def_id());
+                    let mut ancestors = Vec::new();
+                    if let Visibility::Restricted(ancestor) = vis {
+                        let mut current = scope.nearest_parent_mod().to_def_id();
+                        // Definitions in different crates are unrelated, as in
+                        // Visibility::is_accessible_from.
+                        if current.krate == ancestor.krate {
+                            loop {
+                                ancestors.push(current);
+                                let Some(parent) = self.tcx.opt_parent(current) else { break };
+                                current = parent;
+                            }
+                        }
+                    }
+                    candidates.push((decl, key, res.orig_ident_span));
+                    snapshot.push((vis, ancestors));
+                }
+
+                // This stage has no resolver, hygiene, query or diagnostic access.
+                // run_stage settles all workers and returns results in input order,
+                // including when the parallel feature or session parallelism is off.
+                let decisions = run_stage(Arc::new(snapshot), candidates.len(), |snapshot, index| {
+                    let (vis, ancestors) = &snapshot[index];
+                    let accessible = match *vis {
+                        Visibility::Public => true,
+                        Visibility::Restricted(ancestor) => ancestors.contains(&ancestor),
+                    };
+                    (index, accessible)
+                });
+                // Check the complete ordering before integrating any candidate.
+                for (expected, &(index, _)) in decisions.iter().enumerate() {
+                    assert_eq!(index, expected, "rs3_glob_commit_order");
+                }
+                candidates
+                    .into_iter()
+                    .zip(decisions)
+                    .filter_map(|(binding, (_, accessible))| accessible.then_some(binding))
+                    .collect::<Vec<_>>()
+            }
 
             // Errors are reported in `write_imports_resolutions`
             _ => vec![],
