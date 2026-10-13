@@ -1,6 +1,6 @@
 use crate::rustc_ast::ast::{self, AttrStyle};
 use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
-use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
+use crate::rustc_ast::tokenstream::{FlatTokenBuffer, TokenStream};
 use crate::rustc_ast::util::unicode::{TEXT_FLOW_CONTROL_CHARS, contains_text_flow_control_chars};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::codes::*;
@@ -28,6 +28,7 @@ use crate::rustc_parse::lexer::unicode_chars::UNICODE_ARRAY;
 
 mod diagnostics;
 mod tokentrees;
+mod tree_sink;
 mod unescape_error_reporting;
 mod unicode_chars;
 
@@ -70,12 +71,38 @@ pub enum StripTokens {
 
 pub(crate) fn lex_token_trees<'psess, 'src>(
     psess: &'psess ParseSess,
+    src: &'src str,
+    owner: Option<&'src Arc<String>>,
+    start_pos: BytePos,
+    override_span: Option<Span>,
+    strip_tokens: StripTokens,
+) -> Result<TokenStream, Vec<Diag<'psess>>> {
+    let mut sink = tree_sink::TreeSink::default();
+    lex_with_sink(psess, src, owner, start_pos, override_span, strip_tokens, &mut sink)
+}
+
+pub(crate) fn lex_flat_tokens<'psess, 'src>(
+    psess: &'psess ParseSess,
+    src: &'src str,
+    owner: Option<&'src Arc<String>>,
+    start_pos: BytePos,
+    override_span: Option<Span>,
+    strip_tokens: StripTokens,
+) -> Result<FlatTokenBuffer, Vec<Diag<'psess>>> {
+    let mut sink = FlatTokenBuffer::default();
+    lex_with_sink(psess, src, owner, start_pos, override_span, strip_tokens, &mut sink)?;
+    Ok(sink)
+}
+
+fn lex_with_sink<'psess, 'src, S: tree_sink::TokenTreeSink>(
+    psess: &'psess ParseSess,
     mut src: &'src str,
     owner: Option<&'src Arc<String>>,
     mut start_pos: BytePos,
     override_span: Option<Span>,
     strip_tokens: StripTokens,
-) -> Result<TokenStream, Vec<Diag<'psess>>> {
+    sink: &mut S,
+) -> Result<S::Stream, Vec<Diag<'psess>>> {
     match strip_tokens {
         StripTokens::Shebang | StripTokens::ShebangAndFrontmatter => {
             if let Some(shebang_len) = crate::rustc_lexer::strip_shebang(src) {
@@ -104,14 +131,12 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
         last_lifetime: None,
         token: Token::dummy(),
         diag_info: TokenTreeDiagInfo::default(),
-        tree_buf: Vec::new(),
         nfc_cache: FxHashMap::default(),
         ident_cache: alloc::vec![(0, sym::empty); 512],
-        empty_stream: None,
         gallery_seen: Vec::new(),
         gallery_new: Vec::new(),
     };
-    let res = lexer.lex_token_trees(/* is_delimited */ false);
+    let res = lexer.lex_token_trees(sink, /* is_delimited */ false);
 
     let mut unmatched_closing_delims: Vec<_> =
         make_errors_for_mismatched_closing_delims(&lexer.diag_info.unmatched_delims, psess);
@@ -162,19 +187,12 @@ struct Lexer<'psess, 'src> {
 
     diag_info: TokenTreeDiagInfo,
 
-    /// Scratch stack of the token trees of every open group, innermost last.
-    /// See `lex_token_trees`.
-    tree_buf: Vec<TokenTree>,
-
     /// Symbols of source spellings already normalized, keyed by the borrowed source text.
     nfc_cache: FxHashMap<&'src str, Symbol>,
 
     /// Exact packed spellings of short ordinary identifiers and their normalized symbols.
     /// Zero is empty: an ordinary identifier never contains a NUL byte.
     ident_cache: Vec<(u64, Symbol)>,
-
-    /// Shared backing stream for empty groups.
-    empty_stream: Option<TokenStream>,
 
     /// The session's `symbol_gallery` keeps each symbol's first occurrence, so of the
     /// identifiers this lexer records only the first of each symbol can change it, and nothing
