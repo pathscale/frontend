@@ -290,7 +290,12 @@ impl<'a> ExtCtxt<'a> {
         )
     }
     pub fn block(&self, span: Span, stmts: ThinVec<ast::Stmt>) -> P<ast::Block> {
-        P::new(ast::Block { stmts, id: ast::DUMMY_NODE_ID, rules: BlockCheckMode::Default, span })
+        P::new(ast::Block {
+            stmts: stmts.into(),
+            id: ast::DUMMY_NODE_ID,
+            rules: BlockCheckMode::Default,
+            span,
+        })
     }
 
     pub fn expr(&self, span: Span, kind: ast::ExprKind) -> P<ast::Expr> {

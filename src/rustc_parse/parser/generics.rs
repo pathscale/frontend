@@ -1,23 +1,23 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_ast::{
     self as ast, AttrVec, DUMMY_NODE_ID, GenericBounds, GenericParam, GenericParamKind, TyKind,
     WhereClause, token,
 };
 use crate::rustc_errors::{Applicability, Diag, PResult};
 use crate::rustc_span::{Ident, Span, kw, sym};
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use thin_vec::ThinVec;
 
 use super::{ForceCollect, Parser, Trailing, UsePreAttrPos};
+use crate::exp;
 use crate::rustc_parse::diagnostics::{
     self, MultipleWhereClauses, UnexpectedDefaultValueForLifetimeInGenericParameters,
     UnexpectedSelfInGenericParameters, WhereClauseBeforeTupleStructBody,
     WhereClauseBeforeTupleStructBodySugg,
 };
-use crate::exp;
 
 enum PredicateKindOrStructBody {
     PredicateKind(ast::WherePredicateKind),
@@ -378,7 +378,7 @@ impl<'a> Parser<'a> {
                 None => self.mk_unit_expr(decls_and_precond.span),
             };
             let precond = self.mk_closure_expr(precond.span, precond);
-            let decls = decls_and_precond.into_inner().stmts;
+            let decls = decls_and_precond.into_inner().stmts.into_iter().collect();
             (decls, Some(precond))
         } else {
             (Default::default(), None)
@@ -637,7 +637,11 @@ impl<'a> Parser<'a> {
             diag.span(lhs_ty.span.to(rhs_ty.span));
             diag.span_label(lhs_ty.span.to(rhs_ty.span), "not supported");
 
-            suggest_replacing_equality_pred_with_assoc_item_constraint(&mut diag, lhs_ty.into_inner(), rhs_ty.into_inner());
+            suggest_replacing_equality_pred_with_assoc_item_constraint(
+                &mut diag,
+                lhs_ty.into_inner(),
+                rhs_ty.into_inner(),
+            );
 
             return Err(diag);
         }
