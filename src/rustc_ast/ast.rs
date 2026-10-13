@@ -3880,7 +3880,7 @@ pub struct Attribute {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum AttrKind {
     /// A normal attribute.
-    Normal(Box<NormalAttr>),
+    Normal(P<NormalAttr>),
 
     /// A synthetic attribute inserted by the compiler.
     Synthetic(Box<SyntheticAttr>),
