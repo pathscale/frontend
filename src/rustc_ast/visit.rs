@@ -414,6 +414,7 @@ macro_rules! common_visitor_and_walkers {
         // custom visits for the `MutVisitor`.
         impl_visitable_list!(<$($lt)? $($mut)?>
             ThinVec<AngleBracketedArg>,
+            ArenaVec<AngleBracketedArg>,
             ThinVec<Attribute>,
             ThinVec<GenericBound>,
             ThinVec<Ident>,

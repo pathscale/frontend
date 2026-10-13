@@ -610,7 +610,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         assert!(last_segment.args.is_none());
         last_segment.args = Some(P::new(GenericArgs::AngleBracketed(AngleBracketedArgs {
             span: DUMMY_SP,
-            args: generic_args,
+            args: generic_args.into(),
         })));
 
         // Now lower everything as normal.

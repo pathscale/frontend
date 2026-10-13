@@ -6,8 +6,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -17,10 +17,10 @@ use alloc::vec::Vec;
 mod llvm_enzyme {
     use crate::rustc_ast::ptr::P;
     use alloc::boxed::Box;
-    use alloc::vec::Vec;
-    use alloc::string::ToString;
-    use core::str::FromStr;
     use alloc::string::String;
+    use alloc::string::ToString;
+    use alloc::vec::Vec;
+    use core::str::FromStr;
 
     use crate::rustc_ast::expand::autodiff_attrs::{
         DiffActivity, DiffMode, valid_input_activity, valid_ret_activity, valid_ty_for_activity,
@@ -422,11 +422,12 @@ mod llvm_enzyme {
             }
         };
         // Now update for d_fn
-        rustc_ad_attr.item.args = crate::rustc_ast::AttrArgs::Delimited(crate::rustc_ast::DelimArgs {
-            dspan: DelimSpan::dummy(),
-            delim: crate::rustc_ast::token::Delimiter::Parenthesis,
-            tokens: ts,
-        });
+        rustc_ad_attr.item.args =
+            crate::rustc_ast::AttrArgs::Delimited(crate::rustc_ast::DelimArgs {
+                dspan: DelimSpan::dummy(),
+                delim: crate::rustc_ast::token::Delimiter::Parenthesis,
+                tokens: ts,
+            });
 
         let new_id = ecx.sess.psess.attr_id_generator.mk_attr_id();
         let d_attr = outer_normal_attr(&rustc_ad_attr, new_id, span);
@@ -603,7 +604,7 @@ mod llvm_enzyme {
             })
             .collect::<ThinVec<_>>();
 
-        let args: AngleBracketedArgs = AngleBracketedArgs { span, args: generic_args };
+        let args: AngleBracketedArgs = AngleBracketedArgs { span, args: generic_args.into() };
 
         let segment = PathSegment {
             ident,

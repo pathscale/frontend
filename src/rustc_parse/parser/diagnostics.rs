@@ -1,13 +1,12 @@
 use crate::rustc_ast::ptr::P;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 use core::mem::take;
 use core::ops::{Deref, DerefMut};
 
-use ast::token::IdentIsRaw;
 use crate::rustc_ast::token::{self, Lit, LitKind, Token, TokenKind};
 use crate::rustc_ast::util::parser::AssocOp;
 use crate::rustc_ast::{
@@ -22,7 +21,10 @@ use crate::rustc_errors::{
     pluralize,
 };
 use crate::rustc_span::symbol::used_keywords;
-use crate::rustc_span::{BytePos, DUMMY_SP, Ident, Span, SpanSnippetError, Spanned, Symbol, kw, sym};
+use crate::rustc_span::{
+    BytePos, DUMMY_SP, Ident, Span, SpanSnippetError, Spanned, Symbol, kw, sym,
+};
+use ast::token::IdentIsRaw;
 use thin_vec::{ThinVec, thin_vec};
 use tracing::{debug, trace};
 
@@ -31,6 +33,7 @@ use super::{
     BlockMode, CommaRecoveryMode, ExpTokenPair, Parser, PathStyle, Restrictions, SemiColonMode,
     SeqSep, TokenType,
 };
+use crate::exp;
 use crate::rustc_parse::diagnostics::{
     AddParen, AmbiguousPlus, AsyncMoveBlockIn2015, AsyncUseBlockIn2015, AttributeOnParamType,
     AwaitSuggestion, BadQPathStage2, BadTypePlus, BadTypePlusSub, ColonAsSemi,
@@ -47,7 +50,6 @@ use crate::rustc_parse::diagnostics::{
     UnexpectedConstParamDeclaration, UnexpectedConstParamDeclarationSugg, UnmatchedAngleBrackets,
     UseEqInstead, WrapType,
 };
-use crate::exp;
 use crate::rustc_parse::parser::attr::InnerAttrPolicy;
 use crate::rustc_parse::parser::{FnContext, IsDotDotDot};
 
@@ -985,7 +987,10 @@ impl<'a> Parser<'a> {
             // }
             debug!(?maybe_struct_name, ?self.token);
             let mut snapshot = self.create_snapshot_for_diagnostic();
-            let path = Path { segments: ast::PathSegments::new(), span: self.prev_token.span.shrink_to_lo() };
+            let path = Path {
+                segments: ast::PathSegments::new(),
+                span: self.prev_token.span.shrink_to_lo(),
+            };
             let struct_expr = snapshot.parse_expr_struct(None, path, false);
             let block_tail = self.parse_block_tail(lo, s, AttemptLocalParseRecovery::No);
             return Some(match (struct_expr, block_tail) {
@@ -2530,7 +2535,7 @@ impl<'a> Parser<'a> {
     /// like the user has forgotten them.
     pub(super) fn handle_ambiguous_unbraced_const_arg(
         &mut self,
-        args: &mut ThinVec<AngleBracketedArg>,
+        args: &mut ast::ArenaVec<AngleBracketedArg>,
     ) -> PResult<'a, bool> {
         // If we haven't encountered a closing `>`, then the argument is malformed.
         // It's likely that the user has written a const expression without enclosing it
@@ -2822,7 +2827,9 @@ impl<'a> Parser<'a> {
                                             segments: [
                                                 PathSegment::from_ident(*old_ident),
                                                 PathSegment::from_ident(*ident),
-                                            ].into_iter().collect(),
+                                            ]
+                                            .into_iter()
+                                            .collect(),
                                         },
                                     );
                                     first_pat = self.mk_pat(new_span, path);
