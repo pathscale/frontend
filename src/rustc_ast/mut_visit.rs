@@ -299,6 +299,14 @@ impl<V: MutVisitor> MutVisitable<V> for ArenaVec<P<Expr>> {
     }
 }
 
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<PatField> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|field| visitor.flat_map_pat_field(field));
+    }
+}
+
 macro_rules! generate_flat_map_visitor_fns {
     ($($name:ident, $Ty:ty, $flat_map_fn:ident$(, $param:ident: $ParamTy:ty)*;)+) => {
         $(

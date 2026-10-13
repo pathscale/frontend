@@ -428,6 +428,7 @@ macro_rules! common_visitor_and_walkers {
             ThinVec<TestBinderExists>,
             ThinVec<TestBinderForall>,
             ThinVec<P<Ty>>,
+            ArenaVec<P<Ty>>,
             ThinVec<TyPat>,
             ThinVec<EiiImpl>,
         );
@@ -1247,6 +1248,17 @@ impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<P<Expr>> {
     fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
         for expr in self {
             try_visit!(visitor.visit_expr(expr));
+        }
+        V::Result::output()
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<PatField> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for field in self {
+            try_visit!(visitor.visit_pat_field(field));
         }
         V::Result::output()
     }

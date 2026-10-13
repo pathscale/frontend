@@ -1097,7 +1097,7 @@ impl Pat {
             // A tuple pattern `(P0, .., Pn)` can be reparsed as `(T0, .., Tn)`
             // assuming `T0` to `Tn` are all syntactically valid as types.
             PatKind::Tuple(pats) => {
-                let tys = pats.iter().map(|pat| pat.to_ty()).collect::<Option<ThinVec<_>>>()?;
+                let tys = pats.iter().map(|pat| pat.to_ty()).collect::<Option<ArenaVec<_>>>()?;
                 TyKind::Tup(tys)
             }
             _ => return None,
@@ -1325,7 +1325,7 @@ pub enum PatKind {
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     /// The path uses the node allocator to keep the common pattern variants small.
-    Struct(Option<Box<QSelf>>, P<Path>, ThinVec<PatField>, PatFieldsRest),
+    Struct(Option<Box<QSelf>>, P<Path>, ArenaVec<PatField>, PatFieldsRest),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
     /// The path uses the node allocator to keep the common pattern variants small.
@@ -1956,7 +1956,7 @@ impl Expr {
             }
 
             ExprKind::Tup(exprs) => {
-                let tys = exprs.iter().map(|expr| expr.to_ty()).collect::<Option<ThinVec<_>>>()?;
+                let tys = exprs.iter().map(|expr| expr.to_ty()).collect::<Option<ArenaVec<_>>>()?;
                 TyKind::Tup(tys)
             }
 
@@ -2979,7 +2979,7 @@ pub enum TyKind {
     /// The never type (`!`).
     Never,
     /// A tuple (`(A, B, C, D,...)`).
-    Tup(ThinVec<P<Ty>>),
+    Tup(ArenaVec<P<Ty>>),
     /// A path (`module::module::...::Type`), optionally
     /// "qualified", e.g., `<Vec<T> as SomeTrait>::SomeType`.
     ///

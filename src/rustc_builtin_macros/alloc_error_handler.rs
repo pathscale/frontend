@@ -53,7 +53,7 @@ pub(crate) fn expand(
     let stmts = thin_vec![generate_handler(ecx, ident, span, sig_span)];
 
     // Generate anonymous constant serving as container for the allocator methods.
-    let const_ty = ecx.ty(sig_span, TyKind::Tup(ThinVec::new()));
+    let const_ty = ecx.ty(sig_span, TyKind::Tup(ast::ArenaVec::new()));
     let const_body = ecx.expr_block(ecx.block(span, stmts));
     let const_item = ecx.item_const(
         span,

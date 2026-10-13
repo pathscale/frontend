@@ -331,7 +331,7 @@ fn generate_default_impl(
     };
 
     let anon_mod = |span: Span, stmts: ThinVec<ast::Stmt>| {
-        let unit = ecx.ty(item_span, ast::TyKind::Tup(ThinVec::new()));
+        let unit = ecx.ty(item_span, ast::TyKind::Tup(ast::ArenaVec::new()));
         let underscore = Ident::new(kw::Underscore, item_span);
         ecx.item_const(
             span,

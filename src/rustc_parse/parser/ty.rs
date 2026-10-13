@@ -472,11 +472,15 @@ impl<'a> Parser<'a> {
     /// - `(TYPE,)`, a tuple with a single field of type TYPE.
     fn parse_ty_tuple_or_parens(&mut self, lo: Span, allow_plus: AllowPlus) -> PResult<'a, TyKind> {
         let mut trailing_plus = false;
-        let (ts, trailing) = self.parse_paren_comma_seq(|p| {
-            let ty = p.parse_ty()?;
-            trailing_plus = p.prev_token == TokenKind::Plus;
-            Ok(ty)
-        })?;
+        let (ts, trailing) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<P<Ty>>>(
+            exp!(OpenParen),
+            exp!(CloseParen),
+            |p| {
+                let ty = p.parse_ty()?;
+                trailing_plus = p.prev_token == TokenKind::Plus;
+                Ok(ty)
+            },
+        )?;
 
         if ts.len() == 1 && matches!(trailing, Trailing::No) {
             let ty = ts.into_iter().next().unwrap();

@@ -1584,7 +1584,7 @@ impl<'a> Parser<'a> {
             let guar = e.emit();
             self.recover_stmt();
             // When recovering, pretend we had `Foo { .. }`, to avoid cascading errors.
-            (ThinVec::new(), PatFieldsRest::Recovered(guar))
+            (ast::ArenaVec::new(), PatFieldsRest::Recovered(guar))
         });
         self.bump();
         Ok(PatKind::Struct(qself, P::new(path), fields, etc))
@@ -1681,8 +1681,8 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses the fields of a struct-like pattern.
-    fn parse_pat_fields(&mut self) -> PResult<'a, (ThinVec<PatField>, PatFieldsRest)> {
-        let mut fields: ThinVec<PatField> = ThinVec::new();
+    fn parse_pat_fields(&mut self) -> PResult<'a, (ast::ArenaVec<PatField>, PatFieldsRest)> {
+        let mut fields: ast::ArenaVec<PatField> = ast::ArenaVec::new();
         let mut etc = PatFieldsRest::None;
         let mut ate_comma = true;
         let mut delayed_err: Option<Diag<'a>> = None;
@@ -1871,7 +1871,7 @@ impl<'a> Parser<'a> {
 
     /// If the user writes `S { ref field: name }` instead of `S { field: ref name }`, we suggest
     /// the correct code.
-    fn recover_misplaced_pattern_modifiers(&self, fields: &ThinVec<PatField>, err: &mut Diag<'a>) {
+    fn recover_misplaced_pattern_modifiers(&self, fields: &[PatField], err: &mut Diag<'a>) {
         if let Some(last) = fields.last()
             && last.is_shorthand
             && let PatKind::Ident(binding, ident, None) = last.pat.kind

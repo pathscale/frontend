@@ -12,10 +12,10 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-pub(crate) use Ty::*;
 use crate::rustc_ast::{self as ast, GenericArg, GenericParamKind, Generics, TyKind};
 use crate::rustc_expand::base::ExtCtxt;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw};
+pub(crate) use Ty::*;
 use thin_vec::ThinVec;
 
 /// A path, e.g., `::std::option::Option::<i32>` (global). Has support
@@ -98,7 +98,7 @@ impl Ty {
             Path(p) => cx.ty_path(p.to_path(cx, span, self_ty, self_generics)),
             Self_ => cx.ty_path(self.to_path(cx, span, self_ty, self_generics)),
             Unit => {
-                let ty = ast::TyKind::Tup(ThinVec::new());
+                let ty = ast::TyKind::Tup(ast::ArenaVec::new());
                 cx.ty(span, ty)
             }
             AstTy(ty) => ty.clone(),

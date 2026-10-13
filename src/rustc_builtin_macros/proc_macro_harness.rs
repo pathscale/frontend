@@ -110,12 +110,13 @@ impl<'a> CollectProcMacros<'a> {
         function_ident: Ident,
         attr: &'a ast::Attribute,
     ) {
-        let Some(crate::rustc_attr_ir::Attribute::Parsed(AttributeKind::ProcMacroDerive { .. })) =
-            AttributeParser::parse_limited_sym(
-                self.session,
-                slice::from_ref(attr),
-                &[sym::proc_macro_derive],
-            )
+        let Some(crate::rustc_attr_ir::Attribute::Parsed(AttributeKind::ProcMacroDerive {
+            ..
+        })) = AttributeParser::parse_limited_sym(
+            self.session,
+            slice::from_ref(attr),
+            &[sym::proc_macro_derive],
+        )
         else {
             return;
         };
@@ -382,7 +383,7 @@ fn mk_decls(cx: &mut ExtCtxt<'_>, macros: &[ProcMacro]) -> P<ast::Item> {
     let anon_constant = cx.item_const(
         span,
         Ident::new(kw::Underscore, span),
-        cx.ty(span, ast::TyKind::Tup(ThinVec::new())),
+        cx.ty(span, ast::TyKind::Tup(ast::ArenaVec::new())),
         Some(block),
         ast::ConstItemKind::Body,
     );
