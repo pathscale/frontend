@@ -2644,7 +2644,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses the `|arg, arg|` header of a closure.
-    fn parse_fn_block_decl(&mut self) -> PResult<'a, (Box<FnDecl>, Span)> {
+    fn parse_fn_block_decl(&mut self) -> PResult<'a, (P<FnDecl>, Span)> {
         let arg_start = self.token.span.lo();
 
         let inputs = if self.eat(exp!(OrOr)) {
@@ -2666,7 +2666,7 @@ impl<'a> Parser<'a> {
         let output =
             self.parse_ret_ty(AllowPlus::Yes, RecoverQPath::Yes, RecoverReturnSign::Yes)?;
 
-        Ok((Box::new(FnDecl { inputs, output }), arg_span))
+        Ok((P::new(FnDecl { inputs, output }), arg_span))
     }
 
     /// Parses a parameter in a closure header (e.g., `|arg, arg|`).
@@ -4271,7 +4271,7 @@ impl<'a> Parser<'a> {
                 movability: crate::rustc_ast::Movability::Movable,
                 capture_clause: crate::rustc_ast::CaptureBy::Ref,
                 coroutine_marker: None,
-                fn_decl: Box::new(crate::rustc_ast::FnDecl {
+                fn_decl: P::new(crate::rustc_ast::FnDecl {
                     inputs: Default::default(),
                     output: crate::rustc_ast::FnRetTy::Default(span),
                 }),

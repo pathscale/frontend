@@ -690,8 +690,8 @@ impl<'a> Parser<'a> {
         fn_parse_mode: &FnParseMode,
         ret_allow_plus: AllowPlus,
         recover_return_sign: RecoverReturnSign,
-    ) -> PResult<'a, Box<FnDecl>> {
-        Ok(Box::new(FnDecl {
+    ) -> PResult<'a, P<FnDecl>> {
+        Ok(P::new(FnDecl {
             inputs: self.parse_fn_params(fn_parse_mode)?,
             output: self.parse_ret_ty(ret_allow_plus, RecoverQPath::Yes, recover_return_sign)?,
         }))
