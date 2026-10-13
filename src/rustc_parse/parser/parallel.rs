@@ -98,7 +98,9 @@ impl<'a> Parser<'a> {
         }
         let attr_start = self.psess.attr_id_generator.position();
         let edition = self.psess.edition;
-        let original = with_session_globals(|globals| globals.share_for_parse());
+        let original = with_session_globals(|globals| {
+            globals.can_share_for_parse().then(|| globals.share_for_parse())
+        })?;
         let (fork, baseline) = original.fork_for_parse();
         let fork = Arc::new(fork);
         let initial = State::copy(self);
