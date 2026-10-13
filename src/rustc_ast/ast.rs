@@ -745,7 +745,7 @@ pub struct AngleBracketedArgs {
     /// The overall span.
     pub span: Span,
     /// The comma separated parts in the `<...>`.
-    pub args: ThinVec<AngleBracketedArg>,
+    pub args: ArenaVec<AngleBracketedArg>,
 }
 
 /// Either an argument for a generic parameter or a constraint on an associated item.

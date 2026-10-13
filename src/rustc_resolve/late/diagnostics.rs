@@ -4,8 +4,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -101,7 +101,9 @@ fn path_to_string_without_assoc_item_bindings(path: &Path) -> String {
         if let Some(args) = segment.args.as_deref_mut()
             && let ast::GenericArgs::AngleBracketed(angle_bracketed) = args
         {
-            angle_bracketed.args.retain(|arg| matches!(arg, ast::AngleBracketedArg::Arg(_)));
+            angle_bracketed.args.flat_map_in_place(|arg| {
+                matches!(&arg, ast::AngleBracketedArg::Arg(_)).then_some(arg)
+            });
             remove_args = angle_bracketed.args.is_empty();
         }
         if remove_args {
@@ -311,8 +313,7 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                 };
 
                 // Only suggest for bounds that are explicitly on an in-scope type parameter.
-                let Some(partial_res) = this.partial_res(where_bound.bounded_ty.id)
-                else {
+                let Some(partial_res) = this.partial_res(where_bound.bounded_ty.id) else {
                     continue;
                 };
                 if !matches!(partial_res.full_res(), Some(Res::Def(DefKind::TyParam, _))) {
@@ -574,7 +575,8 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             if let Some(module_def_id) = module
                 && let Some(directive) = self.r.on_unknown_data(module_def_id)
             {
-                let args = FormatArgs { unresolved: item_ident.to_string(), ..FormatArgs::new(mod_str) };
+                let args =
+                    FormatArgs { unresolved: item_ident.to_string(), ..FormatArgs::new(mod_str) };
                 let CustomDiagnostic {
                     message,
                     label,
@@ -2079,7 +2081,11 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
                         None
                     })?;
                     let start = open_brace_span.hi() + crate::rustc_span::BytePos(offset as u32);
-                    Some(open_brace_span.with_lo(start).with_hi(start + crate::rustc_span::BytePos(1)))
+                    Some(
+                        open_brace_span
+                            .with_lo(start)
+                            .with_hi(start + crate::rustc_span::BytePos(1)),
+                    )
                 });
             let closing_brace = close_brace_span.map(|sp| span.to(sp));
             (true, closing_brace)
@@ -3000,7 +3006,8 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
         let name = path[path.len() - 1].ident.name;
         // Deterministic: the same suggestion sorting every candidate by its text would pick,
         // found in one pass over the candidates as collected, each text read once.
-        let texts: Vec<&str> = names.iter().map(|suggestion| suggestion.candidate.as_str()).collect();
+        let texts: Vec<&str> =
+            names.iter().map(|suggestion| suggestion.candidate.as_str()).collect();
         let Some(index) = find_best_match_index_as_if_sorted(&texts, name.as_str()) else {
             return TypoCandidate::None;
         };
@@ -4213,7 +4220,9 @@ impl<'ast, 'ra, 'tcx> LateResolutionVisitor<'_, 'ast, 'ra, 'tcx> {
             }
             MissingLifetimeKind::Brackets => {
                 let sugg: String = core::iter::once("<")
-                    .chain(core::iter::repeat_n(existing_name.as_str(), lt.count).separated_by(", "))
+                    .chain(
+                        core::iter::repeat_n(existing_name.as_str(), lt.count).separated_by(", "),
+                    )
                     .chain([">"])
                     .collect();
                 (lt.span.shrink_to_hi(), sugg)
@@ -4576,7 +4585,7 @@ fn mk_where_bound_predicate(
             None => {
                 second_last.args =
                     Some(P::new(ast::GenericArgs::AngleBracketed(ast::AngleBracketedArgs {
-                        args: ThinVec::from([added_constraint]),
+                        args: core::iter::once(added_constraint).collect(),
                         span: DUMMY_SP,
                     })));
             }

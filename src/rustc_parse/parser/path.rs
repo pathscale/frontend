@@ -3,7 +3,6 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem;
 
-use ast::token::IdentIsRaw;
 use crate::rustc_ast::token::{self, MetaVarKind, Token, TokenKind};
 use crate::rustc_ast::{
     self as ast, AngleBracketedArg, AngleBracketedArgs, AnonConst, AssocItemConstraint,
@@ -12,18 +11,19 @@ use crate::rustc_ast::{
 };
 use crate::rustc_errors::{Applicability, Diag, PResult};
 use crate::rustc_span::{BytePos, Ident, Span, kw, sym};
+use ast::token::IdentIsRaw;
 use thin_vec::ThinVec;
 use tracing::debug;
 
 use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{Parser, Restrictions, TokenType};
+use crate::exp;
 use crate::rustc_parse::ast::{PatKind, TyKind};
 use crate::rustc_parse::diagnostics::{
     self, AttributeOnEmptyType, AttributeOnGenericArg, ConstGenericWithoutBraces,
     ConstGenericWithoutBracesSugg, PathFoundAttributeInParams, PathFoundCVariadicParams,
     PathSingleColon, PathTripleColon,
 };
-use crate::exp;
 use crate::rustc_parse::parser::{
     CommaRecoveryMode, Expr, ExprKind, FnContext, FnParseMode, RecoverColon, RecoverComma,
 };
@@ -544,7 +544,7 @@ impl<'a> Parser<'a> {
         style: PathStyle,
         lo: Span,
         ty_generics: Option<&Generics>,
-    ) -> PResult<'a, ThinVec<AngleBracketedArg>> {
+    ) -> PResult<'a, ast::ArenaVec<AngleBracketedArg>> {
         // We need to detect whether there are extra leading left angle brackets and produce an
         // appropriate error and suggestion. This cannot be implemented by looking ahead at
         // upcoming tokens for a matching `>` character - if there are unmatched `<` tokens
@@ -687,8 +687,8 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_angle_args(
         &mut self,
         ty_generics: Option<&Generics>,
-    ) -> PResult<'a, ThinVec<AngleBracketedArg>> {
-        let mut args = ThinVec::new();
+    ) -> PResult<'a, ast::ArenaVec<AngleBracketedArg>> {
+        let mut args = ast::ArenaVec::new();
         while let Some(arg) = self.parse_angle_arg(ty_generics)? {
             args.push(arg);
             if !self.eat(exp!(Comma)) {
