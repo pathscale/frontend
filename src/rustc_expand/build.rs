@@ -1,6 +1,4 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_ast::token::Delimiter;
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::util::literal;
@@ -9,6 +7,8 @@ use crate::rustc_ast::{
     UnOp, attr, token, tokenstream,
 };
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Spanned, Symbol, kw, sym};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use thin_vec::{ThinVec, thin_vec};
 
 use crate::rustc_expand::base::ExtCtxt;
@@ -353,7 +353,7 @@ impl<'a> ExtCtxt<'a> {
             ast::ExprKind::MethodCall(P::new(ast::MethodCall {
                 seg,
                 receiver: expr,
-                args,
+                args: args.into(),
                 span,
             })),
         )
@@ -365,7 +365,7 @@ impl<'a> ExtCtxt<'a> {
         expr: P<ast::Expr>,
         args: ThinVec<P<ast::Expr>>,
     ) -> P<ast::Expr> {
-        self.expr(span, ast::ExprKind::Call(expr, args))
+        self.expr(span, ast::ExprKind::Call(expr, args.into()))
     }
     pub fn expr_loop(&self, sp: Span, block: P<ast::Block>) -> P<ast::Expr> {
         self.expr(sp, ast::ExprKind::Loop(block, None, sp))
@@ -379,7 +379,7 @@ impl<'a> ExtCtxt<'a> {
         id: Ident,
         args: ThinVec<P<ast::Expr>>,
     ) -> P<ast::Expr> {
-        self.expr(span, ast::ExprKind::Call(self.expr_ident(span, id), args))
+        self.expr(span, ast::ExprKind::Call(self.expr_ident(span, id), args.into()))
     }
     pub fn expr_call_global(
         &self,
@@ -595,12 +595,7 @@ impl<'a> ExtCtxt<'a> {
         self.arm(span, self.pat_wild(span), self.expr_unreachable(span))
     }
 
-    pub fn expr_match(
-        &self,
-        span: Span,
-        arg: P<ast::Expr>,
-        arms: ThinVec<ast::Arm>,
-    ) -> P<Expr> {
+    pub fn expr_match(&self, span: Span, arg: P<ast::Expr>, arms: ThinVec<ast::Arm>) -> P<Expr> {
         self.expr(span, ast::ExprKind::Match(arg, arms, MatchKind::Prefix))
     }
 

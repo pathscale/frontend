@@ -20,7 +20,9 @@ use thin_vec::ThinVec;
 
 use crate::rustc_ast::ast::*;
 use crate::rustc_ast::tokenstream::*;
-use crate::rustc_ast::visit::{AssocCtxt, BoundKind, FnCtxt, LifetimeCtxt, VisitorResult, try_visit};
+use crate::rustc_ast::visit::{
+    AssocCtxt, BoundKind, FnCtxt, LifetimeCtxt, VisitorResult, try_visit,
+};
 
 mod sealed {
     use crate::rustc_ast_ir::visit::VisitorResult;
@@ -272,6 +274,14 @@ macro_rules! define_named_walk {
 }
 
 super::common_visitor_and_walkers!((mut) MutVisitor);
+
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<P<Expr>> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|expr| visitor.filter_map_expr(expr));
+    }
+}
 
 macro_rules! generate_flat_map_visitor_fns {
     ($($name:ident, $Ty:ty, $flat_map_fn:ident$(, $param:ident: $ParamTy:ty)*;)+) => {

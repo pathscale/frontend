@@ -7,9 +7,9 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use alloc::sync::Arc;
 use core::mem;
 use core::ops::ControlFlow;
-use alloc::sync::Arc;
 
 use crate::rustc_ast::node_id::NodeMap;
 use crate::rustc_ast::*;
@@ -18,10 +18,12 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::{HirId, Target, find_attr};
-use crate::span_bug;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_session::diagnostics::report_lit_error;
-use crate::rustc_span::{ByteSymbol, DUMMY_SP, DesugaringKind, Ident, Span, Spanned, Symbol, respan, sym};
+use crate::rustc_span::{
+    ByteSymbol, DUMMY_SP, DesugaringKind, Ident, Span, Spanned, Symbol, respan, sym,
+};
+use crate::span_bug;
 use thin_vec::{ThinVec, thin_vec};
 use visit::{Visitor, walk_expr};
 
@@ -542,7 +544,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_legacy_const_generics(
         &mut self,
         mut f: Expr,
-        args: ThinVec<P<Expr>>,
+        args: ast::ArenaVec<P<Expr>>,
         legacy_args_idx: &[usize],
     ) -> hir::ExprKind<'hir> {
         let ExprKind::Path(None, path) = &mut f.kind else {
@@ -1202,7 +1204,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
             self.stmt_let_pat(None, whole_span, Some(rhs), pat, hir::LocalSource::AssignDesugar);
 
         // `a = lhs1; b = lhs2;`.
-        let stmts = self.arena.alloc_from_iter(core::iter::once(destructure_let).chain(assignments));
+        let stmts =
+            self.arena.alloc_from_iter(core::iter::once(destructure_let).chain(assignments));
 
         // Wrap everything in a block.
         hir::ExprKind::Block(self.block_all(whole_span, stmts, None), None)

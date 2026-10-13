@@ -2,19 +2,18 @@
 
 use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::mem;
 use core::ops::{Bound, ControlFlow};
 
-use ast::mut_visit::{self, MutVisitor};
-use ast::token::IdentIsRaw;
-use ast::{ForLoopKind, MatchKind, Pat, Path, PathSegment, Recovered};
 use crate::rustc_ast::token::{self, Delimiter, InvisibleOrigin, MetaVarKind, Token, TokenKind};
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast::util::classify;
-use crate::rustc_ast::util::parser::{AssocOp, ExprPrecedence, Fixity, prec_let_scrutinee_needs_par};
+use crate::rustc_ast::util::parser::{
+    AssocOp, ExprPrecedence, Fixity, prec_let_scrutinee_needs_par,
+};
 use crate::rustc_ast::visit::{Visitor, walk_expr};
 use crate::rustc_ast::{
     self as ast, AnonConst, Arm, AssignOp, AssignOpKind, AttrStyle, AttrVec, BinOp, BinOpKind,
@@ -25,10 +24,15 @@ use crate::rustc_ast::{
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Applicability, Diag, PResult, StashKey, Subdiagnostic};
 use crate::rustc_lint_defs::builtin::BREAK_WITH_LABEL_AND_LOOP;
-use rustc_literal_escaper::unescape_char;
 use crate::rustc_session::diagnostics::report_lit_error;
 use crate::rustc_span::edition::Edition;
-use crate::rustc_span::{BytePos, ErrorGuaranteed, Ident, Pos, Span, Spanned, Symbol, kw, respan, sym};
+use crate::rustc_span::{
+    BytePos, ErrorGuaranteed, Ident, Pos, Span, Spanned, Symbol, kw, respan, sym,
+};
+use ast::mut_visit::{self, MutVisitor};
+use ast::token::IdentIsRaw;
+use ast::{ForLoopKind, MatchKind, Pat, Path, PathSegment, Recovered};
+use rustc_literal_escaper::unescape_char;
 use thin_vec::{ThinVec, thin_vec};
 use tracing::instrument;
 
@@ -91,8 +95,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a sequence of expressions delimited by parentheses.
-    fn parse_expr_paren_seq(&mut self) -> PResult<'a, ThinVec<P<Expr>>> {
-        self.parse_paren_comma_seq(Self::parse_expr).map(|(r, _)| r)
+    fn parse_expr_paren_seq(&mut self) -> PResult<'a, ast::ArenaVec<P<Expr>>> {
+        self.expect(exp!(OpenParen))?;
+        self.parse_seq_to_end_with(
+            exp!(CloseParen),
+            SeqSep::trailing_allowed(exp!(Comma)),
+            Self::parse_expr,
+        )
+        .map(|(r, _)| r)
     }
 
     /// Parses an expression, subject to the given restrictions.
@@ -1269,13 +1279,12 @@ impl<'a> Parser<'a> {
     /// only for such a callee, and the path is moved out of the callee on the error path
     /// instead of being cloned up front for every call.
     fn parse_expr_fn_call(&mut self, lo: Span, fun: P<Expr>) -> P<Expr> {
-        let snapshot = if self.token == token::OpenParen
-            && matches!(fun.kind, ExprKind::Path(None, _))
-        {
-            Some(self.create_snapshot_for_diagnostic())
-        } else {
-            None
-        };
+        let snapshot =
+            if self.token == token::OpenParen && matches!(fun.kind, ExprKind::Path(None, _)) {
+                Some(self.create_snapshot_for_diagnostic())
+            } else {
+                None
+            };
         let open_paren = self.token.span;
         let call_depth = self.token_cursor.depth();
 
@@ -1305,9 +1314,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn recover_raw_ref_call_args(&mut self, guar: ErrorGuaranteed) -> ThinVec<P<Expr>> {
+    fn recover_raw_ref_call_args(&mut self, guar: ErrorGuaranteed) -> ast::ArenaVec<P<Expr>> {
         let err_span = self.prev_token.span.to(self.token.span);
-        let mut args = thin_vec![self.mk_expr_err(err_span, guar)];
+        let mut args = ast::ArenaVec::new();
+        args.push(self.mk_expr_err(err_span, guar));
         while !self.token.kind.is_close_delim_or_eof() {
             if self.eat(exp!(Comma)) {
                 if !self.token.kind.is_close_delim_or_eof() {
@@ -2828,10 +2838,7 @@ impl<'a> Parser<'a> {
     /// i.e. the same span we use to later decide whether the drop behaviour should be that of
     /// edition `..=2021` or that of `2024..`.
     // Public to use it for custom `if` expressions in rustfmt forks like https://github.com/tucant/rustfmt
-    pub fn parse_expr_cond(
-        &mut self,
-        let_chains_policy: LetChainsPolicy,
-    ) -> PResult<'a, P<Expr>> {
+    pub fn parse_expr_cond(&mut self, let_chains_policy: LetChainsPolicy) -> PResult<'a, P<Expr>> {
         let mut cond =
             self.parse_expr_res(Restrictions::NO_STRUCT_LITERAL | Restrictions::ALLOW_LET)?;
 
@@ -3608,7 +3615,8 @@ impl<'a> Parser<'a> {
 
         CondChecker::new(self, LetChainsPolicy::AlwaysAllowed).visit_expr(&mut cond);
 
-        let guard = Guard { cond: cond.into_inner(), span_with_leading_if: leading_if_span.to(cond_span) };
+        let guard =
+            Guard { cond: cond.into_inner(), span_with_leading_if: leading_if_span.to(cond_span) };
         Ok(Box::new(guard))
     }
 
@@ -3628,7 +3636,9 @@ impl<'a> Parser<'a> {
                 // FIXME(guard_patterns): convert this to a normal guard instead
                 let span = pat.span;
                 let ast::PatKind::Paren(subpat) = pat.kind else { unreachable!() };
-                let ast::PatKind::Guard(_, mut guard) = subpat.into_inner().kind else { unreachable!() };
+                let ast::PatKind::Guard(_, mut guard) = subpat.into_inner().kind else {
+                    unreachable!()
+                };
                 self.psess.gated_spans.ungate_last(sym::guard_patterns, guard.span());
                 let mut checker = CondChecker::new(self, LetChainsPolicy::AlwaysAllowed);
                 checker.visit_expr(&mut guard.cond);
@@ -3658,10 +3668,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_match_guard_condition(
-        &mut self,
-        force_collect: ForceCollect,
-    ) -> PResult<'a, P<Expr>> {
+    fn parse_match_guard_condition(&mut self, force_collect: ForceCollect) -> PResult<'a, P<Expr>> {
         let attrs = self.parse_outer_attributes()?;
         let expr = self.collect_tokens(
             None,
@@ -4223,7 +4230,7 @@ impl<'a> Parser<'a> {
         ExprKind::Index(expr, idx, brackets_span)
     }
 
-    fn mk_call(&self, f: P<Expr>, args: ThinVec<P<Expr>>) -> ExprKind {
+    fn mk_call(&self, f: P<Expr>, args: ast::ArenaVec<P<Expr>>) -> ExprKind {
         ExprKind::Call(f, args)
     }
 
@@ -4241,12 +4248,7 @@ impl<'a> Parser<'a> {
         use_expr
     }
 
-    pub(crate) fn mk_expr_with_attrs(
-        &self,
-        span: Span,
-        kind: ExprKind,
-        attrs: AttrVec,
-    ) -> P<Expr> {
+    pub(crate) fn mk_expr_with_attrs(&self, span: Span, kind: ExprKind, attrs: AttrVec) -> P<Expr> {
         P::new(Expr { kind, span, attrs, id: DUMMY_NODE_ID, tokens: None })
     }
 
