@@ -16,8 +16,8 @@ description = "rustc's frontend with no LLVM and no std: parsing through MIR, as
 repository = "https://github.com/pathscale/frontend"
 readme = "README.md"
 publish = true
-# Measurement tools for working on this crate, not part of it.
-exclude = ["tools/"]
+# Measurement tools and private preservation artifacts are not part of the release package.
+exclude = ["tools/", "patches/"]
 
 [lib]
 path = "src/lib.rs"
