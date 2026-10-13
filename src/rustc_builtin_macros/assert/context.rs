@@ -104,14 +104,16 @@ impl<'cx, 'a> Context<'cx, 'a> {
             self.span,
             self.cx.item(
                 self.span,
-                thin_vec![self.cx.attr_nested_word(sym::allow, sym::unused_imports, self.span)],
+                core::iter::once(self.cx.attr_nested_word(sym::allow, sym::unused_imports, self.span)).collect(),
                 ItemKind::Use(UseTree {
                     prefix: self.cx.path(self.span, self.cx.std_path(&[sym::asserting])),
                     kind: UseTreeKind::Nested {
-                        items: thin_vec![
+                        items: [
                             nested_tree(self, sym::TryCaptureGeneric),
                             nested_tree(self, sym::TryCapturePrintable),
-                        ],
+                        ]
+                        .into_iter()
+                        .collect(),
                         span: self.span,
                     },
                 }),
@@ -167,9 +169,9 @@ impl<'cx, 'a> Context<'cx, 'a> {
         });
         self.cx.expr(
             self.span,
-            ExprKind::MacCall(Box::new(MacCall {
+            ExprKind::MacCall(P::new(MacCall {
                 path: panic_path,
-                args: Box::new(DelimArgs {
+                args: P::new(DelimArgs {
                     dspan: DelimSpan::from_single(self.span),
                     delim: Delimiter::Parenthesis,
                     tokens: initial.into_iter().chain(captures).collect::<TokenStream>(),

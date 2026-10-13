@@ -6,6 +6,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
@@ -433,7 +434,7 @@ mod llvm_enzyme {
         let d_attr = outer_normal_attr(&rustc_ad_attr, new_id, span);
 
         // If the source function has the `#[inline(never)]` attribute, we'll also add it to the diff function
-        let mut d_attrs = thin_vec![d_attr];
+        let mut d_attrs: ast::AttrVec = core::iter::once(d_attr).collect();
 
         if has_inline_never {
             d_attrs.push(inline_never);
@@ -537,10 +538,10 @@ mod llvm_enzyme {
             .collect();
         let fn_ptr_ty = ecx.ty(
             span,
-            TyKind::FnPtr(Box::new(ast::FnPtrTy {
+            TyKind::FnPtr(P::new(ast::FnPtrTy {
                 safety: p_sig.header.safety,
                 ext: p_sig.header.ext,
-                generic_params: ThinVec::new(),
+                generic_params: crate::rustc_ast::ArenaVec::new(),
                 decl: P::new(ast::FnDecl {
                     inputs: fn_ptr_params,
                     output: p_sig.decl.output.clone(),
@@ -803,7 +804,7 @@ mod llvm_enzyme {
                     let name = "dret".to_string();
                     let ident = Ident::from_str_and_span(&name, ty.span);
                     let shadow_arg = ast::Param {
-                        attrs: ThinVec::new(),
+                        attrs: crate::rustc_ast::AttrVec::new(),
                         ty: ty.clone(),
                         pat: P::new(ast::Pat {
                             id: ast::DUMMY_NODE_ID,

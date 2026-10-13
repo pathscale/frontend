@@ -265,7 +265,7 @@ impl PathSegment {
 /// The segments in an AST path.
 ///
 /// A single segment is stored inline. Two through four segments use an arena-owned
-/// inline buffer. Longer paths use a `ThinVec`; empty paths do not allocate.
+/// inline buffer. Longer paths use chunk-backed `ArenaVec` storage; empty paths do not allocate.
 ///
 /// `PathSegment` is 24 bytes, and `NodeId` is a plain `u32` in this crate, so it provides no
 /// layout niche for the enum tag. The enum and this wrapper are 32 bytes on 64-bit targets.
@@ -277,13 +277,13 @@ pub struct PathSegments(PathSegmentsInner);
 enum PathSegmentsInner {
     Inline(PathSegment),
     Short(P<smallvec::SmallVec<[PathSegment; 4]>>),
-    Heap(ThinVec<PathSegment>),
+    Heap(ArenaVec<PathSegment>),
 }
 
 impl PathSegments {
     /// Creates an empty path segment list without allocating.
     pub fn new() -> Self {
-        Self(PathSegmentsInner::Heap(ThinVec::new()))
+        Self(PathSegmentsInner::Heap(ArenaVec::new()))
     }
 
     /// Creates a list by cloning `element` `count` times.
@@ -299,7 +299,7 @@ impl PathSegments {
                 Self(PathSegmentsInner::Short(P::new(segments)))
             }
             count => {
-                let mut segments = ThinVec::with_capacity(count);
+                let mut segments = ArenaVec::with_capacity(count);
                 for _ in 0..count {
                     segments.push(element.clone());
                 }
@@ -354,7 +354,7 @@ impl PathSegments {
     /// Inserts a segment at `index`.
     pub fn insert(&mut self, index: usize, segment: PathSegment) {
         assert!(index <= self.len());
-        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ArenaVec::new()));
         self.0 = match old {
             PathSegmentsInner::Inline(first) => {
                 let mut segments = smallvec::SmallVec::new();
@@ -372,7 +372,7 @@ impl PathSegments {
                 PathSegmentsInner::Short(segments)
             }
             PathSegmentsInner::Short(segments) => {
-                let mut heap = ThinVec::with_capacity(8);
+                let mut heap = ArenaVec::with_capacity(8);
                 heap.extend(segments.into_inner());
                 heap.insert(index, segment);
                 PathSegmentsInner::Heap(heap)
@@ -389,7 +389,7 @@ impl PathSegments {
 
     /// Removes and returns the last segment.
     pub fn pop(&mut self) -> Option<PathSegment> {
-        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ArenaVec::new()));
         match old {
             PathSegmentsInner::Inline(segment) => Some(segment),
             PathSegmentsInner::Short(mut segments) => {
@@ -404,7 +404,7 @@ impl PathSegments {
             PathSegmentsInner::Heap(mut segments) => {
                 let popped = segments.pop();
                 self.0 = match segments.len() {
-                    0 => PathSegmentsInner::Heap(ThinVec::new()),
+                    0 => PathSegmentsInner::Heap(ArenaVec::new()),
                     1 => PathSegmentsInner::Inline(segments.pop().unwrap()),
                     _ => PathSegmentsInner::Heap(segments),
                 };
@@ -416,7 +416,7 @@ impl PathSegments {
     /// Removes and returns the segment at `index`.
     pub fn remove(&mut self, index: usize) -> PathSegment {
         assert!(index < self.len());
-        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+        let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ArenaVec::new()));
         match old {
             PathSegmentsInner::Inline(segment) => segment,
             PathSegmentsInner::Short(mut segments) => {
@@ -446,7 +446,7 @@ impl PathSegments {
             return;
         }
         if len == 1 {
-            let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ThinVec::new()));
+            let old = mem::replace(&mut self.0, PathSegmentsInner::Heap(ArenaVec::new()));
             self.0 = match old {
                 PathSegmentsInner::Inline(segment) => PathSegmentsInner::Inline(segment),
                 PathSegmentsInner::Short(segments) => {
@@ -457,7 +457,7 @@ impl PathSegments {
                     segments.truncate(1);
                     match segments.pop() {
                         Some(segment) => PathSegmentsInner::Inline(segment),
-                        None => PathSegmentsInner::Heap(ThinVec::new()),
+                        None => PathSegmentsInner::Heap(ArenaVec::new()),
                     }
                 }
             };
@@ -472,7 +472,7 @@ impl PathSegments {
 
     /// Removes all segments without allocating.
     pub fn clear(&mut self) {
-        self.0 = PathSegmentsInner::Heap(ThinVec::new());
+        self.0 = PathSegmentsInner::Heap(ArenaVec::new());
     }
 }
 
@@ -498,6 +498,17 @@ impl DerefMut for PathSegments {
 
 impl From<ThinVec<PathSegment>> for PathSegments {
     fn from(segments: ThinVec<PathSegment>) -> Self {
+        match segments.len() {
+            0 => Self::new(),
+            1 => Self(PathSegmentsInner::Inline(segments.into_iter().next().unwrap())),
+            2..=4 => Self(PathSegmentsInner::Short(P::new(segments.into_iter().collect()))),
+            _ => Self(PathSegmentsInner::Heap(segments.into())),
+        }
+    }
+}
+
+impl From<ArenaVec<PathSegment>> for PathSegments {
+    fn from(segments: ArenaVec<PathSegment>) -> Self {
         match segments.len() {
             0 => Self::new(),
             1 => Self(PathSegmentsInner::Inline(segments.into_iter().next().unwrap())),
@@ -568,8 +579,8 @@ pub enum PathSegmentsIntoIter {
     Inline(Option<PathSegment>),
     /// Iterates over segments moved out of the arena-owned inline buffer.
     Short(smallvec::IntoIter<[PathSegment; 4]>),
-    /// Iterates over heap-stored segments.
-    Heap(thin_vec::IntoIter<PathSegment>),
+    /// Iterates over segments moved out of chunk-backed spill storage.
+    Heap(crate::rustc_ast::arena_vec::IntoIter<PathSegment>),
 }
 
 impl Iterator for PathSegmentsIntoIter {
@@ -619,7 +630,7 @@ impl<E: crate::rustc_span::SpanEncoder> crate::rustc_serialize::Encodable<E> for
 
 impl<D: crate::rustc_span::SpanDecoder> crate::rustc_serialize::Decodable<D> for PathSegments {
     fn decode(decoder: &mut D) -> Self {
-        let segments: ThinVec<PathSegment> = crate::rustc_serialize::Decodable::decode(decoder);
+        let segments: ArenaVec<PathSegment> = crate::rustc_serialize::Decodable::decode(decoder);
         segments.into()
     }
 }
@@ -788,7 +799,7 @@ pub struct ParenthesizedArgs {
     pub span: Span,
 
     /// `(A, B)`
-    pub inputs: ThinVec<Param>,
+    pub inputs: ArenaVec<Param>,
 
     /// ```text
     /// Foo(A, B) -> C
@@ -912,7 +923,7 @@ impl GenericParam {
 /// a function, enum, trait, etc.
 #[derive(Clone, Encodable, Decodable, Debug, Default, Walkable)]
 pub struct Generics {
-    pub params: ThinVec<GenericParam>,
+    pub params: crate::rustc_ast::ArenaVec<GenericParam>,
     pub where_clause: WhereClause,
     pub span: Span,
 }
@@ -960,7 +971,7 @@ pub enum WherePredicateKind {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct WhereBoundPredicate {
     /// Any generics from a `for` binding.
-    pub bound_generic_params: ThinVec<GenericParam>,
+    pub bound_generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
     /// The type being bounded.
     pub bounded_ty: P<Ty>,
     /// Trait and lifetime bounds (`Clone + Send + 'static`).
@@ -1325,11 +1336,11 @@ pub enum PatKind {
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     /// The path uses the node allocator to keep the common pattern variants small.
-    Struct(Option<Box<QSelf>>, P<Path>, ArenaVec<PatField>, PatFieldsRest),
+    Struct(Option<P<QSelf>>, P<Path>, ArenaVec<PatField>, PatFieldsRest),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
     /// The path uses the node allocator to keep the common pattern variants small.
-    TupleStruct(Option<Box<QSelf>>, P<Path>, ArenaVec<Pat>),
+    TupleStruct(Option<P<QSelf>>, P<Path>, ArenaVec<Pat>),
 
     /// An or-pattern `A | B | C`.
     /// Invariant: `pats.len() >= 2`.
@@ -1339,7 +1350,7 @@ pub enum PatKind {
     /// Unqualified path patterns `A::B::C` can legally refer to variants, structs, constants
     /// or associated constants. Qualified path patterns `<A>::B::C`/`<A as Trait>::B::C` can
     /// only legally refer to associated constants.
-    Path(Option<Box<QSelf>>, Path),
+    Path(Option<P<QSelf>>, Path),
 
     /// A tuple pattern (`(a, b)`).
     Tuple(ArenaVec<Pat>),
@@ -1377,13 +1388,13 @@ pub enum PatKind {
     Never,
 
     /// A guard pattern (e.g., `x if guard(x)`).
-    Guard(P<Pat>, Box<Guard>),
+    Guard(P<Pat>, P<Guard>),
 
     /// Parentheses in patterns used for grouping (i.e., `(PAT)`).
     Paren(P<Pat>),
 
     /// A macro pattern; pre-expansion.
-    MacCall(Box<MacCall>),
+    MacCall(P<MacCall>),
 
     /// Placeholder for a pattern that wasn't syntactically well formed in some way.
     Err(ErrorGuaranteed),
@@ -1690,7 +1701,7 @@ pub enum StmtKind {
     /// Just a trailing semi-colon.
     Empty,
     /// Macro.
-    MacCall(Box<MacCallStmt>),
+    MacCall(P<MacCallStmt>),
 }
 
 impl StmtKind {
@@ -1708,7 +1719,7 @@ impl StmtKind {
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct MacCallStmt {
-    pub mac: Box<MacCall>,
+    pub mac: P<MacCall>,
     pub style: MacStmtStyle,
     pub attrs: AttrVec,
     pub tokens: Option<LazyAttrTokenStream>,
@@ -1787,7 +1798,7 @@ pub struct Arm {
     /// Match arm pattern, e.g. `10` in `match foo { 10 => {}, _ => {} }`.
     pub pat: P<Pat>,
     /// Match arm guard, e.g. `n > 10` in `match foo { n if n > 10 => {}, _ => {} }`.
-    pub guard: Option<Box<Guard>>,
+    pub guard: Option<P<Guard>>,
     /// Match arm body. Omitted if the pattern is a never pattern.
     pub body: Option<P<Expr>>,
     pub span: Span,
@@ -1907,7 +1918,7 @@ impl Expr {
     pub fn to_bound(&self) -> Option<GenericBound> {
         match &self.kind {
             ExprKind::Path(None, path) => Some(GenericBound::Trait(PolyTraitRef::new(
-                ThinVec::new(),
+                ArenaVec::new(),
                 path.clone(),
                 TraitBoundModifiers::NONE,
                 self.span,
@@ -2089,7 +2100,7 @@ impl Expr {
             id: DUMMY_NODE_ID,
             kind: ExprKind::Dummy,
             span: DUMMY_SP,
-            attrs: ThinVec::new(),
+            attrs: crate::rustc_ast::AttrVec::new(),
             tokens: None,
         }
     }
@@ -2175,7 +2186,7 @@ pub enum StructRest {
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct StructExpr {
-    pub qself: Option<Box<QSelf>>,
+    pub qself: Option<P<QSelf>>,
     pub path: Path,
     pub fields: ArenaVec<ExprField>,
     pub rest: StructRest,
@@ -2235,7 +2246,7 @@ pub enum ExprKind {
     /// `'label: for await? pat in iter { block }`
     ///
     /// This is desugared to a combination of `loop` and `match` expressions.
-    ForLoop(Box<ForLoop>),
+    ForLoop(P<ForLoop>),
     /// Conditionless loop (can be exited with `break`, `continue`, or `return`).
     ///
     /// `'label: loop { block }`
@@ -2243,7 +2254,7 @@ pub enum ExprKind {
     /// A `match` block.
     Match(P<Expr>, ArenaVec<Arm>, MatchKind),
     /// A closure (e.g., `move |a, b, c| a + b + c`).
-    Closure(Box<Closure>),
+    Closure(P<Closure>),
     /// A block (`'label: { ... }`).
     Block(P<Block>, Option<Label>),
     /// An `async` block (`async move { ... }`),
@@ -2287,7 +2298,7 @@ pub enum ExprKind {
     /// parameters (e.g., `foo::bar::<baz>`).
     ///
     /// Optionally "qualified" (e.g., `<Vec<T> as SomeTrait>::SomeType`).
-    Path(Option<Box<QSelf>>, Path),
+    Path(Option<P<QSelf>>, Path),
 
     /// A referencing operation (`&a`, `&mut a`, `&raw const a` or `&raw mut a`).
     AddrOf(BorrowKind, Mutability, P<Expr>),
@@ -2308,12 +2319,12 @@ pub enum ExprKind {
     OffsetOf(P<Ty>, ThinVec<Ident>),
 
     /// A macro invocation; pre-expansion.
-    MacCall(Box<MacCall>),
+    MacCall(P<MacCall>),
 
     /// A struct literal expression.
     ///
     /// E.g., `Foo {x: 1, y: 2}`, or `Foo {x: 1, .. rest}`.
-    Struct(Box<StructExpr>),
+    Struct(P<StructExpr>),
 
     /// An array literal constructed from one repeated element.
     ///
@@ -2483,7 +2494,7 @@ pub enum ClosureBinder {
         /// for<'a, 'b> |_: &'a (), _: &'b ()| { ... }
         ///     ^^^^^^ -- this
         /// ```
-        generic_params: ThinVec<GenericParam>,
+        generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
     },
 }
 
@@ -2492,7 +2503,7 @@ pub enum ClosureBinder {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct MacCall {
     pub path: Path,
-    pub args: Box<DelimArgs>,
+    pub args: P<DelimArgs>,
 }
 
 impl MacCall {
@@ -2555,7 +2566,7 @@ impl DelimArgs {
 /// Represents a macro definition.
 #[derive(Clone, Encodable, Decodable, Debug, StableHash, Walkable)]
 pub struct MacroDef {
-    pub body: Box<DelimArgs>,
+    pub body: P<DelimArgs>,
     /// `true` if macro was defined with `macro_rules`.
     pub macro_rules: bool,
 
@@ -2927,7 +2938,7 @@ impl Ty {
 pub struct FnPtrTy {
     pub safety: Safety,
     pub ext: Extern,
-    pub generic_params: ThinVec<GenericParam>,
+    pub generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
     pub decl: P<FnDecl>,
     /// Span of the `[unsafe] [extern] fn(...) -> ...` part, i.e. everything
     /// after the generic params (if there are any, e.g. `for<'a>`).
@@ -2951,7 +2962,7 @@ impl FnPtrTy {
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct UnsafeBinderTy {
-    pub generic_params: ThinVec<GenericParam>,
+    pub generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
     pub inner_ty: P<Ty>,
 }
 
@@ -2973,7 +2984,7 @@ pub enum TyKind {
     /// Desugars into `Pin<&'a T>` or `Pin<&'a mut T>`.
     PinnedRef(#[visitable(extra = LifetimeCtxt::Ref)] Option<Lifetime>, MutTy),
     /// A function pointer type (e.g., `fn(usize) -> bool`).
-    FnPtr(Box<FnPtrTy>),
+    FnPtr(P<FnPtrTy>),
     /// An unsafe existential lifetime binder (e.g., `unsafe<'a> &'a ()`).
     UnsafeBinder(Box<UnsafeBinderTy>),
     /// The never type (`!`).
@@ -2984,7 +2995,7 @@ pub enum TyKind {
     /// "qualified", e.g., `<Vec<T> as SomeTrait>::SomeType`.
     ///
     /// Type parameters are stored in the `Path` itself.
-    Path(Option<Box<QSelf>>, Path),
+    Path(Option<P<QSelf>>, Path),
     /// A trait object type `Bound1 + Bound2 + Bound3`
     /// where `Bound` is a trait or a lifetime.
     TraitObject(#[visitable(extra = BoundKind::TraitObject)] GenericBounds, TraitObjectSyntax),
@@ -3003,7 +3014,7 @@ pub enum TyKind {
     /// Inferred type of a `self` or `&self` argument in a method.
     ImplicitSelf,
     /// A macro in the type position.
-    MacCall(Box<MacCall>),
+    MacCall(P<MacCall>),
     /// Placeholder for a `va_list`.
     CVarArgs,
     /// Pattern types like `pattern_type!(u32 is 1..=)`, which is the same as `NonZero<u32>`,
@@ -3262,7 +3273,7 @@ impl InlineAsmTemplatePiece {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct InlineAsmSym {
     pub id: NodeId,
-    pub qself: Option<Box<QSelf>>,
+    pub qself: Option<P<QSelf>>,
     pub path: Path,
 }
 
@@ -3735,7 +3746,7 @@ pub struct ForeignMod {
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct EnumDef {
-    pub variants: ThinVec<Variant>,
+    pub variants: ArenaVec<Variant>,
 }
 
 /// Enum variant.
@@ -3773,7 +3784,7 @@ pub enum UseTreeKind {
     /// use foo::{bar, baz};
     ///          ^^^^^^^^^^
     /// ```
-    Nested { items: ThinVec<(UseTree, NodeId)>, span: Span },
+    Nested { items: ArenaVec<(UseTree, NodeId)>, span: Span },
     /// `use prefix::*`
     Glob(Span),
 }
@@ -3841,7 +3852,7 @@ impl AttrStyle {
 }
 
 /// A list of attributes.
-pub type AttrVec = ThinVec<Attribute>;
+pub type AttrVec = ArenaVec<Attribute>;
 
 /// A syntax-level representation of an attribute.
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
@@ -3991,7 +4002,7 @@ pub enum Parens {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct PolyTraitRef {
     /// The `'a` in `for<'a> Foo<&'a T>`.
-    pub bound_generic_params: ThinVec<GenericParam>,
+    pub bound_generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
 
     // Optional constness, asyncness, or polarity.
     pub modifiers: TraitBoundModifiers,
@@ -4008,7 +4019,7 @@ pub struct PolyTraitRef {
 
 impl PolyTraitRef {
     pub fn new(
-        generic_params: ThinVec<GenericParam>,
+        generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
         path: Path,
         modifiers: TraitBoundModifiers,
         span: Span,
@@ -4033,7 +4044,7 @@ pub struct Visibility {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum VisibilityKind {
     Public,
-    Restricted { path: Box<Path>, id: NodeId, shorthand: bool },
+    Restricted { path: P<Path>, id: NodeId, shorthand: bool },
     Inherited,
 }
 
@@ -4063,7 +4074,7 @@ pub struct MutRestriction {
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub enum RestrictionKind {
     Unrestricted,
-    Restricted { path: Box<Path>, id: NodeId, shorthand: bool },
+    Restricted { path: P<Path>, id: NodeId, shorthand: bool },
 }
 
 /// Field definition in a struct, variant or union.
@@ -4121,11 +4132,11 @@ pub enum VariantData {
     /// Struct variant.
     ///
     /// E.g., `Bar { .. }` as in `enum Foo { Bar { .. } }`.
-    Struct { fields: ThinVec<FieldDef>, recovered: Recovered },
+    Struct { fields: crate::rustc_ast::ArenaVec<FieldDef>, recovered: Recovered },
     /// Tuple variant.
     ///
     /// E.g., `Bar(..)` as in `enum Foo { Bar(..) }`.
-    Tuple(ThinVec<FieldDef>, NodeId),
+    Tuple(crate::rustc_ast::ArenaVec<FieldDef>, NodeId),
     /// Unit variant.
     ///
     /// E.g., `Bar = ..` as in `enum Foo { Bar = .. }`.
@@ -4343,7 +4354,7 @@ pub struct TyAlias {
 pub struct Impl {
     pub generics: Generics,
     pub constness: Const,
-    pub of_trait: Option<Box<TraitImplHeader>>,
+    pub of_trait: Option<P<TraitImplHeader>>,
     pub self_ty: P<Ty>,
     pub items: ThinVec<P<AssocItem>>,
 }
@@ -4428,7 +4439,7 @@ pub enum DelegationSource {
 pub struct Delegation {
     /// Path resolution id.
     pub id: NodeId,
-    pub qself: Option<Box<QSelf>>,
+    pub qself: Option<P<QSelf>>,
     pub path: Path,
     pub ident: Ident,
     pub rename: Option<Ident>,
@@ -4452,7 +4463,7 @@ pub enum DelegationSuffixes {
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
 pub struct DelegationMac {
-    pub qself: Option<Box<QSelf>>,
+    pub qself: Option<P<QSelf>>,
     pub prefix: Path,
     pub suffixes: DelegationSuffixes,
     pub body: Option<P<Block>>,
@@ -4540,7 +4551,7 @@ pub struct TestBinderForall {
 pub struct TestBinderExists {
     pub span: Span,
     pub node_id: NodeId,
-    pub params: ThinVec<GenericParam>,
+    pub params: crate::rustc_ast::ArenaVec<GenericParam>,
     pub body: TestBinderBody,
 }
 
@@ -4579,11 +4590,11 @@ pub enum ItemKind {
     /// A static item (`static`).
     ///
     /// E.g., `static FOO: i32 = 42;` or `static FOO: &'static str = "bar";`.
-    Static(Box<StaticItem>),
+    Static(P<StaticItem>),
     /// A constant item (`const`).
     ///
     /// E.g., `const FOO: i32 = 42;`.
-    Const(Box<ConstItem>),
+    Const(P<ConstItem>),
     /// A module-level const block.
     /// Equivalent to `const _: () = const { ... };`.
     ///
@@ -4608,7 +4619,7 @@ pub enum ItemKind {
     /// A type alias (`type`).
     ///
     /// E.g., `type Foo = Bar<u8>;`.
-    TyAlias(Box<TyAlias>),
+    TyAlias(P<TyAlias>),
     /// An enum definition (`enum`).
     ///
     /// E.g., `enum Foo<A, B> { C<A>, D<B> }`.
@@ -4624,7 +4635,7 @@ pub enum ItemKind {
     /// A trait declaration (`trait`).
     ///
     /// E.g., `trait Foo { .. }`, `trait Foo<T> { .. }` or `auto trait Foo {}`.
-    Trait(Box<Trait>),
+    Trait(P<Trait>),
     /// Trait alias.
     ///
     /// E.g., `trait Foo = Bar + Quux;`.
@@ -4636,7 +4647,7 @@ pub enum ItemKind {
     /// A macro invocation.
     ///
     /// E.g., `foo!(..)`.
-    MacCall(Box<MacCall>),
+    MacCall(P<MacCall>),
     /// A macro definition.
     MacroDef(Ident, MacroDef),
     /// A single delegation item (`reuse`).
@@ -4772,13 +4783,13 @@ pub type AssocItem = Item<AssocItemKind>;
 pub enum AssocItemKind {
     /// An associated constant, `const $ident: $ty $def?;` where `def ::= "=" $expr? ;`.
     /// If `def` is parsed, then the constant is provided, and otherwise required.
-    Const(Box<ConstItem>),
+    Const(P<ConstItem>),
     /// An associated function.
     Fn(P<Fn>),
     /// An associated type.
-    Type(Box<TyAlias>),
+    Type(P<TyAlias>),
     /// A macro expanding to associated items.
-    MacCall(Box<MacCall>),
+    MacCall(P<MacCall>),
     /// An associated delegation item.
     Delegation(Box<Delegation>),
     /// An associated list or glob delegation item.
@@ -4842,13 +4853,13 @@ impl TryFrom<ItemKind> for AssocItemKind {
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub enum ForeignItemKind {
     /// A foreign static item (`static FOO: u8`).
-    Static(Box<StaticItem>),
+    Static(P<StaticItem>),
     /// A foreign function.
     Fn(P<Fn>),
     /// A foreign type.
-    TyAlias(Box<TyAlias>),
+    TyAlias(P<TyAlias>),
     /// A macro expanding to foreign items.
-    MacCall(Box<MacCall>),
+    MacCall(P<MacCall>),
 }
 
 impl ForeignItemKind {

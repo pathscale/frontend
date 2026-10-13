@@ -257,7 +257,7 @@ impl<'a> Parser<'a> {
             _ => MacStmtStyle::NoBraces,
         };
 
-        let mac = Box::new(MacCall { path, args });
+        let mac = P::new(MacCall { path, args });
 
         let kind = if (style == MacStmtStyle::Braces
             && !matches!(self.token.kind, token::Dot | token::Question))
@@ -267,7 +267,7 @@ impl<'a> Parser<'a> {
                     | token::Eof
                     | token::CloseInvisible(InvisibleOrigin::MetaVar(MetaVarKind::Stmt))
             ) {
-            StmtKind::MacCall(Box::new(MacCallStmt { mac, style, attrs, tokens: None }))
+            StmtKind::MacCall(P::new(MacCallStmt { mac, style, attrs, tokens: None }))
         } else {
             // Since none of the above applied, this is an expression statement macro.
             let e = self.mk_expr(lo.to(hi), ExprKind::MacCall(mac));

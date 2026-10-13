@@ -60,10 +60,10 @@ impl<'a> ExtCtxt<'a> {
         path: ast::Path,
         delim: Delimiter,
         tokens: TokenStream,
-    ) -> Box<ast::MacCall> {
-        Box::new(ast::MacCall {
+    ) -> P<ast::MacCall> {
+        P::new(ast::MacCall {
             path,
-            args: Box::new(ast::DelimArgs {
+            args: P::new(ast::DelimArgs {
                 dspan: tokenstream::DelimSpan { open: span, close: span },
                 delim,
                 tokens,
@@ -188,7 +188,7 @@ impl<'a> ExtCtxt<'a> {
 
     pub fn poly_trait_ref(&self, span: Span, path: ast::Path, is_const: bool) -> ast::PolyTraitRef {
         ast::PolyTraitRef {
-            bound_generic_params: ThinVec::new(),
+            bound_generic_params: crate::rustc_ast::ArenaVec::new(),
             modifiers: ast::TraitBoundModifiers {
                 polarity: ast::BoundPolarity::Positive,
                 constness: if is_const {
@@ -319,7 +319,7 @@ impl<'a> ExtCtxt<'a> {
         self.expr_ident(span, Ident::new(kw::SelfLower, span))
     }
 
-    pub fn expr_macro_call(&self, span: Span, call: Box<ast::MacCall>) -> P<ast::Expr> {
+    pub fn expr_macro_call(&self, span: Span, call: P<ast::MacCall>) -> P<ast::Expr> {
         self.expr(span, ast::ExprKind::MacCall(call))
     }
 
@@ -417,7 +417,7 @@ impl<'a> ExtCtxt<'a> {
     ) -> P<ast::Expr> {
         self.expr(
             span,
-            ast::ExprKind::Struct(Box::new(ast::StructExpr {
+            ast::ExprKind::Struct(P::new(ast::StructExpr {
                 qself: None,
                 path,
                 fields: fields.into(),
@@ -630,7 +630,7 @@ impl<'a> ExtCtxt<'a> {
         // here, but that's not entirely clear.
         self.expr(
             span,
-            ast::ExprKind::Closure(Box::new(ast::Closure {
+            ast::ExprKind::Closure(P::new(ast::Closure {
                 binder: ast::ClosureBinder::NotPresent,
                 capture_clause: ast::CaptureBy::Ref,
                 constness: ast::Const::No,

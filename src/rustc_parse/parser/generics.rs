@@ -21,7 +21,7 @@ use crate::rustc_parse::diagnostics::{
 
 enum PredicateKindOrStructBody {
     PredicateKind(ast::WherePredicateKind),
-    StructBody(ThinVec<ast::FieldDef>),
+    StructBody(crate::rustc_ast::ArenaVec<ast::FieldDef>),
 }
 
 impl<'a> Parser<'a> {
@@ -206,8 +206,8 @@ impl<'a> Parser<'a> {
     /// ```ebnf
     /// GenericParams = (GenericParam ("," GenericParam)* ","?)?
     /// ```
-    pub(super) fn parse_generic_params(&mut self) -> PResult<'a, ThinVec<ast::GenericParam>> {
-        let mut params = ThinVec::new();
+    pub(super) fn parse_generic_params(&mut self) -> PResult<'a, crate::rustc_ast::ArenaVec<ast::GenericParam>> {
+        let mut params = ast::ArenaVec::new();
         let mut done = false;
         let prev = self.parsing_generics;
         self.parsing_generics = true;
@@ -335,7 +335,7 @@ impl<'a> Parser<'a> {
             self.expect_gt_or_maybe_suggest_closing_generics(&params)?;
             (params, span_lo.to(self.prev_token.span))
         } else {
-            (ThinVec::new(), self.prev_token.span.shrink_to_hi())
+            (ast::ArenaVec::new(), self.prev_token.span.shrink_to_hi())
         };
         Ok(ast::Generics {
             params,
@@ -408,14 +408,14 @@ impl<'a> Parser<'a> {
         &mut self,
         struct_name: Ident,
         body_insertion_point: Span,
-    ) -> PResult<'a, (WhereClause, Option<ThinVec<ast::FieldDef>>)> {
+    ) -> PResult<'a, (WhereClause, Option<crate::rustc_ast::ArenaVec<ast::FieldDef>>)> {
         self.parse_where_clause_common(Some((struct_name, body_insertion_point)))
     }
 
     fn parse_where_clause_common(
         &mut self,
         struct_: Option<(Ident, Span)>,
-    ) -> PResult<'a, (WhereClause, Option<ThinVec<ast::FieldDef>>)> {
+    ) -> PResult<'a, (WhereClause, Option<crate::rustc_ast::ArenaVec<ast::FieldDef>>)> {
         let mut where_clause = WhereClause {
             has_where_token: false,
             predicates: ast::ArenaVec::new(),

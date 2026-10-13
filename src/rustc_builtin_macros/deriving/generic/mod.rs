@@ -256,7 +256,7 @@ pub(crate) struct MethodDef<'a> {
     /// Returns type
     pub ret_ty: Ty,
 
-    pub attributes: ast::AttrVec,
+    pub attributes: ThinVec<ast::Attribute>,
 
     pub fieldless_variants_strategy: FieldlessVariantsStrategy,
 
@@ -357,7 +357,7 @@ pub(crate) fn combine_substructure<'a>(
 }
 
 struct TypeParameter {
-    bound_generic_params: ThinVec<ast::GenericParam>,
+    bound_generic_params: crate::rustc_ast::ArenaVec<ast::GenericParam>,
     ty: P<ast::Ty>,
 }
 
@@ -424,7 +424,7 @@ fn find_type_parameters(
     struct Visitor<'a, 'b> {
         cx: &'a ExtCtxt<'b>,
         ty_param_names: &'a [Symbol],
-        bound_generic_params_stack: ThinVec<ast::GenericParam>,
+        bound_generic_params_stack: crate::rustc_ast::ArenaVec<ast::GenericParam>,
         type_params: Vec<TypeParameter>,
     }
 
@@ -473,7 +473,7 @@ fn find_type_parameters(
     let mut visitor = Visitor {
         cx,
         ty_param_names,
-        bound_generic_params_stack: ThinVec::new(),
+        bound_generic_params_stack: ast::ArenaVec::new(),
         type_params: Vec::new(),
     };
     visit::Visitor::visit_ty(&mut visitor, ty);
@@ -620,7 +620,7 @@ impl<'a> TraitDef<'a> {
                     kind: ast::VisibilityKind::Inherited,
                 },
                 attrs: ast::AttrVec::new(),
-                kind: ast::AssocItemKind::Type(Box::new(ast::TyAlias {
+                kind: ast::AssocItemKind::Type(P::new(ast::TyAlias {
                     defaultness: ast::Defaultness::Implicit,
                     ident,
                     generics: Generics::default(),
@@ -638,7 +638,7 @@ impl<'a> TraitDef<'a> {
         let span = generics.span.with_ctxt(ctxt);
 
         // Create the generic parameters
-        let params: ThinVec<_> = generics
+        let params: ast::ArenaVec<_> = generics
             .params
             .iter()
             .map(|param| match &param.kind {
@@ -765,7 +765,7 @@ impl<'a> TraitDef<'a> {
 
                         let kind = ast::WherePredicateKind::BoundPredicate(predicate);
                         let predicate = ast::WherePredicate {
-                            attrs: ThinVec::new(),
+                            attrs: crate::rustc_ast::AttrVec::new(),
                             kind,
                             id: ast::DUMMY_NODE_ID,
                             span: self.span,
@@ -805,7 +805,7 @@ impl<'a> TraitDef<'a> {
         let rustc_const_unstable =
             cx.path_ident(self.span, Ident::new(sym::rustc_const_unstable, self.span));
 
-        let mut attrs = thin_vec![cx.attr_word(sym::automatically_derived, self.span),];
+        let mut attrs: ast::AttrVec = core::iter::once(cx.attr_word(sym::automatically_derived, self.span)).collect();
 
         // Only add `rustc_const_unstable` attributes if `derive_const` is used within libcore/libstd,
         // Other crates don't need stability attributes, so adding them is not useful, but libcore needs them
@@ -850,7 +850,7 @@ impl<'a> TraitDef<'a> {
             attrs,
             ast::ItemKind::Impl(ast::Impl {
                 generics: trait_generics,
-                of_trait: Some(Box::new(ast::TraitImplHeader {
+                of_trait: Some(P::new(ast::TraitImplHeader {
                     safety: self.safety,
                     polarity: ast::ImplPolarity::Positive,
                     defaultness: ast::Defaultness::Implicit,
@@ -1081,7 +1081,7 @@ impl<'a> MethodDef<'a> {
         // Create the method.
         P::new(ast::AssocItem {
             id: ast::DUMMY_NODE_ID,
-            attrs: self.attributes.clone(),
+            attrs: self.attributes.clone().into(),
             span,
             vis: ast::Visibility { span: trait_lo_sp, kind: ast::VisibilityKind::Inherited },
             kind: ast::AssocItemKind::Fn(P::new(ast::Fn {

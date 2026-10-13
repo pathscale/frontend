@@ -1,5 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use alloc::format;
 
@@ -30,7 +31,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     pub(crate) fn lower_qpath(
         &mut self,
         id: NodeId,
-        qself: &Option<Box<QSelf>>,
+        qself: &Option<P<QSelf>>,
         p: &Path,
         param_mode: ParamMode,
         allow_return_type_notation: AllowReturnTypeNotation,

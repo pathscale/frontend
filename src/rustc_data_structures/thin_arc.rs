@@ -6,7 +6,7 @@
 //! larger or over-aligned slices use the global allocator. Every empty slice shares one
 //! static header and never allocates or touches a count.
 
-use crate::rustc_ast::ptr::{alloc_bytes, dealloc_bytes};
+use crate::rustc_ast::ptr::{alloc_list_bytes, dealloc_list_bytes};
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::hash::{Hash, Hasher};
@@ -73,7 +73,7 @@ impl<T> ThinArcSlice<T> {
             return Self::empty();
         }
         let (layout, offset) = Self::layout(len);
-        let storage = alloc_bytes(layout);
+        let storage = alloc_list_bytes(layout);
         let raw = storage.as_ptr();
         let ptr = storage.cast::<Header>();
         // SAFETY: `ptr` is fresh and aligned for `Header`; elements go at `offset`.
@@ -85,7 +85,7 @@ impl<T> ThinArcSlice<T> {
                     Some(item) => data.add(i).write(item),
                     None => {
                         ptr::drop_in_place(ptr::slice_from_raw_parts_mut(data, i));
-                        dealloc_bytes(storage, layout);
+                        dealloc_list_bytes(storage, layout);
                         panic!("ExactSizeIterator yielded fewer items than its len");
                     }
                 }
@@ -153,7 +153,7 @@ impl<T> Drop for ThinArcSlice<T> {
         // SAFETY: the last handle; the elements are initialized and dropped once.
         unsafe {
             ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.data(), len));
-            dealloc_bytes(self.ptr.cast(), layout);
+            dealloc_list_bytes(self.ptr.cast(), layout);
         }
     }
 }

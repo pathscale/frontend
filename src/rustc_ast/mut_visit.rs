@@ -291,11 +291,27 @@ impl<V: MutVisitor> MutVisitable<V> for ArenaVec<Stmt> {
     }
 }
 
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<Variant> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|variant| visitor.flat_map_variant(variant));
+    }
+}
+
 impl<V: MutVisitor> MutVisitable<V> for ArenaVec<P<Expr>> {
     type Extra = ();
 
     fn visit_mut(&mut self, visitor: &mut V, (): ()) {
         self.flat_map_in_place(|expr| visitor.filter_map_expr(expr));
+    }
+}
+
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<FieldDef> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|field| visitor.flat_map_field_def(field));
     }
 }
 
@@ -350,6 +366,14 @@ macro_rules! generate_flat_map_visitor_fns {
                 values.flat_map_in_place(|value| vis.$flat_map_fn(value$(,$param)*));
             }
         )+
+    }
+}
+
+impl<V: MutVisitor> MutVisitable<V> for ArenaVec<GenericParam> {
+    type Extra = ();
+
+    fn visit_mut(&mut self, visitor: &mut V, (): ()) {
+        self.flat_map_in_place(|param| visitor.flat_map_generic_param(param));
     }
 }
 

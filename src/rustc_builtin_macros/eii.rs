@@ -186,10 +186,10 @@ fn eii_(
 fn split_attrs(
     ecx: &mut ExtCtxt<'_>,
     span: Span,
-    attrs: ThinVec<Attribute>,
-) -> (ThinVec<Attribute>, ThinVec<Attribute>) {
-    let mut macro_attributes = ThinVec::new();
-    let mut foreign_item_attributes = ThinVec::new();
+    attrs: ast::AttrVec,
+) -> (ast::AttrVec, ast::AttrVec) {
+    let mut macro_attributes = ast::AttrVec::new();
+    let mut foreign_item_attributes = ast::AttrVec::new();
 
     for attr in attrs {
         match attr.name() {
@@ -256,10 +256,10 @@ fn name_for_impl_macro(
 /// Ensure that in the list of attrs, there's only a single `eii` attribute.
 fn filter_attrs_for_multiple_eii_attr(
     ecx: &mut ExtCtxt<'_>,
-    attrs: ThinVec<Attribute>,
+    attrs: ast::AttrVec,
     eii_attr_span: Span,
     eii_attr_path: &Path,
-) -> ThinVec<Attribute> {
+) -> ast::AttrVec {
     attrs
         .into_iter()
         .filter(|i| {
@@ -286,7 +286,7 @@ fn generate_default_impl(
     item_span: Span,
     foreign_item_name: Ident,
 ) -> Option<P<ast::Item>> {
-    let attrs = ThinVec::new();
+    let attrs = ast::AttrVec::new();
 
     match item_kind {
         ItemKind::Fn(func) => {
@@ -362,7 +362,7 @@ fn generate_foreign_item(
     item_span: Span,
     item_kind: &ItemKind,
     vis: Visibility,
-    attrs_from_decl: ThinVec<Attribute>,
+    attrs_from_decl: ast::AttrVec,
 ) -> P<ast::Item> {
     let mut foreign_item_attrs = attrs_from_decl;
 
@@ -387,7 +387,7 @@ fn generate_foreign_item(
 
     ecx.item(
         eii_attr_span,
-        ThinVec::new(),
+        Default::default(),
         ast::ItemKind::ForeignMod(ast::ForeignMod {
             extern_span: eii_attr_span,
             safety: ast::Safety::Unsafe(eii_attr_span),
@@ -429,7 +429,7 @@ fn generate_foreign_func(
     ast::ForeignItemKind::Fn(func)
 }
 
-fn generate_foreign_static(mut stat: Box<ast::StaticItem>) -> ast::ForeignItemKind {
+fn generate_foreign_static(mut stat: P<ast::StaticItem>) -> ast::ForeignItemKind {
     if stat.safety == ast::Safety::Default {
         stat.safety = ast::Safety::Safe(stat.ident.span);
     }
@@ -455,7 +455,7 @@ fn generate_attribute_macro_to_implement(
     macro_name: Ident,
     foreign_item_name: Ident,
     impl_unsafe: bool,
-    attrs_from_decl: ThinVec<Attribute>,
+    attrs_from_decl: ast::AttrVec,
 ) -> P<ast::Item> {
     let mut macro_attrs = attrs_from_decl;
 
@@ -477,7 +477,7 @@ fn generate_attribute_macro_to_implement(
             macro_name,
             ast::MacroDef {
                 // { () => {} }
-                body: Box::new(ast::DelimArgs {
+                body: P::new(ast::DelimArgs {
                     dspan: DelimSpan::from_single(span),
                     delim: Delimiter::Brace,
                     tokens: TokenStream::from_iter([

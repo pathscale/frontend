@@ -338,7 +338,7 @@ impl<'a> Parser<'a> {
             TyKind::Infer
         } else if self.check_fn_front_matter(false, Case::Sensitive) {
             // Function pointer type
-            self.parse_ty_fn_ptr(lo, ThinVec::new(), None, recover_return_sign)?
+            self.parse_ty_fn_ptr(lo, ast::ArenaVec::new(), None, recover_return_sign)?
         } else if self.check_keyword(exp!(For)) {
             // Function pointer type or bound list (trait object type) starting with a poly-trait.
             //   `for<'lt> [unsafe] [extern "ABI"] fn (&'lt S) -> T`
@@ -500,7 +500,7 @@ impl<'a> Parser<'a> {
             match ty.into_inner().kind {
                 // `"(" BareTraitBound ")" "+" Bound "+" ...`.
                 TyKind::Path(None, path) if maybe_bounds => self.parse_remaining_bounds_path(
-                    ThinVec::new(),
+                    ast::ArenaVec::new(),
                     path,
                     lo,
                     true,
@@ -581,7 +581,7 @@ impl<'a> Parser<'a> {
 
     fn parse_remaining_bounds_path(
         &mut self,
-        generic_params: ThinVec<GenericParam>,
+        generic_params: crate::rustc_ast::ArenaVec<GenericParam>,
         path: ast::Path,
         lo: Span,
         parse_plus: bool,
@@ -883,7 +883,7 @@ impl<'a> Parser<'a> {
     fn parse_ty_fn_ptr(
         &mut self,
         lo: Span,
-        mut params: ThinVec<GenericParam>,
+        mut params: crate::rustc_ast::ArenaVec<GenericParam>,
         param_insertion_point: Option<Span>,
         recover_return_sign: RecoverReturnSign,
     ) -> PResult<'a, TyKind> {
@@ -908,7 +908,7 @@ impl<'a> Parser<'a> {
         let decl = self.parse_fn_decl(&mode, AllowPlus::No, recover_return_sign)?;
 
         let decl_span = span_start.to(self.prev_token.span);
-        Ok(TyKind::FnPtr(Box::new(FnPtrTy {
+        Ok(TyKind::FnPtr(P::new(FnPtrTy {
             ext,
             safety,
             generic_params: params,
@@ -921,13 +921,13 @@ impl<'a> Parser<'a> {
     fn recover_fn_ptr_with_generics(
         &mut self,
         lo: Span,
-        params: &mut ThinVec<GenericParam>,
+        params: &mut crate::rustc_ast::ArenaVec<GenericParam>,
         param_insertion_point: Option<Span>,
     ) -> PResult<'a, ()> {
         let generics = self.parse_generics()?;
         let arity = generics.params.len();
 
-        let mut lifetimes: ThinVec<_> = generics
+        let lifetimes: ast::ArenaVec<_> = generics
             .params
             .into_iter()
             .filter(|param| matches!(param.kind, ast::GenericParamKind::Lifetime))
@@ -955,7 +955,7 @@ impl<'a> Parser<'a> {
         };
 
         self.dcx().emit_err(FnPtrWithGenerics { span: generics.span, sugg });
-        params.append(&mut lifetimes);
+        params.extend(lifetimes);
         Ok(())
     }
 
@@ -1060,10 +1060,10 @@ impl<'a> Parser<'a> {
         let path = self.parse_path_inner(PathStyle::Type, ty_generics)?;
         if self.eat(exp!(Bang)) {
             // Macro invocation in type position
-            Ok(TyKind::MacCall(Box::new(MacCall { path, args: self.parse_delim_args()? })))
+            Ok(TyKind::MacCall(P::new(MacCall { path, args: self.parse_delim_args()? })))
         } else if allow_plus == AllowPlus::Yes && self.check_plus() {
             // `Trait1 + Trait2 + 'a`
-            self.parse_remaining_bounds_path(ThinVec::new(), path, lo, true, ast::Parens::No)
+            self.parse_remaining_bounds_path(ast::ArenaVec::new(), path, lo, true, ast::Parens::No)
         } else {
             // Just a type path.
             Ok(TyKind::Path(None, path))
@@ -1500,7 +1500,7 @@ impl<'a> Parser<'a> {
     /// ```
     pub(super) fn parse_higher_ranked_binder(
         &mut self,
-    ) -> PResult<'a, (ThinVec<GenericParam>, Option<Span>)> {
+    ) -> PResult<'a, (crate::rustc_ast::ArenaVec<GenericParam>, Option<Span>)> {
         if self.eat_keyword(exp!(For)) {
             let lo = self.token.span;
             self.expect_lt()?;
@@ -1510,7 +1510,7 @@ impl<'a> Parser<'a> {
             // type or const parameters, and parameters must not have bounds.
             Ok((params, Some(lo.to(self.prev_token.span))))
         } else {
-            Ok((ThinVec::new(), None))
+            Ok((ast::ArenaVec::new(), None))
         }
     }
 
@@ -1520,7 +1520,7 @@ impl<'a> Parser<'a> {
     fn recover_fn_trait_with_lifetime_params(
         &mut self,
         fn_path: &mut ast::Path,
-        lifetime_defs: &mut ThinVec<GenericParam>,
+        lifetime_defs: &mut crate::rustc_ast::ArenaVec<GenericParam>,
     ) -> PResult<'a, ()> {
         let fn_path_segment = fn_path.segments.last_mut().unwrap();
         let generic_args = if let Some(p_args) = &fn_path_segment.args {
@@ -1615,7 +1615,7 @@ impl<'a> Parser<'a> {
         };
 
         // Convert parsed `<'a>` in `Fn<'a>` into `for<'a>`.
-        let mut generic_params = lifetimes
+        let generic_params = lifetimes
             .iter()
             .map(|lt| GenericParam {
                 id: lt.id,
@@ -1626,8 +1626,8 @@ impl<'a> Parser<'a> {
                 kind: ast::GenericParamKind::Lifetime,
                 colon_span: None,
             })
-            .collect::<ThinVec<GenericParam>>();
-        lifetime_defs.append(&mut generic_params);
+            .collect::<crate::rustc_ast::ArenaVec<GenericParam>>();
+        lifetime_defs.extend(generic_params);
 
         let generic_args_span = generic_args.span();
         let snippet = format!(

@@ -1,6 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
+use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -57,7 +58,7 @@ fn expand<'cx>(
     ExpandResult::Ready(MacEager::expr(
         cx.expr(
             sp,
-            ExprKind::MacCall(Box::new(MacCall {
+            ExprKind::MacCall(P::new(MacCall {
                 path: Path {
                     span: sp,
                     segments: cx
@@ -66,7 +67,7 @@ fn expand<'cx>(
                         .map(PathSegment::from_ident)
                         .collect(),
                 },
-                args: Box::new(DelimArgs {
+                args: P::new(DelimArgs {
                     dspan: DelimSpan::from_single(sp),
                     delim: Delimiter::Parenthesis,
                     tokens: tts,

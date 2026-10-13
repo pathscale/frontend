@@ -591,7 +591,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                             id: self.next_node_id(),
                             kind: ExprKind::Err(invalid_expr_error(self.tcx, span)),
                             span: f.span,
-                            attrs: [].into(),
+                            attrs: Default::default(),
                             tokens: None,
                         })
                     } else {
@@ -1218,7 +1218,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn extract_tuple_struct_path<'a>(
         &mut self,
         expr: &'a Expr,
-    ) -> Option<(&'a Option<Box<QSelf>>, &'a Path)> {
+    ) -> Option<(&'a Option<P<QSelf>>, &'a Path)> {
         if let ExprKind::Path(qself, path) = &expr.kind {
             // Does the path resolve to something disallowed in a tuple struct/variant pattern?
             if let Some(partial_res) = self.get_partial_res(expr.id) {
@@ -1240,7 +1240,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     fn extract_unit_struct_path<'a>(
         &mut self,
         expr: &'a Expr,
-    ) -> Option<(&'a Option<Box<QSelf>>, &'a Path)> {
+    ) -> Option<(&'a Option<P<QSelf>>, &'a Path)> {
         if let ExprKind::Path(qself, path) = &expr.kind {
             // Does the path resolve to something disallowed in a unit struct/variant pattern?
             if let Some(partial_res) = self.get_partial_res(expr.id) {
@@ -1921,7 +1921,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             )
         };
 
-        let attrs: AttrVec = thin_vec![self.unreachable_code_attr(try_span)];
+        let attrs: AttrVec = core::iter::once(self.unreachable_code_attr(try_span)).collect();
 
         // `ControlFlow::Continue(val) => #[allow(unreachable_code)] val,`
         let continue_arm = {
