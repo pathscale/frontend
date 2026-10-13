@@ -245,8 +245,30 @@ fn new_parser_from_source_file(
     strip_tokens: StripTokens,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let end_pos = source_file.end_position();
-    let stream = source_file_to_stream(psess, source_file, None, strip_tokens)?;
-    let mut parser = Parser::new(psess, stream, None);
+    #[cfg(feature = "parallel")]
+    let use_flat = !crate::rustc_data_structures::sync::is_parallel_here();
+    #[cfg(not(feature = "parallel"))]
+    let use_flat = true;
+    let mut parser = if use_flat {
+        let src = source_file.src.as_ref().unwrap_or_else(|| {
+            psess.dcx().bug(format!(
+                "cannot lex `source_file` without source: {}",
+                psess.source_map().filename_for_diagnostics(&source_file.name)
+            ));
+        });
+        let buffer = lexer::lex_flat_tokens(
+            psess,
+            src.as_str(),
+            Some(src),
+            source_file.start_pos,
+            None,
+            strip_tokens,
+        )?;
+        Parser::from_flat(psess, buffer)
+    } else {
+        let stream = source_file_to_stream(psess, source_file, None, strip_tokens)?;
+        Parser::new(psess, stream, None)
+    };
     if parser.token == token::Eof {
         parser.token.span = Span::new(end_pos, end_pos, parser.token.span.ctxt(), None);
     }

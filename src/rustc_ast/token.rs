@@ -1050,7 +1050,23 @@ impl Token {
         }
     }
 
+    /// Most adjacent source tokens cannot start a compound token. Keep that
+    /// rejection at the caller instead of entering the full two-token match.
+    #[inline]
     pub fn glue(&self, joint: &Token) -> Option<Token> {
+        if matches!(
+            self.kind,
+            Eq | Lt | Gt | Bang | Plus | Minus | Star | Slash | Percent | Caret
+                | And | Or | Shl | Shr | Dot | DotDot | Colon | SingleQuote
+        ) {
+            self.glue_joint(joint)
+        } else {
+            None
+        }
+    }
+
+    #[inline(never)]
+    fn glue_joint(&self, joint: &Token) -> Option<Token> {
         let kind = match (&self.kind, &joint.kind) {
             (Eq, Eq) => EqEq,
             (Eq, Gt) => FatArrow,

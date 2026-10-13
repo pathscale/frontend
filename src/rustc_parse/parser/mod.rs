@@ -34,8 +34,8 @@ use crate::rustc_ast::token::{
     self, IdentIsRaw, InvisibleOrigin, MetaVarKind, NtExprKind, NtPatKind, Token, TokenKind,
 };
 use crate::rustc_ast::tokenstream::{
-    FrameSpare, ParserRange, ParserReplacement, Spacing, TokenCursor, TokenStream, TokenTree,
-    WithTokens,
+    FlatTokenBuffer, FrameSpare, ParserRange, ParserReplacement, Spacing, TokenCursor,
+    TokenStream, TokenTree, WithTokens,
 };
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast::util::classify;
@@ -305,13 +305,15 @@ pub(super) fn take_arena_vec<T>(scratch: &mut Vec<T>, start: usize) -> ast::Aren
     target_pointer_width = "64",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 288);
+// The source/tree cursor variant may add one aligned slot.
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 304);
 #[cfg(all(
     feature = "parallel",
     target_pointer_width = "64",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 304);
+// The source/tree cursor variant may add one aligned slot.
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 320);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -418,9 +420,21 @@ impl<'a> Parser<'a> {
         stream: TokenStream,
         subparser_name: Option<&'static str>,
     ) -> Self {
+        Self::new_with_cursor(psess, TokenCursor::new(stream), subparser_name)
+    }
+
+    pub(crate) fn from_flat(psess: &'a ParseSess, buffer: FlatTokenBuffer) -> Self {
+        Self::new_with_cursor(psess, TokenCursor::from_flat(buffer), None)
+    }
+
+    fn new_with_cursor(
+        psess: &'a ParseSess,
+        token_cursor: TokenCursor,
+        subparser_name: Option<&'static str>,
+    ) -> Self {
         let mut parser = Parser {
             psess,
-            token_cursor: TokenCursor::new(stream),
+            token_cursor,
             frame_spare: FrameSpare::default(),
             list_scratch: ParserListScratchSlot::default(),
             subparser_name,
@@ -618,7 +632,7 @@ impl<'a> Parser<'a> {
     // ahead through the current metavar expansion.
     fn check_noexpect_past_close_delim(&self, tok: &TokenKind) -> bool {
         matches!(
-            self.token_cursor.look_ahead_past_close_delim(),
+            self.token_cursor.look_ahead_past_close_delim().as_deref(),
             Some(TokenTree::Token(token::Token { kind, .. }, _)) if kind == tok
         )
     }
@@ -1317,11 +1331,16 @@ impl<'a> Parser<'a> {
             return looker(&self.token);
         }
 
+        if let Some(token) = self.token_cursor.flat_look_ahead_token(dist) {
+            return looker(&token);
+        }
+
         // Typically around 98% of the `dist > 0` cases have `dist == 1`, so we
         // have a fast special case for that.
         if dist == 1 {
             // `look_ahead(1)` returns the next token.
-            match self.token_cursor.look_ahead(1) {
+            let next_tree = self.token_cursor.look_ahead(1);
+            match next_tree.as_deref() {
                 Some(tree) => {
                     // Indexing stayed within the current token tree.
                     match tree {
@@ -1377,7 +1396,7 @@ impl<'a> Parser<'a> {
         dist: usize,
         looker: impl FnOnce(&TokenTree) -> R,
     ) -> Option<R> {
-        self.token_cursor.look_ahead(dist).map(looker)
+        self.token_cursor.look_ahead(dist).map(|tree| looker(&tree))
     }
 
     /// Returns whether any of the given keywords are `dist` tokens ahead of the current one.

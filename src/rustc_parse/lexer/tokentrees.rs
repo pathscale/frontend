@@ -1,38 +1,37 @@
-use alloc::vec::Vec;
 use crate::rustc_ast::token::{self, Delimiter, Token};
-use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
+use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing};
 use crate::rustc_ast_pretty::pprust::token_to_string;
 use crate::rustc_errors::Diag;
 
 use super::diagnostics::{
     report_missing_open_delim, report_suspicious_mismatch_block, same_indentation_level,
 };
+use super::tree_sink::TokenTreeSink;
 use super::{Lexer, UnmatchedDelim};
 
 impl<'psess, 'src> Lexer<'psess, 'src> {
     // Lex into a token stream. The `Spacing` in the result is that of the
     // opening delimiter.
-    pub(super) fn lex_token_trees(
+    pub(super) fn lex_token_trees<S: TokenTreeSink>(
         &mut self,
+        sink: &mut S,
         is_delimited: bool,
-    ) -> Result<(Spacing, TokenStream), Diag<'psess>> {
+    ) -> Result<(Spacing, S::Stream), Diag<'psess>> {
         // Move past the opening delimiter.
         let open_spacing = self.bump_minimal();
 
-        // This group's trees go on the end of the lexer's shared `tree_buf`,
-        // above any enclosing group's trees, and move out at the close into
-        // one exactly sized `Vec`. One allocation per group instead of one per
-        // doubling. Every exit restores `tree_buf` to `start`.
-        let start = self.tree_buf.len();
+        // A tree sink moves children out at the close. A flat sink leaves them
+        // in source order and returns their range, with no group allocation.
+        let start = sink.len();
         loop {
             if let Some(delim) = self.token.kind.open_delim() {
                 // Invisible delimiters cannot occur here because `TokenTreesReader` parses
                 // code directly from strings, with no macro expansion involved.
                 debug_assert!(!matches!(delim, Delimiter::Invisible(_)));
-                match self.lex_token_tree_open_delim(delim) {
-                    Ok(val) => self.tree_buf.push(val),
+                match self.lex_token_tree_open_delim(sink, delim) {
+                    Ok(()) => {}
                     Err(errs) => {
-                        self.tree_buf.truncate(start);
+                        sink.truncate(start);
                         return Err(errs);
                     }
                 }
@@ -41,53 +40,41 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 // code directly from strings, with no macro expansion involved.
                 debug_assert!(!matches!(delim, Delimiter::Invisible(_)));
                 return if is_delimited {
-                    Ok((open_spacing, self.take_trees(start)))
+                    Ok((open_spacing, sink.finish(start)))
                 } else {
-                    self.tree_buf.truncate(start);
+                    sink.truncate(start);
                     Err(self.close_delim_err(delim))
                 };
             } else if self.token.kind == token::Eof {
                 return if is_delimited {
-                    self.tree_buf.truncate(start);
+                    sink.truncate(start);
                     Err(self.eof_err())
                 } else {
-                    Ok((open_spacing, self.take_trees(start)))
+                    Ok((open_spacing, sink.finish(start)))
                 };
             } else {
                 // Get the next normal token.
                 let (this_tok, this_spacing) = self.bump();
-                self.tree_buf.push(TokenTree::Token(this_tok, this_spacing));
+                sink.push(this_tok, this_spacing);
             }
         }
     }
 
-    /// Moves the trees above `start` out of `tree_buf` into a stream whose
-    /// `Vec` has exactly their length as capacity (`Drain` is `TrustedLen`,
-    /// so `collect` allocates once, and not at all for an empty group).
-    fn take_trees(&mut self, start: usize) -> TokenStream {
-        if start == self.tree_buf.len() {
-            return self
-                .empty_stream
-                .get_or_insert_with(|| TokenStream::new(Vec::new()))
-                .clone();
-        }
-
-        TokenStream::from_exact(self.tree_buf.drain(start..))
-    }
-
-    fn lex_token_tree_open_delim(
+    fn lex_token_tree_open_delim<S: TokenTreeSink>(
         &mut self,
+        sink: &mut S,
         open_delim: Delimiter,
-    ) -> Result<TokenTree, Diag<'psess>> {
+    ) -> Result<(), Diag<'psess>> {
         // The span for beginning of the delimited section.
         let pre_span = self.token.span;
+        sink.open(self.token);
 
         self.diag_info.open_delimiters.push((open_delim, self.token.span));
 
         // Lex the token trees within the delimiters.
         // We stop at any delimiter so we can try to recover if the user
         // uses an incorrect delimiter.
-        let (open_spacing, tts) = self.lex_token_trees(/* is_delimited */ true)?;
+        let (open_spacing, tts) = self.lex_token_trees(sink, /* is_delimited */ true)?;
 
         // Expand to cover the entire delimited token tree.
         let delim_span = DelimSpan::from_pair(pre_span, self.token.span);
@@ -99,7 +86,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 self.diag_info.open_delimiters.pop().unwrap();
                 let close_delimiter_span = self.token.span;
 
-                if tts.is_empty() && close_delim == Delimiter::Brace {
+                if sink.is_empty(&tts) && close_delim == Delimiter::Brace {
                     let empty_block_span = pre_span.to(close_delimiter_span);
                     if !sm.is_multiline(empty_block_span) {
                         // Only track if the block is in the form of `{}`, otherwise it is
@@ -117,7 +104,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 // A brace-delimited block whose first token is `&&`/`||` usually means
                 // the user meant to continue an if-let chain, e.g. `if let P = e { && cond {`.
                 if Delimiter::Brace == open_delim
-                    && let Some(TokenTree::Token(tok, _)) = tts.iter().next()
+                    && let Some(tok) = sink.first(&tts)
                     && matches!(tok.kind, token::AndAnd | token::OrOr)
                 {
                     self.diag_info.if_let_chain_hint_spans.push(tok.span);
@@ -183,7 +170,8 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
 
         let spacing = DelimSpacing::new(open_spacing, close_spacing);
 
-        Ok(TokenTree::Delimited(delim_span, spacing, open_delim, tts))
+        sink.close(delim_span, spacing, open_delim, tts);
+        Ok(())
     }
 
     // Move on to the next token, returning the current token and its spacing.

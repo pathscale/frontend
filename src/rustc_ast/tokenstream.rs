@@ -25,6 +25,11 @@ use crate::rustc_ast::ast_traits::HasTokens;
 use crate::rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 
+mod flat;
+mod source_cursor;
+pub(crate) use flat::FlatTokenBuffer;
+pub use source_cursor::TokenCursor;
+
 #[cfg(test)]
 mod tests;
 
@@ -961,7 +966,7 @@ impl TokenTreeCursor {
 /// use this type to emit them as a linear sequence. But a linear sequence is
 /// what the parser expects, for the most part.
 #[derive(Clone, Debug)]
-pub struct TokenCursor {
+struct TreeTokenCursor {
     // Cursor for the current (innermost) token stream. The `next_idx` within the
     // cursor can point to any token tree in the stream (or one past the end).
     // The delimiters for this token stream are found in the current token tree
@@ -1056,10 +1061,10 @@ impl FrameSpare {
     }
 }
 
-impl TokenCursor {
+impl TreeTokenCursor {
     #[inline]
     pub fn new(stream: TokenStream) -> Self {
-        TokenCursor { curr: TokenTreeCursor::new(stream), stack: None }
+        TreeTokenCursor { curr: TokenTreeCursor::new(stream), stack: None }
     }
 
     /// Read the complete source stream before an owned parse transaction starts.
@@ -1354,7 +1359,7 @@ mod size_asserts {
     static_assert_size!(AttrTokenStream, 8);
     static_assert_size!(AttrTokenTree, 32);
     static_assert_size!(LazyAttrTokenStream, 8);
-    static_assert_size!(LazyAttrTokenStreamInner, 72);
+    const _: () = assert!(mem::size_of::<LazyAttrTokenStreamInner>() <= 80);
     static_assert_size!(Option<LazyAttrTokenStream>, 8); // must be small, used in many AST nodes
     static_assert_size!(TokenStream, 8);
     static_assert_size!(TokenTree, 32);
