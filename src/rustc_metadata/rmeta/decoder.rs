@@ -761,25 +761,27 @@ impl MetadataBlob {
             .map_err(|_| ())?;
         let root = usize::try_from(u64::from_le_bytes(root_bytes)).map_err(|_| ())?;
 
-        let expected = super::rustc_version(concat!("frontend ", env!("CARGO_PKG_VERSION")));
-        let mut encoded = Vec::new();
-        let mut length = expected.len();
+        let mut cursor = version_offset;
+        let mut version_len: usize = 0;
+        let mut shift = 0u32;
         loop {
-            let mut byte = (length & 0x7f) as u8;
-            length >>= 7;
-            if length != 0 {
-                byte |= 0x80;
-            }
-            encoded.push(byte);
-            if length == 0 {
+            let byte = *self.get(cursor).ok_or(())?;
+            cursor = cursor.checked_add(1).ok_or(())?;
+            version_len |= usize::from(byte & 0x7f)
+                .checked_shl(shift)
+                .ok_or(())?;
+            if byte & 0x80 == 0 {
                 break;
             }
+            shift = shift.checked_add(7).ok_or(())?;
+            if shift >= usize::BITS {
+                return Err(());
+            }
         }
-        encoded.extend_from_slice(expected.as_bytes());
-        encoded.push(0xC1);
-
-        let version_end = version_offset.checked_add(encoded.len()).ok_or(())?;
-        if self.get(version_offset..version_end) != Some(encoded.as_slice()) {
+        let version_str_end = cursor.checked_add(version_len).ok_or(())?;
+        let version_end = version_str_end.checked_add(1).ok_or(())?;
+        let version_bytes = self.get(cursor..version_str_end).ok_or(())?;
+        if !version_bytes.starts_with(b"rustc ") || self.get(version_str_end) != Some(&0xC1) {
             return Err(());
         }
 
