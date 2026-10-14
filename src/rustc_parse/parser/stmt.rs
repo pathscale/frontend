@@ -333,13 +333,17 @@ impl<'a> Parser<'a> {
             self.parse_pat_before_ty(None, RecoverComma::Yes, PatternLocation::LetBinding)?;
 
         let (err, ty, colon_sp) = if colon {
-            // Save the state of the parser before parsing type normally, in case there is a `:`
-            // instead of an `=` typo.
-            let parser_snapshot_before_type = self.clone();
+            // A normal diagnostic parse may need to retry a mistyped `:` as `=`.
+            // The deferred syntax attempt propagates a type error for normal replay.
+            let parser_snapshot_before_type =
+                (!self.expected_token_types.is_deferred()).then(|| self.clone());
             let colon_sp = self.prev_token.span;
             match self.parse_ty() {
                 Ok(ty) => (None, Some(ty), Some(colon_sp)),
                 Err(mut err) => {
+                    let Some(parser_snapshot_before_type) = parser_snapshot_before_type else {
+                        return Err(err);
+                    };
                     err.span_label(
                         colon_sp,
                         format!(
