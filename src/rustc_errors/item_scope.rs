@@ -1,132 +1,11 @@
-//! Diagnostics as owned output: collected per par item and per query, forwarded, replayed in
-//! serial order.
+//! Legacy diagnostic replay and query records.
 //!
-//! # The problem
-//!
-//! A caller of this frontend reads diagnostics as a list, in emission order, and that list is
-//! the answer: `frontend_facts::check_source` hands it back verbatim. When the compiler's
-//! internal stages (`rustc_data_structures::sync::stages`: per body, per module, per check)
-//! run their items on several workers, two bodies that each produce an error race to the one
-//! shared emitter, and the list comes out in whichever order the threads reached the lock. The
-//! same program would give different answers on different runs, and a different answer from a
-//! serial run. Neither is acceptable.
-//!
-//! # The shape: data forward, not a shared sink
-//!
-//! There is no shared emission buffer and no reorder logic. A par item's diagnostics are part of
-//! its *result*, and a query's diagnostics are part of *its* result:
-//!
-//! 1. A parallel stage owns one [`OrderedReplay`] and runs each item through it
-//!    ([`OrderedReplay::run_item`], which is [`OrderedReplay::collect`] without the mode check).
-//!    While the item runs, whatever it emits into a `DiagCtxt` that already existed when the
-//!    item began is *moved* into an owned [`ItemDiagnostics`] instead of reaching the emitter.
-//! 2. `run_item` hands that value to the replay as the item's diagnostic output.
-//! 3. An [`OrderedReplay`] records the items' outputs as they finish, in any order, and when the
-//!    stage concludes ([`OrderedReplay::finish`], called in stage order on the thread that
-//!    started the stage) forwards them in item order.
-//!
-//! Forwarding is a move. A diagnostic is built once, carried as data (spans are indices into the
-//! frozen source map, not copies of source text), and rendered to text once, by the emitter at
-//! the final sink. Nothing is cloned and nothing is rendered twice.
-//!
-//! **Order is the serial order by construction.** A serial run emits item 0's diagnostics, then
-//! item 1's, and so on, each item's in its own program order; forwarding in item order
-//! reproduces exactly that. Nested loops compose without a special case: an inner loop's
-//! replay forwards into the *enclosing item's* collection, which is itself forwarded in the
-//! outer loop's order.
-//!
-//! # Queries: a query's diagnostics belong to the query, not to whoever ran it
-//!
-//! Items share the query system. A query is computed once, by whichever item asks for it first
-//! *in time*, and every later request is a cache hit that emits nothing. In a serial run "first
-//! in time" is "first in serial order", so the query's diagnostics come out at its first serial
-//! consumer. In parallel it is whoever won the race: a query first asked for by item `j` may be
-//! computed by item `m > j`. Collected into `m`'s output, its diagnostics would come out at `m`'s
-//! position, or not at all when `m` comes after an item that ended in a fatal error (the replay
-//! drops everything after that item, as a serial run never reaches it). Item `j`'s cache hit
-//! would emit nothing, and the error would be lost. That was a real divergence (two `E0223`
-//! errors from HIR type lowering, present serially and missing in parallel).
-//!
-//! So a query that runs inside an item scope gets a stream of its own ([`QueryFrame`]): what it
-//! emits goes there, not into the item's collection. When the query finishes the stream is
-//! frozen into an `Arc<`[`QueryDiagnostics`]`>`, the diagnostics part of the query's output,
-//! stored beside the value (`rustc_middle::query::NodeDiagnostics`, keyed by the value's
-//! `DepNodeIndex`). Every *consumption* of the query inside an item scope then appends a
-//! reference to that record, `Consumed(record)`, to the consumer's collection: the run that
-//! computed it, every cache hit, every thread that waited for it, every thread that found it
-//! poisoned. A query that emitted nothing, and consumed nothing that did, has no record and costs
-//! its consumers one branch.
-//!
-//! At replay a `Consumed(record)` emits the record's events in place, recursively, the first time
-//! it is reached, and nothing after that: the record's events are moved out on first use
-//! ([`QueryDiagnostics`] says why that is the "emitted" mark). Since replay walks everything in
-//! serial order, the first `Consumed` it reaches is the first serial consumer's, which is where
-//! a serial run printed the query's diagnostics. Dropped items drop only their references; the
-//! record is still there for the consumer that counts. Forwarding into an enclosing collection
-//! moves the reference, never the events, so nested stages cost nothing extra; the events are
-//! moved once, by the outermost replay.
-//!
-//! # What happens at collection, and what waits for the replay
-//!
-//! Emission is split in two (see `DiagCtxtInner::emit_diagnostic`):
-//!
-//! - **Counted at collection**: the error guarantee `emit` hands back, `err_guars` and
-//!   `lint_err_guars` behind `has_errors` and `err_count`, taint, `treat_err_as_bug`. These are
-//!   what a running item can observe about its own emissions. An item that emits an error and
-//!   then asks `has_errors()`, or calls `abort_if_errors()`, or taints its inference context
-//!   with the guarantee, must see its own error at once, as it does in a serial run. Counting
-//!   at replay would break that inside the item. Replay therefore never counts again, and that
-//!   holds for query records too: an error inside a query is counted once, when the query emits
-//!   it, however many consumers reference the record.
-//! - **Decided at replay**: the duplicate check against `emitted_diagnostics`, `OnceNote` and
-//!   `OnceHelp` filtering, the one-shot `recursion_depth_exceeding_limit` silencing, the printed
-//!   error and warning counts, `has_printed`, and the emitter itself. These depend on what was
-//!   printed *before*, so they are made in serial order, and the copy of a duplicate that
-//!   survives is the one a serial run keeps.
-//!
-//! Delayed bugs and stash operations are forwarded as data too, for the same reason: their
-//! final order is otherwise the race. See [`EventKind`].
-//!
-//! # A fatal error inside an item or a query
-//!
-//! A serial run that raises `FatalError` inside item `k` prints everything up to that point,
-//! then abandons the loop: items after `k` never run. [`OrderedReplay::collect`] catches the
-//! fatal error and returns it as data, alongside what the item emitted before raising it.
-//! [`OrderedReplay::finish`] forwards items in order up to and including the first one that
-//! ended in a fatal error, drops everything after it, and hands the fatal error back for the
-//! shim to raise again. The output is the serial output. (Counts are the exception: items after
-//! `k` may have run and counted errors. After a fatal error nothing prints a count.)
-//!
-//! A query that raises is closed on the way out like any other: its partial stream is frozen
-//! into a record, referenced from the consumer that ran it, and kept in the query's poisoned
-//! state, so a thread that later finds the query poisoned (or wakes from waiting on it) appends
-//! the same reference before raising. Whichever of them comes first in serial order prints what
-//! the query emitted before it failed.
-//!
-//! A panic that is not a fatal error (an internal compiler error) is not caught; it unwinds out
-//! as before, and what that item collected is lost with it.
-//!
-//! # Which `DiagCtxt` a scope captures
-//!
-//! Only one that already existed when the scope began. Every `DiagCtxt`, every item scope and
-//! every stage draws a number from one clock ([`tick`]); an item scope captures a context only
-//! if the context's number is lower. A context created *inside* an item (a scratch parser, a
-//! silent context for a speculative parse) keeps emitting straight to its own emitter, which is
-//! what its creator expects to read back.
-//!
-//! A query frame is stricter: it captures only a context older than the outermost stage of its
-//! chain (its *root*), because its record outlives the item that computed it and may be replayed
-//! from another stage altogether. An emission a query frame does not capture falls through to
-//! the item scope beneath it, as it did before queries had streams. In practice every capture in
-//! a query frame is the session's own context: a query reaches a `DiagCtxt` only through its
-//! `TyCtxt`, and one it creates for itself is newer than every scope.
-//!
-//! # Serial mode
-//!
-//! [`OrderedReplay::collect`] runs the closure directly and collects nothing when the compiler
-//! is not in thread-safe mode, and [`QueryFrame::open`] opens nothing, so a serial run is
-//! byte-identical to what it was: the emission path finds no scope open on the thread and
-//! prints at once, statement for statement as before, and no query ever has a record.
+//! Compiler walks now run serially on the caller, including in parallel sessions, and emit in
+//! their existing order. They open no parallel replay or borrowed worker context. The public
+//! replay API remains for compatibility; its context-bearing events stay on the caller.
+//! Owned file parsing creates its diagnostic context inside the task and returns DiagInner
+//! records with its AST. Owned body parsing retains the established clean-transaction retry.
+//! Neither path transports a DcxRef, QueryFrame or OrderedReplay to nagoya.
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them.
@@ -222,21 +101,9 @@ thread_local! {
 
 /// Which `DiagCtxt` an event belongs to, so it can be replayed into that context.
 ///
-/// A raw pointer, because the event travels through worker threads and result slots that do
-/// not carry the context's lifetime. **Sound because of when it is used.** An item's event is
-/// only captured from a context created before the capturing item began, and it is replayed
-/// before the par call that ran that item returns (the [`OrderedReplay`] contract); the par call
-/// is made by code that borrows the session owning the context, so the context can neither move
-/// nor drop in between. A query record's event can be replayed later, from another stage, so a
-/// query frame captures only a context older than its chain's outermost stage, which in this
-/// compiler is always the session's context (see the module docs, "Which `DiagCtxt` a scope
-/// captures"): it lives as long as the `TyCtxt` whose query results hold the record.
-///
-/// It asserts nothing about threads. An event reaches another thread only inside a parallel
-/// stage's own state (its replay, its items' outputs), which `sync::stage` hands to the pool on
-/// the `DynSend`/`DynSync` word of the call site, the one place that word is taken; a
-/// `DcxRef` is dereferenced only to take the context's own lock (`DiagCtxt::inner`, a real
-/// mutex in thread-safe mode, which is the only mode in which one is ever made).
+/// A caller-local pointer retained by the compatibility replay. Its owner must finish replay
+/// while the diagnostic context remains alive. This type is neither Send nor Sync and never
+/// appears in the input or output of an owned task; parse tasks return DiagInner records.
 #[derive(Copy, Clone)]
 pub(super) struct DcxRef(*const DiagCtxt);
 
@@ -514,24 +381,10 @@ struct Target {
 /// always goes to the innermost enclosing scope when there is one, since it stands for whatever
 /// the par call's caller is doing, and is emitted only by the outermost replay.
 ///
-/// # How a stage uses it
+/// # Compatibility use
 ///
-/// In thread-safe mode only; a serial stage needs none of this. Every item index must report,
-/// or everything after it is held back and lost. A parallel stage (`sync::stage`) owns one,
-/// begun where the stage starts and dropped with the stage, and calls it directly; the shape of
-/// it is:
-///
-/// ```ignore (sketch of the replay's part in a stage)
-/// let replay = OrderedReplay::new(len);            // on the calling thread, before spawning
-/// // for item `i`, on whichever worker runs it (`run_item` is these two calls):
-/// let run = replay.collect(|| for_each(item));
-/// replay.ready(i, run.diagnostics, run.result.is_err());
-/// slots[i] = run.result.ok();                      // the item's own result, if any
-/// // after every item has finished, still on the calling thread:
-/// if let Err(fatal) = replay.finish() {
-///     fatal.raise();                               // leave the par call as a serial run would
-/// }
-/// ```
+/// Every item index must report before finish. This replay opens caller-local collection frames
+/// and forwards diagnostics in input order; the owned task executor does not use it.
 ///
 /// # What an item costs it
 ///
@@ -548,13 +401,8 @@ pub struct OrderedReplay {
     root: u64,
     /// This stage's start on the clock: the `opened` of every item scope it opens.
     ///
-    /// It was a fresh `tick` per item, which is one `fetch_add` on the one clock every worker
-    /// shares, per item. The stage's own time captures exactly the same contexts. An item scope
-    /// captures a context older than itself, and the only contexts created between the stage's
-    /// start and an item's start are ones the item cannot reach: the stage's function and input
-    /// outlive the stage's scope (`sync::stages` is shaped like `std::thread::scope`), so they
-    /// cannot borrow anything the scope's body made after it began, and another item's scratch
-    /// context is that item's local. Contexts the item makes for itself are newer than either.
+    /// Compatibility collection frames share this creation time. Contexts created locally
+    /// inside a frame continue to emit directly into their own diagnostic sinks.
     opened: u64,
     /// Per item: whether it has reported, and whether it ended in a fatal error. Sized once, when
     /// the stage starts, and written once per item, by the thread that ran it.
@@ -614,28 +462,7 @@ impl OrderedReplay {
         self.collect_in_stage(f)
     }
 
-    /// Run item `index` of a parallel stage with its diagnostics collected, and report it:
-    /// [`collect`](Self::collect) then [`ready`](Self::ready), without asking the mode. `true`
-    /// if the item ended in a fatal error, after which a serial run would not have gone on.
-    ///
-    /// What `sync::stage` calls around every item of a parallel stage, on whichever thread runs
-    /// it, once per item even when the thread runs a whole chunk inside one install of the
-    /// scope's context: an item's diagnostics are its own output, whatever ran next to it.
-    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
-    pub(crate) fn run_item(&self, index: usize, item: impl FnOnce()) -> bool {
-        let run = self.collect_in_stage(item);
-        let fatal = run.result.is_err();
-        self.ready(index, run.diagnostics, fatal);
-        fatal
-    }
-
-    /// [`collect`](Self::collect) for a parallel stage's item, without asking the mode.
-    ///
-    /// [`run_item`](Self::run_item) calls it only inside a parallel stage, where every thread
-    /// that runs an item has a parallel session latched (the scope's owner opened a
-    /// parallel scope, and a helper latches the session's width before it runs anything), so the
-    /// answer is always "thread-safe". Asking is a thread-local read, and this is on the path of
-    /// every item.
+    /// Open a caller-local collection frame for the compatibility collect API.
     fn collect_in_stage<R>(&self, f: impl FnOnce() -> R) -> ItemRun<R> {
         // No collection yet: one is made when the item first emits or consumes something with
         // diagnostics, or when a stage started inside it captures this scope as its target.

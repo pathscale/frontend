@@ -64,8 +64,8 @@ diagnostics = []
 # Make ps-rusty_alloc the global allocator of the `frontend-facts` binary. Off by default: the
 # library never sets a global allocator, and a binary that links it picks its own.
 rusty_alloc = ["dep:rusty_alloc"]
-# Run a parallel session's stages (`rustc_data_structures::sync::stages`) on nagoya's pool. Off
-# by default, and the default build is the serial compiler exactly as it was, with no `nagoya`
+# Run owned file/body parsing and frozen resolver decisions on nagoya's pool. Borrowed
+# compiler stages stay serial. Off by default, with no `nagoya`
 # and no `std` in its graph.
 #
 # **Why it is a feature and not a dependency everyone takes.** nagoya's pool needs `std` (its

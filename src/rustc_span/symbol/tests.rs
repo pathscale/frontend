@@ -7,7 +7,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicU32;
+
 
 use super::*;
 use crate::rustc_span::create_default_session_globals_then;

@@ -182,26 +182,17 @@ pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send,
 
     let width = NonZero::new(session_width(jobs)).expect("a session runs on at least one thread");
 
-    // **The session's thread, plus nagoya's pool when the session is parallel.**
-    //
-    // This had two paths: a `rustc_thread_pool` (rayon-core) pool of `jobs.frontend` workers that
-    // this function built, with a deadlock handler, and a single-thread one. The rustc-owned pool
-    // is gone for good. What replaced it builds no pool at all: the session runs on the caller's
-    // thread, and when it is parallel each stage (`sync::stages`) hands items to helpers on
-    // nagoya's pool, which nagoya owns and which serves every session in the process.
-    //
-    // The deadlock handler went with the pool, and nothing here replaces it. It existed because
-    // rayon workers blocked on each other's queries with nothing to detect a cycle; the query
-    // system now detects a cycle at the moment a wait would close one (`QueryWaitGraph`), and a
-    // stage's waits only ever wait for running items (see `stage.rs`).
+    // The compiler context and all arena-dependent walks stay on the caller. Owned parsing
+    // and frozen resolver decisions can use nagoya's pool when this session asks for width.
+    // This function creates no pool, captures no worker context and starts no thread.
     run_on_current_thread_with_globals(
         edition,
         sm_inputs,
         extra_symbols,
         |current_gcx| {
-            // One registry per session, with one slot per thread the session may use. This
-            // thread holds slot 0 for the whole session; pool helpers lease the others while they
-            // run this session's items. Every `WorkerLocal` the session creates is sized by it.
+            // One registry per session, with this caller holding slot zero. Compiler
+            // WorkerLocal values never enter owned parser tasks; the registry still sizes the
+            // session's arenas, and each later session gets its own registry.
             //
             // It replaced a registry kept on the thread across requests, sized by whichever
             // session came first: a cache of the first request's shape, and wrong once sessions

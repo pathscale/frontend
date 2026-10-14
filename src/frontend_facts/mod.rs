@@ -708,14 +708,10 @@ fn frontend_jobs(width: usize) -> Option<core::num::NonZero<usize>> {
 /// and only [`analyze_source`] installed one it can read back. Extraction may add a limitation
 /// notice when an unresolved trait impl prevents a visibility fact.
 ///
-/// **Three independent walks, each spread over the session's workers when it has more than one.** The
-/// definitions, the imports and the bodies are each a list whose items do not read one
-/// another's results: every item asks `tcx` its own questions and returns owned data. Each list
-/// is one stage (`sync::run_stage`) over its frozen input, read in place, which runs serially
-/// when the session is serial and on the pool otherwise, and which returns one output per item,
-/// in input order, either way. The lists are then
-/// assembled exactly as the serial loops assembled them, so a fact's position, ties in the final
-/// sorts included, is the same at any worker count.
+/// **Three serial walks over the borrowed compiler context.** Definitions, imports and bodies
+/// return owned facts, but their producers query the arena-backed TyCtxt. run_stage and
+/// run_stage_weighted execute those producers on the caller in input order, including in
+/// parallel sessions. The final assembly and sort tie order remain unchanged.
 ///
 /// **Data forward, not recomputed.** The definitions stage prints each local definition's path
 /// once. Its output is frozen before the imports and bodies stages start, and they, like the

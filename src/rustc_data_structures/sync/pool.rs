@@ -1,7 +1,7 @@
 //! Everything the parallel shims take from `std` and `nagoya`, in one place.
 //!
 //! Compiled only with the `parallel` feature, which is what brings `nagoya` and, through it,
-//! `std`. No other module of this crate names either; `stage.rs` builds stages out of what is
+//! `std`. No other module of this crate names either; `owned_stage.rs` builds tasks out of what is
 //! here. `Cargo.toml` says why the feature is off by default.
 //!
 //! # Frontend owns no thread
@@ -93,19 +93,15 @@ pub(crate) fn width() -> usize {
     }
 }
 
-/// Fanout jobs submitted and not yet finished, across every scope of every session in the
-/// process.
+/// Owned jobs submitted and not yet finished across the application.
 ///
-/// **The budget is the application's, not a scope's.** There is one pool, and a stage inside an
-/// item of another stage, or a stage of another session, draws on the same workers. Counting
-/// per scope let every scope submit up to its own width, so nested and concurrent scopes
-/// together queued many times the pool's size, and the surplus only contended: jobs that found
-/// no registry slot, and locks fought over by more runners than there are cores.
+/// File tasks, nested body tasks and owned resolver decisions share one pool budget. A successor
+/// inherits its predecessor's place; an owner executes work the budget cannot admit.
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /// Submit `work` if the application-wide budget has room, and say whether it did. The budget is
 /// the pool's worker count: one job per worker, whoever submitted it. Work not submitted stays
-/// with its scope, whose owner runs it.
+/// in its typed owned task, where its owner can claim and run it.
 pub(crate) fn try_submit(work: impl FnOnce() + Send + 'static) -> bool {
     let limit = workers();
     let mut current = IN_FLIGHT.load(Ordering::Relaxed);
@@ -151,7 +147,7 @@ fn launch(work: impl FnOnce() + Send + 'static) {
 }
 
 /// Park this thread until `future` completes. On a pool worker this takes the worker out of the
-/// pool until it wakes; see `stage.rs` for why every wait here ends.
+/// pool until it wakes. Owned-task waits are reactive and follow only already-running work.
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     nagoya::block_on(future)
 }

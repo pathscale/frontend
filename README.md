@@ -112,7 +112,9 @@ the panic catcher first and use `panic = "unwind"`.
 `check_source` on the repository's two generated corpora of valid source
 (`examples/parallel_timing.rs`). The clean corpus is 200 files, 4.66 MB; the large one is 6
 files, 0.98 MB. "Before" is the earliest measurement on record (commit `6774475`); "after" is
-this branch, on the same 16-core machine, best of back-to-back runs.
+the former scoped stage executor, on the same 16-core machine, best of back-to-back runs.
+These historical timings predate the owned-task boundary described below; current stage scaling
+is not established by this table.
 
 | | before | after |
 | --- | ---: | ---: |
@@ -170,25 +172,32 @@ parallel --example parallel_timing -- files clean 12`, against the same without 
 
 ### 2. Run files in parallel, not one file wide
 
-A check of one file is about 45% serial (parse, macro expansion, name resolution, session setup
-and teardown), so running one file's stages on many workers stops paying at about width 4:
+Borrowed compiler state remains on its caller. Expansion, late resolution, lowering, type
+checking, borrow checking, facts and compiler lints run serially even at a wider session setting.
+Their inputs and query results borrow the compiler arena and cannot be made owned by wrapping
+owner IDs in Arc. Frozen glob visibility decisions are an owned-input/owned-output exception.
 
-| clean corpus, one file at a time | width 1 | width 2 | width 4 | width 8 | width 12 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| wall clock | 2,400 ms | 1,800 ms | 1,380 ms | 1,140 ms | 1,030 ms |
+With the `parallel` feature, `rustc_parse::owned::parse_source_files` accepts an owned slice of
+`ParseFileInput` values built from `Arc<SourceFile>`, their `Arc<SourceMap>`, edition and
+token-stripping policy. It uses plain nagoya tasks and returns one `ParsedFile` in input order:
+an owned AST, structured diagnostics, deferred lints and parser effects. Each file retains its
+own symbol, span and hygiene identities; inspect or render its output through `ParsedFile::enter`.
+Files are independent parse sessions, and their ASTs are not a combined compilation. Source
+bytes and AST nodes are not copied for task transfer.
 
-Files share nothing, so checking several at once scales almost linearly: the same 200 files on
-12 workers, each file serial, take about 285 ms (8.7x), about 215 ms with mimalloc.
+Owned function-body parsing also uses the pool. It keeps the existing transaction validation
+and retries serially when a speculative diagnostic or disallowed identity insertion prevents
+commit. File tasks and nested body tasks share the application pool budget; owners claim queued
+work before waiting, so a nested parse does not wait for queued work behind blocked workers.
 
-- **Many files:** one call per file (`check_shared_source_with_width`,
-  `analyze_shared_source_with_width`, `read_crate`), each at width 1, spread over a pool, for
-  example nagoya's `par_for`. Answers are identical to running them one after another.
-- **Fewer files than workers** (a few large files): the same, each at width 2 to 4.
-- **One large file:** width 4 is the sweet spot; wider costs CPU for little.
+For complete semantic analysis, the host can schedule independent compiler sessions using typed
+owned source inputs and collect owned reports. A session width above one permits its owned parser
+work to use spare pool budget; it does not make the borrowed query context parallel. The old
+width-4 recommendation and scoped-stage timings above do not describe this executor.
 
-Width above 1 needs the `parallel` cargo feature. Workers that run sessions need a large stack
-(the timing example uses 16 MiB), and every entry point needs a panic catcher installed first
-(`unwind_janky::install_catcher`) and `panic = "unwind"`.
+Workers need large stacks (the default nagoya runtime uses 16 MiB). Programs doing complete
+semantic analysis still install `unwind_janky::install_catcher` first and use `panic = "unwind"`.
+Frontend starts no OS threads of its own.
 
 ## Future work
 
@@ -197,7 +206,7 @@ corpus unless they say otherwise. `research/FINDINGS.md` has the profiles.
 
 | Work | What it would save | Why it is not done |
 | --- | --- | --- |
-| A batch entry point, one session per file on nagoya's pool, answers in input order | Nothing new in time (a caller gets the 8.7x today with `par_for`); it saves every caller writing it | `run_stage` outside a session runs serially, so it needs a helper in `sync::pool` |
+| Owned semantic-analysis sessions, reports in input order | Host-level parallelism for independent files | The parse-only batch API owns its data; a borrowed GlobalCtxt is still not a task input |
 | Borrowck's MIR type check without a fulfillment context for operations that register no obligations | Part of MIR type check, which is 12% (279 ms of 2.3 s) | Needs a prototype to size |
 | Borrowck without cloning each body (renumber regions into a side table) | About 3% (clone, renumber, copy) | Other passes read the unrenumbered MIR after borrowck |
 | One shard lock per query run instead of two | About 2%, more at higher widths | Contained, not yet done |

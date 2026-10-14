@@ -3,10 +3,9 @@
 //!
 //! Operations
 //! ----------
-//! There is one: the stage (`stage.rs`, [`stages`] and [`run_stage`]), a function over frozen
-//! input fanned out per index into fill-once, per-item-awaitable output slots. In a parallel
-//! session its items run on nagoya's pool; in a serial one it degenerates straightforwardly to
-//! the loop, in order, on the calling thread.
+//! Borrowed compiler work (`stage.rs`, [`stages`] and [`run_stage`]) runs serially on the
+//! caller. Owned work ([`run_owned_stage`]) uses typed Arc input and owned output with real
+//! Send/Sync bounds. Only owned work can enter nagoya's pool in a parallel session.
 //!
 //! Whether a session is parallel is decided per session, not per process: see `mode` below.
 //!
@@ -73,9 +72,7 @@ mod owned_stage;
 // The only module that names `std` or `nagoya`, and only with the `parallel` feature.
 #[cfg(feature = "parallel")]
 mod pool;
-// The one module here that names the compiler above it: a stage's items run in the compiler's
-// context (`rustc_middle::ty::tls::ItemContext`) and hand it their diagnostics
-// (`rustc_errors::OrderedReplay`). Its header says why that is a direct call and not a hook.
+// Serial compatibility for compiler walks that borrow their arena and diagnostic context.
 mod stage;
 mod vec;
 mod worker_local;
