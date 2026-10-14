@@ -314,22 +314,24 @@ impl<'a> Parser<'a> {
     }
 
     fn should_continue_as_assoc_expr(&mut self, lhs: &Expr) -> bool {
-        match (self.expr_is_complete(lhs), AssocOp::from_token(&self.token)) {
+        if !self.expr_is_complete(lhs) {
+            return true;
+        }
+        match AssocOp::from_token(&self.token) {
             // Semi-statement forms are odd:
             // See https://github.com/rust-lang/rust/issues/29071
-            (true, None) => false,
-            (false, _) => true, // Continue parsing the expression.
+            None => false,
             // An exhaustive check is done in the following block, but these are checked first
             // because they *are* ambiguous but also reasonable looking incorrect syntax, so we
             // want to keep their span info to improve diagnostics in these cases in a later stage.
-            (true, Some(AssocOp::Binary(
+            Some(AssocOp::Binary(
                 BinOpKind::Mul | // `{ 42 } *foo = bar;` or `{ 42 } * 3`
                 BinOpKind::Sub | // `{ 42 } -5`
                 BinOpKind::Add | // `{ 42 } + 42` (unary plus)
                 BinOpKind::And | // `{ 42 } &&x` (#61475) or `{ 42 } && if x { 1 } else { 0 }`
                 BinOpKind::Or | // `{ 42 } || 42` ("logical or" or closure)
                 BinOpKind::BitOr // `{ 42 } | 42` or `{ 42 } |x| 42`
-            ))) => {
+            )) => {
                 // These cases are ambiguous and can't be identified in the parser alone.
                 //
                 // Bitwise AND is left out because guessing intent is hard. We can make
@@ -340,8 +342,8 @@ impl<'a> Parser<'a> {
                 self.psess.ambiguous_block_expr_parse.borrow_mut().insert(sp, lhs.span);
                 false
             }
-            (true, Some(op)) if !op.can_continue_expr_unambiguously() => false,
-            (true, Some(_)) => {
+            Some(op) if !op.can_continue_expr_unambiguously() => false,
+            Some(_) => {
                 self.error_found_expr_would_be_stmt(lhs);
                 true
             }
