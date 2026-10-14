@@ -1,4 +1,4 @@
-//! A bunch of methods and structures more or less related to resolving imports.
+ //! A bunch of methods and structures more or less related to resolving imports.
 
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
@@ -838,13 +838,25 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
             self.write_import_resolutions(&imports_to_resolve);
 
-            self.indeterminate_imports = imports_to_resolve
-                .extract_if(.., |(_, _, count)| {
-                    indeterminate_count += *count;
-                    *count > 0
-                })
-                .collect();
-            self.determined_imports.extend(imports_to_resolve.into_iter().map(|(i, _, _)| i));
+            let pending_counts =
+                imports_to_resolve.iter().map(|(_, _, count)| *count).collect();
+            let deltas = round::stage_deltas(pending_counts);
+            let mut next_round = Vec::with_capacity(imports_to_resolve.len());
+            for ((import, resolution, count), delta) in
+                imports_to_resolve.into_iter().zip(deltas)
+            {
+                assert_eq!(
+                    delta.indeterminate_count, count,
+                    "rs3_import_round_delta"
+                );
+                indeterminate_count += delta.indeterminate_count;
+                if delta.indeterminate_count > 0 {
+                    next_round.push((import, resolution, count));
+                } else {
+                    self.determined_imports.push(import);
+                }
+            }
+            self.indeterminate_imports = next_round;
         }
     }
 
