@@ -19,7 +19,7 @@ use core::mem;
 use crate::rustc_ast::NodeId;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
-use crate::rustc_data_structures::sync::run_stage;
+
 use crate::rustc_errors::{Applicability, BufferedEarlyLint, Diagnostic};
 use crate::rustc_expand::base::SyntaxExtensionKind;
 use crate::rustc_hir::def::{self, DefKind, PartialRes};
@@ -1900,17 +1900,22 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     snapshot.push((vis, ancestors));
                 }
 
-                // This stage has no resolver, hygiene, query or diagnostic access.
-                // run_stage settles all workers and returns results in input order,
-                // including when the parallel feature or session parallelism is off.
-                let decisions = run_stage(Arc::new(snapshot), candidates.len(), |snapshot, index| {
-                    let (vis, ancestors) = &snapshot[index];
-                    let accessible = match *vis {
-                        Visibility::Public => true,
-                        Visibility::Restricted(ancestor) => ancestors.contains(&ancestor),
-                    };
-                    (index, accessible)
-                });
+                // Workers receive only owned visibility facts and return ordered decisions.
+                let decisions = crate::rustc_data_structures::sync::run_owned_stage(
+                    Arc::new(snapshot),
+                    candidates.len(),
+                    |snapshot, index| {
+                        u32::try_from(snapshot[index].1.len()).unwrap_or(u32::MAX).saturating_add(1)
+                    },
+                    |snapshot, index| {
+                        let (vis, ancestors) = &snapshot[index];
+                        let accessible = match *vis {
+                            Visibility::Public => true,
+                            Visibility::Restricted(ancestor) => ancestors.contains(&ancestor),
+                        };
+                        (index, accessible)
+                    },
+                );
                 // Check the complete ordering before integrating any candidate.
                 for (expected, &(index, _)) in decisions.iter().enumerate() {
                     assert_eq!(index, expected, "rs3_glob_commit_order");

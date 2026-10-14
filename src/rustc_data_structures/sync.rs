@@ -57,26 +57,7 @@ pub(crate) use self::pool::{parse_pool_width, retry_parse_serial, speculate_pars
 pub use self::stage::{
     Chain, ReadySlot, Slots, StageScope, cost, run_stage, run_stage_weighted, stages,
 };
-/// Execute owned parse jobs on the caller, returning results in input order.
-/// The general stage executor captures borrowed compiler context even for static input.
-#[cfg(feature = "parallel")]
-pub(crate) fn run_owned_stage<In, O>(
-    input: alloc::sync::Arc<In>,
-    len: usize,
-    weight: fn(&In, usize) -> u32,
-    run: fn(&In, usize) -> O,
-) -> Vec<O>
-where
-    In: crate::rustc_data_structures::marker::DynSend
-        + crate::rustc_data_structures::marker::DynSync
-        + 'static,
-    O: crate::rustc_data_structures::marker::DynSend
-        + crate::rustc_data_structures::marker::DynSync
-        + 'static,
-{
-    let _ = weight;
-    (0..len).map(|index| run(&input, index)).collect()
-}
+pub use self::owned_stage::run_owned_stage;
 
 pub use self::vec::{AppendOnlyIndexVec, AppendOnlyVec, LockFreeAppendOnlyVec};
 pub use self::worker_local::{Registry, RegistryScope, RegistrySlot, WorkerLocal};
@@ -88,6 +69,7 @@ pub use crate::rustc_data_structures::marker::*;
 // not on this crate's analysis path.
 mod freeze;
 mod lock;
+mod owned_stage;
 // The only module that names `std` or `nagoya`, and only with the `parallel` feature.
 #[cfg(feature = "parallel")]
 mod pool;
