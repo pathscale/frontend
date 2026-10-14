@@ -1397,6 +1397,11 @@ impl<'a> Parser<'a> {
         self.token_cursor.look_ahead(dist).map(|tree| looker(&tree))
     }
 
+    /// Structural predicates inspect a group's opener without collecting its body.
+    fn tree_look_ahead_token<R>(&self, dist: usize, looker: impl FnOnce(&Token) -> R) -> Option<R> {
+        self.token_cursor.look_ahead_tree_token(dist).map(|token| looker(&token))
+    }
+
     /// Returns whether any of the given keywords are `dist` tokens ahead of the current one.
     pub(crate) fn is_keyword_ahead(&self, dist: usize, kws: &[Symbol]) -> bool {
         self.look_ahead(dist, |t| kws.iter().any(|&kw| t.is_keyword(kw)))

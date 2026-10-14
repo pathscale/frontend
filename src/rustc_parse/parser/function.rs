@@ -2,7 +2,7 @@ use crate::rustc_ast as ast;
 use crate::rustc_ast::ast::*;
 use crate::rustc_ast::ptr::P;
 use crate::rustc_ast::token::{self, InvisibleOrigin, MetaVarKind, TokenKind};
-use crate::rustc_ast::tokenstream::TokenTree;
+
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Applicability, PResult};
@@ -349,7 +349,13 @@ impl<'a> Parser<'a> {
                 case == Case::Insensitive
                     || matches!(
                         ident.name,
-                        kw::Fn | kw::Gen | kw::Const | kw::Async | kw::Unsafe | kw::Safe | kw::Extern
+                        kw::Fn
+                            | kw::Gen
+                            | kw::Const
+                            | kw::Async
+                            | kw::Unsafe
+                            | kw::Safe
+                            | kw::Extern
                     )
                     || check_pub && ident.name == kw::Pub
             }
@@ -394,34 +400,17 @@ impl<'a> Parser<'a> {
                 })
             // `extern ABI fn`
             || self.check_keyword_case(exp!(Extern), case)
-                // Use `tree_look_ahead` because `ABI` might be a metavariable,
-                // i.e. an invisible-delimited sequence, and `tree_look_ahead`
-                // will consider that a single element when looking ahead.
+                // Treat a metavariable ABI's invisible-delimited sequence as
+                // one tree, without collecting the body of a source group.
                 && self.look_ahead(1, |t| t.can_begin_string_literal())
-                && (self.tree_look_ahead(2, |tt| {
-                    match tt {
-                        TokenTree::Token(t, _) => t.is_keyword_case(kw::Fn, case),
-                        TokenTree::Delimited(..) => false,
-                    }
-                }) == Some(true) ||
+                && (self.tree_look_ahead_token(2, |t| t.is_keyword_case(kw::Fn, case)) == Some(true) ||
                     // This branch is only for better diagnostics; `pub`, `unsafe`, etc. are not
                     // allowed here.
                     (self.may_recover()
-                        && self.tree_look_ahead(2, |tt| {
-                            match tt {
-                                TokenTree::Token(t, _) =>
-                                    ALL_QUALS.iter().any(|exp| {
-                                        t.is_keyword(exp.kw)
-                                    }),
-                                TokenTree::Delimited(..) => false,
-                            }
+                        && self.tree_look_ahead_token(2, |t| {
+                            ALL_QUALS.iter().any(|exp| t.is_keyword(exp.kw))
                         }) == Some(true)
-                        && self.tree_look_ahead(3, |tt| {
-                            match tt {
-                                TokenTree::Token(t, _) => t.is_keyword_case(kw::Fn, case),
-                                TokenTree::Delimited(..) => false,
-                            }
-                        }) == Some(true)
+                        && self.tree_look_ahead_token(3, |t| t.is_keyword_case(kw::Fn, case)) == Some(true)
                     )
                 )
     }
