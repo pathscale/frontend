@@ -16,7 +16,7 @@ use frontend::rustc_expand::expand::ExpansionConfig;
 use frontend::rustc_expand::proc_macro::BangProcMacro;
 use frontend::rustc_feature::UnstableFeatures;
 use frontend::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
-use frontend::rustc_middle::ty::context::tls;
+use frontend::rustc_middle::ty::tls;
 use frontend::rustc_proc_macro as pm;
 use frontend::rustc_proc_macro::bridge::client::Client;
 use frontend::rustc_resolve::Resolver;
@@ -65,7 +65,7 @@ fn expand(client: Client, input: ServerTokens) -> Result<ServerTokens, ErrorGuar
         let mut resolver = Resolver::new(tcx, &[], DUMMY_SP, DUMMY_SP, arenas);
         let config = ExpansionConfig::default(tcx.crate_name(LOCAL_CRATE), tcx.features());
         let mut ecx = ExtCtxt::new(tcx.sess, config, &mut resolver, None);
-        ecx.current_expansion.id = LocalExpnId::fresh(
+        ecx.current_expansion.id = tcx.with_stable_hashing_context(|hcx| LocalExpnId::fresh(
             ExpnData::default(
                 ExpnKind::Macro(MacroKind::Bang, Symbol::intern("bridge_witness")),
                 DUMMY_SP,
@@ -73,8 +73,8 @@ fn expand(client: Client, input: ServerTokens) -> Result<ServerTokens, ErrorGuar
                 Some(CRATE_DEF_ID.to_def_id()),
                 None,
             ),
-            tcx.create_stable_hashing_context(),
-        );
+            hcx,
+        ));
         BangProcMacro { client }.expand(&mut ecx, DUMMY_SP, input)
     })
 }
@@ -131,7 +131,7 @@ fn run(source: Arc<String>, legacy: bool) {
                 assert!(expand(Client::expand1(echo), input).is_err(), "frontend_threads_legacy_refusal");
                 let recorded = messages.lock();
                 assert!(recorded.iter().any(|m| m.contains("frontend_proc_macro_cross_thread_removed")),
-                    "frontend_threads_legacy_error_name: {recorded:?}");
+                    "frontend_threads_legacy_error_name: {:?}", &*recorded);
                 println!("frontend_threads_legacy_refusal: ok");
             } else {
                 let output = expand(Client::expand1(outer), input.clone())
@@ -145,9 +145,9 @@ fn run(source: Arc<String>, legacy: bool) {
                 assert_eq!(pprust::tts_to_string(&recovered), before, "frontend_threads_recovered_tokens");
                 let recorded = messages.lock();
                 assert!(recorded.iter().any(|m| m.contains("frontend_proc_macro_nested_bridge")),
-                    "frontend_threads_nested_error_name: {recorded:?}");
+                    "frontend_threads_nested_error_name: {:?}", &*recorded);
                 assert!(recorded.iter().any(|m| m.contains("frontend_threads_client_panic")),
-                    "frontend_threads_panic_error_name: {recorded:?}");
+                    "frontend_threads_panic_error_name: {:?}", &*recorded);
                 println!("frontend_threads_bridge: {before}");
             }
             // The refusal and deliberate panic are the witness's expected diagnostics.
