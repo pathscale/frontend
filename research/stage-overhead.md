@@ -236,4 +236,4 @@ session whatever its size, on 38 to 77 us of work.
   whole full-width overhead. The average `src/` file (20 KB, 80 us of typeck) runs serially.
 
 Not weighted: `frontend_facts` definition and import stages (cost is per path printed, not per
-byte, and unmeasured), parse chunks (handover item 4), `hir_id_validator` (debug only).
+byte, and unmeasured), parallel parse chunks, `hir_id_validator` (debug only).

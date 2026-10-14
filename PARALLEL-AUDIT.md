@@ -44,8 +44,8 @@ and `AllocMap::to_alloc` is a `Sharded`. Therefore:
 
 - **The mode must be set before `GlobalCtxt` construction** (`query_system()` builds every
   `QueryState` and cache; `CtxtInterners::new` builds the interners). If it is not, the process
-  panics there, which is loud and safe. This is the parallel-mode agent's `set from
-  opts.jobs.frontend` step; it must happen before `create_global_ctxt`.
+  panics there, which is loud and safe. Set the mode from `opts.jobs.frontend` before
+  `create_global_ctxt`.
 - Because the mode is process-wide and set-once, a process that ever ran a serial session cannot
   later run a parallel one (the assert fires). Owned by the `sync.rs` mode section.
 
@@ -158,7 +158,7 @@ the parallel stages rely on.
 | `DefaultCache` | `src/rustc_middle/query/caches.rs:54` | query results | **Kept, lock** (`ShardedHashMap`): the query caches are the memoization model and the owner keeps them. They are fill-once per key already (see "Reactive"). |
 | `SingleCache` | `caches.rs:97` | `()`-keyed queries | **Safe**: `eko::thread::OnceLock`, a fill-once slot. Only the computing thread calls `set`, because the active-key table admits one. |
 | `VecCache` (`DefIdCache::local`) | `caches.rs:141`, `src/rustc_data_structures/vec_cache.rs:313` | local `DefId` queries | **Safe**: upstream's lock-free atomic slots; bucket allocation under a static `eko` mutex (`vec_cache.rs:126`). |
-| `QuerySystem::arenas` | `system.rs:115` | `arena_cache` queries | **Safe** if every nagoya worker is registered in the session's `Registry` (per-worker arenas, `WorkerLocal`). **Hazard, owned by the parallel-mode agent**: `WorkerLocal::deref` panics on an unregistered thread (`worker_local.rs` `verify`). |
+| `QuerySystem::arenas` | `system.rs:115` | `arena_cache` queries | **Safe** if every nagoya worker is registered in the session's `Registry` (per-worker arenas, `WorkerLocal`). **Hazard**: `WorkerLocal::deref` panics on an unregistered thread (`worker_local.rs` `verify`). |
 | `QuerySystem::side_effects`, `used_features` | `system.rs:124`, `system.rs:129` | incremental side effects; feature use tracking | **Kept, lock**: side effects are empty with the dep graph disabled; `used_features` is a set union whose order does not matter. Could become per-item output merged after the stage if it ever shows up in a profile. |
 | `on_disk_cache` | `system.rs:135` | none | **Safe**: always `None` here (dep graph disabled). |
 | Query feeding | `src/rustc_middle/query/calls.rs` `query_feed` | `TyCtxtFeed` | **Safe**: a key is fed by the one query that creates its def; same as upstream parallel. |
@@ -175,7 +175,7 @@ the parallel stages rely on.
 | `mir::BasicBlocks` cache | `src/rustc_middle/mir/basic_blocks.rs:37` | predecessors, dominators of shared bodies | **Safe**: `eko::thread::OnceLock` fill-once slots; the contended case yields instead of parking. |
 | `DepGraph` | `src/rustc_middle/dep_graph/graph.rs:75` | `next_virtual_depnode_index`, `read_index` | **Safe**: disabled graph, `Arc<AtomicU32>` counter. `green_edge_buf` (`:169`) is `WorkerLocal` and only used when incremental. |
 | `CurrentGcx` | `context.rs:821` | `GlobalCtxt::enter` | **Safe**: `Arc<RwLock<Option<*const ()>>>`; set once by the caller thread before the stage. |
-| `ImplicitCtxt` TLV | `src/rustc_middle/ty/context/tls.rs:56` | every query | **Safe**, installed per worker by the parallel-mode agent. Note for that agent: the copied context's `query` becomes the `parent` of every job the piece starts, which is exactly the stack edge the cycle check needs; do not clear it. |
+| `ImplicitCtxt` TLV | `src/rustc_middle/ty/context/tls.rs:56` | every query | **Safe**, installed per worker. the copied context's `query` becomes the `parent` of every job the piece starts, which is exactly the stack edge the cycle check needs; do not clear it. |
 | Stable-hash address memos (`RawList`, `AdtDefData`) and `ADDRESS_CACHE_GENERATION` | were `src/rustc_middle/ty/impls_ty.rs`, `src/rustc_middle/ty/adt.rs:161`, `src/rustc_data_structures/stable_hash.rs` | query-key fingerprints in debug builds, `type_id_hash`, writeback sorting | **Fixed (delete, then per computation)**. Two thread-local maps keyed by arena address, retired by a process-wide generation counter bumped per `GlobalCtxt`. With sessions sharing nagoya workers the counter was not enough: a worker could hash a live session's value at an address a dead session's entry still named, with no new context created in between (wrong fingerprint), and every new session emptied every worker's memo (thrash). Deleted the thread-locals, the counter and its two functions. The memo that prevents exponential re-hashing of a shared type DAG is now a field of `StableHashState` (`src/rustc_middle/ich.rs:47`), reached through two defaulted `StableHashCtxt` methods (`stable_hash.rs:76`). It lives for one `with_stable_hashing_context` call, cannot outlive its arena and is never shared. What was given up: reuse of a list's fingerprint across separate hashing calls. |
 | `PASS_TO_PROFILER_NAMES` | was `src/rustc_mir_transform/pass_manager.rs` | every MIR pass | **Fixed (delete)**: a per-thread cache of leaked `mir_pass_*` strings for a self-profiler whose label argument is ignored (`profiling.rs` `generic_activity_with_arg`). On workers it leaked one copy per pass per thread. `MirPass::profiler_name` (`pass_manager.rs:125`) now returns the static name. |
 | `Rc<DenseLocationMap>` in borrowck | `src/rustc_borrowck/mod.rs:367` and the nine files that pass it | borrowck of each body | **Fixed**: `Arc`. Built once per body, then read only: frozen data handed forward. |
@@ -196,7 +196,7 @@ the parallel stages rely on.
 | `CTRL_C_RECEIVED`, `PAT_ID`, `OPAQUE_ID`, `rustc_transmute` `COUNTER` | `src/rustc_const_eval/mod.rs:86`, `src/rustc_pattern_analysis/pat.rs:19`, `constructor.rs:667`, `src/rustc_transmute/layout/dfa.rs:47` | const eval, match checking, transmute checks | **Safe**: atomics used for flags or unique ids only. |
 | `LazyLock` statics (`PASS_NAMES`, `DEFAULT_QUERY_PROVIDERS`, `BUILTIN_ATTRIBUTE_MAP`) and `OnceLock` statics | `src/rustc_mir_transform/mod.rs:118`, `src/rustc_interface/passes.rs:928`, `src/rustc_feature/builtin_attrs.rs:422` | read-only tables | **Safe**: frozen once, read-only after. |
 | `hir_id_validator` errors | `src/rustc_passes/hir_id_validator.rs:33` | per-module HIR validation | **Kept, lock** (debug-assertions only). Per-module output merged after would be the data-forward form. |
-| `unwind_janky` `RESUMING`, `LAST_PANIC` | `src/unwind_janky/mod.rs:149`, `:193` | a panic on a worker | **Hazard, parallel-mode agent**: per thread now. A panic caught on a worker leaves its message in that worker's `LAST_PANIC`; the catch that re-raises on the caller must carry the payload over, or the caller reports the wrong (or no) message. |
+| `unwind_janky` `RESUMING`, `LAST_PANIC` | `src/unwind_janky/mod.rs:149`, `:193` | a panic on a worker | **Hazard**: per thread now. A panic caught on a worker leaves its message in that worker's `LAST_PANIC`; the catch that re-raises on the caller must carry the payload over, or the caller reports the wrong (or no) message. |
 | `rustc_attr_parsing` `STATE_OBJECT` | `src/rustc_attr_parsing/context.rs:130` | attribute parsing | **Safe**: per-thread parser state; attribute parsing runs during lowering, before the parallel stages. |
 | `Registry`, `WorkerLocal` | `src/rustc_data_structures/sync/worker_local.rs` | all worker-local arenas | Not mine; see the arena rows. |
 
@@ -217,7 +217,7 @@ provider and everything between it and the query call `async`, which is the whol
 
 What can be done without that, precisely:
 
-1. **Help while waiting** (the parallel-mode agent's `parallel.rs`): a worker about to sleep on a
+1. **Help while waiting** (`parallel.rs`): a worker about to sleep on a
    latch or a join first runs other queued `par_*` pieces on its own stack, then re-checks. That is
    what rayon's `mark_blocked_and_wait` bought. It keeps the worker busy.
 2. **Forced inputs** (below): if the stage's inputs are computed before the stage, the slots the
@@ -249,7 +249,7 @@ to keep closures in the same piece as their typeck root, so two pieces never rac
 defining bodies' `typeck`), const items and const generics (const eval of another body), and
 `Steal` ordering. The cycle check covers those.
 
-## Owned by other agents: things this pass depends on
+## Integration dependencies
 
 - Set the mode before `create_global_ctxt` (else `Sharded::new` panics); see "How `Lock` picks".
 - Register every nagoya worker in the session's `Registry` before it runs a piece, or every
@@ -286,7 +286,7 @@ defining bodies' `typeck`), const items and const generics (const eval of anothe
 
 ## Verify
 
-Not built (agents are banned from cargo). From the checkout:
+Static inspection only. Suggested validation from the checkout:
 
 ```sh
 . ~/.zshenv && cargo check
