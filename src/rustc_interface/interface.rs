@@ -356,8 +356,8 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
     // that schedules its own work and is not a child of the build tool that invoked it, so an
     // inherited pool would be the wrong budget even if something did read it.
     //
-    // `jobs.frontend` sizes the session's `sync::Registry`, whose slots are the session's thread
-    // budget on nagoya's pool: that is the number that bounds frontend parallelism.
+    // `jobs.frontend` sizes the session's registry and bounds its owned-task fanout.
+    // Borrowed compiler walks use only the caller's registry slot.
     let early_dcx = EarlyDiagCtxt::new(config.opts.error_format);
     let jobs = config.opts.jobs;
 

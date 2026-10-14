@@ -24,13 +24,14 @@ asked for paths to be resolved into a compiled library. It is never a blocker to
   through `ekostd`. The one exception is `src/rustc_data_structures/sync/pool.rs`, compiled only
   with the `parallel` feature, which takes nagoya's pool and `std`'s `catch_unwind` and
   `resume_unwind` from there; nothing else names `std` or `nagoya`.
-- frontend creates no threads and owns no pool. A compile runs on the caller's thread. When a
-  session asks for parallelism (`jobs.frontend` of two or more, with the `parallel` cargo
-  feature, which is off by default) its internal stages (`rustc_data_structures::sync::stages`
-  and `run_stage`) also run items on nagoya's pool, whose threads are nagoya's or the embedding
-  program's; otherwise every stage runs serially, in order, on the caller's thread. Never call
-  `eko::thread::spawn`, `std::thread` or anything else that starts a thread from this crate, and
-  never bring back the `par_*` shims: new parallel work is a stage over frozen input.
+- frontend creates no threads and owns no pool. A compile runs on the caller's thread.
+  Borrowed compiler walks (`sync::stages`, `run_stage`, `run_stage_weighted`) stay serial.
+  With the `parallel` feature and a session width above one, owned file/body parsing and
+  frozen resolver decisions use plain nagoya tasks. New pool work must enter as typed
+  `Arc<In>` with actual `Send + Sync + 'static` bounds and return owned `Send + 'static`
+  output. Never transport TyCtxt, arena borrows, compiler TLS or lifetime-erased closures;
+  never use scoped parallel-for or thread creation APIs. Keep unsupported ownership
+  boundaries serial and state why. Never bring back the `par_*` shims.
 - No Python. No em dashes. No AI attribution. Never `git stash`. Stage your own paths only,
   with `git commit --only <paths>`.
 
@@ -41,6 +42,7 @@ In short:
 
 - **Declare mimalloc as your binary's global allocator.** frontend declares none. It is 8% of
   a serial check and 24% with files in parallel.
-- **Run files in parallel, each at width 1** (2 to 4 when there are fewer files than workers),
-  rather than one file wide. One file is about 45% serial, so its own stages stop paying at
-  about width 4, while 200 files on 12 workers run 8.7x faster than one after another.
+- **Run independent files in parallel.** Use `rustc_parse::owned::parse_source_files` for
+  owned parse output, or let the host schedule separate compiler sessions using typed owned
+  inputs. Arena-dependent stages inside a compiler session remain serial; its owned body
+  parsing can use spare pool budget. Existing width timings predate this ownership boundary.

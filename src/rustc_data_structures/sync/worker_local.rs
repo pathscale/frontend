@@ -29,8 +29,8 @@ use crate::rustc_data_structures::sync::CacheAligned;
 //
 // - `run_compiler` makes one `Registry` per session, with one slot per thread the session may
 //   use (`jobs.frontend`, or one), and leases slot 0 to its own thread for the whole session.
-// - A pool helper leases a free slot when it starts serving that session and gives it back when
-//   it leaves. Its `WorkerLocal` values are the slot's, whichever OS thread holds it.
+// - Compiler walks use only their caller's slot. Owned parser jobs create local parser state
+//   and never share this registry or its arena-backed WorkerLocal values.
 // - A thread enters a registry for the duration of a scope and leaves it on the way out, so a
 //   worker that served one session and then another is never left pointing at the first.
 //

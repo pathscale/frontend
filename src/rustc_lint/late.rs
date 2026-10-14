@@ -502,12 +502,8 @@ fn late_lint_crate<'tcx>(tcx: TyCtxt<'tcx>) {
 
 /// Performs lint checking on a crate.
 pub fn check_crate<'tcx>(tcx: TyCtxt<'tcx>) {
-    // Two independent stages in one scope, neither waiting for the other: the whole-crate lints,
-    // and the per-module lints, which are a stage over the crate's modules of their own. Serially
-    // they run in that order, as the `par_join` they replaced did.
-    //
-    // Each is a walk of the whole crate, and weighs it (`sync::cost::WALK`): a small crate runs
-    // both on this thread, in order, and only a crate whose two walks pay for a helper wakes one.
+    // Both walks borrow TyCtxt and remain serial: whole-crate lints, then per-module lints.
+    // The compatibility stage API preserves that diagnostic order and evaluates no weights.
     let crate_walk = tcx.crate_stage_weight(cost::WALK);
     stages(|scope| {
         scope.stage_weighted((), 1, |_, _| crate_walk, |_, _| {

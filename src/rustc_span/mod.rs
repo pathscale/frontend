@@ -301,10 +301,8 @@ where
 
 /// Whether this thread has `SessionGlobals` installed.
 ///
-/// For a parallel stage's item context (`rustc_middle::ty::tls::ItemContext`), which captures
-/// the session's globals where a stage scope opens, installs them around an item on a pool
-/// thread that has none, and leaves them alone on a thread (the session's own) that already has
-/// them.
+/// Owned parse tasks install their own identities locally. Borrowed compiler contexts remain
+/// on the caller and are never captured for pool work.
 #[inline]
 pub fn session_globals_are_set() -> bool {
     SESSION_GLOBALS.is_set()
