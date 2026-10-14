@@ -482,9 +482,12 @@ impl<'tcx> Folder<'tcx> {
         let is_size = self.tcx.is_intrinsic(def_id, sym::size_of);
         let is_align = self.tcx.is_intrinsic(def_id, sym::align_of);
         let is_size_val = self.tcx.is_intrinsic(def_id, sym::size_of_val);
+        let is_align_val = self.tcx.is_intrinsic(def_id, sym::align_of_val);
         let is_needs_drop = self.tcx.is_intrinsic(def_id, sym::needs_drop);
-        if !is_size && !is_align && !is_size_val && !is_needs_drop {
-            return Err("call to a function other than size_of, align_of, or size_of_val");
+        if !is_size && !is_align && !is_size_val && !is_align_val && !is_needs_drop {
+            return Err(
+                "call to a function other than size_of, align_of, size_of_val, or align_of_val",
+            );
         }
 
         let Some(ty) =
@@ -503,23 +506,23 @@ impl<'tcx> Folder<'tcx> {
             return Err("layout intrinsic has an unsized type");
         }
 
-        if is_size_val {
+        if is_size_val || is_align_val {
             if args.len() != 1 {
-                return Err("size_of_val call has an unexpected argument count");
+                return Err("size_of_val or align_of_val call has an unexpected argument count");
             }
             let argument = self.eval_operand(body, locals, &args[0].node, depth)?;
             let FoldValue::Reference { pointee_ty, .. } = argument else {
-                return Err("size_of_val argument is not a folded local reference");
+                return Err("size_of_val or align_of_val argument is not a folded local reference");
             };
             if pointee_ty != ty {
-                return Err("size_of_val argument has a mismatched pointee type");
+                return Err("size_of_val or align_of_val argument has a mismatched pointee type");
             }
         } else if !args.is_empty() {
             return Err("size_of or align_of call has arguments");
         }
 
         let (size, align) = self.layout(ty)?;
-        let value = if is_align { align as u128 } else { size.bytes() as u128 };
+        let value = if is_align || is_align_val { align as u128 } else { size.bytes() as u128 };
         self.scalar_value(value, destination_ty)
     }
 
