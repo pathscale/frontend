@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.7.3 - Unreleased
+## 0.7.4 - 2026-10-14
+
+This is a patch release following 0.7.3.
+
+- Build as a registry dependency: `build.rs` now sets `CFG_RELEASE`, `CFG_VERSION`,
+  `CFG_RELEASE_CHANNEL` and `RUSTC_INSTALL_BINDIR` (the caller's value, else this checkout's
+  default). They were set only by `.cargo/config.toml`, which is not packaged, so 0.7.3 did not
+  compile as a dependency.
+
+## 0.7.3 - 2026-10-14
 
 This is a patch release following 0.7.2.
 

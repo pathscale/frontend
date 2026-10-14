@@ -71,7 +71,7 @@ paths such as `frontend::rustc_interface` and `frontend::rustc_middle`.
 
 ```toml
 [dependencies]
-frontend = "^0.7.3"
+frontend = "^0.7.4"
 ```
 
 Source parsing needs no sysroot, compiler version, or release channel. A caller may provide a
