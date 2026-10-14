@@ -20,8 +20,9 @@ use crate::rustc_errors::emitter::Emitter;
 use crate::rustc_errors::{DiagCtxt, DiagCtxtFlags, DiagInner, PResult};
 use crate::rustc_session::parse::{ParseEffects, ParseSess};
 use crate::rustc_span::edition::Edition;
+use crate::rustc_span::owned_parse::OwnedParseGlobals;
 use crate::rustc_span::source_map::SourceMap;
-use crate::rustc_span::{Ident, SessionGlobals, Span, with_parse_globals};
+use crate::rustc_span::{Ident, Span, with_parse_globals};
 use crate::rustc_span::{parse_transaction, with_session_globals};
 use count::count;
 use state::State;
@@ -36,7 +37,7 @@ pub(super) struct BodyJob {
     before: ParseEffects,
 }
 struct Input {
-    globals: Arc<SessionGlobals>,
+    globals: OwnedParseGlobals,
     source_map: Arc<SourceMap>,
     jobs: Vec<BodyJob>,
     edition: Edition,
@@ -139,7 +140,7 @@ impl<'a> Parser<'a> {
                         return None;
                     }
                     let input = Arc::new(Input {
-                        globals: Arc::clone(&fork),
+                        globals: OwnedParseGlobals::share(&fork)?,
                         source_map: psess.clone_source_map(),
                         jobs,
                         edition,
@@ -274,7 +275,7 @@ fn body_weight(input: &Input, index: usize) -> u32 {
 
 fn parse_body(input: &Input, index: usize) -> Option<Body> {
     let job = &input.jobs[index];
-    with_parse_globals(&input.globals, || {
+    input.globals.enter(|| {
         sync::speculate_parse(|| {
             parse_transaction::body_pass(|| {
                 let _arena = ParseArena::enter();

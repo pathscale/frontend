@@ -26,10 +26,14 @@ use crate::rustc_attr_parsing::parser::{AllowExprMetavar, ArgParser, PathParser,
 use crate::rustc_attr_parsing::synthetic::SyntheticAttrState;
 use crate::rustc_attr_parsing::{AttributeTemplate, ShouldEmit};
 
-// `+ DynSend + DynSync` dropped from the trait object: they are no longer auto traits, so a
-// trait object cannot name them (see `rustc_data_structures/marker.rs`).
+// Preserve the ownership bounds when attribute lints become deferred parser output.
 pub struct EmitAttribute(
-    pub  Box<dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()> + 'static>,
+    pub Box<
+        dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
+            + Send
+            + Sync
+            + 'static,
+    >,
 );
 
 /// Context created once, for example as part of the ast lowering

@@ -81,6 +81,8 @@ pub mod def_id;
 use def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE, LocalDefId, StableCrateId};
 pub mod edit_distance;
 #[cfg(feature = "parallel")]
+pub mod owned_parse;
+#[cfg(feature = "parallel")]
 pub(crate) mod parse_transaction;
 mod span_encoding;
 

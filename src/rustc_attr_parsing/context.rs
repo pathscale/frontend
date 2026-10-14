@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::rustc_ast::{AttrStyle, MetaItemLit, Safety};
 use crate::rustc_attr_ir::target::Target;
 use crate::rustc_attr_ir::{AttrPath, Attribute, AttributeKind};
-use crate::rustc_data_structures::sync::{DynSend, DynSync};
+
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level, MultiSpan};
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_lint_defs::builtin::UNUSED_ATTRIBUTES;
@@ -421,7 +421,7 @@ impl<'f, 'sess: 'f> SharedContext<'f, 'sess> {
     pub(crate) fn emit_lint(
         &mut self,
         lint: &'static Lint,
-        diagnostic: impl for<'x> Diagnostic<'x, ()> + DynSend + DynSync + 'static,
+        diagnostic: impl for<'x> Diagnostic<'x, ()> + Send + Sync + 'static,
         span: impl Into<MultiSpan>,
     ) {
         self.emit_lint_inner(
@@ -433,8 +433,8 @@ impl<'f, 'sess: 'f> SharedContext<'f, 'sess> {
 
     pub(crate) fn emit_lint_with_sess<
         F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
-            + DynSend
-            + DynSync
+            + Send
+            + Sync
             + 'static,
     >(
         &mut self,
