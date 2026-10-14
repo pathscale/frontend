@@ -19,6 +19,7 @@
 //! in `README.md`, "Integrating it: allocator and parallelism".
 
 #![no_std]
+#![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![recursion_limit = "512"]
 // `proc_macro_diagnostic`, `proc_macro_internals` and `proc_macro_quote` were here and are gone
 // with `staged_api`. They were never core's: `proc_macro` declared them itself, in the
