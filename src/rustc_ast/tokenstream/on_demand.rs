@@ -1,6 +1,3 @@
-// The following lexer parts connect this cursor to parser entry points.
-#![allow(dead_code)]
-
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -33,6 +30,7 @@ struct Source {
     start: BytePos,
     groups: Vec<Group>,
     short_symbols: Vec<(u64, Symbol)>,
+    raw_identifier_spans: Vec<Span>,
 }
 
 /// Only source with no eager lexer side effects is admitted here. Failure has
@@ -51,6 +49,7 @@ impl Source {
         let mut groups: Vec<Group> = Vec::new();
         let mut enclosing = OUTER;
         let mut short_candidates = alloc::vec![(0u64, 0u32); 512];
+        let mut raw_identifier_spans = Vec::new();
         loop {
             pos += cursor.skip_whitespace();
             let raw = cursor.advance_token();
@@ -74,10 +73,21 @@ impl Source {
                 if !spelling.is_ascii() {
                     return None;
                 }
+                // Ident aux=1 denotes an ASCII raw identifier. NFC and all
+                // invalid raw names stay on the original diagnostic path.
+                let prefix = if kind == SourceKind::Ident && aux == 1 { 2 } else { 0 };
+                let name = &spelling[prefix..];
+                if prefix != 0 {
+                    if matches!(name, "" | "_" | "super" | "self" | "Self" | "crate") {
+                        return None;
+                    }
+                    raw_identifier_spans
+                        .push(Span::with_root_ctxt(start + BytePos(lo), start + BytePos(pos)));
+                }
                 if kind == SourceKind::Ident
-                    && let Some(key) = short_key(spelling)
+                    && let Some(key) = short_key(name)
                 {
-                    short_candidates[short_slot(key)] = (key, lo);
+                    short_candidates[short_slot(key)] = (key, lo + prefix as u32);
                 }
             }
             if matches!(kind, SourceKind::LineDoc | SourceKind::BlockDoc)
@@ -162,7 +172,7 @@ impl Source {
                 (key, symbol)
             })
             .collect();
-        Some(Arc::new(Self { text, start, groups, short_symbols }))
+        Some(Arc::new(Self { text, start, groups, short_symbols, raw_identifier_spans }))
     }
 
     /// No references into the source escape a scan. Resuming from a byte
@@ -239,14 +249,16 @@ impl Source {
         } else {
             match token.kind {
                 SourceKind::Ident => {
-                    let text = &self.text[token.lo as usize..token.hi as usize];
+                    let lo = token.lo + if token.aux == 1 { 2 } else { 0 };
+                    let text = &self.text[lo as usize..token.hi as usize];
                     let symbol = short_key(text)
                         .and_then(|key| {
                             let (cached, symbol) = self.short_symbols[short_slot(key)];
                             (cached == key).then_some(symbol)
                         })
-                        .unwrap_or_else(|| self.intern(token.lo, token.hi));
-                    token::Ident(symbol, IdentIsRaw::No)
+                        .unwrap_or_else(|| self.intern(lo, token.hi));
+                    let raw = if token.aux == 1 { IdentIsRaw::Yes } else { IdentIsRaw::No };
+                    token::Ident(symbol, raw)
                 }
                 SourceKind::Lifetime => {
                     token::Lifetime(self.intern(token.lo, token.hi), IdentIsRaw::No)
@@ -305,6 +317,10 @@ impl OnDemandCursor {
     ) -> Option<Self> {
         let source = Source::checked(text, start, begin, frontmatter, edition)?;
         Some(Self::at(source, begin, OUTER))
+    }
+
+    pub(super) fn raw_identifier_spans(&self) -> &[Span] {
+        &self.source.raw_identifier_spans
     }
 
     fn at(source: Arc<Source>, offset: u32, enclosing: u32) -> Self {
@@ -443,6 +459,10 @@ fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
     let mut aux = 0;
     let kind = match kind {
         TokenKind::Ident => S::Ident,
+        TokenKind::RawIdent => {
+            aux = 1;
+            S::Ident
+        }
         TokenKind::Lifetime { starts_with_number: false } => S::Lifetime,
         TokenKind::Semi => S::Semi,
         TokenKind::Comma => S::Comma,
@@ -502,7 +522,7 @@ fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
                 _ => return None,
             }
         }
-        // This includes raw identifiers/lifetimes, unknown prefixes, guarded
+        // This includes raw lifetimes, unknown prefixes, guarded
         // strings, frontmatter, invalid Unicode and malformed literals.
         _ => return None,
     };

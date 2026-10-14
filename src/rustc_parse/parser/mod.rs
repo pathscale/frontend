@@ -466,6 +466,12 @@ impl<'a> Parser<'a> {
             body_jobs: None,
         };
 
+        // The eager lexer records every raw identifier before parsing starts,
+        // including identifiers beyond an early parse failure.
+        for span in parser.token_cursor.raw_identifier_spans() {
+            psess.raw_identifier_spans.push(*span);
+        }
+
         // Make parser point to the first token.
         parser.bump();
 

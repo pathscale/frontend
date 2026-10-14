@@ -85,6 +85,13 @@ impl TokenCursor {
         })
     }
 
+    pub(crate) fn raw_identifier_spans(&self) -> &[crate::rustc_span::Span] {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor.raw_identifier_spans(),
+            Cursor::Trees(_) | Cursor::Flat(_) => &[],
+        }
+    }
+
     pub fn look_ahead_token(&self, dist: usize) -> Option<Token> {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.look_ahead_token(dist),

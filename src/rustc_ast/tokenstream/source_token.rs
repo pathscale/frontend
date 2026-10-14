@@ -1,6 +1,3 @@
-// This module is wired into the source cursor by the following queue parts.
-#![allow(dead_code)]
-
 use crate::rustc_ast::token::{self, Delimiter, TokenKind};
 
 use super::Spacing;
