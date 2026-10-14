@@ -82,7 +82,7 @@ pub(crate) fn dlsym_proc_macros(
 
     let path_c = CString::new(path.as_bytes())
         .map_err(|_| format!("proc-macro dylib path contains a NUL byte: {}", path.display()))?;
-    let symbol_name = crate::rustc_session::session::generate_proc_macro_decls_symbol(
+    let symbol_name = crate::rustc_session::generate_proc_macro_decls_symbol(
         stable_crate_id,
     );
     let symbol_c = CString::new(symbol_name.as_bytes())
