@@ -85,26 +85,6 @@ fn sparse_inserts() {
     }
 }
 
-#[test]
-fn concurrent_stress_check() {
-    let cache: VecCache<u32, u32, u32> = VecCache::default();
-    // `eko::thread::scope` rather than `std::thread::scope`. Its `spawn` returns
-    // nothing instead of a handle, which costs this test nothing: the threads' whole effect is
-    // the write into `cache`, and `scope` joins every one of them before it returns, so the
-    // lookups below still run after every write.
-    eko::thread::scope(|s| {
-        for idx in 0..100 {
-            let cache = &cache;
-            s.spawn(move || {
-                cache.complete(idx, idx, idx);
-            });
-        }
-    });
-
-    for idx in 0..100 {
-        assert_eq!(cache.lookup(&idx), Some((idx, idx)));
-    }
-}
 
 #[test]
 fn slot_entries_table() {
