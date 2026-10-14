@@ -37,7 +37,19 @@ enum OuterAttributeType {
 
 impl<'a> Parser<'a> {
     /// Parses attributes that appear before an item.
+    #[inline]
     pub(super) fn parse_outer_attributes(&mut self) -> PResult<'a, AttrWrapper> {
+        match self.token.kind {
+            token::Pound | token::DocComment(..) => self.parse_outer_attributes_present(),
+            _ => {
+                self.expected_token_types.insert(super::TokenType::Pound);
+                Ok(AttrWrapper::new(ast::AttrVec::new(), self.num_bump_calls))
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn parse_outer_attributes_present(&mut self) -> PResult<'a, AttrWrapper> {
         let mut outer_attrs = ast::AttrVec::new();
         let mut just_parsed_doc_comment = false;
         let start_pos = self.num_bump_calls;
@@ -362,7 +374,19 @@ impl<'a> Parser<'a> {
     /// terminated by a semicolon.
     ///
     /// Matches `inner_attrs*`.
+    #[inline]
     pub fn parse_inner_attributes(&mut self) -> PResult<'a, ast::AttrVec> {
+        match self.token.kind {
+            token::Pound | token::DocComment(..) => self.parse_inner_attributes_present(),
+            _ => {
+                self.expected_token_types.insert(super::TokenType::Pound);
+                Ok(ast::AttrVec::new())
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn parse_inner_attributes_present(&mut self) -> PResult<'a, ast::AttrVec> {
         let mut attrs = ast::AttrVec::new();
         loop {
             let start_pos = self.num_bump_calls;
