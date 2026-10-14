@@ -308,6 +308,15 @@ pub(crate) struct ExternLocationNotFile<'a> {
     pub location: &'a Path,
 }
 
+#[derive(Diagnostic)]
+#[diag("failed to load proc-macro dylib for crate `{$crate_name}`: {$reason}")]
+pub(crate) struct ProcMacroDylibLoad<'a> {
+    #[primary_span]
+    pub span: Span,
+    pub crate_name: Symbol,
+    pub reason: &'a str,
+}
+
 pub(crate) struct MultipleCandidates {
     pub span: Span,
     pub flavor: CrateFlavor,

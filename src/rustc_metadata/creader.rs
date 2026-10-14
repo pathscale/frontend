@@ -607,6 +607,13 @@ impl CStore {
         let _prof_timer =
             tcx.sess.prof.generic_activity_with_arg("metadata_register_crate", name.as_str());
 
+        let proc_macro_library = host_lib.as_ref().unwrap_or(&lib);
+        let proc_macro_dylib = proc_macro_library.source.dylib.clone();
+        let proc_macro_stable_crate_id = proc_macro_library
+            .metadata
+            .get_root()
+            .stable_crate_id();
+
         let Library { source, metadata } = lib;
         let crate_root = metadata.get_root();
         let host_hash = host_lib.as_ref().map(|lib| lib.metadata.get_root().hash());
@@ -643,11 +650,29 @@ impl CStore {
             private_dep,
         )?;
 
+        let raw_proc_macros = if crate_root.is_proc_macro_crate() {
+            let path = proc_macro_dylib.as_deref().ok_or_else(|| {
+                CrateError::ProcMacroDylibLoad(
+                    name,
+                    "host proc-macro crate has no dylib path".to_owned(),
+                )
+            })?;
+            Some(
+                crate::rustc_metadata::dylib::dlsym_proc_macros(
+                    path,
+                    proc_macro_stable_crate_id,
+                )
+                .map_err(|reason| CrateError::ProcMacroDylibLoad(name, reason))?,
+            )
+        } else {
+            None
+        };
+
         let crate_metadata = CrateMetadata::new(
             tcx,
             metadata,
             crate_root,
-            None,
+            raw_proc_macros,
             cnum,
             cnum_map,
             dep_kind,

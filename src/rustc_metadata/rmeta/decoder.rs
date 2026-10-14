@@ -44,6 +44,7 @@ use crate::rustc_middle::mir::interpret::{AllocDecodingSession, AllocDecodingSta
 use crate::rustc_middle::ty::codec::TyDecoder;
 use crate::rustc_middle::ty::{RestrictionKind, Visibility};
 use crate::rustc_middle::{bug, implement_ty_decoder};
+use crate::rustc_metadata::dylib::LoadedProcMacro;
 use crate::rustc_proc_macro::bridge::client::Client as ProcMacroClient;
 use crate::rustc_serialize::opaque::MemDecoder;
 use crate::rustc_serialize::{Decodable, Decoder};
@@ -122,8 +123,8 @@ pub(crate) struct CrateMetadata {
     /// These can be introduced using either `#![rustc_coherence_is_core]`
     /// or `#[rustc_allow_incoherent_impl]`.
     incoherent_impls: FxIndexMap<SimplifiedType, LazyArray<DefIndex>>,
-    /// Proc macro function pointers for this crate, if it's a proc macro crate.
-    raw_proc_macros: Option<&'static [ProcMacroClient]>,
+    /// Proc macro clients loaded from this crate's host dylib.
+    raw_proc_macros: Option<&'static [LoadedProcMacro]>,
     /// Source maps for code from the crate.
     source_map_import_info: Lock<Vec<Option<ImportedSourceFile>>>,
     /// For every definition in this crate, maps its `DefPathHash` to its `DefIndex`.
@@ -1034,9 +1035,7 @@ impl CrateMetadata {
         tcx: TyCtxt<'_>,
         id: DefIndex,
     ) -> (Option<ProcMacroClient>, ProcMacroKind) {
-        // DefIndex's in root.proc_macro_data have a one-to-one correspondence
-        // with items in 'raw_proc_macros'.
-        let (pos, (_id, kind)) = self
+        let (_pos, (_id, kind)) = self
             .root
             .proc_macro_data
             .as_ref()
@@ -1046,7 +1045,17 @@ impl CrateMetadata {
             .enumerate()
             .find(|(_pos, (i, _))| *i == id)
             .unwrap();
-        (self.raw_proc_macros.map(|clients| clients[pos]), kind.decode((self, tcx)))
+        let kind = kind.decode((self, tcx));
+        let client = self.raw_proc_macros.and_then(|loaded| {
+            let mut matching = loaded.iter().filter_map(|entry| entry.client_for(&kind));
+            let client = matching.next()?;
+            if matching.next().is_some() {
+                None
+            } else {
+                Some(client)
+            }
+        });
+        (client, kind)
     }
 
     fn opt_item_name(&self, item_index: DefIndex) -> Option<Symbol> {
@@ -1995,7 +2004,7 @@ impl CrateMetadata {
         tcx: TyCtxt<'_>,
         blob: MetadataBlob,
         root: CrateRoot,
-        raw_proc_macros: Option<&'static [ProcMacroClient]>,
+        raw_proc_macros: Option<&'static [LoadedProcMacro]>,
         cnum: CrateNum,
         cnum_map: CrateNumMap,
         dep_kind: CrateDepKind,
