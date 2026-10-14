@@ -48,7 +48,7 @@ impl<'a> Parser<'a> {
 
         // We might have a typo'd `Const` that was parsed as a type parameter.
         if self.may_recover()
-            && ident.name.as_str().to_ascii_lowercase() == kw::Const.as_str()
+            && ident.name.as_str().eq_ignore_ascii_case(kw::Const.as_str())
             && self.check_ident()
         // `Const` followed by IDENT
         {
