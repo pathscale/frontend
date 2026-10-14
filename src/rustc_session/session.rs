@@ -619,13 +619,6 @@ impl Session {
         }
     }
 
-    /// Begin a body observation with only the source setup's const losses.
-    /// Query-cache hits do not replay losses; batch callers must conservatively fall back
-    /// when any body reports an uncomputed constant.
-    pub fn reset_uncomputed_consts(&self, common: &[String]) {
-        *self.uncomputed_consts.lock() = common.to_vec();
-    }
-
     /// Const definition paths whose symbolic terms were not fully compared.
     pub fn uncomputed_consts(&self) -> Vec<String> {
         let mut consts = self.uncomputed_consts.lock().clone();

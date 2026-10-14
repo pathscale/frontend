@@ -3855,6 +3855,27 @@ fn analyze_body_facts_internal(
     loaded: Loaded<'_>,
     capture_identities: bool,
 ) -> BodyTypeIdentityReport {
+    analyze_body_facts_with_crate_id_internal(
+        crate_name,
+        source,
+        body_span,
+        edition,
+        loaded,
+        capture_identities,
+        false,
+    )
+    .0
+}
+
+fn analyze_body_facts_with_crate_id_internal(
+    crate_name: &str,
+    source: &str,
+    body_span: effects::TextRange,
+    edition: Option<&str>,
+    loaded: Loaded<'_>,
+    capture_identities: bool,
+    capture_crate_id: bool,
+) -> (BodyTypeIdentityReport, Option<String>) {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "analyze_body_type_facts needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -3862,11 +3883,11 @@ fn analyze_body_facts_internal(
 
     let (Ok(start), Ok(end)) = (usize::try_from(body_span.start), usize::try_from(body_span.end))
     else {
-        return body_identity_report_with_gap(BodyTypeCoverageGapKind::BodyNotFound, None);
+        return (body_identity_report_with_gap(BodyTypeCoverageGapKind::BodyNotFound, None), None);
     };
     // A caller cannot select appended helper declarations as its candidate body.
     if start >= end || source.get(start..end).is_none() {
-        return body_identity_report_with_gap(BodyTypeCoverageGapKind::BodyNotFound, None);
+        return (body_identity_report_with_gap(BodyTypeCoverageGapKind::BodyNotFound, None), None);
     }
 
     let setup = Setup { edition, loaded, ..Setup::plain(crate_name) };
@@ -3890,7 +3911,7 @@ fn analyze_body_facts_internal(
             let mut report =
                 body_identity_report_with_gap(BodyTypeCoverageGapKind::FrontendFatal, None);
             report.type_facts.fatal = true;
-            return report;
+            return (report, None);
         }
     };
     if inject_stubs {
@@ -3912,10 +3933,17 @@ fn analyze_body_facts_internal(
         crate_cfg: setup.loaded.cfg.to_vec(),
     };
     let mut report = BodyTypeIdentityReport::default();
+    let mut local_crate_id = None;
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
             create_and_enter_global_ctxt(compiler, krate, |tcx| {
+                if capture_crate_id {
+                    local_crate_id = Some(format!(
+                        "{:016x}",
+                        tcx.stable_crate_id(crate::rustc_span::def_id::LOCAL_CRATE).as_u64()
+                    ));
+                }
                 report = extract_body_type_identity(
                     tcx,
                     body_span,
@@ -3927,28 +3955,17 @@ fn analyze_body_facts_internal(
         })
     });
     if finished.is_err() {
-        report.type_facts.fatal = true;
-        report.type_facts.type_extraction_complete = false;
-        report.identity_facts.extraction_complete = false;
-        report.identity_facts.pattern_extraction_complete = false;
-        let file = report.type_facts.body_span.as_ref().map(|span| span.file.clone());
-        let span = file.map(|file| ByteSpan { file, start: body_span.start, end: body_span.end });
-        push_body_type_gap(
-            &mut report.type_facts,
-            BodyTypeCoverageGapKind::FrontendFatal,
-            span.clone(),
-        );
-        push_identity_gap(&mut report.identity_facts, BodyTypeCoverageGapKind::FrontendFatal, span);
+        mark_body_frontend_fatal(&mut report, body_span);
     }
     report.type_facts.diagnostics = captured.lock().typed.clone();
-    report
+    (report, local_crate_id)
 }
 
-/// Extract several exact function bodies in one compiler context, in request order.
-/// Each body owns its diagnostics. Const losses are conservatively shared because cached
-/// const queries do not replay their observations; callers needing exact candidate results
-/// must fall back to isolated analysis whenever that union is nonempty. The second return
-/// value is the local stable crate ID, used to identify owner-sensitive observations.
+/// Extract several exact function bodies in request order with isolated compiler sessions.
+/// Each report is the result of the corresponding single-body analysis, including diagnostics,
+/// const losses, completion and fatal status. No speculative shared analysis or retry is needed.
+/// The second return value is the local stable crate ID from the first session that entered a
+/// compiler context, or None if no session did. An empty request creates no compiler context.
 /// Callers supplying alternative source bodies must preserve lexical resolution and map their source spans explicitly.
 pub fn analyze_bodies_type_identity_with_loaded(
     crate_name: &str,
@@ -3973,130 +3990,20 @@ fn analyze_bodies_facts_internal(
         "analyze_body_type_facts needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
 
-    let setup = Setup { edition, loaded, ..Setup::plain(crate_name) };
-    let original = Arc::new(source.to_string());
-    let input = Input::Str { name: FileName::anon_source_code(&original), input: original };
-    let (input, inject_stubs) = match input {
-        Input::Str { name, input: text }
-            if lang_item_stubs::should_inject(
-                &text,
-                setup.sysroot.is_none() && setup.loaded.dependencies.is_empty(),
-            ) =>
-        {
-            let appended = Arc::new(format!("{}\n{}", text, lang_item_stubs::MINIMAL_LANG_ITEMS));
-            (Input::Str { name, input: appended }, true)
-        }
-        other => (other, false),
-    };
-    let mut opts = match setup.options(&input) {
-        Ok(opts) => opts,
-        Err(_) => {
-            let mut report =
-                body_identity_report_with_gap(BodyTypeCoverageGapKind::FrontendFatal, None);
-            report.type_facts.fatal = true;
-            return (body_spans.iter().map(|_| report.clone()).collect(), None);
-        }
-    };
-    if inject_stubs {
-        // The appended lang-item declarations contain const and auto traits. This is
-        // an explicitly synthetic no-core context, not the caller's crate feature
-        // policy or a project-validity verdict.
-        opts.unstable_opts.crate_attr.push(
-            "feature(lang_items, unboxed_closures, rustc_attrs, const_trait_impl, auto_traits, prelude_import)"
-                .to_string(),
-        );
-    }
-
-    let captured = Arc::new(eko::thread::Mutex::new(CapturedDiagnostics::default()));
-    let config = Config {
-        opts,
-        input,
-        psess_created: Some(capture_diagnostics(&captured)),
-        using_internal_features: &USING_INTERNAL_FEATURES,
-        crate_cfg: setup.loaded.cfg.to_vec(),
-    };
+    let mut reports = Vec::with_capacity(body_spans.len());
     let mut local_crate_id = None;
-    let mut reports: Vec<_> =
-        body_spans.iter().map(|_| BodyTypeIdentityReport::default()).collect();
-    let finished = catch_fatal_errors(|| {
-        run_compiler(config, |compiler| {
-            let krate = parse(&compiler.sess);
-            create_and_enter_global_ctxt(compiler, krate, |tcx| {
-                local_crate_id = Some(format!(
-                    "{:016x}",
-                    tcx.stable_crate_id(crate::rustc_span::def_id::LOCAL_CRATE).as_u64()
-                ));
-                // Resolve and lower once before delimiting body-local observations.
-                let _ = tcx.hir_body_owner_ids();
-                let common = captured.lock().typed.clone();
-                let common_consts = tcx.sess.uncomputed_consts();
-                for (report, body_span) in reports.iter_mut().zip(body_spans) {
-                    let valid = usize::try_from(body_span.start)
-                        .ok()
-                        .zip(usize::try_from(body_span.end).ok())
-                        .is_some_and(|(start, end)| {
-                            start < end && source.get(start..end).is_some()
-                        });
-                    if !valid {
-                        *report = body_identity_report_with_gap(
-                            BodyTypeCoverageGapKind::BodyNotFound,
-                            None,
-                        );
-                        continue;
-                    }
-                    if body_spans.len() > 1 {
-                        tcx.dcx().reset_err_count();
-                        tcx.sess.reset_uncomputed_consts(&common_consts);
-                    }
-                    captured.lock().typed = common.clone();
-                    *report = extract_body_type_identity(
-                        tcx,
-                        *body_span,
-                        inject_stubs,
-                        source.len(),
-                        capture_identities,
-                    );
-                    report.type_facts.diagnostics = captured.lock().typed.clone();
-                    if body_spans.len() > 1 && tcx.dcx().has_errors().is_some() {
-                        mark_body_frontend_fatal(report, *body_span);
-                    }
-                }
-                if body_spans.len() > 1 {
-                    tcx.dcx().reset_err_count();
-                }
-            });
-        })
-    });
-    if finished.is_err() {
-        for (report, body_span) in reports.iter_mut().zip(body_spans) {
-            mark_body_frontend_fatal(report, *body_span);
-            report.type_facts.diagnostics = captured.lock().typed.clone();
-        }
-    }
-    if body_spans.len() > 1 {
-        let mut consts: Vec<String> = reports
-            .iter()
-            .flat_map(|report| report.type_facts.uncomputed_consts.iter().cloned())
-            .collect();
-        consts.sort();
-        consts.dedup();
-        if !consts.is_empty() {
-            for report in &mut reports {
-                report.type_facts.uncomputed_consts = consts.clone();
-                report.type_facts.type_extraction_complete = false;
-                report.identity_facts.extraction_complete = false;
-                push_body_type_gap(
-                    &mut report.type_facts,
-                    BodyTypeCoverageGapKind::NontrivialConstNotComputed,
-                    None,
-                );
-                push_identity_gap(
-                    &mut report.identity_facts,
-                    BodyTypeCoverageGapKind::NontrivialConstNotComputed,
-                    None,
-                );
-            }
-        }
+    for body_span in body_spans {
+        let (report, crate_id) = analyze_body_facts_with_crate_id_internal(
+            crate_name,
+            source,
+            *body_span,
+            edition,
+            loaded,
+            capture_identities,
+            local_crate_id.is_none(),
+        );
+        local_crate_id = local_crate_id.or(crate_id);
+        reports.push(report);
     }
     (reports, local_crate_id)
 }
