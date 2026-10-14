@@ -3197,8 +3197,9 @@ pub struct BodyTypeFacts {
     /// each owner's type-check result.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expressions: Vec<BodyExpressionTypeFact>,
-    /// True when body-owned expression types were extracted without a coverage gap. This is
-    /// not a compilation, ownership, trait, or call-semantics verdict; diagnostics and taint
+    /// True when expression and pattern types in this body and its visited nested bodies were
+    /// extracted without a coverage gap. This is not a compilation, ownership, trait, or
+    /// call-semantics verdict; diagnostics and taint
     /// remain independent observations.
     #[serde(default)]
     pub type_extraction_complete: bool,
