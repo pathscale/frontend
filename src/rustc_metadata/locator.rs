@@ -1023,6 +1023,7 @@ pub(crate) enum CrateError {
     ExternLocationNotFile(Symbol, PathBuf),
     MultipleCandidates(Symbol, CrateFlavor, Vec<PathBuf>),
     FullMetadataNotFound(Symbol, CrateFlavor),
+    ProcMacroDylibLoad(Symbol, String),
     SymbolConflictsCurrent(Symbol),
     StableCrateIdCollision(Symbol, Symbol),
     LocatorCombined(Box<CombinedLocatorError>),
@@ -1054,6 +1055,9 @@ impl CrateError {
             }
             CrateError::FullMetadataNotFound(name, flavor) => {
                 format!("only a metadata stub was found for `{name}` as a {flavor}")
+            }
+            CrateError::ProcMacroDylibLoad(name, reason) => {
+                format!("proc-macro dylib for `{name}` failed to load: {reason}")
             }
             CrateError::SymbolConflictsCurrent(name) => {
                 format!("`{name}` collides with the crate being compiled")
@@ -1120,6 +1124,13 @@ impl CrateError {
             }
             CrateError::FullMetadataNotFound(crate_name, flavor) => {
                 dcx.emit_err(diagnostics::FullMetadataNotFound { span, crate_name, flavor });
+            }
+            CrateError::ProcMacroDylibLoad(crate_name, reason) => {
+                dcx.emit_err(diagnostics::ProcMacroDylibLoad {
+                    span,
+                    crate_name,
+                    reason: &reason,
+                });
             }
             CrateError::SymbolConflictsCurrent(root_name) => {
                 dcx.emit_err(diagnostics::SymbolConflictsCurrent { span, crate_name: root_name });
