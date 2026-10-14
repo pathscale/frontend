@@ -1,0 +1,11 @@
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3" },
+    { path = "std::thread::Builder::spawn", reason = "owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3" },
+    { path = "std::thread::scope", reason = "owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3" },
+]
+
+disallowed-types = [
+    { path = "std::sync::Barrier", reason = "owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3" },
+    { path = "std::sync::mpsc::Sender", reason = "owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3" },
+    { path = "std::sync::Condvar", reason = "owner ruling: typed Arc<T> hand-off, concurrency only via nagoya/ps-st3" },
+]
