@@ -17,9 +17,7 @@ use super::{Capturing, ForceCollect, Parser, Trailing};
 #[derive(Clone, Debug)]
 pub(super) struct CollectPos {
     start_token: (Token, Spacing),
-    // Disabled collection still passes positions through the parse callbacks,
-    // but never observes their cursor snapshots.
-    cursor_snapshot: Option<TokenCursor>,
+    cursor_snapshot: TokenCursor,
     start_pos: u32,
 }
 
@@ -91,13 +89,15 @@ fn has_cfg_or_cfg_attr<'a>(mut attrs: impl Iterator<Item = &'a Attribute>) -> bo
 
 impl<'a> Parser<'a> {
     #[inline]
-    pub(super) fn collect_pos(&self) -> CollectPos {
-        CollectPos {
-            start_token: (self.token, self.token_spacing),
-            cursor_snapshot: (!matches!(self.capture_state.capturing, Capturing::Disabled))
-                .then(|| self.token_cursor.clone()),
-            start_pos: self.num_bump_calls,
+    pub(super) fn collect_pos(&self) -> Option<CollectPos> {
+        if matches!(self.capture_state.capturing, Capturing::Disabled) {
+            return None;
         }
+        Some(CollectPos {
+            start_token: (self.token, self.token_spacing),
+            cursor_snapshot: self.token_cursor.clone(),
+            start_pos: self.num_bump_calls,
+        })
     }
 
     #[inline]
@@ -207,7 +207,8 @@ impl<'a> Parser<'a> {
             return Ok(f(self, attrs.attrs)?.0);
         }
 
-        let mut collect_pos = self.collect_pos();
+        let mut collect_pos =
+            self.collect_pos().expect("enabled token capture has a collection position");
         let has_outer_attrs = !attrs.attrs.is_empty();
         let parser_replacements_start = self.capture_state.parser_replacements.len();
 
@@ -356,7 +357,7 @@ impl<'a> Parser<'a> {
 
         let tokens = LazyAttrTokenStream::new_pending(
             collect_pos.start_token,
-            collect_pos.cursor_snapshot.expect("enabled token capture has a cursor snapshot"),
+            collect_pos.cursor_snapshot,
             num_calls,
             self.break_last_token,
             node_replacements,

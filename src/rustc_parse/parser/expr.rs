@@ -77,7 +77,7 @@ impl<'a> Parser<'a> {
         let pre_attr_pos = self.collect_pos();
         let attrs = self.parse_outer_attributes()?;
         self.collect_tokens(
-            Some(pre_attr_pos),
+            pre_attr_pos,
             AttrWrapper::empty(),
             ForceCollect::Yes,
             |this, _empty_attrs| {

@@ -144,7 +144,7 @@ impl<'a> Parser<'a> {
             // from the expression anyway, because `Stmt` delegates `HasAttrs`/`HasTokens` to
             // the things within `StmtKind`.)
             let stmt = self.collect_tokens(
-                Some(pre_attr_pos),
+                pre_attr_pos,
                 AttrWrapper::empty(),
                 force_collect,
                 |this, _empty_attrs| {
@@ -181,7 +181,7 @@ impl<'a> Parser<'a> {
             let restrictions =
                 if force_full_expr { Restrictions::empty() } else { Restrictions::STMT_EXPR };
             let e = self.collect_tokens(
-                Some(pre_attr_pos),
+                pre_attr_pos,
                 AttrWrapper::empty(),
                 force_collect,
                 |this, _empty_attrs| {
