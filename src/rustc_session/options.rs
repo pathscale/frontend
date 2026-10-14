@@ -476,6 +476,14 @@ macro_rules! options {
                 $(, removed: $removed:ident )?
             ),
         )*
+        $(
+            @compatibility {
+                $(
+                    $(#[$compat_attr:meta])*
+                    $compat_opt:ident : $compat_ty:ty = $compat_init:expr,
+                )*
+            }
+        )?
     ) => {
         #[derive(Clone)]
         pub struct $struct_name {
@@ -483,6 +491,12 @@ macro_rules! options {
                 $(#[$attr])*
                 pub $opt: $t,
             )*
+            $(
+                $(
+                    $(#[$compat_attr])*
+                    pub $compat_opt: $compat_ty,
+                )*
+            )?
         }
 
         #[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Copy, Clone, Encodable, BlobDecodable)]
@@ -536,6 +550,9 @@ macro_rules! options {
                     $(
                         $opt: $init,
                     )*
+                    $(
+                        $( $compat_opt: $compat_init, )*
+                    )?
                 }
             }
         }
@@ -1288,9 +1305,7 @@ options! {
         See #77382 and #74551."),
     proc_macro_backtrace: bool = (false, parse_bool, [UNTRACKED],
          "show backtraces for panics during proc-macro execution (default: no)"),
-    proc_macro_execution_strategy: ProcMacroExecutionStrategy = (ProcMacroExecutionStrategy::SameThread,
-        parse_proc_macro_execution_strategy, [UNTRACKED],
-        "how to run proc-macro code (default: same-thread)"),
+
     profile_closures: bool = (false, parse_no_value, [UNTRACKED],
         "profile size of closures"),
     profiler_runtime: String = (String::from("profiler_builtins"), parse_string, [TRACKED],
@@ -1499,4 +1514,11 @@ written to standard error output)"),
     // If you add a new option, please update:
     // - compiler/rustc_interface/src/tests.rs
     // - src/doc/unstable-book/src/compiler-flags
+
+    @compatibility {
+        /// Historical library field, retained for source compatibility only.
+        /// There is no -Z proc-macro-execution-strategy option. A legacy
+        /// CrossThread request returns frontend_proc_macro_cross_thread_removed.
+        proc_macro_execution_strategy: ProcMacroExecutionStrategy = ProcMacroExecutionStrategy::SameThread,
+    }
 }

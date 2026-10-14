@@ -9,8 +9,7 @@ use core::hash::Hash;
 use core::ops::{Bound, Range};
 use core::sync::atomic::AtomicU32;
 
-use eko::channel;
-use eko::thread;
+
 // A prelude macro names no path, which is why a `std::` search never saw this one.
 use eko::thread_local;
 
@@ -136,9 +135,7 @@ macro_rules! define_dispatcher {
 }
 with_api!(define_dispatcher, MarkedTokenStream<S>, MarkedSpan<S>, MarkedSymbol<S>);
 
-// This trait is currently only implemented and used once, inside of this crate.
-// We keep it public to allow implementing more complex execution strategies in
-// the future, such as wasm proc-macros.
+/// Runs a proc-macro client through the existing bridge protocol.
 pub trait ExecutionStrategy {
     fn run_bridge_and_client(
         &self,
@@ -150,42 +147,71 @@ pub trait ExecutionStrategy {
 }
 
 thread_local! {
-    /// While running a proc-macro with the same-thread executor, this flag will
-    /// be set, forcing nested proc-macro invocations (e.g. due to
-    /// `TokenStream::expand_expr`) to be run using a cross-thread executor.
-    ///
-    /// This is required as the thread-local state in the proc_macro client does
-    /// not handle being re-entered, and will invalidate all `Symbol`s when
-    /// entering a nested macro.
-    static ALREADY_RUNNING_SAME_THREAD: Cell<bool> = const { Cell::new(false) };
+    // BRIDGE_STATE restores its previous pointer, but the client also clears
+    // its separate symbol interner on entry and exit. Refuse nesting before
+    // entering the client so the outer invocation's symbols remain valid.
+    static ACTIVE_CLIENT: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Keep `ALREADY_RUNNING_SAME_THREAD` (see also its documentation)
-/// set to `true`, preventing same-thread reentrance.
-struct RunningSameThreadGuard(());
+struct ActiveClientGuard;
 
-impl RunningSameThreadGuard {
-    fn new() -> Self {
-        let already_running = ALREADY_RUNNING_SAME_THREAD.replace(true);
-        assert!(
-            !already_running,
-            "same-thread nesting (\"reentrance\") of proc macro executions is not supported"
-        );
-        RunningSameThreadGuard(())
+impl ActiveClientGuard {
+    fn enter() -> Result<Self, PanicMessage> {
+        if ACTIVE_CLIENT.get() {
+            return Err(PanicMessage::StaticStr(
+                "frontend_proc_macro_nested_bridge: nested proc-macro execution is unsupported because the client symbol interner is not reentrant",
+            ));
+        }
+        ACTIVE_CLIENT.set(true);
+        Ok(Self)
     }
 }
 
-impl Drop for RunningSameThreadGuard {
+impl Drop for ActiveClientGuard {
     fn drop(&mut self) {
-        ALREADY_RUNNING_SAME_THREAD.set(false);
+        ACTIVE_CLIENT.set(false);
     }
 }
 
+/// Executes a client on the caller's thread, without a message pipe or worker.
+pub struct SameThread;
+
+fn bridge_error(mut input: Buffer, error: PanicMessage) -> Buffer {
+    input.clear();
+    // The Err arm has no success value, so its wire encoding is independent
+    // of the token-stream result the caller will decode.
+    Result::<(), PanicMessage>::Err(error).encode(&mut input, &mut ());
+    input
+}
+
+impl ExecutionStrategy for SameThread {
+    fn run_bridge_and_client(
+        &self,
+        dispatcher: &mut Dispatcher<impl Server>,
+        input: Buffer,
+        run_client: extern "C" fn(BridgeConfig<'_>) -> Buffer,
+        force_show_panics: bool,
+    ) -> Buffer {
+        let _guard = match ActiveClientGuard::enter() {
+            Ok(guard) => guard,
+            Err(error) => return bridge_error(input, error),
+        };
+        let mut dispatch = |buf| dispatcher.dispatch(buf);
+        run_client(BridgeConfig { input, dispatch: (&mut dispatch).into(), force_show_panics })
+    }
+}
+
+/// Compatibility wrapper for callers compiled against the published strategy API.
+/// A cross-thread request is refused; it is never converted into same-thread work.
 pub struct MaybeCrossThread {
+    /// Legacy request, retained for source compatibility. A true value returns
+    /// frontend_proc_macro_cross_thread_removed through the bridge protocol.
     pub cross_thread: bool,
 }
 
+/// Published same-thread strategy value, retaining its original type.
 pub const SAME_THREAD: MaybeCrossThread = MaybeCrossThread { cross_thread: false };
+/// Published legacy value. Execution returns a named refusal without entering the client.
 pub const CROSS_THREAD: MaybeCrossThread = MaybeCrossThread { cross_thread: true };
 
 impl ExecutionStrategy for MaybeCrossThread {
@@ -196,72 +222,12 @@ impl ExecutionStrategy for MaybeCrossThread {
         run_client: extern "C" fn(BridgeConfig<'_>) -> Buffer,
         force_show_panics: bool,
     ) -> Buffer {
-        if self.cross_thread || ALREADY_RUNNING_SAME_THREAD.get() {
-            let (mut server, mut client) = MessagePipe::new();
-
-            let join_handle = thread::spawn(move || {
-                let mut dispatch = |b: Buffer| -> Buffer {
-                    client.send(b);
-                    client.recv().expect("server died while client waiting for reply")
-                };
-
-                run_client(BridgeConfig {
-                    input,
-                    dispatch: (&mut dispatch).into(),
-                    force_show_panics,
-                })
-            })
-            // `eko`'s `spawn` hands back the `pthread_create` errno where
-            // `std::thread::spawn` panics on its own. Same outcome, said here.
-            .expect("could not start a thread to run the proc macro on");
-
-            while let Some(b) = server.recv() {
-                server.send(dispatcher.dispatch(b));
-            }
-
-            // `Err` is a failed `pthread_join`, not a panicking client: a panic inside the
-            // client is caught by `run_client` and comes back through the pipe as a
-            // `PanicMessage`, which is what the RPC boundary is for.
-            join_handle.join().expect("could not join the thread running the proc macro")
-        } else {
-            let _guard = RunningSameThreadGuard::new();
-
-            let mut dispatch = |buf| dispatcher.dispatch(buf);
-
-            run_client(BridgeConfig { input, dispatch: (&mut dispatch).into(), force_show_panics })
+        if self.cross_thread {
+            return bridge_error(input, PanicMessage::StaticStr(
+                "frontend_proc_macro_cross_thread_removed: cross-thread proc-macro execution has been removed",
+            ));
         }
-    }
-}
-
-/// A message pipe used for communicating between server and client threads.
-struct MessagePipe<T> {
-    tx: channel::SyncSender<T>,
-    rx: channel::Receiver<T>,
-}
-
-impl<T> MessagePipe<T> {
-    /// Creates a new pair of endpoints for the message pipe.
-    fn new() -> (Self, Self) {
-        let (tx1, rx1) = channel::sync_channel(1);
-        let (tx2, rx2) = channel::sync_channel(1);
-        (MessagePipe { tx: tx1, rx: rx2 }, MessagePipe { tx: tx2, rx: rx1 })
-    }
-
-    /// Send a message to the other endpoint of this pipe.
-    fn send(&mut self, value: T) {
-        // Not `unwrap`: the error carries the undelivered `T` back, and `T` here is a `Buffer`,
-        // which has no `Debug`.
-        if self.tx.send(value).is_err() {
-            panic!("the other end of the proc macro message pipe is gone");
-        }
-    }
-
-    /// Receive a message from the other endpoint of this pipe.
-    ///
-    /// Returns `None` if the other end of the pipe has been destroyed, and no
-    /// message was received.
-    fn recv(&mut self) -> Option<T> {
-        self.rx.recv().ok()
+        SameThread.run_bridge_and_client(dispatcher, input, run_client, force_show_panics)
     }
 }
 

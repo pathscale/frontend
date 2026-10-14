@@ -24,7 +24,7 @@ use crate::rustc_session::config::{
     InstrumentCoverage, InstrumentMcount, InstrumentMcountOpts, InstrumentXRay, LinkSelfContained,
     LinkerPluginLto, LocationDetail, LtoCli, MirIncludeSpans, NextSolverConfig, Offload, Options,
     OutFileName, OutputType, OutputTypes, PAuthKey, PacRet, Passes, PatchableFunctionEntry,
-    Polonius, ProcMacroExecutionStrategy, Strip, SwitchWithOptPath, SymbolManglingVersion,
+    Polonius, Strip, SwitchWithOptPath, SymbolManglingVersion,
     WasiExecModel,
 };
 use crate::rustc_session::search_paths::SearchPath;
@@ -631,7 +631,7 @@ fn test_unstable_options_tracking_hash() {
     // `pre_link_arg` is omitted because it just forwards to `pre_link_args`.
     untracked!(pre_link_args, vec![String::from("abc"), String::from("def")]);
     untracked!(proc_macro_backtrace, true);
-    untracked!(proc_macro_execution_strategy, ProcMacroExecutionStrategy::CrossThread);
+
     untracked!(profile_closures, true);
     untracked!(query_dep_graph, true);
     untracked!(self_profile, SwitchWithOptPath::Enabled(None));
