@@ -36,6 +36,17 @@ impl<T> Spill<T> {
         self.data = data;
         self.capacity = capacity;
     }
+    fn extend(&mut self, values: impl Iterator<Item = T>) {
+        for value in values {
+            if self.len == self.capacity {
+                let needed = self.len.checked_add(1).expect("AST list too large");
+                self.reserve_exact(needed.max(self.len.saturating_mul(2)));
+            }
+            // SAFETY: capacity is checked for every element, independently of size hints.
+            unsafe { self.data.as_ptr().add(self.len).write(value) };
+            self.len += 1;
+        }
+    }
 }
 
 impl<T> Drop for Spill<T> {
@@ -206,6 +217,33 @@ impl<T> ArenaBuffer<T> {
     pub(crate) fn clear(&mut self) {
         self.truncate(0);
     }
+
+    pub(crate) fn extend<I: IntoIterator<Item = T>>(&mut self, values: I) {
+        let values = values.into_iter();
+        let (lower, upper) = values.size_hint();
+        if upper == Some(lower) {
+            let needed = self.as_slice().len().checked_add(lower).expect("AST list too large");
+            let capacity = self.capacity();
+            if needed > capacity {
+                self.reserve_exact(needed.max(capacity.saturating_mul(2)));
+            }
+        }
+        self.extend_reserved(values);
+    }
+
+    fn extend_reserved(&mut self, mut values: impl Iterator<Item = T>) {
+        if let Some(spill) = &mut self.spill {
+            spill.extend(values);
+            return;
+        }
+        let available = self.inline.capacity() - self.inline.len();
+        self.inline.extend(values.by_ref().take(available));
+        if let Some(value) = values.next() {
+            // The inline buffer is full. This push creates the chunk-backed spill.
+            self.push(value);
+            self.spill.as_mut().expect("AST list exceeds inline capacity").extend(values);
+        }
+    }
 }
 
 impl<T: Clone> Clone for ArenaBuffer<T> {
@@ -228,9 +266,7 @@ impl<T> FromIterator<T> for ArenaBuffer<T> {
         if upper == Some(lower) {
             buffer.reserve_exact(lower);
         }
-        for value in values {
-            buffer.push(value);
-        }
+        buffer.extend_reserved(values);
         buffer
     }
 }

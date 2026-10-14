@@ -111,8 +111,11 @@ impl<T> DerefMut for ArenaVec<T> {
 
 impl<T> Extend<T> for ArenaVec<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, values: I) {
-        for value in values {
-            self.push(value);
+        let mut values = values.into_iter();
+        if let Some(first) = values.next() {
+            self.0
+                .get_or_insert_with(|| P::new(ArenaBuffer::new()))
+                .extend(core::iter::once(first).chain(values));
         }
     }
 }

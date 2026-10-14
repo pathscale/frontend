@@ -291,9 +291,7 @@ pub(super) fn take_thin_vec<T>(scratch: &mut Vec<T>, start: usize) -> ThinVec<T>
 
 pub(super) fn take_arena_vec<T>(scratch: &mut Vec<T>, start: usize) -> ast::ArenaVec<T> {
     let mut result = ast::ArenaVec::with_capacity(scratch.len() - start);
-    for value in scratch.drain(start..) {
-        result.push(value);
-    }
+    result.extend(scratch.drain(start..));
     result
 }
 
