@@ -5,10 +5,12 @@
 //!
 //! Nodes are bump-allocated into 64 KiB chunks, one current chunk per thread, instead of one
 //! global allocation each. A chunk is aligned to its size, so a node finds its chunk by masking
-//! its address. The chunk header counts the nodes alive in it, plus one while it is a thread's
-//! current chunk; dropping a node runs its destructor and decrements the count, and the chunk
-//! goes back to the global allocator when the count reaches zero. Nothing ties a node to a
-//! session or a thread: a node can be dropped anywhere, and memory is held only while some node
+//! its address. The chunk header counts issued allocations, reserved allocation counts, and
+//! one pin while it is a thread's current chunk. The current chunk reserves counts in batches,
+//! consuming them locally for new nodes. Dropping a node runs its destructor and decrements
+//! the count; retiring a chunk releases its pin and unused reservations. The chunk goes back
+//! to the global allocator when the count reaches zero. Nothing ties a node to a session or a
+//! thread: a node can be dropped anywhere, and retired memory is held only while some allocation
 //! of the chunk is alive.
 
 use alloc::alloc::{Layout, alloc, dealloc, handle_alloc_error};
@@ -27,10 +29,12 @@ const CHUNK_BYTES: usize = 64 * 1024;
 const HEADER_BYTES: usize = 64;
 /// The largest node, so a chunk always fits many.
 const MAX_NODE_BYTES: usize = 1024;
+/// Ownership counts acquired together by a chunk's sole allocating thread.
+const COUNT_BATCH: usize = 256;
 
 #[repr(C, align(64))]
 struct ChunkHeader {
-    /// Nodes alive in the chunk, plus one while it is a thread's current chunk.
+    /// Issued allocations, unused reservations, and the current-chunk pin.
     live: AtomicUsize,
 }
 
@@ -50,17 +54,28 @@ fn new_chunk() -> NonNull<ChunkHeader> {
     chunk
 }
 
-/// Drops one count of `chunk`, freeing it on the last.
+/// Drops one count of the chunk, freeing it on the last.
 ///
 /// # Safety
 ///
 /// The caller owns one count of a live chunk, and gives it up.
 #[inline]
 unsafe fn release(chunk: NonNull<ChunkHeader>) {
-    // The same discipline as `Arc`: every count holder's writes happen before the free.
-    if unsafe { chunk.as_ref() }.live.fetch_sub(1, Ordering::Release) == 1 {
+    // SAFETY: the caller gives up its single count.
+    unsafe { release_counts(chunk, 1) };
+}
+
+/// Gives up a pin and unused reservations, or one issued allocation count.
+///
+/// # Safety
+///
+/// The caller owns all counts of this live chunk; counts is nonzero.
+#[inline]
+unsafe fn release_counts(chunk: NonNull<ChunkHeader>, counts: usize) {
+    // The same discipline as Arc: every count holder's writes happen before the free.
+    if unsafe { chunk.as_ref() }.live.fetch_sub(counts, Ordering::Release) == counts {
         fence(Ordering::Acquire);
-        // SAFETY: the last count is gone, so nothing points into the chunk.
+        // SAFETY: the last counts are gone, so nothing points into the chunk.
         unsafe { dealloc(chunk.as_ptr().cast(), chunk_layout()) };
     }
 }
@@ -74,18 +89,30 @@ fn chunk_of<T>(node: NonNull<T>) -> NonNull<ChunkHeader> {
     unsafe { NonNull::new_unchecked(addr as *mut ChunkHeader) }
 }
 
-/// A thread's current chunk and the offset of its first free byte.
+/// A thread's current chunk, next free byte, and unissued ownership counts.
 struct Current {
     chunk: Option<NonNull<ChunkHeader>>,
     next: usize,
+    reserved: usize,
+}
+
+impl Current {
+    fn new() -> Self {
+        Self { chunk: None, next: CHUNK_BYTES, reserved: 0 }
+    }
+
+    fn retire(&mut self) {
+        if let Some(chunk) = self.chunk.take() {
+            let counts = 1 + core::mem::take(&mut self.reserved);
+            // SAFETY: this value owns the pin and all unissued reservation counts.
+            unsafe { release_counts(chunk, counts) };
+        }
+    }
 }
 
 impl Drop for Current {
     fn drop(&mut self) {
-        if let Some(chunk) = self.chunk {
-            // SAFETY: the current-chunk count is this value's.
-            unsafe { release(chunk) }
-        }
+        self.retire();
     }
 }
 
@@ -99,8 +126,8 @@ pub(crate) struct ParseArena(Option<Current>);
 impl ParseArena {
     pub(crate) fn enter() -> Self {
         Self(CURRENT.with(
-            || Current { chunk: None, next: CHUNK_BYTES },
-            |current| core::mem::replace(current, Current { chunk: None, next: CHUNK_BYTES }),
+            Current::new,
+            |current| core::mem::replace(current, Current::new()),
         ))
     }
 }
@@ -110,7 +137,7 @@ impl Drop for ParseArena {
     fn drop(&mut self) {
         if let Some(previous) = self.0.take() {
             let retired = CURRENT.with(
-                || Current { chunk: None, next: CHUNK_BYTES },
+                Current::new,
                 |current| core::mem::replace(current, previous),
             );
             drop(retired);
@@ -118,21 +145,18 @@ impl Drop for ParseArena {
     }
 }
 
-/// Room for one node of `layout`, with a count taken on its chunk for the node.
+/// Room for one node of layout, transferring one reserved count to it.
 #[inline]
 fn alloc_node(layout: Layout) -> NonNull<u8> {
     let slot = CURRENT.with(
-        || Current { chunk: None, next: CHUNK_BYTES },
+        Current::new,
         |cur| {
             let align = layout.align();
             let mut offset = (cur.next + align - 1) & !(align - 1);
             let chunk = match cur.chunk {
                 Some(chunk) if offset + layout.size() < CHUNK_BYTES => chunk,
-                old => {
-                    if let Some(old) = old {
-                        // SAFETY: the current-chunk count, given up as the chunk is retired.
-                        unsafe { release(old) }
-                    }
+                _ => {
+                    cur.retire();
                     let chunk = new_chunk();
                     cur.chunk = Some(chunk);
                     offset = HEADER_BYTES;
@@ -140,15 +164,21 @@ fn alloc_node(layout: Layout) -> NonNull<u8> {
                 }
             };
             cur.next = offset + layout.size();
-            // SAFETY: the current chunk is alive while it holds the current-chunk count.
-            // Zero-sized nodes can keep using this chunk without consuming bytes.
-            unsafe { chunk.as_ref() }
-                .live
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                    (count < isize::MAX as usize).then(|| count + 1)
-                })
-                .expect("AST chunk count overflow");
-            // SAFETY: `offset + size` is within the chunk, and strictly below its end, so even a
+            if cur.reserved == 0 {
+                // SAFETY: the current-chunk pin keeps the header alive. Only this
+                // thread reserves counts; other threads may release issued counts.
+                let count = unsafe { chunk.as_ref() }
+                    .live
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                        let available = (isize::MAX as usize).saturating_sub(count);
+                        (available != 0).then(|| count + available.min(COUNT_BATCH))
+                    })
+                    .expect("AST chunk count overflow");
+                cur.reserved = ((isize::MAX as usize) - count).min(COUNT_BATCH);
+            }
+            // One reserved count becomes the returned allocation's owned count.
+            cur.reserved -= 1;
+            // SAFETY: offset + size is within the chunk, and strictly below its end, so even a
             // zero-sized node masks back to this chunk.
             unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(offset)) }
         },
@@ -156,7 +186,7 @@ fn alloc_node(layout: Layout) -> NonNull<u8> {
     // Out of thread-local keys: a chunk of its own, whose one count is the node's.
     slot.unwrap_or_else(|| {
         let chunk = new_chunk();
-        // SAFETY: the header is `HEADER_BYTES`, inside the chunk.
+        // SAFETY: the header is HEADER_BYTES, inside the chunk.
         unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(HEADER_BYTES)) }
     })
 }
