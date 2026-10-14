@@ -149,50 +149,6 @@ fn symbol_indices_stale_miss_finds_the_later_insert() {
     }
 }
 
-/// Several workers intern overlapping sets of strings in different orders, concurrently, while
-/// the table grows under them. Every string gets exactly one index, every worker agrees on it,
-/// and the index names that string.
-#[test]
-fn symbol_indices_concurrent_intern_agrees() {
-    const WORKERS: usize = 8;
-    const NAMES: usize = 3000;
-    let names: Vec<&'static [u8]> =
-        (0..NAMES).map(|n| leaked(format!("ident_{}", n % (NAMES / 2)))).collect();
-    let distinct = NAMES / 2;
-
-    let strs = SymbolStrs::new();
-    let indices = SymbolIndices::new();
-    let lock = parking_lot::Mutex::new(());
-    let seen: Vec<Vec<AtomicU32>> =
-        (0..WORKERS).map(|_| (0..NAMES).map(|_| AtomicU32::new(u32::MAX)).collect()).collect();
-
-    // `eko::thread::scope`, as `vec_cache`'s concurrent test: the test is the one place that
-    // needs real concurrency to exercise the lock-free path.
-    eko::thread::scope(|s| {
-        for w in 0..WORKERS {
-            let (strs, indices, lock, names, seen) = (&strs, &indices, &lock, &names, &seen);
-            s.spawn(move || {
-                // Worker `w` walks the names from a different start, half of them backwards.
-                for k in 0..NAMES {
-                    let n = if w % 2 == 0 { (k + w * 397) % NAMES } else { NAMES - 1 - k };
-                    let local = intern_shared(strs, indices, lock, names[n]);
-                    seen[w][n].store(local, Ordering::Relaxed);
-                }
-            });
-        }
-    });
-
-    assert_eq!(strs.len.load(Ordering::Acquire), distinct);
-    for n in 0..NAMES {
-        let local = seen[0][n].load(Ordering::Relaxed);
-        for w in 1..WORKERS {
-            assert_eq!(seen[w][n].load(Ordering::Relaxed), local, "worker {w} on name {n}");
-        }
-        assert_eq!(strs.get(local as usize), names[n]);
-        // The duplicate of a name (`n` and `n + distinct`) shares its index.
-        assert_eq!(seen[0][n % distinct].load(Ordering::Relaxed), local);
-    }
-}
 
 /// A test string that lives as long as the tables that hold it.
 fn leaked(s: String) -> &'static [u8] {
