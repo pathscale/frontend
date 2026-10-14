@@ -726,8 +726,12 @@ impl<'a> Parser<'a> {
             exp!(CloseParen),
             |p| {
                 p.recover_vcs_conflict_marker();
-                let snapshot = p.create_snapshot_for_diagnostic();
+                let snapshot = (!p.expected_token_types.is_deferred())
+                    .then(|| p.create_snapshot_for_diagnostic());
                 let param = p.parse_param_general(fn_parse_mode, first_param, true).or_else(|e| {
+                    let Some(snapshot) = snapshot else {
+                        return Err(e);
+                    };
                     let guar = e.emit();
                     // When parsing a param failed, we should check to make the span of the param
                     // not contain '(' before it.
@@ -819,10 +823,11 @@ impl<'a> Parser<'a> {
                 (pat, this.parse_ty_for_param()?)
             } else {
                 debug!("parse_param_general ident_to_pat");
-                // Only the `recover_arg_parse` arm below restores this snapshot, so a caller
-                // that does not recover (parenthesized `Fn(A, B)` sugar) takes none.
+                // Only diagnostic recovery restores this snapshot. The deferred syntax
+                // attempt propagates failures for replay by a fresh normal parser.
                 let parser_snapshot_before_ty =
-                    recover_arg_parse.then(|| this.create_snapshot_for_diagnostic());
+                    (recover_arg_parse && !this.expected_token_types.is_deferred())
+                        .then(|| this.create_snapshot_for_diagnostic());
                 this.eat_incorrect_doc_comment_for_param_type();
                 let mut ty = this.parse_ty_for_param();
 
@@ -855,12 +860,12 @@ impl<'a> Parser<'a> {
                     Err(err) if this.token == token::DotDotDot => return Err(err),
                     Err(err) if this.unmatched_angle_bracket_count > 0 => return Err(err),
                     Err(err) if recover_arg_parse => {
+                        let Some(snapshot) = parser_snapshot_before_ty else {
+                            return Err(err);
+                        };
                         // Recover from attempting to parse the argument as a type without pattern.
                         err.cancel();
-                        // Always `Some` here: it is taken exactly when `recover_arg_parse`.
-                        if let Some(snapshot) = parser_snapshot_before_ty {
-                            this.restore_snapshot(snapshot);
-                        }
+                        this.restore_snapshot(snapshot);
                         this.recover_arg_parse(fn_parse_mode.context)?
                     }
                     Err(err) => return Err(err),
