@@ -34,8 +34,8 @@ use crate::rustc_ast::token::{
     self, IdentIsRaw, InvisibleOrigin, MetaVarKind, NtExprKind, NtPatKind, Token, TokenKind,
 };
 use crate::rustc_ast::tokenstream::{
-    FlatTokenBuffer, FrameSpare, ParserRange, ParserReplacement, Spacing, TokenCursor,
-    TokenStream, TokenTree, WithTokens,
+    FlatTokenBuffer, FrameSpare, ParserRange, ParserReplacement, Spacing, TokenCursor, TokenStream,
+    TokenTree, WithTokens,
 };
 use crate::rustc_ast::util::case::Case;
 use crate::rustc_ast::util::classify;
@@ -306,14 +306,14 @@ pub(super) fn take_arena_vec<T>(scratch: &mut Vec<T>, start: usize) -> ast::Aren
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
 // The source/tree cursor variant may add one aligned slot.
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 304);
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 336);
 #[cfg(all(
     feature = "parallel",
     target_pointer_width = "64",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
 // The source/tree cursor variant may add one aligned slot.
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 320);
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 352);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -427,7 +427,7 @@ impl<'a> Parser<'a> {
         Self::new_with_cursor(psess, TokenCursor::from_flat(buffer), None)
     }
 
-    fn new_with_cursor(
+    pub(crate) fn new_with_cursor(
         psess: &'a ParseSess,
         token_cursor: TokenCursor,
         subparser_name: Option<&'static str>,
@@ -570,9 +570,7 @@ impl<'a> Parser<'a> {
         edible: &[ExpTokenPair],
         inedible: &[ExpTokenPair],
     ) -> PResult<'a, Recovered> {
-        if self.token != token::Eof
-            && self.last_unexpected_token_span == Some(self.token.span)
-        {
+        if self.token != token::Eof && self.last_unexpected_token_span == Some(self.token.span) {
             FatalError.raise();
         } else {
             self.expected_one_of_not_found(edible, inedible)

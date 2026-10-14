@@ -1361,7 +1361,8 @@ mod size_asserts {
     static_assert_size!(AttrTokenStream, 8);
     static_assert_size!(AttrTokenTree, 32);
     static_assert_size!(LazyAttrTokenStream, 8);
-    const _: () = assert!(mem::size_of::<LazyAttrTokenStreamInner>() <= 80);
+    // Pending source captures now retain two compact on-demand cursor lexemes.
+    const _: () = assert!(mem::size_of::<LazyAttrTokenStreamInner>() <= 112);
     static_assert_size!(Option<LazyAttrTokenStream>, 8); // must be small, used in many AST nodes
     static_assert_size!(TokenStream, 8);
     static_assert_size!(TokenTree, 32);

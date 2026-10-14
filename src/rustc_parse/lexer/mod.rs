@@ -81,6 +81,36 @@ pub(crate) fn lex_token_trees<'psess, 'src>(
     lex_with_sink(psess, src, owner, start_pos, override_span, strip_tokens, &mut sink)
 }
 
+/// Keep sessions with observable per-file symbol recording on the eager path.
+/// Preflight itself emits nothing and cannot replace eager error recovery.
+pub(crate) fn try_source_cursor(
+    psess: &ParseSess,
+    source: &Arc<String>,
+    start: BytePos,
+    strip_tokens: &StripTokens,
+) -> Option<crate::rustc_ast::tokenstream::TokenCursor> {
+    if psess.collects_symbol_gallery() {
+        return None;
+    }
+    let begin = match strip_tokens {
+        StripTokens::Shebang | StripTokens::ShebangAndFrontmatter => {
+            u32::try_from(crate::rustc_lexer::strip_shebang(source.as_str()).unwrap_or(0)).ok()?
+        }
+        StripTokens::Nothing => 0,
+    };
+    let frontmatter = match strip_tokens {
+        StripTokens::ShebangAndFrontmatter => FrontmatterAllowed::Yes,
+        StripTokens::Shebang | StripTokens::Nothing => FrontmatterAllowed::No,
+    };
+    crate::rustc_ast::tokenstream::TokenCursor::from_source(
+        source.clone(),
+        start,
+        begin,
+        frontmatter,
+        psess.edition,
+    )
+}
+
 pub(crate) fn lex_flat_tokens<'psess, 'src>(
     psess: &'psess ParseSess,
     src: &'src str,

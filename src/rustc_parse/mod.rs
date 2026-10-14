@@ -25,9 +25,9 @@
 use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use eko::path::{Path, PathBuf};
-use core::str::Utf8Error;
 use alloc::sync::Arc;
+use core::str::Utf8Error;
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_ast as ast;
 use crate::rustc_ast::token;
@@ -256,15 +256,21 @@ fn new_parser_from_source_file(
                 psess.source_map().filename_for_diagnostics(&source_file.name)
             ));
         });
-        let buffer = lexer::lex_flat_tokens(
-            psess,
-            src.as_str(),
-            Some(src),
-            source_file.start_pos,
-            None,
-            strip_tokens,
-        )?;
-        Parser::from_flat(psess, buffer)
+        if let Some(cursor) =
+            lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
+        {
+            Parser::new_with_cursor(psess, cursor, None)
+        } else {
+            let buffer = lexer::lex_flat_tokens(
+                psess,
+                src.as_str(),
+                Some(src),
+                source_file.start_pos,
+                None,
+                strip_tokens,
+            )?;
+            Parser::from_flat(psess, buffer)
+        }
     } else {
         let stream = source_file_to_stream(psess, source_file, None, strip_tokens)?;
         Parser::new(psess, stream, None)
@@ -394,13 +400,14 @@ fn lex_token_trees_for_span(
     span: Span,
 ) -> Option<impl Iterator<Item = TokenTree>> {
     let src = psess.source_map().span_to_snippet(span).ok()?;
-    let stream = match lexer::lex_token_trees(psess, &src, None, span.lo(), None, StripTokens::Nothing) {
-        Ok(stream) => stream,
-        Err(errs) => {
-            errs.into_iter().for_each(|err| err.cancel());
-            return None;
-        }
-    };
+    let stream =
+        match lexer::lex_token_trees(psess, &src, None, span.lo(), None, StripTokens::Nothing) {
+            Ok(stream) => stream,
+            Err(errs) => {
+                errs.into_iter().for_each(|err| err.cancel());
+                return None;
+            }
+        };
     Some((0..).map_while(move |index| stream.get(index).cloned()))
 }
 
@@ -423,5 +430,5 @@ pub fn fake_token_stream_for_crate(psess: &ParseSess, krate: &ast::Crate) -> Tok
         Some(krate.spans.inner_span),
     ))
 }
-pub use crate::maybe_recover_from_interpolated_ty_qpath;
 pub use crate::exp;
+pub use crate::maybe_recover_from_interpolated_ty_qpath;

@@ -1,11 +1,17 @@
 use alloc::borrow::Cow;
+use alloc::string::String;
+use alloc::sync::Arc;
 
 use super::flat::{FlatTokenBuffer, FlatTokenCursor};
+use super::on_demand::OnDemandCursor;
 use super::{DelimSpan, FrameSpare, Spacing, TokenStream, TokenTree, TreeTokenCursor};
 use crate::rustc_ast::token::{Delimiter, Token};
+use crate::rustc_lexer::FrontmatterAllowed;
+use crate::rustc_span::BytePos;
+use crate::rustc_span::edition::Edition;
 
-/// Source parsers step through a shared flat buffer. Parsers over macro input keep
-/// the tree cursor so invisible delimiters retain their existing behavior.
+/// Source parsers can pull directly from shared source bytes. The eager flat
+/// fallback and macro tree cursor retain their existing recovery behavior.
 #[derive(Clone, Debug)]
 pub struct TokenCursor {
     inner: Cursor,
@@ -15,6 +21,7 @@ pub struct TokenCursor {
 enum Cursor {
     Trees(TreeTokenCursor),
     Flat(FlatTokenCursor),
+    Source(OnDemandCursor),
 }
 
 impl TokenCursor {
@@ -27,19 +34,31 @@ impl TokenCursor {
         Self { inner: Cursor::Flat(FlatTokenCursor::new(buffer)) }
     }
 
+    pub(crate) fn from_source(
+        source: Arc<String>,
+        start: BytePos,
+        begin: u32,
+        frontmatter: FrontmatterAllowed,
+        edition: Edition,
+    ) -> Option<Self> {
+        let cursor = OnDemandCursor::new(source, start, begin, frontmatter, edition)?;
+        Some(Self { inner: Cursor::Source(cursor) })
+    }
+
     #[cfg(feature = "parallel")]
     pub(crate) fn source_stream(&self) -> Option<&TokenStream> {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.source_stream(),
-            Cursor::Flat(_) => None,
+            Cursor::Flat(_) | Cursor::Source(_) => None,
         }
     }
 
-    /// Flat token lookahead needs no tree construction, including across group boundaries.
+    /// Source token lookahead needs no tree construction, including across group boundaries.
     #[inline]
     pub(crate) fn flat_look_ahead_token(&self, dist: usize) -> Option<Token> {
         match &self.inner {
             Cursor::Flat(cursor) => Some(cursor.look_ahead_token(dist)),
+            Cursor::Source(cursor) => Some(cursor.look_ahead_token(dist)),
             Cursor::Trees(_) => None,
         }
     }
@@ -49,6 +68,7 @@ impl TokenCursor {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.look_ahead(n).map(Cow::Borrowed),
             Cursor::Flat(cursor) => cursor.look_ahead(n).map(Cow::Owned),
+            Cursor::Source(cursor) => cursor.look_ahead(n).map(Cow::Owned),
         }
     }
 
@@ -56,6 +76,7 @@ impl TokenCursor {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.look_ahead_token(dist),
             Cursor::Flat(cursor) => Some(cursor.look_ahead_token(dist)),
+            Cursor::Source(cursor) => Some(cursor.look_ahead_token(dist)),
         }
     }
 
@@ -64,6 +85,7 @@ impl TokenCursor {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.look_ahead_past_close_delim().map(Cow::Borrowed),
             Cursor::Flat(cursor) => cursor.look_ahead_past_close_delim().map(Cow::Owned),
+            Cursor::Source(cursor) => cursor.look_ahead_past_close_delim().map(Cow::Owned),
         }
     }
 
@@ -72,6 +94,7 @@ impl TokenCursor {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.clone_enclosing_delim(),
             Cursor::Flat(cursor) => cursor.clone_enclosing_delim(),
+            Cursor::Source(cursor) => cursor.clone_enclosing_delim(),
         }
     }
 
@@ -80,6 +103,7 @@ impl TokenCursor {
         match &mut self.inner {
             Cursor::Trees(cursor) => cursor.bump_to_end(),
             Cursor::Flat(cursor) => cursor.bump_to_end(),
+            Cursor::Source(cursor) => cursor.bump_to_end(),
         }
     }
 
@@ -88,6 +112,7 @@ impl TokenCursor {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.depth(),
             Cursor::Flat(cursor) => cursor.depth(),
+            Cursor::Source(cursor) => cursor.depth(),
         }
     }
 
@@ -96,6 +121,7 @@ impl TokenCursor {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.parent_delim_and_span(),
             Cursor::Flat(cursor) => cursor.parent_delim_and_span(),
+            Cursor::Source(cursor) => cursor.parent_delim_and_span(),
         }
     }
 
@@ -113,6 +139,7 @@ impl TokenCursor {
         match &mut self.inner {
             Cursor::Trees(cursor) => cursor.inlined_next_and_bump_reusing(spare),
             Cursor::Flat(cursor) => cursor.next_and_bump(),
+            Cursor::Source(cursor) => cursor.next_and_bump(),
         }
     }
 }
