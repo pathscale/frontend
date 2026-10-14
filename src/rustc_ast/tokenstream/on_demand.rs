@@ -30,7 +30,6 @@ struct Source {
     start: BytePos,
     groups: Vec<Group>,
     short_symbols: Vec<(u64, Symbol)>,
-    raw_identifier_spans: Vec<Span>,
 }
 
 /// Only source with no eager lexer side effects is admitted here. Failure has
@@ -49,7 +48,6 @@ impl Source {
         let mut groups: Vec<Group> = Vec::new();
         let mut enclosing = OUTER;
         let mut short_candidates = alloc::vec![(0u64, 0u32); 512];
-        let mut raw_identifier_spans = Vec::new();
         loop {
             pos += cursor.skip_whitespace();
             let raw = cursor.advance_token();
@@ -73,21 +71,8 @@ impl Source {
                 if !spelling.is_ascii() {
                     return None;
                 }
-                // Ident aux=1 denotes an ASCII raw identifier. NFC and all
-                // invalid raw names stay on the original diagnostic path.
-                let prefix = if kind == SourceKind::Ident && aux == 1 { 2 } else { 0 };
-                let name = &spelling[prefix..];
-                if prefix != 0 {
-                    if matches!(name, "" | "_" | "super" | "self" | "Self" | "crate") {
-                        return None;
-                    }
-                    raw_identifier_spans
-                        .push(Span::with_root_ctxt(start + BytePos(lo), start + BytePos(pos)));
-                }
-                if kind == SourceKind::Ident
-                    && let Some(key) = short_key(name)
-                {
-                    short_candidates[short_slot(key)] = (key, lo + prefix as u32);
+                if kind == SourceKind::Ident && let Some(key) = short_key(spelling) {
+                    short_candidates[short_slot(key)] = (key, lo);
                 }
             }
             if matches!(kind, SourceKind::LineDoc | SourceKind::BlockDoc)
@@ -104,24 +89,22 @@ impl Source {
                 if suffix < raw.len && &spelling[suffix as usize..] == "_" {
                     return None;
                 }
-                if let LiteralKind::Int { base: base @ (Base::Binary | Base::Octal), .. } = literal
-                    && spelling[2..suffix as usize]
+                if let LiteralKind::Int { base: base @ (Base::Binary | Base::Octal), .. } = literal {
+                    if spelling[2..suffix as usize]
                         .chars()
                         .any(|c| c != '_' && c.to_digit(base as u32).is_none())
-                {
-                    return None;
+                    {
+                        return None;
+                    }
                 }
                 let (_, mode, prefix, postfix) = literal_layout(kind, aux)?;
-                let content =
-                    spelling.get(prefix as usize..suffix.checked_sub(postfix)? as usize)?;
+                let content = spelling.get(prefix as usize..suffix.checked_sub(postfix)? as usize)?;
                 if contains_text_flow_control_chars(content) {
                     return None;
                 }
                 if let Some(mode) = mode {
                     let needs_check = match mode {
-                        Mode::Str => {
-                            memchr::memchr3(b'\\', b'"', b'\r', content.as_bytes()).is_some()
-                        }
+                        Mode::Str => memchr::memchr3(b'\\', b'"', b'\r', content.as_bytes()).is_some(),
                         Mode::RawStr => memchr::memchr(b'\r', content.as_bytes()).is_some(),
                         _ => true,
                     };
@@ -160,19 +143,16 @@ impl Source {
         }
         // Intern only after eligibility is established. The immutable cache is
         // shared by every snapshot; misses still intern from the source owner.
-        let short_symbols = short_candidates
-            .into_iter()
-            .map(|(key, lo)| {
-                let symbol = if key == 0 {
-                    sym::empty
-                } else {
-                    let len = (64 - key.leading_zeros()).div_ceil(8) as usize;
-                    Symbol::intern_from_source(&text[lo as usize..lo as usize + len], &text)
-                };
-                (key, symbol)
-            })
-            .collect();
-        Some(Arc::new(Self { text, start, groups, short_symbols, raw_identifier_spans }))
+        let short_symbols = short_candidates.into_iter().map(|(key, lo)| {
+            let symbol = if key == 0 {
+                sym::empty
+            } else {
+                let len = (64 - key.leading_zeros()).div_ceil(8) as usize;
+                Symbol::intern_from_source(&text[lo as usize..lo as usize + len], &text)
+            };
+            (key, symbol)
+        }).collect();
+        Some(Arc::new(Self { text, start, groups, short_symbols }))
     }
 
     /// No references into the source escape a scan. Resuming from a byte
@@ -195,14 +175,9 @@ impl Source {
                     whitespace = true;
                 }
                 _ => {
-                    let (kind, suffix, aux) =
-                        classify(raw.kind).expect("preflight admitted lexeme");
+                    let (kind, suffix, aux) = classify(raw.kind).expect("preflight admitted lexeme");
                     return SourceToken {
-                        lo,
-                        hi: pos,
-                        suffix,
-                        kind,
-                        aux,
+                        lo, hi: pos, suffix, kind, aux,
                         // Before preparation this records preceding whitespace.
                         spacing: if whitespace { Spacing::Alone } else { Spacing::Joint },
                     };
@@ -249,20 +224,14 @@ impl Source {
         } else {
             match token.kind {
                 SourceKind::Ident => {
-                    let lo = token.lo + if token.aux == 1 { 2 } else { 0 };
-                    let text = &self.text[lo as usize..token.hi as usize];
-                    let symbol = short_key(text)
-                        .and_then(|key| {
-                            let (cached, symbol) = self.short_symbols[short_slot(key)];
-                            (cached == key).then_some(symbol)
-                        })
-                        .unwrap_or_else(|| self.intern(lo, token.hi));
-                    let raw = if token.aux == 1 { IdentIsRaw::Yes } else { IdentIsRaw::No };
-                    token::Ident(symbol, raw)
+                    let text = &self.text[token.lo as usize..token.hi as usize];
+                    let symbol = short_key(text).and_then(|key| {
+                        let (cached, symbol) = self.short_symbols[short_slot(key)];
+                        (cached == key).then_some(symbol)
+                    }).unwrap_or_else(|| self.intern(token.lo, token.hi));
+                    token::Ident(symbol, IdentIsRaw::No)
                 }
-                SourceKind::Lifetime => {
-                    token::Lifetime(self.intern(token.lo, token.hi), IdentIsRaw::No)
-                }
+                SourceKind::Lifetime => token::Lifetime(self.intern(token.lo, token.hi), IdentIsRaw::No),
                 SourceKind::LineDoc | SourceKind::BlockDoc => {
                     let block = token.kind == SourceKind::BlockDoc;
                     token::DocComment(
@@ -272,8 +241,8 @@ impl Source {
                     )
                 }
                 _ => {
-                    let (kind, _, prefix, postfix) =
-                        literal_layout(token.kind, token.aux).expect("preflight admitted literal");
+                    let (kind, _, prefix, postfix) = literal_layout(token.kind, token.aux)
+                        .expect("preflight admitted literal");
                     let end = token.lo + token.suffix;
                     let symbol = self.intern(token.lo + prefix, end - postfix);
                     let suffix = (end < token.hi).then(|| self.intern(end, token.hi));
@@ -285,16 +254,12 @@ impl Source {
     }
 
     fn group_at(&self, lo: u32) -> u32 {
-        self.groups
-            .binary_search_by_key(&lo, |group| group.open)
+        self.groups.binary_search_by_key(&lo, |group| group.open)
             .expect("preflight indexed opening delimiter") as u32
     }
 
     fn delim_span(&self, group: Group) -> DelimSpan {
-        DelimSpan::from_pair(
-            self.span(group.open, group.open + 1),
-            self.span(group.close, group.close + 1),
-        )
+        DelimSpan::from_pair(self.span(group.open, group.open + 1), self.span(group.close, group.close + 1))
     }
 }
 
@@ -317,10 +282,6 @@ impl OnDemandCursor {
     ) -> Option<Self> {
         let source = Source::checked(text, start, begin, frontmatter, edition)?;
         Some(Self::at(source, begin, OUTER))
-    }
-
-    pub(super) fn raw_identifier_spans(&self) -> &[Span] {
-        &self.source.raw_identifier_spans
     }
 
     fn at(source: Arc<Source>, offset: u32, enclosing: u32) -> Self {
@@ -374,8 +335,7 @@ impl OnDemandCursor {
         assert_ne!(n, 0);
         let mut cursor = self.clone();
         for _ in 1..n {
-            if cursor.current.kind.close_delim().is_some() || cursor.current.kind == SourceKind::Eof
-            {
+            if cursor.current.kind.close_delim().is_some() || cursor.current.kind == SourceKind::Eof {
                 return None;
             }
             cursor.skip_tree();
@@ -394,8 +354,7 @@ impl OnDemandCursor {
         if let Some(delim) = self.current.kind.open_delim() {
             let (open, open_spacing) = self.next_and_bump();
             let mut children = Vec::new();
-            while self.current.kind.close_delim().is_none() && self.current.kind != SourceKind::Eof
-            {
+            while self.current.kind.close_delim().is_none() && self.current.kind != SourceKind::Eof {
                 children.push(self.take_tree());
             }
             debug_assert_eq!(self.current.kind.close_delim(), Some(delim));
@@ -407,9 +366,7 @@ impl OnDemandCursor {
                 TokenStream::new(children),
             )
         } else {
-            assert!(
-                self.current.kind.close_delim().is_none() && self.current.kind != SourceKind::Eof
-            );
+            assert!(self.current.kind.close_delim().is_none() && self.current.kind != SourceKind::Eof);
             let (token, spacing) = self.next_and_bump();
             TokenTree::Token(token, spacing)
         }
@@ -440,11 +397,7 @@ impl OnDemandCursor {
     }
 
     pub(super) fn depth(&self) -> usize {
-        if self.enclosing == OUTER {
-            0
-        } else {
-            self.source.groups[self.enclosing as usize].depth as usize
-        }
+        if self.enclosing == OUTER { 0 } else { self.source.groups[self.enclosing as usize].depth as usize }
     }
 
     pub(super) fn parent_delim_and_span(&self) -> Option<(Delimiter, DelimSpan)> {
@@ -459,10 +412,6 @@ fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
     let mut aux = 0;
     let kind = match kind {
         TokenKind::Ident => S::Ident,
-        TokenKind::RawIdent => {
-            aux = 1;
-            S::Ident
-        }
         TokenKind::Lifetime { starts_with_number: false } => S::Lifetime,
         TokenKind::Semi => S::Semi,
         TokenKind::Comma => S::Comma,
@@ -507,22 +456,13 @@ fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
                 LiteralKind::Str { terminated: true } => S::Str,
                 LiteralKind::ByteStr { terminated: true } => S::ByteStr,
                 LiteralKind::CStr { terminated: true } => S::CStr,
-                LiteralKind::RawStr { n_hashes: Some(hashes) } => {
-                    aux = hashes;
-                    S::StrRaw
-                }
-                LiteralKind::RawByteStr { n_hashes: Some(hashes) } => {
-                    aux = hashes;
-                    S::ByteStrRaw
-                }
-                LiteralKind::RawCStr { n_hashes: Some(hashes) } => {
-                    aux = hashes;
-                    S::CStrRaw
-                }
+                LiteralKind::RawStr { n_hashes: Some(hashes) } => { aux = hashes; S::StrRaw }
+                LiteralKind::RawByteStr { n_hashes: Some(hashes) } => { aux = hashes; S::ByteStrRaw }
+                LiteralKind::RawCStr { n_hashes: Some(hashes) } => { aux = hashes; S::CStrRaw }
                 _ => return None,
             }
         }
-        // This includes raw lifetimes, unknown prefixes, guarded
+        // This includes raw identifiers/lifetimes, unknown prefixes, guarded
         // strings, frontmatter, invalid Unicode and malformed literals.
         _ => return None,
     };
