@@ -332,14 +332,19 @@ impl OnDemandCursor {
         if dist == 0 {
             return Token::dummy();
         }
-        let mut cursor = self.clone();
+        if dist == 1 {
+            return self.source.expand(self.current);
+        }
+        // Token lookahead does not observe enclosing groups. Borrow the source
+        // and perform only the lexeme transition from advance().
+        let (mut current, mut pending) = (self.current, self.pending);
         for _ in 1..dist {
-            if cursor.current.kind == SourceKind::Eof {
+            if current.kind == SourceKind::Eof {
                 break;
             }
-            cursor.advance();
+            (current, pending) = self.source.prepare(pending);
         }
-        cursor.source.expand(cursor.current)
+        self.source.expand(current)
     }
 
     fn skip_tree(&mut self) {
@@ -366,6 +371,12 @@ impl OnDemandCursor {
 
     /// Structural predicates need only a token or a group's opening delimiter.
     pub(super) fn look_ahead_tree_token(&self, n: usize) -> Option<Token> {
+        if n == 1 {
+            if self.current.kind.close_delim().is_some() || self.current.kind == SourceKind::Eof {
+                return None;
+            }
+            return Some(self.source.expand(self.current));
+        }
         let cursor = self.tree_cursor(n)?;
         Some(cursor.source.expand(cursor.current))
     }
