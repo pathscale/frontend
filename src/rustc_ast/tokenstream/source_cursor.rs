@@ -72,6 +72,19 @@ impl TokenCursor {
         }
     }
 
+    /// Skip whole trees, returning a group's opening token without its body.
+    pub(crate) fn look_ahead_tree_token(&self, n: usize) -> Option<Token> {
+        if let Cursor::Source(cursor) = &self.inner {
+            return cursor.look_ahead_tree_token(n);
+        }
+        self.look_ahead(n).map(|tree| match tree.as_ref() {
+            TokenTree::Token(token, _) => *token,
+            TokenTree::Delimited(span, _, delim, _) => {
+                Token::new(delim.as_open_token_kind(), span.open)
+            }
+        })
+    }
+
     pub fn look_ahead_token(&self, dist: usize) -> Option<Token> {
         match &self.inner {
             Cursor::Trees(cursor) => cursor.look_ahead_token(dist),

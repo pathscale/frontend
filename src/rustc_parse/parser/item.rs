@@ -1168,14 +1168,8 @@ impl<'a> Parser<'a> {
             // Recover cases like `impl(path::to::module)` + SUFFIX to suggest inserting `in`.
             SUFFIXES.iter().any(|suffix| {
                 suffix.iter().enumerate().all(|(i, kw)| {
-                    self.tree_look_ahead(i + 2, |t| {
-                        if let TokenTree::Token(token, _) = t {
-                            token.is_keyword(*kw)
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false)
+                    self.tree_look_ahead_token(i + 2, |token| token.is_keyword(*kw))
+                        .unwrap_or(false)
                 })
             })
         } else {
@@ -1721,12 +1715,9 @@ impl<'a> Parser<'a> {
         // Look for the optional ABI string literal.
         let n = if self.look_ahead(2, |t| t.can_begin_string_literal()) { 3 } else { 2 };
 
-        // Look for the `{`. Use `tree_look_ahead` because the ABI (if present)
-        // might be a metavariable i.e. an invisible-delimited sequence, and
-        // `tree_look_ahead` will consider that a single element when looking
-        // ahead.
-        self.tree_look_ahead(n, |t| matches!(t, TokenTree::Delimited(_, _, Delimiter::Brace, _)))
-            == Some(true)
+        // Treat a metavariable ABI as one tree and inspect only the opener
+        // of the following group.
+        self.tree_look_ahead_token(n, |t| t.kind == token::OpenBrace) == Some(true)
     }
 
     fn parse_global_static_front_matter(&mut self, case: Case) -> Option<Safety> {
@@ -2248,7 +2239,9 @@ impl<'a> Parser<'a> {
     }
     /// This is the case where we find `struct Foo<T>(T) where T: Copy;`
     /// Unit like structs are handled in parse_item_struct function
-    pub(super) fn parse_tuple_struct_body(&mut self) -> PResult<'a, crate::rustc_ast::ArenaVec<FieldDef>> {
+    pub(super) fn parse_tuple_struct_body(
+        &mut self,
+    ) -> PResult<'a, crate::rustc_ast::ArenaVec<FieldDef>> {
         let openparen_span = self.token.span;
         let mut encountered_colon = false;
         self.parse_delim_comma_seq_with(exp!(OpenParen), exp!(CloseParen), |p| {
