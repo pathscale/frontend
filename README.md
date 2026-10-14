@@ -13,6 +13,24 @@ construction, MIR optimization, borrow checking and monomorphization collection.
 substantively unchanged: the MIR data model, the MIR that gets built, and the MIR pass pipeline are
 all identical to the commit named in [UPSTREAM.md](UPSTREAM.md).
 
+## 0.7.3 patch release
+
+- Ordinary nested closure bodies are visited with their own type-check results. Unsupported
+  nested owners and unresolved identities retain explicit coverage gaps.
+- `frontend_facts::analyze_bodies_type_identity_with_loaded` returns exact body reports in
+  request order. Each body uses an isolated compiler session, so diagnostics, symbolic constant
+  losses and fatal status agree with the corresponding single-body observation. Its second
+  return value is the stable crate ID from the first session that entered a compiler context.
+- Eligible serial source parsers use a replayable on-demand lexer. Inputs requiring recovery,
+  normalization or symbol-gallery records, and active parallel parsing, retain eager lexing.
+- The existing `frontend-facts` binary accepts an optional `--max-input-bytes N` budget for
+  stdin. N is a positive decimal byte count; exceeding it emits
+  `CAP_INPUT_BYTES_EXCEEDED` on stderr and exits 78. It cannot be used with `--root` and does
+  not bound module, metadata or dependency reads. Calls without it keep their existing behavior.
+
+The existing public enum variants and JSON vocabulary are preserved. Macro-expanded expression
+types remain explicit coverage gaps. See [CHANGELOG.md](CHANGELOG.md).
+
 ## Read this first: you do not need a standard library
 
 **If you are about to say "no usable standard library exists", you are off track. Stop.**
@@ -25,8 +43,8 @@ ask for. That is the default on purpose.
 
 Do not clone rust-lang/rust, do not build a sysroot, do not go looking for one on disk, and do
 not report a missing one as a blocker. The reasoning is in `src/frontend_facts/mod.rs`, at the
-comment headed "The sysroot is an optional parameter, because this is a parser", and in commit
-`b87daf4`. The sysroot section further down applies only to a caller who has deliberately
+comment headed "The sysroot is an optional parameter, because this is a parser".
+The sysroot section further down applies only to a caller who has deliberately
 asked for paths to be resolved into a compiled library, which is rare.
 
 ## Why you might want it
@@ -47,13 +65,13 @@ That is the whole build. There is no bootstrap, no `x.py`, no Python.
 
 ## Using it
 
-Add the crates you want as ordinary dependencies. **Nothing else is required**: no environment
-variables, no `.cargo/config.toml`, no build wrapper.
+Add frontend as an ordinary dependency. **Nothing else is required**: no environment
+variables, no `.cargo/config.toml`, no build wrapper. Compiler modules are available through
+paths such as `frontend::rustc_interface` and `frontend::rustc_middle`.
 
 ```toml
 [dependencies]
-rustc_interface = { git = "...", rev = "..." }
-rustc_middle    = { git = "...", rev = "..." }
+frontend = "^0.7.3"
 ```
 
 Source parsing needs no sysroot, compiler version, or release channel. A caller may provide a
@@ -81,16 +99,15 @@ the structural selector currently has no edition parameter.
 The result contains actual expression types and adjustments, type-check taint,
 diagnostics, uncomputed symbolic constants and explicit coverage gaps. Reached
 closure bodies and their binding, reference and tuple patterns participate in
-the strict type gate. Supported `for`, `while`, source-written range lowerings
-and macro expansions retain generated HIR types separately, with their source
-callsite. The desugaring chain lists compiler syntax lowerings in hygiene order;
-macro marks are represented by `MacroExpansion` projection gaps, so a pure macro
-expansion has an empty chain.
+the strict type gate. Supported `for`, `while` and source-written range
+lowerings retain generated HIR types separately, with their source callsite.
+The desugaring chain lists compiler syntax lowerings in hygiene order.
 `type_extraction_complete` describes HIR type extraction; `projection_gaps`
-records where one source range cannot select one expression uniquely. Typed
-macro expansions can have complete type extraction while their source identity
-projection remains incomplete. Unvisited nested owners, unsupported lowerings,
-unavailable types and uncomputed symbolic constants remain extraction gaps.
+records where one source range cannot select one expression uniquely. Ordinary
+nested closures are visited with their own type-check results. Unsupported
+nested owners, macro-expanded expressions, unsupported lowerings, unavailable
+types and uncomputed symbolic constants remain extraction gaps. Closure type
+identities can still be unknown even when expression types are covered.
 Call facts name a type-check-selected item or report an unknown target; they do
 not identify a runtime implementation.
 
