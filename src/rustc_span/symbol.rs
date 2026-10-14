@@ -2843,6 +2843,14 @@ impl ByteSymbol {
     }
 }
 
+impl From<Symbol> for ByteSymbol {
+    #[inline]
+    fn from(symbol: Symbol) -> Self {
+        // Symbols and byte symbols share one index space for identical bytes.
+        Self(symbol.0)
+    }
+}
+
 impl fmt::Debug for ByteSymbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.as_byte_str(), f)
