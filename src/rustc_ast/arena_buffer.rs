@@ -260,7 +260,7 @@ impl<T: fmt::Debug> fmt::Debug for ArenaBuffer<T> {
 
 impl<T> FromIterator<T> for ArenaBuffer<T> {
     fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
-        let values = values.into_iter();
+        let values = values.into_iter().fuse();
         let mut buffer = Self::new();
         let (lower, upper) = values.size_hint();
         if upper == Some(lower) {
