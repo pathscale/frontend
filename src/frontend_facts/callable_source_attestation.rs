@@ -59,6 +59,7 @@ pub struct ResolvedCallableSourceContext {
     pub target_triple: String,
     pub crate_name: String,
     pub stable_crate_id: String,
+    /// Empty for the session's own crate when the session writes no metadata.
     pub crate_metadata_hash: String,
 }
 
@@ -224,8 +225,24 @@ pub(super) fn source_context(tcx: TyCtxt<'_>, def_id: DefId) -> ResolvedCallable
         target_triple: tcx.sess.opts.target_triple.tuple().to_string(),
         crate_name: tcx.crate_name(def_id.krate).to_string(),
         stable_crate_id: format!("{:016x}", tcx.stable_crate_id(def_id.krate).as_u64()),
-        crate_metadata_hash: tcx.crate_hash(def_id.krate).to_hex(),
+        crate_metadata_hash: crate_metadata_hash(tcx, def_id),
     }
+}
+
+/// The metadata hash of the crate that owns `def_id`. A dependency carries one in its metadata.
+/// The session's own crate has one only when this session writes metadata; otherwise its HIR
+/// owners are not hashed (see `TyCtxt::needs_hir_hash`), so the field is empty in debug and
+/// release builds alike instead of depending on `debug_assertions`.
+fn crate_metadata_hash(tcx: TyCtxt<'_>, def_id: DefId) -> String {
+    let writes_metadata = tcx
+        .sess
+        .opts
+        .output_types
+        .contains_key(&crate::rustc_session::config::OutputType::Metadata);
+    if def_id.is_local() && !writes_metadata {
+        return String::new();
+    }
+    tcx.crate_hash(def_id.krate).to_hex()
 }
 
 #[derive(Clone, Copy)]
