@@ -2513,6 +2513,8 @@ impl<'a> Setup<'a> {
     /// (no sysroot, no dependency) and a root that does not declare it already.
     pub fn options(&self, input: &Input) -> Result<Options, Vec<String>> {
         let mut opts = Options::default();
+        opts.isolated_env = true;
+        opts.unstable_opts.enforce_type_length_limit = true;
         opts.crate_name = Some(self.crate_name.to_string());
         opts.crate_types =
             alloc::vec![if self.proc_macro { CrateType::ProcMacro } else { CrateType::Rlib }];
@@ -2947,6 +2949,8 @@ fn check_no_core_source(
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
     let mut opts = Options::default();
+    opts.isolated_env = true;
+    opts.unstable_opts.enforce_type_length_limit = true;
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
     opts.test = test;

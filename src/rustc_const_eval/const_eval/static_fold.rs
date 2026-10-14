@@ -42,6 +42,8 @@ struct Folder<'tcx> {
     tcx: TyCtxt<'tcx>,
     typing_env: ty::TypingEnv<'tcx>,
     active: Vec<Instance<'tcx>>,
+    cache: FxHashMap<Instance<'tcx>, Result<FoldValue<'tcx>, &'static str>>,
+    remaining_steps: usize,
 }
 
 pub(super) fn fold_scalar<'tcx>(
@@ -49,7 +51,13 @@ pub(super) fn fold_scalar<'tcx>(
     typing_env: ty::TypingEnv<'tcx>,
     id: GlobalId<'tcx>,
 ) -> Result<Scalar, &'static str> {
-    let mut folder = Folder { tcx, typing_env, active: Vec::new() };
+    let mut folder = Folder {
+        tcx,
+        typing_env,
+        active: Vec::new(),
+        cache: FxHashMap::default(),
+        remaining_steps: MAX_FOLD_STEPS,
+    };
     let value = folder.eval_instance(id, 0)?;
     folder.to_scalar(value)
 }
@@ -121,6 +129,7 @@ impl<'tcx> Folder<'tcx> {
         id: GlobalId<'tcx>,
         depth: usize,
     ) -> Result<FoldValue<'tcx>, &'static str> {
+        self.spend_step()?;
         if depth >= MAX_FOLD_DEPTH {
             return Err("nested constant fold exceeded its depth bound");
         }
@@ -129,10 +138,26 @@ impl<'tcx> Folder<'tcx> {
         }
 
         let instance = id.instance;
-        let def_id = instance.def_id();
+        if let Some(result) = self.cache.get(&instance) {
+            return *result;
+        }
         if self.active.contains(&instance) {
             return Err("cyclic constant reference");
         }
+
+        self.active.push(instance);
+        let result = self.eval_instance_uncached(instance, depth);
+        self.active.pop();
+        self.cache.insert(instance, result);
+        result
+    }
+
+    fn eval_instance_uncached(
+        &mut self,
+        instance: Instance<'tcx>,
+        depth: usize,
+    ) -> Result<FoldValue<'tcx>, &'static str> {
+        let def_id = instance.def_id();
 
         if let Some((value, ty)) = self.tcx.trivial_const(def_id) {
             return self.eval_const(
@@ -157,6 +182,7 @@ impl<'tcx> Folder<'tcx> {
         // Constant bodies use the CTFE table. is_mir_available only asks for
         // optimized function MIR and is false for external associated constants.
         let uninstantiated_body = self.tcx.mir_for_ctfe(def_id);
+        self.spend_step()?;
         let body = instance.instantiate_mir_and_normalize_erasing_regions(
             self.tcx,
             self.typing_env,
@@ -169,10 +195,7 @@ impl<'tcx> Folder<'tcx> {
             return Err("constant body has arguments");
         }
 
-        self.active.push(instance);
-        let result = self.eval_body(&body, depth);
-        self.active.pop();
-        result
+        self.eval_body(&body, depth)
     }
 
     fn eval_const(
@@ -262,7 +285,6 @@ impl<'tcx> Folder<'tcx> {
     ) -> Result<FoldValue<'tcx>, &'static str> {
         let mut locals: FxHashMap<Local, FoldValue<'tcx>> = FxHashMap::default();
         let mut visited = Vec::new();
-        let mut steps = 0;
         let mut block = mir::START_BLOCK;
 
         loop {
@@ -273,7 +295,7 @@ impl<'tcx> Folder<'tcx> {
 
             let data = &body.basic_blocks[block];
             for statement in &data.statements {
-                self.spend_step(&mut steps)?;
+                self.spend_step()?;
                 match &statement.kind {
                     mir::StatementKind::Assign(assignment) => {
                         let (destination, rvalue) = &**assignment;
@@ -319,7 +341,7 @@ impl<'tcx> Folder<'tcx> {
                 }
             }
 
-            self.spend_step(&mut steps)?;
+            self.spend_step()?;
             match &data.terminator().kind {
                 mir::TerminatorKind::Goto { target } => block = *target,
                 mir::TerminatorKind::SwitchInt { discr, targets } => {
@@ -376,11 +398,11 @@ impl<'tcx> Folder<'tcx> {
         }
     }
 
-    fn spend_step(&self, steps: &mut usize) -> Result<(), &'static str> {
-        *steps += 1;
-        if *steps > MAX_FOLD_STEPS {
-            return Err("constant MIR exceeded its step bound");
-        }
+    fn spend_step(&mut self) -> Result<(), &'static str> {
+        self.remaining_steps = self
+            .remaining_steps
+            .checked_sub(1)
+            .ok_or("constant MIR exceeded its step bound")?;
         Ok(())
     }
 

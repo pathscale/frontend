@@ -34,10 +34,10 @@
 //! test target: `cfg(test)` is set and the test harness is added, which loads the crate `test`,
 //! so libtest's metadata is passed as `--extern noprelude:test=PATH` like std's.
 //!
-//! `--max-input-bytes N` explicitly bounds stdin to N bytes. It accepts a positive decimal
-//! count and is unavailable with `--root`; it does not bound module or dependency reads.
-//! Exceeding it reports CAP_INPUT_BYTES_EXCEEDED on stderr and exits 78. Without the flag,
-//! input handling and exit statuses retain their existing behavior.
+//! Stdin is bounded to 8 MiB by default. `--max-input-bytes N` overrides that limit
+//! with a positive decimal count and is unavailable with `--root`.
+//! Exceeding the limit reports CAP_INPUT_BYTES_EXCEEDED on stderr and exits 78.
+//! This flag does not configure module or dependency read limits.
 //!
 //! This is a `std` program, so it installs `std::panic::catch_unwind` as frontend's catcher
 //! before anything else, which lets fatal frontend diagnostics return with the JSON response.
@@ -63,7 +63,8 @@ fn main() {
     let mut check = false;
     let mut test = false;
     let mut root: Option<String> = None;
-    let mut max_input_bytes: Option<u64> = None;
+    let mut max_input_bytes: u64 = 8 * 1024 * 1024;
+    let mut max_input_bytes_explicit = false;
     let mut target: Option<String> = None;
     let mut edition: Option<String> = None;
     let mut items_only = false;
@@ -85,17 +86,21 @@ fn main() {
                 println!(
                     "Usage: frontend-facts [OPTIONS] [CRATE]\n\nRead crate facts as JSON. Source is read from stdin unless --root PATH is given.\n\nOptions: --root PATH, --target TUPLE, --edition YEAR, --items, --check, --test, --extern NAME=PATH, --cfg SPEC, --env KEY=VALUE, --emit-metadata PATH, --disambiguator VALUE, --rust-src PATH, --proc-macro, --standard-library, --library, --help"
                 );
-                println!("--max-input-bytes N bounds stdin to N bytes (positive decimal; stdin only). Exceeding it exits 78 with CAP_INPUT_BYTES_EXCEEDED.");
+                println!(
+                    "--max-input-bytes N bounds stdin to N bytes (default: 8388608; positive decimal; stdin only). Exceeding it exits 78 with CAP_INPUT_BYTES_EXCEEDED."
+                );
                 return;
             }
             "--max-input-bytes" => {
                 let raw = value("--max-input-bytes");
-                max_input_bytes = Some(
-                    raw.parse::<u64>()
-                        .ok()
-                        .filter(|limit| *limit > 0 && *limit < u64::MAX)
-                        .unwrap_or_else(|| usage("--max-input-bytes needs a positive decimal below u64::MAX")),
-                );
+                max_input_bytes = raw
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|limit| *limit > 0 && *limit < u64::MAX)
+                    .unwrap_or_else(|| {
+                        usage("--max-input-bytes needs a positive decimal below u64::MAX")
+                    });
+                max_input_bytes_explicit = true;
             }
             "--check" => check = true,
             "--test" => test = true,
@@ -149,7 +154,7 @@ fn main() {
             .map(eko::path::Path::new),
     };
     if let Some(root) = root {
-        if max_input_bytes.is_some() {
+        if max_input_bytes_explicit {
             usage("--max-input-bytes bounds stdin and cannot be used with --root");
         }
         if check {
@@ -186,8 +191,10 @@ fn main() {
             "--emit-metadata, --proc-macro, --library and --disambiguator read a crate from --root",
         );
     }
-    let source = if let Some(limit) = max_input_bytes {
+    let source = {
         use std::io::Read;
+
+        let limit = max_input_bytes;
         let mut bytes = Vec::new();
         if let Err(error) = std::io::stdin().take(limit + 1).read_to_end(&mut bytes) {
             usage(&format!("read stdin: {error}"));
@@ -197,12 +204,6 @@ fn main() {
             std::process::exit(78);
         }
         String::from_utf8(bytes).unwrap_or_else(|error| usage(&format!("read stdin: {error}")))
-    } else {
-        let mut source = String::new();
-        if let Err(error) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut source) {
-            usage(&format!("read stdin: {error}"));
-        }
-        source
     };
     if check {
         let checked = frontend::frontend_facts::check_source_against(
@@ -237,3 +238,4 @@ fn print_or_exit(json: Result<String, serde_json::Error>) {
         std::process::exit(2);
     }
 }
+

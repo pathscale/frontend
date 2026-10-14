@@ -1329,6 +1329,7 @@ impl Default for Options {
             working_dir,
             color: ColorConfig::Auto,
             logical_env: FxIndexMap::default(),
+            isolated_env: false,
             verbose: false,
             target_modifiers: BTreeMap::default(),
             mitigation_coverage_map: Default::default(),

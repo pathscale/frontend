@@ -61,9 +61,8 @@ impl MetadataLoader for DefaultMetadataLoader {
         })
     }
 
-    fn get_dylib_metadata(&self, _target: &Target, path: &Path) -> Result<OwnedSlice, String> {
-        debug!("getting dylib metadata for {}", path.display());
-        load_metadata_with(path, |data| section(path, data, ".rustc"))
+    fn get_dylib_metadata(&self, _target: &Target, _path: &Path) -> Result<OwnedSlice, String> {
+        Err("dynamic-library dependencies are disabled; use .rmeta or .rlib metadata".to_owned())
     }
 }
 
@@ -76,3 +75,4 @@ fn section<'a>(path: &Path, bytes: &'a [u8], name: &str) -> Result<&'a [u8], Str
         .data()
         .map_err(|e| format!("failed to read {name} section in '{}': {e}", path.display()))
 }
+

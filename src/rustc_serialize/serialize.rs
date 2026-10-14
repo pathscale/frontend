@@ -166,11 +166,10 @@ pub trait Decoder {
     #[inline]
     fn read_str(&mut self) -> &str {
         let len = self.read_usize();
-        let bytes = self.read_raw_bytes(len + 1);
-        assert!(bytes[len] == STR_SENTINEL);
-        // SAFETY: the presence of `STR_SENTINEL` gives us high (but not
-        // perfect) confidence that the bytes we just read truly are UTF-8.
-        unsafe { core::str::from_utf8_unchecked(&bytes[..len]) }
+        let encoded_len = len.checked_add(1).expect("metadata string length overflow");
+        let bytes = self.read_raw_bytes(encoded_len);
+        assert!(bytes[len] == STR_SENTINEL, "invalid metadata string sentinel");
+        core::str::from_utf8(&bytes[..len]).expect("invalid UTF-8 in metadata string")
     }
 
     #[inline]

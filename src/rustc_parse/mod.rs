@@ -36,7 +36,6 @@ use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Diag, EmissionGuarantee, FatalError, PResult, pluralize};
 pub use crate::rustc_lexer::UNICODE_VERSION;
 use crate::rustc_session::parse::ParseSess;
-use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{FileName, SourceFile, Span, Symbol};
 
@@ -146,35 +145,6 @@ pub fn new_parser_from_file<'a>(
         };
 
         let mut err = psess.dcx().struct_fatal(msg);
-
-        if e.kind() == ErrorKind::NotFound {
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                let parent = match path.parent() {
-                    Some(p) if !p.as_os_str().is_empty() => p,
-                    _ => Path::new("."),
-                };
-                if let Ok(entries) = eko::file::read_dir(parent) {
-                    let candidates: Vec<Symbol> = entries
-                        .iter()
-                        .filter_map(|entry| entry.file_name()?.to_str().map(Symbol::intern))
-                        .collect();
-                    let lookup = Symbol::intern(file_name);
-                    if let Some(suggestion) = find_best_match_for_name(&candidates, lookup, None) {
-                        let suggested_path = if parent == Path::new(".") {
-                            suggestion.as_str().to_string()
-                        } else {
-                            parent.join(suggestion.as_str()).display().to_string()
-                        };
-                        err.help(format!("you might have meant to open `{}`", suggested_path));
-                    }
-                }
-            }
-        }
-        if let Ok(contents) = eko::file::read(path)
-            && let Err(utf8err) = core::str::from_utf8(&contents)
-        {
-            utf8_error(sm, &path.display().to_string(), sp, &mut err, utf8err, &contents);
-        }
         if let Some(sp) = sp {
             err.span(sp);
         }
@@ -434,3 +404,4 @@ pub fn fake_token_stream_for_crate(psess: &ParseSess, krate: &ast::Crate) -> Tok
 }
 pub use crate::exp;
 pub use crate::maybe_recover_from_interpolated_ty_qpath;
+

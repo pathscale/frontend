@@ -615,16 +615,7 @@ impl<'a> CrateLocator<'a> {
     }
 
     fn needs_crate_flavor(&self, flavor: CrateFlavor) -> bool {
-        if flavor == CrateFlavor::Dylib && self.is_proc_macro {
-            return true;
-        }
-
-        if self.only_needs_metadata {
-            flavor == CrateFlavor::Rmeta
-        } else {
-            // we need all flavors (perhaps not true, but what we do for now)
-            true
-        }
+        matches!(flavor, CrateFlavor::Rmeta | CrateFlavor::Rlib)
     }
 
     // Attempts to extract *one* library from the set `m`. If the set has no

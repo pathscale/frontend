@@ -62,24 +62,41 @@ impl Header {
         check_expected_size::<C::EncodedValue>("Config::EncodedValue", self.size_of_value)?;
         check_expected_size::<Header>("Header", self.size_of_header)?;
 
-        if raw_bytes_len != bytes_needed::<C>(self.slot_count()) {
+        let slots = usize::try_from(u64::from_le_bytes(self.slot_count))
+            .map_err(|_| Error(format!("ODHT slot count does not fit usize")))?;
+        if !slots.is_power_of_two() {
             return Err(Error(format!(
-                "Provided allocation has wrong size for slot count {}. \
-                 The allocation's size is {} but the expected size is {}.",
-                self.slot_count(),
-                raw_bytes_len,
-                bytes_needed::<C>(self.slot_count()),
+                "Slot count of hashtable should be a power of two but is {}",
+                slots
             )));
         }
 
-        // This should never actually be a problem because it should be impossible to
-        // create the underlying memory slice in the first place:
-        assert!(u64::from_le_bytes(self.slot_count) <= usize::MAX as u64);
-
-        if !self.slot_count().is_power_of_two() {
+        let items = usize::try_from(u64::from_le_bytes(self.item_count))
+            .map_err(|_| Error(format!("ODHT item count does not fit usize")))?;
+        if items >= slots {
             return Err(Error(format!(
-                "Slot count of hashtable should be a power of two but is {}",
-                self.slot_count()
+                "ODHT item count {} must be smaller than slot count {}",
+                items, slots
+            )));
+        }
+
+        let expected_size = slots
+            .checked_mul(size_of::<Entry<C::EncodedKey, C::EncodedValue>>())
+            .and_then(|entry_bytes| HEADER_SIZE.checked_add(entry_bytes))
+            .and_then(|prefix| {
+                slots
+                    .checked_add(REFERENCE_GROUP_SIZE)
+                    .and_then(|count| count.checked_mul(size_of::<EntryMetadata>()))
+                    .and_then(|metadata_bytes| prefix.checked_add(metadata_bytes))
+            })
+            .filter(|size| *size <= isize::MAX as usize)
+            .ok_or_else(|| Error(format!("ODHT allocation size overflow")))?;
+
+        if raw_bytes_len != expected_size {
+            return Err(Error(format!(
+                "Provided allocation has wrong size for slot count {}. \
+                 The allocation's size is {} but the expected size is {}.",
+                slots, raw_bytes_len, expected_size
             )));
         }
 
@@ -183,14 +200,22 @@ where
     M: Borrow<[u8]>,
 {
     pub fn from_raw_bytes(raw_bytes: M) -> Result<Allocation<C, M>, Error> {
+        let bytes: &[u8] = raw_bytes.borrow();
+        if bytes.len() < HEADER_SIZE {
+            return Err(Error(format!(
+                "ODHT allocation is shorter than its {} byte header",
+                HEADER_SIZE
+            )));
+        }
+
+        // Header has alignment one, and the full header is present.
+        let header = unsafe { &*bytes.as_ptr().cast::<Header>() };
+        header.sanity_check::<C>(bytes.len())?;
+
         let allocation = Allocation {
             bytes: raw_bytes,
             _config: PhantomData::default(),
         };
-
-        allocation
-            .header()
-            .sanity_check::<C>(allocation.bytes.borrow().len())?;
 
         // Check that the hash function provides the expected hash values.
         {
@@ -369,3 +394,4 @@ pub(crate) fn init_in_place<C: Config, M: BorrowMut<[u8]>>(
 
     allocation
 }
+

@@ -82,7 +82,10 @@ impl core::ops::Deref for MetadataBlob {
 impl MetadataBlob {
     /// Runs the [`MemDecoder`] validation and if it passes, constructs a new [`MetadataBlob`].
     pub(crate) fn new(slice: OwnedSlice) -> Result<Self, ()> {
-        if MemDecoder::new(&slice, 0).is_ok() { Ok(Self(slice)) } else { Err(()) }
+        MemDecoder::new(&slice, 0)?;
+        let blob = Self(slice);
+        blob.check_compatibility()?;
+        Ok(blob)
     }
 
     /// Since this has passed the validation of [`MetadataBlob::new`], this returns bytes which are
@@ -745,7 +748,47 @@ mod blob {
 
 impl MetadataBlob {
     pub(crate) fn check_compatibility(&self) -> Result<(), ()> {
-        if self.starts_with(METADATA_HEADER) { Ok(()) } else { Err(()) }
+        if !self.starts_with(METADATA_HEADER) {
+            return Err(());
+        }
+
+        let root_offset = METADATA_HEADER.len();
+        let version_offset = root_offset.checked_add(8).ok_or(())?;
+        let root_bytes: [u8; 8] = self
+            .get(root_offset..version_offset)
+            .ok_or(())?
+            .try_into()
+            .map_err(|_| ())?;
+        let root = usize::try_from(u64::from_le_bytes(root_bytes)).map_err(|_| ())?;
+
+        let expected = super::rustc_version(concat!("frontend ", env!("CARGO_PKG_VERSION")));
+        let mut encoded = Vec::new();
+        let mut length = expected.len();
+        loop {
+            let mut byte = (length & 0x7f) as u8;
+            length >>= 7;
+            if length != 0 {
+                byte |= 0x80;
+            }
+            encoded.push(byte);
+            if length == 0 {
+                break;
+            }
+        }
+        encoded.extend_from_slice(expected.as_bytes());
+        encoded.push(0xC1);
+
+        let version_end = version_offset.checked_add(encoded.len()).ok_or(())?;
+        if self.get(version_offset..version_end) != Some(encoded.as_slice()) {
+            return Err(());
+        }
+
+        let decoder = MemDecoder::new(self, 0)?;
+        if root < version_end || root >= decoder.len() {
+            return Err(());
+        }
+
+        Ok(())
     }
 
     fn root_pos(&self) -> NonZero<usize> {

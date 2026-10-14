@@ -525,7 +525,15 @@ fn early_lint_checks(tcx: TyCtxt<'_>, (): ()) {
 // Behaviour change: `OsStr` is a `std` type, so the key and the value are now plain byte
 // slices. The query declaration in `rustc_middle/src/queries.rs` has to agree.
 fn env_var_os<'tcx>(tcx: TyCtxt<'tcx>, key: &'tcx [u8]) -> Option<&'tcx [u8]> {
-    let value = core::str::from_utf8(key).ok().and_then(eko::env::var_os);
+    let value = core::str::from_utf8(key).ok().and_then(|key| {
+        if let Some(value) = tcx.sess.opts.logical_env.get(key) {
+            Some(value.as_bytes().to_vec())
+        } else if tcx.sess.opts.isolated_env {
+            None
+        } else {
+            eko::env::var_os(key)
+        }
+    });
 
     let value_tcx = value.as_ref().map(|value| {
         // The value is already bytes, so it goes into the arena as it stands. This used to go

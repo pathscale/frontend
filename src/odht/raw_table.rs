@@ -202,17 +202,20 @@ where
         debug_assert!(self.data.len().is_power_of_two());
         debug_assert!(self.metadata.len() == self.data.len() + REFERENCE_GROUP_SIZE);
 
+        if self.data.is_empty() {
+            return None;
+        }
+
         let mask = self.data.len() - 1;
         let hash = H::hash(key.as_slice());
         let mut ps = ProbeSeq::<GROUP_SIZE>::new(h1(hash), mask);
         let h2 = h2(hash);
 
-        loop {
+        for _ in 0..self.data.len() {
             let mut group_query = GroupQuery::from(group_starting_at(self.metadata, ps.index), h2);
 
             for m in &mut group_query {
                 let index = (ps.index + m) & mask;
-
                 let entry = entry_at(self.data, index);
 
                 if likely!(entry.key.equals(key)) {
@@ -226,6 +229,8 @@ where
 
             ps.advance(mask);
         }
+
+        None
     }
 
     #[inline]

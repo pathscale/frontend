@@ -607,12 +607,6 @@ impl CStore {
         let _prof_timer =
             tcx.sess.prof.generic_activity_with_arg("metadata_register_crate", name.as_str());
 
-        let proc_macro_library = host_lib.as_ref().unwrap_or(&lib);
-        let proc_macro_dylib = proc_macro_library.source.dylib.clone();
-        let proc_macro_stable_crate_id = proc_macro_library
-            .metadata
-            .get_root()
-            .stable_crate_id();
 
         let Library { source, metadata } = lib;
         let crate_root = metadata.get_root();
@@ -650,23 +644,7 @@ impl CStore {
             private_dep,
         )?;
 
-        let raw_proc_macros = if crate_root.is_proc_macro_crate() {
-            let path = proc_macro_dylib.as_deref().ok_or_else(|| {
-                CrateError::ProcMacroDylibLoad(
-                    name,
-                    "host proc-macro crate has no dylib path".to_owned(),
-                )
-            })?;
-            Some(
-                crate::rustc_metadata::dylib::dlsym_proc_macros(
-                    path,
-                    proc_macro_stable_crate_id,
-                )
-                .map_err(|reason| CrateError::ProcMacroDylibLoad(name, reason))?,
-            )
-        } else {
-            None
-        };
+        let raw_proc_macros = None;
 
         let crate_metadata = CrateMetadata::new(
             tcx,
@@ -747,14 +725,6 @@ impl CStore {
                 self.load(&mut proc_macro_locator, &mut CrateRejections::default())?
             {
                 Ok(Some((host_result, None)))
-            } else if sess.opts.unstable_opts.wasm_proc_macros {
-                // Load the proc macro crate for wasm
-                proc_macro_locator.for_wasm_proc_macro(sess, path_kind);
-
-                match self.load(&mut proc_macro_locator, &mut CrateRejections::default())? {
-                    Some(host_result) => Ok(Some((host_result, None))),
-                    None => Ok(None),
-                }
             } else {
                 Ok(None)
             }
