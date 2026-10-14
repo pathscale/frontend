@@ -79,14 +79,29 @@ edition, supply an exact full body range directly to the loaded-context variant;
 the structural selector currently has no edition parameter.
 
 The result contains actual expression types and adjustments, type-check taint,
-diagnostics, uncomputed symbolic constants and explicit coverage gaps. Supported
-`for`, `while` and source-written range lowerings retain generated HIR types
-separately, with their full desugaring chain and source callsite.
-`type_extraction_complete` describes HIR
-type extraction; `projection_gaps` records where one source range cannot select
-one expression uniquely. Nested bodies, macros, unsupported lowerings and
-unavailable types remain extraction gaps. Call facts name a type-check-selected
-item or report an unknown target; they do not identify a runtime implementation.
+diagnostics, uncomputed symbolic constants and explicit coverage gaps. Reached
+closure bodies and their binding, reference and tuple patterns participate in
+the strict type gate. Supported `for`, `while`, source-written range lowerings
+and macro expansions retain generated HIR types separately, with their source
+callsite. The desugaring chain lists compiler syntax lowerings in hygiene order;
+macro marks are represented by `MacroExpansion` projection gaps, so a pure macro
+expansion has an empty chain.
+`type_extraction_complete` describes HIR type extraction; `projection_gaps`
+records where one source range cannot select one expression uniquely. Typed
+macro expansions can have complete type extraction while their source identity
+projection remains incomplete. Unvisited nested owners, unsupported lowerings,
+unavailable types and uncomputed symbolic constants remain extraction gaps.
+Call facts name a type-check-selected item or report an unknown target; they do
+not identify a runtime implementation.
+
+`analyze_bodies_type_identity_with_loaded` accepts exact function-body ranges
+in one source and returns identity reports in request order. Each report uses
+an isolated single-body compiler session, including its diagnostics and const
+observations; consume the reports directly without a single-body retry. The
+second return value is the local stable crate ID from the first session that
+entered a compiler context, or `None` if no session did. An empty request creates
+no compiler context. This ID is contextual identity, not a source digest or a
+proof that alternative source bodies preserve lexical resolution.
 These are bounded observations, not ownership or trait-obligation proof or a compiler
 pass/fail verdict. No supplied function body or external procedural macro is
 executed. As with the other entry points, install
