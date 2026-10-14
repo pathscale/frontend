@@ -12,7 +12,7 @@
 //! proc macros and this crate parse the same templates and a proc-macro crate cannot export a
 //! normal item for this one to use.
 //!
-//! See `UPSTREAM.md` for provenance and `README.md` for the sysroot this needs in order to run.
+//! See `UPSTREAM.md` for provenance and `README.md` for optional sysroot configuration.
 //!
 //! **Linking it into a program:** declare mimalloc as your global allocator (this crate declares
 //! none) and run files in parallel, one session each, rather than one file wide. Both are measured

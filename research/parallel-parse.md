@@ -16,8 +16,8 @@ file splits into few chunks, so there is too little to split. The code is at `c8
 (`src/rustc_parse/parser/item_chunks.rs`) if parsing ever becomes the long pole of a session.
 What follows is the design as it was.
 
-Status: source changed, not built or measured by the agents that wrote this (building is the
-main session's job). Measured at `6774475` (before the size gate and the predicted ids):
+Status: historical design, with no build or measurement claim for the changes described here.
+Measured at `6774475` (before the size gate and the predicted ids):
 `parse_crate` on `src/` 1,288 ms at width 1 against 1,795 ms at width 12. "Checking it" at the end says what to run.
 
 The problem: `parse_crate` is about 55 ms of the ~200 ms that stays serial at width 12 on the
