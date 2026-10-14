@@ -150,19 +150,25 @@ impl LitKind {
             }
             token::ByteStr => {
                 let s = symbol.as_str();
-                let mut buf = Vec::with_capacity(s.len());
-                unescape_byte_str(s, |_, res| match res {
-                    Ok(b) => buf.push(b),
-                    Err(err) => {
-                        assert!(!err.is_fatal(), "failed to unescape string literal")
-                    }
-                });
-                LitKind::ByteStr(ByteSymbol::intern(&buf), StrStyle::Cooked)
+                let bytes = if s.is_ascii()
+                    && memchr::memchr3(b'\\', b'\r', b'"', s.as_bytes()).is_none()
+                {
+                    ByteSymbol::from(symbol)
+                } else {
+                    let mut buf = Vec::with_capacity(s.len());
+                    unescape_byte_str(s, |_, res| match res {
+                        Ok(b) => buf.push(b),
+                        Err(err) => {
+                            assert!(!err.is_fatal(), "failed to unescape string literal")
+                        }
+                    });
+                    ByteSymbol::intern(&buf)
+                };
+                LitKind::ByteStr(bytes, StrStyle::Cooked)
             }
             token::ByteStrRaw(n) => {
-                // Raw byte strings have no escapes so no work is needed here.
-                let buf = symbol.as_str().to_owned().into_bytes();
-                LitKind::ByteStr(ByteSymbol::intern(&buf), StrStyle::Raw(n))
+                // Raw byte strings already contain the final bytes in the shared interner.
+                LitKind::ByteStr(ByteSymbol::from(symbol), StrStyle::Raw(n))
             }
             token::CStr => {
                 let s = symbol.as_str();
