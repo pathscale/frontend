@@ -1937,13 +1937,14 @@ pub(crate) mod dep_tracking {
     }
 }
 
-/// How to run proc-macro code when building this crate
+/// Historical library request, retained after removal of the execution-strategy option.
 #[derive(Clone, Copy, PartialEq, Hash, Debug)]
 pub enum ProcMacroExecutionStrategy {
-    /// Run the proc-macro code on the same thread as the server.
+    /// Run the proc-macro code on the caller's thread.
     SameThread,
 
-    /// Run the proc-macro code on a different thread.
+    /// Removed execution mode. A legacy request is refused with
+    /// frontend_proc_macro_cross_thread_removed, without entering the client.
     CrossThread,
 }
 

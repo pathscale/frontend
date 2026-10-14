@@ -27,9 +27,11 @@ use crate::rustc_expand::proc_macro_schema::{
 };
 
 fn exec_strategy(sess: &Session) -> impl pm::bridge::server::ExecutionStrategy + 'static {
-    pm::bridge::server::MaybeCrossThread {
-        cross_thread: sess.opts.unstable_opts.proc_macro_execution_strategy
-            == ProcMacroExecutionStrategy::CrossThread,
+    // This is only the published library compatibility field, no longer an
+    // execution-strategy option. The bridge refuses CrossThread by name.
+    match sess.opts.unstable_opts.proc_macro_execution_strategy {
+        ProcMacroExecutionStrategy::SameThread => pm::bridge::server::SAME_THREAD,
+        ProcMacroExecutionStrategy::CrossThread => pm::bridge::server::CROSS_THREAD,
     }
 }
 
