@@ -97,14 +97,19 @@ impl ParsedFile {
     }
 }
 
-/// Parse independent files using plain nagoya tasks when the selected session is parallel.
+/// Parse independent files using plain nagoya tasks at the selected session's width.
 ///
 /// One output per input, in input order. Each file owns its diagnostic context and globals;
 /// diagnostic order within a file is the parser's original emission order. No borrowed parse
 /// session, diagnostic sink or compiler context is handed to the executor. Nested body parsing
 /// uses the same application pool budget and its existing transactional serial fallback.
+/// A call outside a session uses the configured pool width. An empty batch starts no pool.
 pub fn parse_source_files(files: Arc<[ParseFileInput]>) -> Vec<ParsedFile> {
     let len = files.len();
+    if len == 0 {
+        return Vec::new();
+    }
+    let _mode = sync::enter_session_width(sync::parse_pool_width());
     sync::run_owned_stage(files, len, file_weight, parse_file)
 }
 
