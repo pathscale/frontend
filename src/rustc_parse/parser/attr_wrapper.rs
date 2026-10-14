@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
         // an inner call to `collect_tokens` returns an AST node and then an
         // outer call ends up with the same AST node without any additional
         // wrapping layer.
-        let mut ret_attrs = ast::ArenaVec::<&Attribute>::new();
+        let mut ret_attrs = ast::ArenaBuffer::<&Attribute>::new();
         for attr in ret.attrs() {
             if self.capture_state.seen_attrs.insert(attr.id) {
                 ret_attrs.push(attr);
@@ -249,7 +249,7 @@ impl<'a> Parser<'a> {
         // tokens.
         let definite_capture_mode = self.capture_cfg
             && matches!(self.capture_state.capturing, Capturing::Yes)
-            && has_cfg_or_cfg_attr(ret_attrs.iter().copied());
+            && has_cfg_or_cfg_attr(ret_attrs.as_slice().iter().copied());
         if !definite_capture_mode && !ret_can_hold_tokens {
             drop(ret_attrs);
             return Ok(ret);
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
             //   outer and inner attributes. So this check is more precise than
             //   the earlier `needs_tokens` check, and we don't need to
             //   check `R::SUPPORTS_CUSTOM_INNER_ATTRS`.)
-            || needs_tokens(ret_attrs.iter().copied())
+            || needs_tokens(ret_attrs.as_slice().iter().copied())
             // - We are in "definite capture mode", which requires that there
             //   are `#[cfg]` or `#[cfg_attr]` attributes. (During normal
             //   non-`capture_cfg` parsing, we don't need any special capturing
@@ -312,7 +312,7 @@ impl<'a> Parser<'a> {
         // Reserve exactly the nested replacements and inner-attribute deletions.
         // Keep references to attributes until a retained AttrsTarget needs ownership.
         let inner_attr_count =
-            ret_attrs.iter().filter(|attr| attr.style == ast::AttrStyle::Inner).count();
+            ret_attrs.as_slice().iter().filter(|attr| attr.style == ast::AttrStyle::Inner).count();
         let replacement_count =
             parser_replacements_end - parser_replacements_start + inner_attr_count;
         let mut node_replacements = ast::ArenaVec::with_capacity(replacement_count);
@@ -323,7 +323,7 @@ impl<'a> Parser<'a> {
                 .cloned()
                 .map(|(range, data)| (NodeRange::new(range, collect_pos.start_pos), data)),
         );
-        for attr in &ret_attrs {
+        for attr in ret_attrs.as_slice() {
             if attr.style == ast::AttrStyle::Inner {
                 if let Some(range) = self.capture_state.inner_attr_parser_ranges.remove(&attr.id) {
                     node_replacements.push((NodeRange::new(range, collect_pos.start_pos), None));
@@ -385,7 +385,7 @@ impl<'a> Parser<'a> {
             let start_pos =
                 if has_outer_attrs { attrs.start_pos.unwrap() } else { collect_pos.start_pos };
             let target = AttrsTarget {
-                attrs: ret_attrs.iter().map(|attr| (*attr).clone()).collect(),
+                attrs: ret_attrs.as_slice().iter().map(|attr| (*attr).clone()).collect(),
                 tokens: tokens.clone(),
             };
             tokens_used = true;

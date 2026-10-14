@@ -45,6 +45,7 @@ pub mod token;
 pub mod tokenstream;
 pub mod visit;
 
+pub(crate) use self::arena_buffer::ArenaBuffer;
 pub use self::ast::*;
 pub use self::ast_traits::{AstNodeWrapper, HasAttrs, HasNodeId, HasTokens};
 pub use crate::common_visitor_and_walkers;
