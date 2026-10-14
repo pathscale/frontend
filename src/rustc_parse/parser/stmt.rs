@@ -199,7 +199,9 @@ impl<'a> Parser<'a> {
             self.mk_stmt(lo.to(e.span), StmtKind::Expr(e))
         };
 
-        self.maybe_augment_stashed_expr_in_pats_with_suggestions(&stmt);
+        if !self.expected_token_types.is_deferred() {
+            self.maybe_augment_stashed_expr_in_pats_with_suggestions(&stmt);
+        }
         Ok(stmt)
     }
 
