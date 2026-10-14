@@ -8,6 +8,9 @@ This is a patch release following 0.7.3.
   `CFG_RELEASE_CHANNEL` and `RUSTC_INSTALL_BINDIR` (the caller's value, else this checkout's
   default). They were set only by `.cargo/config.toml`, which is not packaged, so 0.7.3 did not
   compile as a dependency.
+- Callable source attestation no longer panics in release builds. `crate_metadata_hash` is
+  empty for the session's own crate when the session writes no metadata, in debug and release
+  alike; dependencies keep the hash from their metadata.
 
 ## 0.7.3 - 2026-10-14
 
