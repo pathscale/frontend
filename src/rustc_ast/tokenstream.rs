@@ -27,6 +27,7 @@ use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 
 mod flat;
 mod source_cursor;
+mod source_token;
 pub(crate) use flat::FlatTokenBuffer;
 pub use source_cursor::TokenCursor;
 
