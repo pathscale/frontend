@@ -52,6 +52,7 @@ pub(super) const fn reify_to_extern_c_fn_hrt_bridge<
     extern "C" fn wrapper<R, F: Fn(super::BridgeConfig<'_>) -> R + Copy>(
         bridge: super::BridgeConfig<'_>,
     ) -> R {
+        #[allow(clippy::uninit_assumed_init)]
         let f = unsafe {
             // SAFETY: `F` satisfies all criteria for "out of thin air"
             // reconstructability (see module-level doc comment). This is the body of the

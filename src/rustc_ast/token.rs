@@ -1,14 +1,14 @@
 use alloc::borrow::Cow;
 use core::fmt;
 
+use crate::rustc_span::edition::Edition;
+use crate::rustc_span::symbol::IdentPrintMode;
+use crate::rustc_span::{self as sp, DUMMY_SP, ErrorGuaranteed, Span, Symbol, kw, sym};
 pub use LitKind::*;
 pub use NtExprKind::*;
 pub use NtPatKind::*;
 pub use TokenKind::*;
 use rustc_macros::{Decodable, Encodable, StableHash};
-use crate::rustc_span::edition::Edition;
-use crate::rustc_span::symbol::IdentPrintMode;
-use crate::rustc_span::{self as sp, DUMMY_SP, ErrorGuaranteed, Span, Symbol, kw, sym};
 
 use crate::rustc_ast::ast;
 use crate::rustc_ast::util::case::Case;
@@ -380,6 +380,7 @@ impl From<bool> for IdentIsRaw {
 // `PartialEq` is written by hand below: it compares discriminants first so that
 // the parser's checks against a payload-free kind (`token == token::PathSep`,
 // every `check`/`eat` of an `exp!` token) fold to one tag compare once inlined.
+#[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Clone, Copy, Eq, Hash, Encodable, Decodable, Debug, StableHash)]
 pub enum TokenKind {
     /* Expression-operator symbols. */
@@ -540,9 +541,7 @@ impl PartialEq for TokenKind {
             return false;
         }
         match (self, other) {
-            (OpenInvisible(a), OpenInvisible(b)) | (CloseInvisible(a), CloseInvisible(b)) => {
-                a == b
-            }
+            (OpenInvisible(a), OpenInvisible(b)) | (CloseInvisible(a), CloseInvisible(b)) => a == b,
             (Literal(a), Literal(b)) => a == b,
             (Ident(a, a_raw), Ident(b, b_raw)) | (Lifetime(a, a_raw), Lifetime(b, b_raw)) => {
                 a == b && a_raw == b_raw
@@ -954,9 +953,7 @@ impl Token {
                     || !name.is_reserved(|| self.span.edition())
             }
             NtIdent(ident, raw) => {
-                raw == IdentIsRaw::Yes
-                    || ident.is_path_segment_keyword()
-                    || !ident.is_reserved()
+                raw == IdentIsRaw::Yes || ident.is_path_segment_keyword() || !ident.is_reserved()
             }
             _ => false,
         }
@@ -1056,8 +1053,23 @@ impl Token {
     pub fn glue(&self, joint: &Token) -> Option<Token> {
         if matches!(
             self.kind,
-            Eq | Lt | Gt | Bang | Plus | Minus | Star | Slash | Percent | Caret
-                | And | Or | Shl | Shr | Dot | DotDot | Colon | SingleQuote
+            Eq | Lt
+                | Gt
+                | Bang
+                | Plus
+                | Minus
+                | Star
+                | Slash
+                | Percent
+                | Caret
+                | And
+                | Or
+                | Shl
+                | Shr
+                | Dot
+                | DotDot
+                | Colon
+                | SingleQuote
         ) {
             self.glue_joint(joint)
         } else {
