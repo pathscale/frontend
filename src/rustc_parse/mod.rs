@@ -49,6 +49,8 @@ use parser::Parser;
 use crate::rustc_parse::lexer::StripTokens;
 
 pub mod lexer;
+#[cfg(feature = "parallel")]
+pub mod owned;
 
 mod diagnostics;
 

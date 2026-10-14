@@ -7,6 +7,10 @@ struct Access {
 
 eko::scoped_thread_local!(static ACCESS: Access);
 
+pub(crate) fn file_pass<R>(f: impl FnOnce() -> R) -> R {
+    ACCESS.set(&Access { symbols: true, spans: true }, f)
+}
+
 pub(crate) fn item_pass<R>(f: impl FnOnce() -> R) -> R {
     ACCESS.set(&Access { symbols: false, spans: true }, f)
 }
