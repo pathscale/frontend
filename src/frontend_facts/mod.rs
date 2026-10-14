@@ -3636,6 +3636,8 @@ pub enum ResolvedOptionVariantRole {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GeneratedBodyExpressionTypeFact {
     pub callsite: ByteSpan,
+    /// Supported compiler syntax lowerings in hygiene order, excluding macro marks.
+    /// Empty for a pure macro expansion; MacroExpansion projection gaps retain its provenance.
     pub desugaring_chain: Vec<BodyTypeDesugaringKind>,
     /// Per-response traversal ordinal, not a HIR ID or cross-version identity.
     pub visit_order: u32,
@@ -3654,8 +3656,6 @@ pub enum BodyTypeDesugaringKind {
     WhileLoop,
     /// A source-written range expression lowered by the compiler.
     RangeExpr,
-    /// Typed HIR from a supported matches! expansion, with callsite provenance only.
-    MacroExpansion,
 }
 
 /// A typeck-selected call item, not proof of trait obligations or runtime dispatch.
@@ -4851,7 +4851,9 @@ fn supported_body_desugaring(
             ExpnKind::Desugaring(crate::rustc_span::hygiene::DesugaringKind::RangeExpr) => {
                 BodyTypeDesugaringKind::RangeExpr
             }
-            ExpnKind::Macro(..) => BodyTypeDesugaringKind::MacroExpansion,
+            // Macro provenance is retained by the callsite and MacroExpansion projection gap.
+            // Keep the released desugaring enum limited to compiler syntax lowerings.
+            ExpnKind::Macro(..) => continue,
             ExpnKind::AstPass(..) => {
                 return Err(BodyTypeCoverageGapKind::CompilerGeneratedExpression);
             }
