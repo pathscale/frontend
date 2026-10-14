@@ -13,7 +13,7 @@ use core::any::Any;
 /// This module provides types and traits for buffering lints until later in compilation.
 use crate::rustc_ast::node_id::NodeId;
 use crate::rustc_data_structures::fx::FxIndexMap;
-use crate::rustc_data_structures::sync::{DynSend, DynSync};
+
 use crate::rustc_error_messages::MultiSpan;
 use crate::rustc_lint_defs::{Lint, LintId};
 
@@ -22,9 +22,13 @@ use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level};
 pub struct DecorateDiagCompat(
     /// The third argument of the closure is a `Session`. However, due to the dependency tree,
     /// we don't have access to `rustc_session` here, so we downcast it when needed.
-    // `+ DynSync + DynSend` dropped: they are no longer auto traits, so a trait object
-    // cannot name them (see `rustc_data_structures/marker.rs`).
-    pub  Box<dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()> + 'static>,
+    // Deferred parser lints are owned output, including their decorator captures.
+    pub Box<
+        dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()>
+            + Send
+            + Sync
+            + 'static,
+    >,
 );
 
 impl core::fmt::Debug for DecorateDiagCompat {
@@ -33,7 +37,7 @@ impl core::fmt::Debug for DecorateDiagCompat {
     }
 }
 
-impl<D: for<'a> Diagnostic<'a, ()> + DynSync + DynSend + 'static> From<D> for DecorateDiagCompat {
+impl<D: for<'a> Diagnostic<'a, ()> + Send + Sync + 'static> From<D> for DecorateDiagCompat {
     #[inline]
     fn from(d: D) -> Self {
         Self(Box::new(|dcx, level, _| d.into_diag(dcx, level)))
@@ -89,7 +93,7 @@ impl LintBuffer {
     }
 
     pub fn dyn_buffer_lint<
-        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level) -> Diag<'a, ()> + DynSync + DynSend + 'static,
+        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level) -> Diag<'a, ()> + Send + Sync + 'static,
     >(
         &mut self,
         lint: &'static Lint,
@@ -107,8 +111,8 @@ impl LintBuffer {
 
     pub fn dyn_buffer_lint_any<
         F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()>
-            + DynSend
-            + DynSync
+            + Send
+            + Sync
             + 'static,
     >(
         &mut self,

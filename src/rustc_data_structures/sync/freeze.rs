@@ -32,8 +32,10 @@ pub struct FreezeLock<T> {
     lock: RwLock<()>,
 }
 
-// The `DynSync` impl that was here now comes from the blanket impl in `marker.rs` (auto
-// traits are unstable); a second impl would conflict.
+// SAFETY: writes hold the real write lock; shared reads hold a read lock or observe
+// permanently frozen storage. The unsafe read_phase API requires its read guards to
+// end before its owner releases the phase's lock. T is movable and shareable.
+unsafe impl<T: Send + Sync> Sync for FreezeLock<T> {}
 
 impl<T> FreezeLock<T> {
     #[inline]

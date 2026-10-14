@@ -16,7 +16,7 @@ use alloc::sync::Arc;
 use crate::rustc_ast::attr::AttrIdGenerator;
 use crate::rustc_ast::node_id::NodeId;
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexMap};
-use crate::rustc_data_structures::sync::{AppendOnlyVec, DynSend, DynSync, Lock};
+use crate::rustc_data_structures::sync::{AppendOnlyVec, Lock};
 use crate::rustc_errors::emitter::EmitterWithNote;
 use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::{
@@ -213,7 +213,7 @@ impl ParseSess {
     }
 
     pub fn dyn_buffer_lint<
-        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level) -> Diag<'a, ()> + DynSync + DynSend + 'static,
+        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level) -> Diag<'a, ()> + Send + Sync + 'static,
     >(
         &self,
         lint: &'static Lint,
@@ -231,8 +231,8 @@ impl ParseSess {
 
     pub fn dyn_buffer_lint_sess<
         F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
-            + DynSync
-            + DynSend
+            + Send
+            + Sync
             + 'static,
     >(
         &self,
