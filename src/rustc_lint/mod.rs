@@ -39,11 +39,7 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[cfg(test)]
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -102,6 +98,10 @@ mod unqualified_local_imports;
 pub mod unused;
 mod utils;
 
+use crate::rustc_data_structures::unord::UnordSet;
+use crate::rustc_hir::def_id::LocalModId;
+use crate::rustc_middle::query::Providers;
+use crate::rustc_middle::ty::TyCtxt;
 use async_closures::AsyncClosureUsage;
 use async_fn_in_trait::AsyncFnInTrait;
 use autorefs::*;
@@ -139,10 +139,6 @@ use raw_borrows_via_references::*;
 use redundant_semicolon::*;
 use reference_casting::*;
 use runtime_symbols::*;
-use crate::rustc_data_structures::unord::UnordSet;
-use crate::rustc_hir::def_id::LocalModId;
-use crate::rustc_middle::query::Providers;
-use crate::rustc_middle::ty::TyCtxt;
 use shadowed_into_iter::ShadowedIntoIter;
 pub use shadowed_into_iter::{ARRAY_INTO_ITER, BOXED_SLICE_INTO_ITER};
 use static_mut_refs::*;
@@ -156,18 +152,18 @@ use unused::*;
 
 #[rustfmt::skip]
 pub use builtin::MissingDoc;
-pub use context::{CheckLintNameResult, EarlyContext, LateContext, LintContext, LintStore};
-pub use early::diagnostics::DiagAndSess;
-pub use early::{EarlyCheckNode, check_ast_node};
-pub use late::{check_crate, late_lint_mod, unerased_lint_store};
-pub use levels::LintLevelsBuilder;
-pub use passes::{EarlyLintPass, LateLintPass};
 pub use crate::rustc_errors::BufferedEarlyLint;
 pub use crate::rustc_lint_defs::Level::{self, *};
 pub use crate::rustc_lint_defs::{
     Applicability, FutureIncompatibleInfo, Lint, LintId, LintPass, LintVec, declare_lint,
     declare_lint_pass, declare_tool_lint, impl_lint_pass,
 };
+pub use context::{CheckLintNameResult, EarlyContext, LateContext, LintContext, LintStore};
+pub use early::diagnostics::DiagAndSess;
+pub use early::{EarlyCheckNode, check_ast_node};
+pub use late::{check_crate, late_lint_mod, unerased_lint_store};
+pub use levels::LintLevelsBuilder;
+pub use passes::{EarlyLintPass, LateLintPass};
 
 pub fn provide(providers: &mut Providers) {
     levels::provide(providers);

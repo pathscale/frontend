@@ -1,14 +1,12 @@
-use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_ast::mut_visit::*;
+use crate::rustc_ast::ptr::P;
 use crate::rustc_ast::token::Delimiter;
 use crate::rustc_ast::visit::AssocCtxt;
 use crate::rustc_ast::{self as ast};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_span::{DUMMY_SP, Ident};
+use alloc::vec::Vec;
 use smallvec::{SmallVec, smallvec};
-use thin_vec::ThinVec;
 
 use crate::rustc_expand::expand::{AstFragment, AstFragmentKind};
 
@@ -64,16 +62,14 @@ pub(crate) fn placeholder(
             kind: ast::ItemKind::MacCall(mac_placeholder()),
             tokens: None,
         })]),
-        AstFragmentKind::TraitItems => {
-            AstFragment::TraitItems(smallvec![P::new(ast::AssocItem {
-                id,
-                span,
-                vis,
-                attrs,
-                kind: ast::AssocItemKind::MacCall(mac_placeholder()),
-                tokens: None,
-            })])
-        }
+        AstFragmentKind::TraitItems => AstFragment::TraitItems(smallvec![P::new(ast::AssocItem {
+            id,
+            span,
+            vis,
+            attrs,
+            kind: ast::AssocItemKind::MacCall(mac_placeholder()),
+            tokens: None,
+        })]),
         AstFragmentKind::ImplItems => AstFragment::ImplItems(smallvec![P::new(ast::AssocItem {
             id,
             span,
@@ -390,7 +386,9 @@ impl MutVisitor for PlaceholderExpander {
             return;
         }
         match expr.kind {
-            ast::ExprKind::MacCall(_) => *expr = self.remove(expr.id).make_method_receiver_expr().into_inner(),
+            ast::ExprKind::MacCall(_) => {
+                *expr = self.remove(expr.id).make_method_receiver_expr().into_inner()
+            }
             _ => walk_expr(self, expr),
         }
     }

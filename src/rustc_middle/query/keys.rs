@@ -3,12 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::Debug;
 use core::hash::Hash;
@@ -281,7 +275,7 @@ impl QueryKey for (CrateNum, DefId) {
 
     #[inline(always)]
     fn as_local_key(&self) -> Option<Self::LocalQueryKey> {
-        (self.0 == LOCAL_CRATE).then(|| self.1)
+        (self.0 == LOCAL_CRATE).then_some(self.1)
     }
 }
 
@@ -295,7 +289,7 @@ impl QueryKey for (CrateNum, SimplifiedType) {
 
     #[inline(always)]
     fn as_local_key(&self) -> Option<Self::LocalQueryKey> {
-        (self.0 == LOCAL_CRATE).then(|| self.1)
+        (self.0 == LOCAL_CRATE).then_some(self.1)
     }
 }
 
@@ -413,7 +407,7 @@ impl QueryKey for Option<Symbol> {
     }
 }
 
-impl<'tcx> QueryKey for &'tcx [u8] {
+impl QueryKey for &[u8] {
     type Cache<V> = DefaultCache<Self, V>;
     type LocalQueryKey = crate::Never;
 
@@ -496,7 +490,7 @@ impl<'tcx> QueryKey for ty::Value<'tcx> {
     }
 }
 
-impl<'tcx> QueryKey for (LocalExpnId, &'tcx TokenStream) {
+impl QueryKey for (LocalExpnId, &TokenStream) {
     type Cache<V> = DefaultCache<Self, V>;
     type LocalQueryKey = crate::Never;
 
@@ -547,7 +541,7 @@ fn def_id_of_type_cached<'a>(ty: Ty<'a>, visited: &mut SsoHashSet<Ty<'a>>) -> Op
             if visited.insert(ty) {
                 return def_id_of_type_cached(ty, visited);
             }
-            return None;
+            None
         }),
 
         ty::FnDef(def_id, _)

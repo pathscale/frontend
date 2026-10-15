@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use eko::file::Error;
 use eko::path::{Path, PathBuf};
 
@@ -7,9 +7,9 @@ use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{
     Diag, DiagCtxtHandle, DiagSymbolList, Diagnostic, EmissionGuarantee, Level, MultiSpan, msg,
 };
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::{MainDefinition, Ty};
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_passes::check_attr::ProcMacroKind;
 use crate::rustc_passes::lang_items::Duplicate;
@@ -465,7 +465,10 @@ impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for NoMainErr {
             && main_def.opt_fn_def_id().is_none()
         {
             // There is something at `crate::rustc_passes::main`, but it is not a function definition.
-            diag.span_label(main_def.span, msg!("non-function item at `crate::rustc_passes::main` is found"));
+            diag.span_label(
+                main_def.span,
+                msg!("non-function item at `crate::rustc_passes::main` is found"),
+            );
         }
 
         if self.add_teach_note {

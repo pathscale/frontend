@@ -2,9 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -512,25 +511,25 @@ fn build_mismatch_suggestions_for_lifetime(
 
     for info in infos {
         let lifetime = info.lifetime;
-        if matches!(lifetime.syntax, LifetimeSyntax::Implicit) {
-            if let LifetimeSource::Path { angle_brackets } = lifetime.source {
-                let (span, kind) = match angle_brackets {
-                    AngleBrackets::Missing => {
-                        (lifetime.ident.span.shrink_to_hi(), PathSuggestionKind::Missing)
-                    }
-                    AngleBrackets::Empty => (lifetime.ident.span, PathSuggestionKind::Empty),
-                    AngleBrackets::Full => (lifetime.ident.span, PathSuggestionKind::Full),
-                };
-                let entry = path_counts.entry((info.ty.hir_id, kind)).or_insert((span, 0));
-                entry.1 += 1;
-                continue;
-            }
+        if matches!(lifetime.syntax, LifetimeSyntax::Implicit)
+            && let LifetimeSource::Path { angle_brackets } = lifetime.source
+        {
+            let (span, kind) = match angle_brackets {
+                AngleBrackets::Missing => {
+                    (lifetime.ident.span.shrink_to_hi(), PathSuggestionKind::Missing)
+                }
+                AngleBrackets::Empty => (lifetime.ident.span, PathSuggestionKind::Empty),
+                AngleBrackets::Full => (lifetime.ident.span, PathSuggestionKind::Full),
+            };
+            let entry = path_counts.entry((info.ty.hir_id, kind)).or_insert((span, 0));
+            entry.1 += 1;
+            continue;
         }
         suggestions.push(info.suggestion(lifetime_name));
     }
 
     for ((_ty_hir_id, kind), (span, count)) in path_counts {
-        let repeated = core::iter::repeat(lifetime_name).take(count).collect::<Vec<_>>().join(", ");
+        let repeated = core::iter::repeat_n(lifetime_name, count).collect::<Vec<_>>().join(", ");
 
         let suggestion = match kind {
             PathSuggestionKind::Missing => format!("<{repeated}>"),

@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::{boxed::Box, format, vec};
 
 use core::{
@@ -7,12 +8,12 @@ use core::{
     mem::{align_of, size_of},
 };
 
+use crate::odht::{Config, swisstable_group_query::REFERENCE_GROUP_SIZE};
 use crate::odht::{
+    Factor,
     error::Error,
     raw_table::{Entry, EntryMetadata, RawTable},
-    Factor,
 };
-use crate::odht::{swisstable_group_query::REFERENCE_GROUP_SIZE, Config};
 
 const CURRENT_FILE_FORMAT_VERSION: [u8; 4] = [0, 0, 0, 2];
 
@@ -41,7 +42,7 @@ const HEADER_SIZE: usize = size_of::<Header>();
 impl Header {
     pub fn sanity_check<C: Config>(&self, raw_bytes_len: usize) -> Result<(), Error> {
         assert!(align_of::<Header>() == 1);
-        assert!(HEADER_SIZE % 8 == 0);
+        assert!(HEADER_SIZE.is_multiple_of(8));
 
         if self.tag != HEADER_TAG {
             return Err(Error(format!(
@@ -63,7 +64,7 @@ impl Header {
         check_expected_size::<Header>("Header", self.size_of_header)?;
 
         let slots = usize::try_from(u64::from_le_bytes(self.slot_count))
-            .map_err(|_| Error(format!("ODHT slot count does not fit usize")))?;
+            .map_err(|_| Error("ODHT slot count does not fit usize".to_string()))?;
         if !slots.is_power_of_two() {
             return Err(Error(format!(
                 "Slot count of hashtable should be a power of two but is {}",
@@ -72,7 +73,7 @@ impl Header {
         }
 
         let items = usize::try_from(u64::from_le_bytes(self.item_count))
-            .map_err(|_| Error(format!("ODHT item count does not fit usize")))?;
+            .map_err(|_| Error("ODHT item count does not fit usize".to_string()))?;
         if items >= slots {
             return Err(Error(format!(
                 "ODHT item count {} must be smaller than slot count {}",
@@ -90,7 +91,7 @@ impl Header {
                     .and_then(|metadata_bytes| prefix.checked_add(metadata_bytes))
             })
             .filter(|size| *size <= isize::MAX as usize)
-            .ok_or_else(|| Error(format!("ODHT allocation size overflow")))?;
+            .ok_or_else(|| Error("ODHT allocation size overflow".to_string()))?;
 
         if raw_bytes_len != expected_size {
             return Err(Error(format!(
@@ -212,10 +213,7 @@ where
         let header = unsafe { &*bytes.as_ptr().cast::<Header>() };
         header.sanity_check::<C>(bytes.len())?;
 
-        let allocation = Allocation {
-            bytes: raw_bytes,
-            _config: PhantomData::default(),
-        };
+        let allocation = Allocation { bytes: raw_bytes, _config: PhantomData };
 
         // Check that the hash function provides the expected hash values.
         {
@@ -229,10 +227,7 @@ where
 
     #[inline]
     pub unsafe fn from_raw_bytes_unchecked(raw_bytes: M) -> Allocation<C, M> {
-        Allocation {
-            bytes: raw_bytes,
-            _config: PhantomData::default(),
-        }
+        Allocation { bytes: raw_bytes, _config: PhantomData }
     }
 
     #[inline]
@@ -248,6 +243,10 @@ where
     }
 
     #[inline]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the view returns matching metadata and encoded-entry slices"
+    )]
     pub fn data_slices(&self) -> (&[EntryMetadata], &[Entry<C::EncodedKey, C::EncodedValue>]) {
         let raw_bytes = self.bytes.borrow();
         let slot_count = self.header().slot_count();
@@ -345,10 +344,7 @@ where
             entry_metadata.as_ptr_range().start as usize,
         );
 
-        debug_assert_eq!(
-            _raw_bytes_end_addr,
-            entry_metadata.as_ptr_range().end as usize,
-        );
+        debug_assert_eq!(_raw_bytes_end_addr, entry_metadata.as_ptr_range().end as usize,);
 
         f(header, entry_metadata, entry_data)
     }
@@ -382,10 +378,7 @@ pub(crate) fn init_in_place<C: Config, M: BorrowMut<[u8]>>(
 ) -> Allocation<C, M> {
     Header::initialize::<C>(bytes.borrow_mut(), slot_count, item_count, max_load_factor);
 
-    let mut allocation = Allocation {
-        bytes,
-        _config: PhantomData::default(),
-    };
+    let mut allocation = Allocation { bytes, _config: PhantomData };
 
     allocation.with_mut_parts(|_, metadata, data| {
         metadata.fill(0xFF);
@@ -394,4 +387,3 @@ pub(crate) fn init_in_place<C: Config, M: BorrowMut<[u8]>>(
 
     allocation
 }
-

@@ -1,11 +1,10 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 use eko::path::PathBuf;
 
-pub use ReprAttr::*;
 use crate::rustc_abi::Align;
 pub use crate::rustc_ast::attr::data_structures::*;
 pub use crate::rustc_ast::attr::version::RustcVersion;
@@ -15,11 +14,14 @@ use crate::rustc_ast::token::DocFragmentKind;
 use crate::rustc_ast::{AttrStyle, Path, ast};
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_error_messages::{DiagArgValue, IntoDiagArg};
-use rustc_macros::{Decodable, Encodable, PrintAttribute, StableHash};
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::hygiene::Transparency;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, Symbol};
-use crate::rustc_structures::{CollapseMacroDebuginfo, CrateType, Limit, NativeLibKind, SanitizerSet};
+use crate::rustc_structures::{
+    CollapseMacroDebuginfo, CrateType, Limit, NativeLibKind, SanitizerSet,
+};
+pub use ReprAttr::*;
+use rustc_macros::{Decodable, Encodable, PrintAttribute, StableHash};
 use thin_vec::ThinVec;
 
 pub use crate::rustc_attr_ir::canonical_symbols::{CanonicalSymbol, CanonicalSymbols};
@@ -439,6 +441,12 @@ pub enum DocCfgHideShow {
     List(ThinVec<DocCfgHideShowValue>),
 }
 
+impl Default for DocCfgHideShow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocCfgHideShow {
     pub fn new() -> Self {
         Self::List(ThinVec::new())
@@ -635,12 +643,12 @@ pub struct RustcAutodiff {
     /// Calling a differentiated, non-batched function through a loop 100 times is equivalent to:
     /// - Calling the function 50 times with a batch size of 2
     /// - Calling the function 25 times with a batch size of 4,
-    /// etc. A batched function takes more (or longer) arguments, and might be able to benefit from
-    /// cache locality, better re-usal of primal values, and other optimizations.
-    /// We will (before LLVM's vectorizer runs) just generate most LLVM-IR instructions `width`
-    /// times, so this massively increases code size. As such, values like 1024 are unlikely to
-    /// work. We should consider limiting this to u8 or u16, but will leave it at u32 for
-    /// experiments for now and focus on documenting the implications of a large width.
+    ///   etc. A batched function takes more (or longer) arguments, and might be able to benefit from
+    ///   cache locality, better re-usal of primal values, and other optimizations.
+    ///   We will (before LLVM's vectorizer runs) just generate most LLVM-IR instructions `width`
+    ///   times, so this massively increases code size. As such, values like 1024 are unlikely to
+    ///   work. We should consider limiting this to u8 or u16, but will leave it at u32 for
+    ///   experiments for now and focus on documenting the implications of a large width.
     pub width: u32,
     pub input_activity: ThinVec<DiffActivity>,
     pub ret_activity: DiffActivity,

@@ -7,7 +7,9 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::ffi::CStr;
 
-use crate::rustc_proc_macro::{ConcatTreesHelper, Group, Ident, Literal, Punct, Span, TokenStream, TokenTree};
+use crate::rustc_proc_macro::{
+    ConcatTreesHelper, Group, Ident, Literal, Punct, Span, TokenStream, TokenTree,
+};
 
 /// Types that can be interpolated inside a `quote!` invocation.
 pub trait ToTokens {

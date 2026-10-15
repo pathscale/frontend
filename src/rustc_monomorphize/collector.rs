@@ -205,7 +205,6 @@
 //! this is not implemented however: a mono item will be produced
 //! regardless of whether it is actually needed or not.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -500,8 +499,8 @@ fn collect_items_rec<'tcx>(
                     def_path_str,
                 });
             };
-            used_items.extend(used.into_iter().copied());
-            mentioned_items.extend(mentioned.into_iter().copied());
+            used_items.extend(used.iter().copied());
+            mentioned_items.extend(mentioned.iter().copied());
         }
         MonoItem::GlobalAsm(item_id) => {
             assert!(
@@ -740,7 +739,7 @@ impl<'a, 'tcx> MirUsedCollector<'a, 'tcx> {
             }
             Err(err @ ErrorHandled::Reported(..)) => {
                 err.emit_note(self.tcx);
-                return None;
+                None
             }
         }
     }
@@ -876,13 +875,7 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirUsedCollector<'a, 'tcx> {
                         false
                     };
 
-                visit_fn_use(
-                    self.tcx,
-                    callee_ty,
-                    !force_indirect_call,
-                    source,
-                    &mut self.used_items,
-                );
+                visit_fn_use(self.tcx, callee_ty, !force_indirect_call, source, self.used_items);
 
                 if let ty::FnDef(def_id, _) = *callee_ty.kind()
                     && self.tcx.is_intrinsic(def_id, crate::rustc_span::sym::offload)
@@ -890,7 +883,7 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirUsedCollector<'a, 'tcx> {
                 {
                     let kernel_ty = kernel.node.ty(self.body, self.tcx);
                     let kernel_ty = self.monomorphize(kernel_ty);
-                    visit_fn_use(self.tcx, kernel_ty, false, source, &mut self.used_items);
+                    visit_fn_use(self.tcx, kernel_ty, false, source, self.used_items);
                 }
             }
             mir::TerminatorKind::Drop { ref place, .. } => {
@@ -1409,6 +1402,10 @@ fn collect_items_of_instance<'tcx>(
     Ok((used_items, mentioned_items))
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "the result separates used items from mentioned items for one instance"
+)]
 fn items_of_instance<'tcx>(
     tcx: TyCtxt<'tcx>,
     (instance, mode): (Instance<'tcx>, CollectionMode),
@@ -1721,34 +1718,28 @@ impl<'v> RootCollector<'_, 'v> {
     }
 
     fn process_nested_body(&mut self, def_id: LocalDefId) {
-        match self.tcx.def_kind(def_id) {
-            DefKind::Closure => {
-                // for 'pub async fn foo(..)' also trying to monomorphize foo::{closure}
-                let is_pub_fn_coroutine =
+        if self.tcx.def_kind(def_id) == DefKind::Closure {
+            // for 'pub async fn foo(..)' also trying to monomorphize foo::{closure}
+            let is_pub_fn_coroutine =
+                match *self.tcx.type_of(def_id).instantiate_identity().skip_norm_wip().kind() {
+                    ty::Coroutine(cor_id, _args) => {
+                        let tcx = self.tcx;
+                        let parent_id = tcx.parent(cor_id);
+                        tcx.def_kind(parent_id) == DefKind::Fn
+                            && tcx.asyncness(parent_id).is_async()
+                            && tcx.visibility(parent_id).is_public()
+                    }
+                    ty::Closure(..) | ty::CoroutineClosure(..) => false,
+                    _ => unreachable!(),
+                };
+            if (self.strategy == MonoItemCollectionStrategy::Eager || is_pub_fn_coroutine)
+                && !self
+                    .tcx
+                    .generics_of(self.tcx.typeck_root_def_id_local(def_id))
+                    .requires_monomorphization(self.tcx)
+            {
+                let instance =
                     match *self.tcx.type_of(def_id).instantiate_identity().skip_norm_wip().kind() {
-                        ty::Coroutine(cor_id, _args) => {
-                            let tcx = self.tcx;
-                            let parent_id = tcx.parent(cor_id);
-                            tcx.def_kind(parent_id) == DefKind::Fn
-                                && tcx.asyncness(parent_id).is_async()
-                                && tcx.visibility(parent_id).is_public()
-                        }
-                        ty::Closure(..) | ty::CoroutineClosure(..) => false,
-                        _ => unreachable!(),
-                    };
-                if (self.strategy == MonoItemCollectionStrategy::Eager || is_pub_fn_coroutine)
-                    && !self
-                        .tcx
-                        .generics_of(self.tcx.typeck_root_def_id_local(def_id))
-                        .requires_monomorphization(self.tcx)
-                {
-                    let instance = match *self
-                        .tcx
-                        .type_of(def_id)
-                        .instantiate_identity()
-                        .skip_norm_wip()
-                        .kind()
-                    {
                         ty::Closure(def_id, args)
                         | ty::Coroutine(def_id, args)
                         | ty::CoroutineClosure(def_id, args) => {
@@ -1756,20 +1747,18 @@ impl<'v> RootCollector<'_, 'v> {
                         }
                         _ => unreachable!(),
                     };
-                    let Ok(instance) = self.tcx.try_normalize_erasing_regions(
-                        ty::TypingEnv::fully_monomorphized(),
-                        Unnormalized::new_wip(instance),
-                    ) else {
-                        // Don't ICE on an impossible-to-normalize closure.
-                        return;
-                    };
-                    let mono_item = create_fn_mono_item(self.tcx, instance, DUMMY_SP);
-                    if mono_item.node.is_instantiable(self.tcx) {
-                        self.output.push(mono_item);
-                    }
+                let Ok(instance) = self.tcx.try_normalize_erasing_regions(
+                    ty::TypingEnv::fully_monomorphized(),
+                    Unnormalized::new_wip(instance),
+                ) else {
+                    // Don't ICE on an impossible-to-normalize closure.
+                    return;
+                };
+                let mono_item = create_fn_mono_item(self.tcx, instance, DUMMY_SP);
+                if mono_item.node.is_instantiable(self.tcx) {
+                    self.output.push(mono_item);
                 }
             }
-            _ => {}
         }
     }
 

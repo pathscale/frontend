@@ -1,5 +1,5 @@
-use hashbrown::hash_map::Entry;
 use core::mem;
+use hashbrown::hash_map::Entry;
 
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::solve::{Goal, QueryInput};
@@ -196,6 +196,10 @@ impl<'a, D: SolverDelegate<Interner = I>, I: Interner> Canonicalizer<'a, D, I> {
     ///
     /// We want to keep the option of canonicalizing `'static` to an existential
     /// variable in the future by changing the way we detect global where-bounds.
+    #[expect(
+        clippy::type_complexity,
+        reason = "canonicalization returns the canonical arguments and folded query input"
+    )]
     pub(super) fn canonicalize_input<P: TypeFoldable<I>>(
         delegate: &'a D,
         input: QueryInput<I, P>,

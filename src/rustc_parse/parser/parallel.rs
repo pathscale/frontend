@@ -86,6 +86,10 @@ fn clean(psess: &ParseSess, diagnostic: &AtomicBool) -> bool {
     !diagnostic.load(Ordering::Relaxed) && psess.dcx().has_errors().is_none()
 }
 impl<'a> Parser<'a> {
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "speculative parser state is gathered on the caller thread before owned jobs are submitted"
+    )]
     pub(super) fn parse_parallel_bodies(&mut self) -> Option<ast::Crate> {
         if !sync::is_parallel_here()
             || self.body_jobs.is_some()
@@ -102,15 +106,17 @@ impl<'a> Parser<'a> {
         let original = with_session_globals(|globals| {
             globals.can_share_for_parse().then(|| globals.share_for_parse())
         })?;
+        crate::rustc_parse::record_parallel_attempt();
         let (fork, baseline) = original.fork_for_parse();
         let fork = Arc::new(fork);
         let initial = State::copy(self);
+        let cut_hint = initial.token_cursor.depth_zero_item_cuts().len();
         let source_map = self.psess.clone_source_map();
         let candidate = with_parse_globals(&fork, || {
             sync::speculate_parse(|| {
                 parse_transaction::item_pass(|| {
                     let (psess, diagnostic) = session(source_map, attr_start, edition);
-                    let jobs = Arc::new(Lock::new(Vec::new()));
+                    let jobs = Arc::new(Lock::new(Vec::with_capacity(cut_hint)));
                     let mut parser = initial.parser(&psess);
                     parser.body_jobs = Some(Arc::clone(&jobs));
                     let (attrs, items, spans) = match parser.parse_mod(exp!(Eof)) {
@@ -145,6 +151,7 @@ impl<'a> Parser<'a> {
                         jobs,
                         edition,
                     });
+                    crate::rustc_parse::record_parallel_body_jobs(input.jobs.len());
                     let output = sync::run_owned_stage(
                         Arc::clone(&input),
                         input.jobs.len(),
@@ -180,11 +187,16 @@ impl<'a> Parser<'a> {
                 })
             })
         })
-        .flatten()?;
+        .flatten();
+        let Some(candidate) = candidate else {
+            crate::rustc_parse::record_parallel_retry();
+            return None;
+        };
         // All workers and speculative diagnostics have settled before anything is published.
         if self.psess.attr_id_generator.position() != attr_start
             || !original.commit_parse_spans(&fork, baseline)
         {
+            crate::rustc_parse::record_parallel_retry();
             return None;
         }
         assert!(self.psess.attr_id_generator.commit(attr_start, candidate.attr_end));
@@ -192,6 +204,7 @@ impl<'a> Parser<'a> {
             self.psess.append_parse_effects(effects);
         }
         candidate.state.install(self);
+        crate::rustc_parse::record_parallel_commit();
         Some(candidate.krate)
     }
     pub(super) fn defer_function_body(
@@ -202,31 +215,25 @@ impl<'a> Parser<'a> {
         if self.token != token::OpenBrace || self.capture_cfg {
             return Ok(None);
         }
-        let (group_idx, tree, open, close, inside_bumps, attributes) =
-            if let Some(info) = self.token_cursor.enclosing_group_info() {
-                if info.delim != Delimiter::Brace {
-                    return Ok(None);
-                }
-                (
-                    Some(info.group_idx),
-                    None,
-                    info.open,
-                    info.close,
-                    info.inside_bumps,
-                    info.attr_count,
-                )
-            } else {
-                if self.token_cursor.can_parallel_parse() {
-                    sync::retry_parse_serial();
-                }
-                let tree = self.token_cursor.clone_enclosing_delim();
-                let TokenTree::Delimited(spans, _, Delimiter::Brace, stream) = &tree else {
-                    return Ok(None);
-                };
-                let (inside_bumps, attributes) = count(stream, true);
-                let (open, close) = (spans.open, spans.close);
-                (None, Some(tree), open, close, inside_bumps, attributes)
+        let (group_idx, tree, open, close, inside_bumps, attributes) = if let Some(info) =
+            self.token_cursor.enclosing_group_info()
+        {
+            if info.delim != Delimiter::Brace {
+                return Ok(None);
+            }
+            (Some(info.group_idx), None, info.open, info.close, info.inside_bumps, info.attr_count)
+        } else {
+            if self.token_cursor.can_parallel_parse() {
+                sync::retry_parse_serial();
+            }
+            let tree = self.token_cursor.clone_enclosing_delim();
+            let TokenTree::Delimited(spans, _, Delimiter::Brace, stream) = &tree else {
+                return Ok(None);
             };
+            let (inside_bumps, attributes) = count(stream, true);
+            let (open, close) = (spans.open, spans.close);
+            (None, Some(tree), open, close, inside_bumps, attributes)
+        };
         let source_span = |span: Span| {
             !span.is_dummy()
                 && span.ctxt().is_root()
@@ -362,13 +369,13 @@ struct Splice {
 
 impl MutVisitor for Splice {
     fn visit_fn(&mut self, mut kind: FnKind<'_>, _: &ast::AttrVec, _: Span, _: ast::NodeId) {
-        if let FnKind::Fn(_, _, function) = &mut kind {
-            if let Some(block) = self.blocks.remove(&function.ident.span) {
-                if function.body.is_some() {
-                    self.inconsistent = true;
-                } else {
-                    function.body = Some(block);
-                }
+        if let FnKind::Fn(_, _, function) = &mut kind
+            && let Some(block) = self.blocks.remove(&function.ident.span)
+        {
+            if function.body.is_some() {
+                self.inconsistent = true;
+            } else {
+                function.body = Some(block);
             }
         }
         mut_visit::walk_fn(self, kind);

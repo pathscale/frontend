@@ -2,8 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -17,7 +15,6 @@ use thin_vec::{ThinVec, thin_vec};
 
 use crate::rustc_builtin_macros::deriving::generic::ty::*;
 use crate::rustc_builtin_macros::deriving::generic::*;
-use crate::rustc_builtin_macros::deriving::path_std;
 
 pub(crate) fn expand_deriving_debug(
     cx: &ExtCtxt<'_>,

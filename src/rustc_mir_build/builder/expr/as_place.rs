@@ -1,13 +1,15 @@
 //! See docs in build/expr/mod.rs
 
+use crate::assert_matches;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::iter;
-use crate::assert_matches;
 
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::rustc_middle::hir::place::{Projection as HirProjection, ProjectionKind as HirProjectionKind};
+use crate::rustc_middle::hir::place::{
+    Projection as HirProjection, ProjectionKind as HirProjectionKind,
+};
 use crate::rustc_middle::mir::AssertKind::BoundsCheck;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::thir::*;
@@ -257,7 +259,10 @@ fn strip_prefix<'tcx>(
 }
 
 impl<'tcx> PlaceBuilder<'tcx> {
-    pub(in crate::rustc_mir_build::builder) fn to_place(&self, cx: &Builder<'_, 'tcx>) -> Place<'tcx> {
+    pub(in crate::rustc_mir_build::builder) fn to_place(
+        &self,
+        cx: &Builder<'_, 'tcx>,
+    ) -> Place<'tcx> {
         self.try_to_place(cx).unwrap_or_else(|| match self.base {
             PlaceBase::Local(local) => span_bug!(
                 cx.local_decls[local].source_info.span,
@@ -273,7 +278,10 @@ impl<'tcx> PlaceBuilder<'tcx> {
     }
 
     /// Creates a `Place` or returns `None` if an upvar cannot be resolved
-    pub(in crate::rustc_mir_build::builder) fn try_to_place(&self, cx: &Builder<'_, 'tcx>) -> Option<Place<'tcx>> {
+    pub(in crate::rustc_mir_build::builder) fn try_to_place(
+        &self,
+        cx: &Builder<'_, 'tcx>,
+    ) -> Option<Place<'tcx>> {
         let resolved = self.resolve_upvar(cx);
         let builder = resolved.as_ref().unwrap_or(self);
         let PlaceBase::Local(local) = builder.base else { return None };
@@ -440,11 +448,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let lhs_expr = &this.thir[lhs];
                 let mut place_builder =
                     unpack!(block = this.expr_as_place(block, lhs, mutability, fake_borrow_temps,));
-                if let ty::Adt(adt_def, _) = lhs_expr.ty.kind() {
-                    if adt_def.is_enum() {
+                if let ty::Adt(adt_def, _) = lhs_expr.ty.kind()
+                    && adt_def.is_enum() {
                         place_builder = place_builder.downcast(*adt_def, variant_index);
                     }
-                }
                 block.and(place_builder.field(name, expr.ty))
             }
             ExprKind::Deref { arg } => {
@@ -621,6 +628,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// * We need to ensure that the bounds check can't be invalidated using an
     ///   expression like `x[1][{x = y; 2}]`. We use fake borrows here to ensure
     ///   that this is the case.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn lower_index_expression(
         &mut self,
         mut block: BasicBlock,

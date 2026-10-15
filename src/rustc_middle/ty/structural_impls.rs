@@ -6,11 +6,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::{self, Debug};
@@ -313,12 +308,12 @@ impl<'tcx> TypeFoldable<TyCtxt<'tcx>> for Pattern<'tcx> {
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        let pat = (*self).clone().try_fold_with(folder)?;
+        let pat = (*self).try_fold_with(folder)?;
         Ok(if pat == *self { self } else { folder.cx().mk_pat(pat) })
     }
 
     fn fold_with<F: TypeFolder<TyCtxt<'tcx>>>(self, folder: &mut F) -> Self {
-        let pat = (*self).clone().fold_with(folder);
+        let pat = (*self).fold_with(folder);
         if pat == *self { self } else { folder.cx().mk_pat(pat) }
     }
 }
@@ -670,7 +665,7 @@ impl<'tcx> TypeSuperVisitable<TyCtxt<'tcx>> for ty::Const<'tcx> {
 
 impl<'tcx> TypeVisitable<TyCtxt<'tcx>> for ty::ValTree<'tcx> {
     fn visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(&self, visitor: &mut V) -> V::Result {
-        let inner: &ty::ValTreeKind<TyCtxt<'tcx>> = &*self;
+        let inner: &ty::ValTreeKind<TyCtxt<'tcx>> = self;
         inner.visit_with(visitor)
     }
 }
@@ -680,8 +675,8 @@ impl<'tcx> TypeFoldable<TyCtxt<'tcx>> for ty::ValTree<'tcx> {
         self,
         folder: &mut F,
     ) -> Result<Self, F::Error> {
-        let inner: &ty::ValTreeKind<TyCtxt<'tcx>> = &*self;
-        let new_inner = inner.clone().try_fold_with(folder)?;
+        let inner: &ty::ValTreeKind<TyCtxt<'tcx>> = &self;
+        let new_inner = (*inner).try_fold_with(folder)?;
 
         if inner == &new_inner {
             Ok(self)
@@ -692,8 +687,8 @@ impl<'tcx> TypeFoldable<TyCtxt<'tcx>> for ty::ValTree<'tcx> {
     }
 
     fn fold_with<F: TypeFolder<TyCtxt<'tcx>>>(self, folder: &mut F) -> Self {
-        let inner: &ty::ValTreeKind<TyCtxt<'tcx>> = &*self;
-        let new_inner = inner.clone().fold_with(folder);
+        let inner: &ty::ValTreeKind<TyCtxt<'tcx>> = &self;
+        let new_inner = (*inner).fold_with(folder);
 
         if inner == &new_inner { self } else { folder.cx().intern_valtree(new_inner) }
     }

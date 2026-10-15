@@ -1,5 +1,5 @@
-use rustc_macros::Diagnostic;
 use crate::rustc_span::Span;
+use rustc_macros::Diagnostic;
 
 #[derive(Diagnostic)]
 #[diag("opaque type's hidden type cannot be another opaque type from the same scope")]

@@ -10,7 +10,9 @@ pub(super) fn type_decodable_derive(
         s.add_impl_generic(parse_quote! { 'tcx });
     }
     let decoder_ty = quote! { __D };
-    s.add_impl_generic(parse_quote! { #decoder_ty: ::frontend::rustc_middle::ty::codec::TyDecoder<'tcx> });
+    s.add_impl_generic(
+        parse_quote! { #decoder_ty: ::frontend::rustc_middle::ty::codec::TyDecoder<'tcx> },
+    );
     s.add_bounds(synstructure::AddBounds::Fields);
 
     decodable_body(s, decoder_ty)
@@ -133,7 +135,9 @@ pub(super) fn type_encodable_derive(
     if !s.ast().generics.lifetimes().any(|lt| lt.lifetime.ident == "tcx") {
         s.add_impl_generic(parse_quote! { 'tcx });
     }
-    s.add_impl_generic(parse_quote! { #encoder_ty: ::frontend::rustc_middle::ty::codec::TyEncoder<'tcx> });
+    s.add_impl_generic(
+        parse_quote! { #encoder_ty: ::frontend::rustc_middle::ty::codec::TyEncoder<'tcx> },
+    );
     s.add_bounds(synstructure::AddBounds::Fields);
 
     encodable_body(s, encoder_ty, false)

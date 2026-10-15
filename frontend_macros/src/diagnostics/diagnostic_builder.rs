@@ -1,4 +1,3 @@
-
 #![deny(unused_must_use)]
 use core::convert::Infallible;
 use std::collections::HashSet;
@@ -17,8 +16,8 @@ use crate::diagnostics::error::{
 use crate::diagnostics::message::Message;
 use crate::diagnostics::utils::{
     FieldInfo, FieldInnerTy, FieldMap, SetOnce, SpannedOption, SubdiagnosticKind,
-    build_field_mapping, is_doc_comment, report_error_if_not_applied_to_span, report_type_error,
-    should_generate_arg, type_is_bool, type_is_unit, type_matches_path,
+    build_field_mapping, is_doc_comment, is_lint_attr, report_error_if_not_applied_to_span,
+    report_type_error, should_generate_arg, type_is_bool, type_is_unit, type_matches_path,
 };
 
 pub(crate) fn each_variant<'s, F>(structure: &mut Structure<'s>, f: F) -> TokenStream
@@ -36,6 +35,9 @@ where
 
     if matches!(ast.data, syn::Data::Enum(..)) {
         for attr in &ast.attrs {
+            if is_doc_comment(attr) || is_lint_attr(attr) {
+                continue;
+            }
             span_err(attr.span().unwrap(), "unsupported type attribute for diagnostic derive enum")
                 .emit();
         }
@@ -113,7 +115,7 @@ impl DiagnosticDeriveVariantBuilder {
         let ast = variant.ast();
         let attrs = &ast.attrs;
         let preamble = attrs.iter().map(|attr| {
-            self.generate_structure_code_for_attr(attr).unwrap_or_else(|v| v.to_compile_error())
+            self.generate_structure_code_for_attr(attr).unwrap_or_else(|v| v.into_compile_error())
         });
 
         quote! {
@@ -178,7 +180,7 @@ impl DiagnosticDeriveVariantBuilder {
         attr: &Attribute,
     ) -> Result<TokenStream, DiagnosticDeriveError> {
         // Always allow documentation comments.
-        if is_doc_comment(attr) {
+        if is_doc_comment(attr) || is_lint_attr(attr) {
             return Ok(quote! {});
         }
 
@@ -298,14 +300,14 @@ impl DiagnosticDeriveVariantBuilder {
             .iter()
             .map(move |attr| {
                 // Always allow documentation comments.
-                if is_doc_comment(attr) {
+                if is_doc_comment(attr) || is_lint_attr(attr) {
                     return quote! {};
                 }
 
                 let name = attr.path().segments.last().unwrap().ident.to_string();
 
                 if name == "primary_span" && seen_label {
-                    span_err(attr.span().unwrap(), format!("`#[primary_span]` must be placed before labels, since it overwrites the span of the diagnostic")).emit();
+                    span_err(attr.span().unwrap(), "`#[primary_span]` must be placed before labels, since it overwrites the span of the diagnostic").emit();
                 }
                 if name == "label" {
                     seen_label = true;
@@ -326,7 +328,7 @@ impl DiagnosticDeriveVariantBuilder {
                         FieldInfo { binding: binding_info, ty: inner_ty, span: &field.span() },
                         binding,
                     )
-                    .unwrap_or_else(|v| v.to_compile_error());
+                    .unwrap_or_else(|v| v.into_compile_error());
 
                 if needs_destructure {
                     inner_ty.with(field_binding, generated_code)
@@ -412,9 +414,9 @@ impl DiagnosticDeriveVariantBuilder {
                 }
 
                 let message = message.diag_message();
-                let applicability = applicability
-                    .value()
-                    .unwrap_or_else(|| quote! { frontend::rustc_errors::Applicability::Unspecified });
+                let applicability = applicability.value().unwrap_or_else(
+                    || quote! { frontend::rustc_errors::Applicability::Unspecified },
+                );
                 let style = suggestion_kind.to_suggestion_style();
 
                 self.formatting_init.extend(code_init);
@@ -496,9 +498,7 @@ impl DiagnosticDeriveVariantBuilder {
                     }
                 }
 
-                let Some((span_idx, _)) = span_idx else {
-                    match type_err(&tup.span())? {}
-                };
+                let Some((span_idx, _)) = span_idx else { match type_err(&tup.span())? {} };
                 let Some((applicability_idx, applicability_span)) = applicability_idx else {
                     match type_err(&tup.span())? {}
                 };

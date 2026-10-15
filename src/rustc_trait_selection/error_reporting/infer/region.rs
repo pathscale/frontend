@@ -2,7 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -10,6 +9,7 @@ use alloc::vec::Vec;
 
 use core::iter;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_errors::{
     Applicability, Diag, E0309, E0310, E0311, E0803, Subdiagnostic, msg, struct_span_code_err,
@@ -18,7 +18,6 @@ use crate::rustc_hir::def::{DefKind, Namespace};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::{self as hir, ParamName};
-use crate::bug;
 use crate::rustc_middle::traits::ObligationCauseCode;
 use crate::rustc_middle::ty::error::TypeError;
 use crate::rustc_middle::ty::print::RegionHighlightMode;
@@ -214,7 +213,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             | RegionResolutionError::CannotNormalize(..) => false,
         };
 
-        let mut errors = if errors.iter().all(|e| is_bound_failure(e)) {
+        let mut errors = if errors.iter().all(&is_bound_failure) {
             errors.to_owned()
         } else {
             errors.iter().filter(|&e| !is_bound_failure(e)).cloned().collect()
@@ -689,20 +688,13 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             }
             SubregionOrigin::Subtype(trace) => {
                 let terr = TypeError::RegionsPlaceholderMismatch;
-                return self.report_and_explain_type_error(
+                self.report_and_explain_type_error(
                     *trace,
                     self.tcx.param_env(generic_param_scope),
                     terr,
-                );
+                )
             }
-            _ => {
-                return self.report_concrete_failure(
-                    generic_param_scope,
-                    placeholder_origin,
-                    sub,
-                    sup,
-                );
-            }
+            _ => self.report_concrete_failure(generic_param_scope, placeholder_origin, sub, sup),
         }
     }
 
@@ -927,7 +919,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             // the `'static` lifetime requirement.
             err.span_label(
                 ty.span,
-                format!("this `dyn Trait` has an implicit `'static` lifetime bound"),
+                "this `dyn Trait` has an implicit `'static` lifetime bound".to_string(),
             );
         }
 
@@ -1322,7 +1314,7 @@ pub fn unexpected_hidden_region_diagnostic<'a, 'tcx>(
                 hidden_region,
                 "",
             );
-            if let Some(_) = tcx.is_suitable_region(generic_param_scope, hidden_region) {
+            if tcx.is_suitable_region(generic_param_scope, hidden_region).is_some() {
                 suggest_precise_capturing(tcx, opaque_ty_key.def_id, hidden_region, &mut err);
             }
         }

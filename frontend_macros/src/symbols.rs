@@ -276,11 +276,7 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
         let env_value = std::env::var(env_var.value()).or_else(|err| {
             // Keep the release symbol in the environment-symbol tail even when the
             // embedding build does not nominate a compiler release.
-            if env_var.value() == "CFG_RELEASE" {
-                Ok("0.0.0".to_owned())
-            } else {
-                Err(err)
-            }
+            if env_var.value() == "CFG_RELEASE" { Ok("0.0.0".to_owned()) } else { Err(err) }
         });
 
         let value = match env_value {

@@ -289,7 +289,11 @@ impl<I: Idx> IntervalSet<I> {
             return None;
         };
         let (_, prev_end) = &self.map[last];
-        if start <= *prev_end { Some(I::new(core::cmp::min(*prev_end, end) as usize)) } else { None }
+        if start <= *prev_end {
+            Some(I::new(core::cmp::min(*prev_end, end) as usize))
+        } else {
+            None
+        }
     }
 
     pub fn insert_all(&mut self) {

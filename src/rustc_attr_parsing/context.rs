@@ -1,16 +1,16 @@
 //! Context given to attribute parsers when parsing.
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
-use core::cell::RefCell;
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_map::Entry;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::mem;
 use core::ops::{Deref, DerefMut};
-use eko::thread::LazyLock;
 #[cfg(debug_assertions)]
 use core::sync::atomic::{AtomicBool, Ordering};
+use eko::thread::LazyLock;
 
 use crate::rustc_ast::{AttrStyle, MetaItemLit, Safety};
 use crate::rustc_attr_ir::target::Target;
@@ -70,7 +70,9 @@ use crate::rustc_attr_parsing::attributes::test_attrs::*;
 use crate::rustc_attr_parsing::attributes::traits::*;
 use crate::rustc_attr_parsing::attributes::transparency::*;
 use crate::rustc_attr_parsing::attributes::unroll::*;
-use crate::rustc_attr_parsing::attributes::{AttributeParser as _, AttributeSafety, Combine, Single, WithoutArgs};
+use crate::rustc_attr_parsing::attributes::{
+    AttributeParser as _, AttributeSafety, Combine, Single, WithoutArgs,
+};
 use crate::rustc_attr_parsing::diagnostics::{
     AttributeParseError, AttributeParseErrorReason, AttributeParseErrorSuggestions,
     ParsedDescription, UnusedDuplicate,
@@ -432,10 +434,7 @@ impl<'f, 'sess: 'f> SharedContext<'f, 'sess> {
     }
 
     pub(crate) fn emit_lint_with_sess<
-        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()> + Send + Sync + 'static,
     >(
         &mut self,
         lint: &'static Lint,
@@ -612,7 +611,7 @@ impl<'f, 'sess: 'f> AcceptContext<'f, 'sess> {
     ///
     /// - You want to emit your own diagnostics (for instance, with [`SharedContext::emit_err`]).
     /// - The attribute can be parsed in multiple ways and it does not make sense to emit an error.
-    pub(crate) fn expect_no_args<'arg>(&mut self, arg: &'arg ArgParser) -> Option<()> {
+    pub(crate) fn expect_no_args(&mut self, arg: &ArgParser) -> Option<()> {
         if let Err(span) = arg.as_no_args() {
             self.adcx().expected_no_args(span);
             return None;
@@ -634,7 +633,7 @@ impl<'f, 'sess: 'f> AcceptContext<'f, 'sess> {
     ///
     /// - You want to emit your own diagnostics (for instance, with [`SharedContext::emit_err`]).
     /// - The attribute can be parsed in multiple ways and it does not make sense to emit an error.
-    pub(crate) fn expect_string_literal<'arg, Arg>(&mut self, arg: &'arg Arg) -> Option<Symbol>
+    pub(crate) fn expect_string_literal<Arg>(&mut self, arg: &Arg) -> Option<Symbol>
     where
         Arg: ExpectStringLiteral,
     {
@@ -1123,7 +1122,11 @@ impl<'a, 'f, 'sess: 'f> AttributeDiagnosticContext<'a, 'f, 'sess> {
         let span = self.inner_span;
         self.emit_lint(
             lint,
-            crate::rustc_attr_parsing::diagnostics::IllFormedAttributeInput::new(&suggestions, None, help.as_deref()),
+            crate::rustc_attr_parsing::diagnostics::IllFormedAttributeInput::new(
+                &suggestions,
+                None,
+                help.as_deref(),
+            ),
             span,
         );
     }

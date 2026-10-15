@@ -1,7 +1,6 @@
 //! Dealing with host effect goals, i.e. enforcing the constness in
 //! `T: const Trait` or `T: [const] Trait`.
 
-use alloc::vec::Vec;
 use crate::rustc_type_ir::fast_reject::DeepRejectCtxt;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::lang_items::SolverTraitLangItem;
@@ -11,6 +10,7 @@ use crate::rustc_type_ir::solve::{
     SizedTraitKind,
 };
 use crate::rustc_type_ir::{self as ty, Interner, Unnormalized, elaborate};
+use alloc::vec::Vec;
 use tracing::instrument;
 
 use super::assembly::{Candidate, structural_traits};
@@ -351,7 +351,6 @@ where
             pred,
             requirements,
         )
-        .map_err(Into::into)
     }
 
     fn consider_builtin_async_fn_trait_candidates(
@@ -498,7 +497,7 @@ where
         let (_, proven_via) = self.probe(|_| ProbeKind::ShadowedEnvProbing).enter(|ecx| {
             let trait_goal: Goal<I, ty::TraitClause<I>> =
                 goal.with(ecx.cx(), goal.predicate.trait_ref);
-            ecx.compute_trait_goal(trait_goal).map_err(Into::into)
+            ecx.compute_trait_goal(trait_goal)
         })?;
         self.assemble_and_merge_candidates(
             proven_via,

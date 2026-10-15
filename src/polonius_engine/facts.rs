@@ -83,8 +83,8 @@ pub struct AllFacts<T: FactTypes> {
     /// For example: `fn foo<'a, 'b: 'a, 'c>(x: &'c &'a u32)` would have two entries:
     /// - one for the user-supplied subset `'b: 'a`
     /// - and one for the `'a: 'c` implied bound from the `x` parameter,
-    /// (note that the transitive relation `'b: 'c` is not necessarily included
-    /// explicitly, but rather inferred by polonius).
+    ///   (note that the transitive relation `'b: 'c` is not necessarily included
+    ///   explicitly, but rather inferred by polonius).
     pub known_placeholder_subset: Vec<(T::Origin, T::Origin)>,
 
     /// `placeholder(origin, loan)` describes a placeholder `origin`, with its associated

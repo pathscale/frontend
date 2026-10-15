@@ -1,5 +1,4 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::rustc_ast::token::{self, MetaVarKind, Token, TokenKind};
@@ -319,10 +318,8 @@ impl<'a> Parser<'a> {
     #[must_use]
     pub(super) fn eat_path_sep(&mut self) -> bool {
         let result = self.eat(exp!(PathSep));
-        if result && self.may_recover() {
-            if self.eat_noexpect(&token::Colon) {
-                self.dcx().emit_err(PathTripleColon { span: self.prev_token.span });
-            }
+        if result && self.may_recover() && self.eat_noexpect(&token::Colon) {
+            self.dcx().emit_err(PathTripleColon { span: self.prev_token.span });
         }
         result
     }
@@ -437,31 +434,34 @@ impl<'a> Parser<'a> {
                     }
 
                     let dcx = self.dcx();
-                    let parse_params_result = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<_>>(
-                        exp!(OpenParen),
-                        exp!(CloseParen),
-                        |p| {
-                            // Inside parenthesized type arguments, we want types only, not names.
-                            let mode = FnParseMode {
-                                context: FnContext::Free,
-                                req_name: |_, _| false,
-                                req_body: false,
-                            };
-                            let param = p.parse_param_general(&mode, false, false)?;
-                            if !matches!(param.pat.kind, PatKind::Missing) {
-                                p.psess
-                                    .gated_spans
-                                    .gate(sym::named_fn_trait_parameters, param.pat.span);
-                            }
-                            if matches!(param.ty.kind, TyKind::CVarArgs) {
-                                dcx.emit_err(PathFoundCVariadicParams { span: param.pat.span });
-                            }
-                            if !param.attrs.is_empty() {
-                                dcx.emit_err(PathFoundAttributeInParams { span: param.attrs[0].span });
-                            }
-                            Ok(param)
-                        },
-                    );
+                    let parse_params_result = self
+                        .parse_delim_comma_seq_with::<_, ast::ArenaVec<_>>(
+                            exp!(OpenParen),
+                            exp!(CloseParen),
+                            |p| {
+                                // Inside parenthesized type arguments, we want types only, not names.
+                                let mode = FnParseMode {
+                                    context: FnContext::Free,
+                                    req_name: |_, _| false,
+                                    req_body: false,
+                                };
+                                let param = p.parse_param_general(&mode, false, false)?;
+                                if !matches!(param.pat.kind, PatKind::Missing) {
+                                    p.psess
+                                        .gated_spans
+                                        .gate(sym::named_fn_trait_parameters, param.pat.span);
+                                }
+                                if matches!(param.ty.kind, TyKind::CVarArgs) {
+                                    dcx.emit_err(PathFoundCVariadicParams { span: param.pat.span });
+                                }
+                                if !param.attrs.is_empty() {
+                                    dcx.emit_err(PathFoundAttributeInParams {
+                                        span: param.attrs[0].span,
+                                    });
+                                }
+                                Ok(param)
+                            },
+                        );
 
                     let (inputs, _) = match parse_params_result {
                         Ok(output) => output,
@@ -654,8 +654,8 @@ impl<'a> Parser<'a> {
 
         let is_first_invocation = style == PathStyle::Expr;
         // Recovery state is only observed by a failed diagnostic attempt.
-        let snapshot = (is_first_invocation && !self.expected_token_types.is_deferred())
-            .then(|| self.clone());
+        let snapshot =
+            (is_first_invocation && !self.expected_token_types.is_deferred()).then(|| self.clone());
 
         self.angle_bracket_nesting += 1;
         debug!("parse_generic_args_with_leading_angle_bracket_recovery: (snapshotting)");
@@ -930,8 +930,8 @@ impl<'a> Parser<'a> {
     /// enclosed in braces:
     /// - Literals.
     /// - Single-segment paths (i.e. standalone generic const parameters).
-    /// All other expressions that can be parsed will emit an error suggesting the expression be
-    /// wrapped in braces.
+    ///   All other expressions that can be parsed will emit an error suggesting the expression be
+    ///   wrapped in braces.
     pub(super) fn parse_unambiguous_unbraced_const_arg(&mut self) -> PResult<'a, P<Expr>> {
         let start = self.token.span;
         let expr = self.parse_expr_res(Restrictions::CONST_EXPR).map_err(|mut err| {

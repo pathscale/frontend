@@ -3,12 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use super::*;
 
@@ -37,8 +32,8 @@ impl<'tcx> MutVisitor<'tcx> for FixReturnPendingVisitor<'tcx> {
             && let AggregateKind::Adt(_, _, ref mut args, _, _) = **kind
         {
             *args = self.tcx.mk_args(&[self.tcx.types.unit.into()]);
-        } else if let Rvalue::Use(Operand::Constant(constant), _) = rvalue {
-            if let Some(async_gen_pending_def_id) = self.tcx.lang_items().async_gen_pending()
+        } else if let Rvalue::Use(Operand::Constant(constant), _) = rvalue
+            && let Some(async_gen_pending_def_id) = self.tcx.lang_items().async_gen_pending()
                 && let Const::Unevaluated(unevaluated, _) = constant.const_
                 && unevaluated.def == async_gen_pending_def_id
             {
@@ -54,7 +49,6 @@ impl<'tcx> MutVisitor<'tcx> for FixReturnPendingVisitor<'tcx> {
                     IndexVec::new(),
                 );
             }
-        }
     }
 }
 

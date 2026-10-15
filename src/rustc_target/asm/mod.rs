@@ -1,20 +1,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 use core::fmt;
 
 use crate::rustc_abi::Size;
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexSet};
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::Symbol;
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 use crate::rustc_target::spec::{Arch, RelocModel, Target};
 
@@ -681,7 +675,10 @@ impl InlineAsmRegClass {
         }
     }
 
-    pub fn parse(arch: InlineAsmArch, name: Symbol) -> Result<Self, &'static [crate::rustc_span::Symbol]> {
+    pub fn parse(
+        arch: InlineAsmArch,
+        name: Symbol,
+    ) -> Result<Self, &'static [crate::rustc_span::Symbol]> {
         Ok(match arch {
             InlineAsmArch::X86 | InlineAsmArch::X86_64 => {
                 Self::X86(X86InlineAsmRegClass::parse(name)?)
@@ -824,7 +821,7 @@ impl InlineAsmType {
             Self::F32 => 4,
             Self::F64 => 8,
             Self::F128 => 16,
-            Self::VecI8(n) => n * 1,
+            Self::VecI8(n) => n,
             Self::VecI16(n) => n * 2,
             Self::VecI32(n) => n * 4,
             Self::VecI64(n) => n * 8,

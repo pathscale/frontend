@@ -2,7 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -414,8 +413,9 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         };
         if matches!(
             error.code,
-            FulfillmentErrorCode::Select(crate::rustc_trait_selection::traits::SelectionError::Unimplemented)
-                | FulfillmentErrorCode::Project(_)
+            FulfillmentErrorCode::Select(
+                crate::rustc_trait_selection::traits::SelectionError::Unimplemented
+            ) | FulfillmentErrorCode::Project(_)
         ) && self.apply_do_not_recommend(&mut error.obligation, &error.root_obligation)
         {
             error.code = FulfillmentErrorCode::Select(SelectionError::Unimplemented);
@@ -679,11 +679,11 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             "impl has stricter requirements than trait"
         );
 
-        if !self.tcx.is_impl_trait_in_trait(trait_item_def_id) {
-            if let Some(span) = self.tcx.hir_span_if_local(trait_item_def_id) {
-                let item_name = self.tcx.item_name(impl_item_def_id.to_def_id());
-                err.span_label(span, format!("definition of `{item_name}` from trait"));
-            }
+        if !self.tcx.is_impl_trait_in_trait(trait_item_def_id)
+            && let Some(span) = self.tcx.hir_span_if_local(trait_item_def_id)
+        {
+            let item_name = self.tcx.item_name(impl_item_def_id.to_def_id());
+            err.span_label(span, format!("definition of `{item_name}` from trait"));
         }
 
         err.span_label(error_span, format!("impl has extra requirement {requirement}"));
@@ -776,7 +776,7 @@ pub fn report_dyn_incompatibility<'tcx>(
         }
     }
 
-    attempt_dyn_to_enum_suggestion(tcx, trait_def_id, &*trait_str, &mut err);
+    attempt_dyn_to_enum_suggestion(tcx, trait_def_id, &trait_str, &mut err);
 
     err
 }
@@ -802,7 +802,7 @@ fn attempt_dyn_to_enum_suggestion(
         .map(|impl_id| {
             // Don't suggest conversion to enum if the impl types have type parameters.
             // It's unlikely the user wants to define a generic enum.
-            let Some(impl_type) = tcx.type_of(*impl_id).no_bound_vars() else { return None };
+            let impl_type = tcx.type_of(*impl_id).no_bound_vars()?;
 
             // Obviously unsized impl types won't be usable in an enum.
             // Note: this doesn't use `Ty::has_trivial_sizedness` because that function

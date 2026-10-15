@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::cmp::Ordering;
 use core::fmt;
@@ -18,6 +12,10 @@ use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, Stab
 /// A packed 128-bit integer. Useful for reducing the size of structures in
 /// some cases.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[expect(
+    clippy::repr_packed_without_abi,
+    reason = "the wrapper's packed representation fixes its integer layout"
+)]
 #[repr(packed(8))]
 pub struct Pu128(pub u128);
 

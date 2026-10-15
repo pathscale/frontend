@@ -79,7 +79,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             UintTy::U16 => u16::MAX as u128,
             UintTy::U32 => u32::MAX as u128,
             UintTy::U64 => u64::MAX as u128,
-            UintTy::U128 => u128::MAX as u128,
+            UintTy::U128 => u128::MAX,
         }
     }
 

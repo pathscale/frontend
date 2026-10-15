@@ -8,9 +8,11 @@ use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::undo_log::UndoLogs;
 use crate::rustc_data_structures::unify as ut;
 use crate::rustc_index::IndexVec;
-use rustc_macros::{TypeFoldable, TypeVisitable};
-use crate::rustc_middle::ty::{self, ReBound, ReStatic, ReVar, Region, RegionExt, RegionVid, Ty, TyCtxt};
+use crate::rustc_middle::ty::{
+    self, ReBound, ReStatic, ReVar, Region, RegionExt, RegionVid, Ty, TyCtxt,
+};
 use crate::rustc_middle::{bug, span_bug};
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument};
 
 use self::CombineMapType::*;
@@ -311,6 +313,10 @@ pub(crate) struct TwoRegions<'tcx> {
 }
 
 #[derive(Copy, Clone, PartialEq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "these undo records are grouped by the operation that created each entry"
+)]
 pub(crate) enum UndoLog<'tcx> {
     /// We added `RegionVid`.
     AddVar(RegionVid),
@@ -642,10 +648,8 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
     ) -> Region<'tcx> {
         // cannot add constraints once regions are resolved
         debug!("RegionConstraintCollector: lub_regions({:?}, {:?})", a, b);
-        if a.is_static() || b.is_static() {
-            a // nothing lives longer than static
-        } else if a == b {
-            a // LUB(a,a) = a
+        if a.is_static() || b.is_static() || a == b {
+            a // static is already the longest region, and LUB(a,a) = a
         } else {
             self.combine_vars(tcx, Lub, a, b, origin)
         }
@@ -662,10 +666,8 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
         debug!("RegionConstraintCollector: glb_regions({:?}, {:?})", a, b);
         if a.is_static() {
             b // static lives longer than everything else
-        } else if b.is_static() {
-            a // static lives longer than everything else
-        } else if a == b {
-            a // GLB(a,a) = a
+        } else if b.is_static() || a == b {
+            a // static lives longer than everything else, and GLB(a,a) = a
         } else {
             self.combine_vars(tcx, Glb, a, b, origin)
         }

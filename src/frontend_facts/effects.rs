@@ -244,20 +244,6 @@ fn select_innermost_containing_body(
         selected.ok_or(EnclosingBodySpanError::NoContainingFunctionBody)
     }
 }
-#[cfg(test)]
-mod enclosing_body_span_tests {
-    use super::*;
-
-    #[test]
-    fn rejects_tied_innermost_bodies() {
-        let candidate = TextRange { start: 4, end: 7 };
-        let body = TextRange { start: 0, end: 10 };
-        assert_eq!(
-            select_innermost_containing_body(candidate, &[body, body]),
-            Err(EnclosingBodySpanError::AmbiguousInnermostBody)
-        );
-    }
-}
 
 /// Parse a source file and combine its syntax with supplied resolution and type facts.
 pub fn analyze_source_with_evidence(
@@ -366,33 +352,33 @@ impl<'a> Visitor<'a> for FunctionCollector<'a> {
     type Result = ();
 
     fn visit_item(&mut self, item: &'a Item) {
-        if let ItemKind::Fn(function) = &item.kind {
-            if let Some(body) = &function.body {
-                self.functions.push(function_effects(
-                    item.kind.ident().map_or_else(String::new, |ident| ident.name.as_str().to_string()),
-                    item.span,
-                    &item.attrs,
-                    body,
-                    self.file,
-                    self.evidence,
-                ));
-            }
+        if let ItemKind::Fn(function) = &item.kind
+            && let Some(body) = &function.body
+        {
+            self.functions.push(function_effects(
+                item.kind.ident().map_or_else(String::new, |ident| ident.name.as_str().to_string()),
+                item.span,
+                &item.attrs,
+                body,
+                self.file,
+                self.evidence,
+            ));
         }
         visit::walk_item(self, item);
     }
 
     fn visit_assoc_item(&mut self, item: &'a AssocItem, ctxt: AssocCtxt) {
-        if let AssocItemKind::Fn(function) = &item.kind {
-            if let Some(body) = &function.body {
-                self.functions.push(function_effects(
-                    item.kind.ident().map_or_else(String::new, |ident| ident.name.as_str().to_string()),
-                    item.span,
-                    &item.attrs,
-                    body,
-                    self.file,
-                    self.evidence,
-                ));
-            }
+        if let AssocItemKind::Fn(function) = &item.kind
+            && let Some(body) = &function.body
+        {
+            self.functions.push(function_effects(
+                item.kind.ident().map_or_else(String::new, |ident| ident.name.as_str().to_string()),
+                item.span,
+                &item.attrs,
+                body,
+                self.file,
+                self.evidence,
+            ));
         }
         visit::walk_assoc_item(self, item, ctxt);
     }
@@ -451,9 +437,9 @@ impl<'a> BodyCollector<'a> {
             Some(resolved) if panic_macro(&resolved.def_path).is_some() => {
                 PanicKind::ExplicitMacro { def_path: resolved.def_path.clone() }
             }
-            Some(_) => PanicKind::Unknown {
-                why: "macro expansion effects are unavailable".to_string(),
-            },
+            Some(_) => {
+                PanicKind::Unknown { why: "macro expansion effects are unavailable".to_string() }
+            }
             None => PanicKind::Unknown { why: "macro resolution is unavailable".to_string() },
         };
         self.panic_sites.push(PanicSite { kind, span });
@@ -498,18 +484,21 @@ impl<'a> BodyCollector<'a> {
         let right_type = self.expression_type(right);
         let operands_integer = match (left_type, right_type) {
             (Some(left), Some(right)) => known(left.is_integer && right.is_integer),
-            _ => StaticFact::Unknown { why: "the arithmetic operand types are unresolved".to_string() },
+            _ => StaticFact::Unknown {
+                why: "the arithmetic operand types are unresolved".to_string(),
+            },
         };
         let may_overflow = match &operands_integer {
             StaticFact::Known { value: false } => known(false),
-            StaticFact::Known { value: true }
-                if self.evidence.overflow_checked.contains(&span) => known(true),
-            StaticFact::Known { value: true } => StaticFact::Unknown {
-                why: "overflow-check information is unavailable".to_string(),
-            },
-            StaticFact::Unknown { .. } => StaticFact::Unknown {
-                why: "integer operand types are unresolved".to_string(),
-            },
+            StaticFact::Known { value: true } if self.evidence.overflow_checked.contains(&span) => {
+                known(true)
+            }
+            StaticFact::Known { value: true } => {
+                StaticFact::Unknown { why: "overflow-check information is unavailable".to_string() }
+            }
+            StaticFact::Unknown { .. } => {
+                StaticFact::Unknown { why: "integer operand types are unresolved".to_string() }
+            }
         };
         if matches!(&may_overflow, StaticFact::Known { value: true }) {
             self.panic_sites.push(PanicSite { kind: PanicKind::ArithmeticMayOverflow, span });
@@ -545,10 +534,9 @@ impl<'a> Visitor<'a> for BodyCollector<'a> {
             ExprKind::MacCall(mac) => self.macro_site(mac),
             ExprKind::MethodCall(_) => self.method_site(expr),
             ExprKind::Try(_) => self.question_mark(expr),
-            ExprKind::Index(_, _, _) => self.panic_sites.push(PanicSite {
-                kind: PanicKind::Index,
-                span: range(self.file, expr.span),
-            }),
+            ExprKind::Index(_, _, _) => self
+                .panic_sites
+                .push(PanicSite { kind: PanicKind::Index, span: range(self.file, expr.span) }),
             ExprKind::Binary(op, left, right) => {
                 if let Some(operator) = arithmetic_operator(op.node) {
                     self.arithmetic_site(expr, operator, left, right);
@@ -646,8 +634,12 @@ fn block_diverges(block: &Block, file: &SourceFile, evidence: &EffectEvidence) -
     for (index, stmt) in block.stmts.iter().enumerate() {
         let is_tail = index + 1 == block.stmts.len() && matches!(stmt.kind, StmtKind::Expr(_));
         let result = match &stmt.kind {
-            StmtKind::Let(local) => local.kind.init().map(|expr| expression_diverges(expr, file, evidence)),
-            StmtKind::Expr(expr) | StmtKind::Semi(expr) => Some(expression_diverges(expr, file, evidence)),
+            StmtKind::Let(local) => {
+                local.kind.init().map(|expr| expression_diverges(expr, file, evidence))
+            }
+            StmtKind::Expr(expr) | StmtKind::Semi(expr) => {
+                Some(expression_diverges(expr, file, evidence))
+            }
             StmtKind::MacCall(mac) => Some(macro_divergence(&mac.mac, file, evidence)),
             StmtKind::Item(_) | StmtKind::Empty => None,
         };
@@ -675,11 +667,13 @@ fn block_diverges(block: &Block, file: &SourceFile, evidence: &EffectEvidence) -
     }
 }
 
-fn expression_diverges(expr: &Expr, file: &SourceFile, evidence: &EffectEvidence) -> StaticFact<bool> {
-    if let Some(fact) = evidence
-        .expression_types
-        .iter()
-        .find(|fact| fact.span == range(file, expr.span))
+fn expression_diverges(
+    expr: &Expr,
+    file: &SourceFile,
+    evidence: &EffectEvidence,
+) -> StaticFact<bool> {
+    if let Some(fact) =
+        evidence.expression_types.iter().find(|fact| fact.span == range(file, expr.span))
     {
         return known(fact.is_never);
     }
@@ -704,40 +698,43 @@ fn expression_diverges(expr: &Expr, file: &SourceFile, evidence: &EffectEvidence
                 .map(|otherwise| expression_diverges(otherwise, file, evidence))
                 .unwrap_or_else(|| known(false));
             let branches = match (&then_result, &else_result) {
-                (StaticFact::Known { value: true }, StaticFact::Known { value: true }) => known(true),
-                (StaticFact::Known { value: false }, StaticFact::Known { value: false }) => known(false),
+                (StaticFact::Known { value: true }, StaticFact::Known { value: true }) => {
+                    known(true)
+                }
+                (StaticFact::Known { value: false }, StaticFact::Known { value: false }) => {
+                    known(false)
+                }
                 _ => unknown("conditional branch divergence is unresolved"),
             };
             match condition {
                 StaticFact::Known { value: true } => known(true),
                 StaticFact::Known { value: false } => branches,
-                StaticFact::Unknown { .. } if matches!(&branches, StaticFact::Known { value: true }) => {
+                StaticFact::Unknown { .. }
+                    if matches!(&branches, StaticFact::Known { value: true }) =>
+                {
                     known(true)
                 }
-                StaticFact::Unknown { .. } => unknown("conditional expression divergence is unresolved"),
+                StaticFact::Unknown { .. } => {
+                    unknown("conditional expression divergence is unresolved")
+                }
             }
         }
         ExprKind::MacCall(mac) => macro_divergence(mac, file, evidence),
-        ExprKind::Call(callee, args) => {
-            sequence_diverges(
-                core::iter::once(&**callee).chain(args.iter().map(|arg| &**arg)),
-                unknown("the call target's return type is unresolved"),
-                file,
-                evidence,
-            )
-        }
+        ExprKind::Call(callee, args) => sequence_diverges(
+            core::iter::once(&**callee).chain(args.iter().map(|arg| &**arg)),
+            unknown("the call target's return type is unresolved"),
+            file,
+            evidence,
+        ),
         ExprKind::MethodCall(call) => sequence_diverges(
             core::iter::once(&*call.receiver).chain(call.args.iter().map(|arg| &**arg)),
             unknown("the method call's return type is unresolved"),
             file,
             evidence,
         ),
-        ExprKind::Array(items) | ExprKind::Tup(items) => sequence_diverges(
-            items.iter().map(|item| &**item),
-            known(false),
-            file,
-            evidence,
-        ),
+        ExprKind::Array(items) | ExprKind::Tup(items) => {
+            sequence_diverges(items.iter().map(|item| &**item), known(false), file, evidence)
+        }
         ExprKind::Binary(op, left, right) if matches!(op.node, BinOpKind::And | BinOpKind::Or) => {
             let left_result = expression_diverges(left, file, evidence);
             if matches!(&left_result, StaticFact::Known { value: true }) {
@@ -756,14 +753,11 @@ fn expression_diverges(expr: &Expr, file: &SourceFile, evidence: &EffectEvidence
         }
         ExprKind::Binary(_, left, right)
         | ExprKind::Assign(left, right, _)
-        | ExprKind::AssignOp(_, left, right) => sequence_diverges(
-            [&**left, &**right].into_iter(),
-            known(false),
-            file,
-            evidence,
-        ),
+        | ExprKind::AssignOp(_, left, right) => {
+            sequence_diverges([&**left, &**right], known(false), file, evidence)
+        }
         ExprKind::Index(value, index, _) => sequence_diverges(
-            [&**value, &**index].into_iter(),
+            [&**value, &**index],
             unknown("indexing behavior is unresolved"),
             file,
             evidence,
@@ -781,7 +775,9 @@ fn expression_diverges(expr: &Expr, file: &SourceFile, evidence: &EffectEvidence
         ExprKind::Continue(_) => known(false),
         ExprKind::Closure(_) | ExprKind::Gen(..) => known(false),
         ExprKind::Match(_, _, _) => unknown("match exhaustiveness is unresolved"),
-        ExprKind::While(..) | ExprKind::ForLoop(_) => unknown("loop exit conditions are unresolved"),
+        ExprKind::While(..) | ExprKind::ForLoop(_) => {
+            unknown("loop exit conditions are unresolved")
+        }
         ExprKind::Lit(_)
         | ExprKind::Path(..)
         | ExprKind::Underscore
@@ -866,7 +862,9 @@ fn sequence_diverges<'a>(
             unknown("an operand's divergence is unresolved")
         }
         StaticFact::Known { value } => known(value),
-        StaticFact::Unknown { .. } if unresolved => unknown("an operand or operation is unresolved"),
+        StaticFact::Unknown { .. } if unresolved => {
+            unknown("an operand or operation is unresolved")
+        }
         unknown_result => unknown_result,
     }
 }
@@ -898,12 +896,8 @@ fn loop_has_break(block: &Block, label: Option<Label>) -> bool {
                         {
                             self.found |= index == 0 && *is_loop;
                         }
-                    } else if let Some((index, (_, is_loop))) = self
-                        .labels
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find(|(_, (_, is_loop))| *is_loop)
+                    } else if let Some((index, (_, is_loop))) =
+                        self.labels.iter().enumerate().rev().find(|(_, (_, is_loop))| *is_loop)
                     {
                         self.found |= index == 0 && *is_loop;
                     }
@@ -912,18 +906,14 @@ fn loop_has_break(block: &Block, label: Option<Label>) -> bool {
                     }
                 }
                 ExprKind::Loop(_, label, _) => {
-                    self.labels.push((
-                        (*label).map(|label| label.ident.name.as_str().to_string()),
-                        true,
-                    ));
+                    self.labels
+                        .push(((*label).map(|label| label.ident.name.as_str().to_string()), true));
                     visit::walk_expr(self, expr);
                     self.labels.pop();
                 }
                 ExprKind::While(_, _, label) => {
-                    self.labels.push((
-                        (*label).map(|label| label.ident.name.as_str().to_string()),
-                        true,
-                    ));
+                    self.labels
+                        .push(((*label).map(|label| label.ident.name.as_str().to_string()), true));
                     visit::walk_expr(self, expr);
                     self.labels.pop();
                 }
@@ -1018,7 +1008,10 @@ fn markdown_headings(doc: &str) -> Vec<MarkdownHeading> {
 
 fn atx_heading(line: &str) -> Option<MarkdownHeading> {
     let level = line.chars().take_while(|ch| *ch == '#').count();
-    if level == 0 || level > 6 || (line.len() > level && !line.as_bytes()[level].is_ascii_whitespace()) {
+    if level == 0
+        || level > 6
+        || (line.len() > level && !line.as_bytes()[level].is_ascii_whitespace())
+    {
         return None;
     }
     let mut title = line[level..].trim().to_string();
@@ -1044,11 +1037,7 @@ fn setext_level(line: &str) -> Option<u8> {
 
 fn range(file: &SourceFile, span: Span) -> TextRange {
     fn at(file: &SourceFile, position: BytePos) -> u32 {
-        if position < file.start_pos {
-            0
-        } else {
-            file.original_relative_byte_pos(position).0
-        }
+        if position < file.start_pos { 0 } else { file.original_relative_byte_pos(position).0 }
     }
     TextRange { start: at(file, span.lo()), end: at(file, span.hi()) }
 }
@@ -1059,4 +1048,18 @@ fn known<T>(value: T) -> StaticFact<T> {
 
 fn unknown<T>(why: &str) -> StaticFact<T> {
     StaticFact::Unknown { why: why.to_string() }
+}
+#[cfg(test)]
+mod enclosing_body_span_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_tied_innermost_bodies() {
+        let candidate = TextRange { start: 4, end: 7 };
+        let body = TextRange { start: 0, end: 10 };
+        assert_eq!(
+            select_innermost_containing_body(candidate, &[body, body]),
+            Err(EnclosingBodySpanError::AmbiguousInnermostBody)
+        );
+    }
 }

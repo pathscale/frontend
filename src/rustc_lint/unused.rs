@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -22,7 +18,9 @@ use crate::rustc_lint::diagnostics::{
     PathStatementDrop, PathStatementDropSub, PathStatementNoEffect, UnusedAllocationDiag,
     UnusedAllocationMutDiag, UnusedDelim, UnusedDelimSuggestion, UnusedImportBracesDiag,
 };
-use crate::rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, Lint, LintContext};
+use crate::rustc_lint::{
+    EarlyContext, EarlyLintPass, LateContext, LateLintPass, Lint, LintContext,
+};
 
 pub mod must_use;
 
@@ -134,6 +132,10 @@ trait UnusedDelimLint {
     // this cannot be a constant is it refers to a static.
     fn lint(&self) -> &'static Lint;
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "delimiter checks retain syntax, token boundaries and recovery context"
+    )]
     fn check_unused_delims_expr(
         &self,
         cx: &EarlyContext<'_>,
@@ -1192,20 +1194,16 @@ impl EarlyLintPass for UnusedBraces {
     }
 
     fn check_ty(&mut self, cx: &EarlyContext<'_>, ty: &ast::Ty) {
-        match ty.kind {
-            ast::TyKind::Array(_, ref len) => {
-                self.check_unused_delims_expr(
-                    cx,
-                    &len.value,
-                    UnusedDelimsCtx::ArrayLenExpr,
-                    false,
-                    None,
-                    None,
-                    false,
-                );
-            }
-
-            _ => {}
+        if let ast::TyKind::Array(_, ref len) = ty.kind {
+            self.check_unused_delims_expr(
+                cx,
+                &len.value,
+                UnusedDelimsCtx::ArrayLenExpr,
+                false,
+                None,
+                None,
+                false,
+            );
         }
     }
 
@@ -1294,9 +1292,7 @@ declare_lint! {
     /// ### Example
     ///
     /// ```rust
-    /// fn main() {
-    ///     let a = Box::new([1, 2, 3]).len();
-    /// }
+    /// let a = Box::new([1, 2, 3]).len();
     /// ```
     ///
     /// {{produces}}

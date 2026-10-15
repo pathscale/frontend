@@ -18,18 +18,12 @@ fn ready() {
 
 fn range(source: &str, text: &str) -> frontend::frontend_facts::effects::TextRange {
     let start = source.find(text).expect("source range") as u32;
-    frontend::frontend_facts::effects::TextRange {
-        start,
-        end: start + text.len() as u32,
-    }
+    frontend::frontend_facts::effects::TextRange { start, end: start + text.len() as u32 }
 }
 
 fn range_last(source: &str, text: &str) -> frontend::frontend_facts::effects::TextRange {
     let start = source.rfind(text).expect("last source range") as u32;
-    frontend::frontend_facts::effects::TextRange {
-        start,
-        end: start + text.len() as u32,
-    }
+    frontend::frontend_facts::effects::TextRange { start, end: start + text.len() as u32 }
 }
 
 fn blake3_digest(source: &[u8]) -> String {
@@ -47,9 +41,7 @@ impl Scratch {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
         std::fs::create_dir_all(&target_dir).expect("create or find Cargo target directory");
-        let target_dir = target_dir
-            .canonicalize()
-            .expect("canonical Cargo target directory");
+        let target_dir = target_dir.canonicalize().expect("canonical Cargo target directory");
         let scratch_parent = target_dir.join("tmp");
         std::fs::create_dir_all(&scratch_parent)
             .expect("create test scratch parent under Cargo target");
@@ -64,10 +56,7 @@ impl Scratch {
             ));
             match std::fs::create_dir(&path) {
                 Ok(()) => {
-                    return Self {
-                        dir: path,
-                        owned_files: Vec::new(),
-                    };
+                    return Self { dir: path, owned_files: Vec::new() };
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => panic!("create owned test scratch directory: {error}"),
@@ -115,17 +104,11 @@ fn loaded_source_attestation_dependency(
     name: &str,
 ) -> (Scratch, [Dependency; 1], std::path::PathBuf) {
     let mut scratch = Scratch::new(name);
-    let root = scratch.write(
-        "lib.rs",
-        &format!("{MINIMAL_LANG_ITEMS}\npub mod target;\n"),
-    );
+    let root = scratch.write("lib.rs", &format!("{MINIMAL_LANG_ITEMS}\npub mod target;\n"));
     let target_source = "pub fn target() -> bool { true }\n";
     let target_path = scratch.write("target.rs", target_source);
     let metadata = scratch.owned_path(&format!("lib{name}.rmeta"));
-    let metadata = metadata
-        .to_str()
-        .expect("metadata path is UTF-8")
-        .to_owned();
+    let metadata = metadata.to_str().expect("metadata path is UTF-8").to_owned();
     let facts = read_crate(
         &CrateRead {
             edition: Some("2024"),
@@ -136,17 +119,9 @@ fn loaded_source_attestation_dependency(
         .with_disambiguator("callable-source-hash-control-v1"),
     )
     .expect("write source-attested metadata with this frontend build");
-    assert!(
-        facts.complete,
-        "test dependency facts are complete: {:?}",
-        facts.diagnostics
-    );
+    assert!(facts.complete, "test dependency facts are complete: {:?}", facts.diagnostics);
     assert!(std::path::Path::new(&metadata).is_file(), "metadata was written");
-    (
-        scratch,
-        [Dependency::new(name, metadata)],
-        std::path::PathBuf::from(target_path),
-    )
+    (scratch, [Dependency::new(name, metadata)], std::path::PathBuf::from(target_path))
 }
 
 fn loaded_minimal_lang_items(name: &str) -> (Scratch, [Dependency; 1]) {
@@ -171,7 +146,7 @@ fn normalized_source_from_source_map(source: &str) -> String {
     let file = source_map.new_source_file(FileName::anon_source_code(source), source.to_owned());
     let full_file = Span::with_root_ctxt(file.start_pos, file.end_position());
     source_map
-        .span_to_source(full_file, |text, start, end| Ok(text[start..end].to_owned()))
+        .span_to_snippet(full_file)
         .expect("read normalized fixture bytes through rustc SourceMap")
 }
 
@@ -197,10 +172,7 @@ fn direct_call_identity_is_bound_to_exact_source_file_and_definition_bytes() {
         .iter()
         .find(|fact| fact.span.start == call_span.start && fact.span.end == call_span.end)
         .expect("source call identity fact");
-    let Some(StaticFact::Known {
-        value: Some(callable),
-    }) = call.resolved_callable.as_ref()
-    else {
+    let Some(StaticFact::Known { value: Some(callable) }) = call.resolved_callable.as_ref() else {
         panic!("compiler did not resolve direct call: {call:?}");
     };
     let StaticFact::Known { value: attestation } = &callable.source_attestation else {
@@ -208,14 +180,8 @@ fn direct_call_identity_is_bound_to_exact_source_file_and_definition_bytes() {
     };
 
     assert_eq!(callable.definition, attestation.definition);
-    assert_eq!(
-        attestation.source_digest_scheme,
-        "rustc_normalized_source_blake3_v1"
-    );
-    assert_eq!(
-        attestation.source_content_digest,
-        blake3_digest(source_map_source.as_bytes())
-    );
+    assert_eq!(attestation.source_digest_scheme, "rustc_normalized_source_blake3_v1");
+    assert_eq!(attestation.source_content_digest, blake3_digest(source_map_source.as_bytes()));
 
     let item = source_map_source
         .get(attestation.item_span.start as usize..attestation.item_span.end as usize)
@@ -243,10 +209,7 @@ fn macro_generated_callable_identity_does_not_claim_source_attestation() {
         .iter()
         .find(|fact| fact.span.start == call_span.start && fact.span.end == call_span.end)
         .expect("source call identity fact");
-    let Some(StaticFact::Known {
-        value: Some(callable),
-    }) = call.resolved_callable.as_ref()
-    else {
+    let Some(StaticFact::Known { value: Some(callable) }) = call.resolved_callable.as_ref() else {
         panic!("compiler did not resolve macro-generated function call: {call:?}");
     };
     assert_eq!(callable.kind, ResolvedCallableKind::DirectItem);
@@ -272,10 +235,7 @@ fn changed_test_owned_dependency_source_fails_the_metadata_hash_gate() {
             source,
             body,
             Some("2024"),
-            Loaded {
-                dependencies: &dependencies,
-                ..Loaded::default()
-            },
+            Loaded { dependencies: &dependencies, ..Loaded::default() },
         )
     };
     let call_range = range_last(source, "callable_source_hash_gate::target::target()");
@@ -286,9 +246,7 @@ fn changed_test_owned_dependency_source_fails_the_metadata_hash_gate() {
         .iter()
         .find(|fact| fact.span.start == call_range.start && fact.span.end == call_range.end)
         .expect("external call identity before changing its source");
-    let Some(StaticFact::Known {
-        value: Some(callable),
-    }) = before_call.resolved_callable.as_ref()
+    let Some(StaticFact::Known { value: Some(callable) }) = before_call.resolved_callable.as_ref()
     else {
         panic!("compiler did not resolve external function call: {before_call:?}");
     };
@@ -297,10 +255,7 @@ fn changed_test_owned_dependency_source_fails_the_metadata_hash_gate() {
     let StaticFact::Known { value: attestation } = &callable.source_attestation else {
         panic!("unchanged source bytes were not attested: {callable:?}");
     };
-    assert_eq!(
-        attestation.source_content_digest,
-        blake3_digest(original.as_bytes())
-    );
+    assert_eq!(attestation.source_content_digest, blake3_digest(original.as_bytes()));
 
     std::fs::write(&target_path, "pub fn target() -> bool { false }\n")
         .expect("mutate only the isolated test-owned source fixture");
@@ -312,9 +267,7 @@ fn changed_test_owned_dependency_source_fails_the_metadata_hash_gate() {
         .iter()
         .find(|fact| fact.span.start == call_range.start && fact.span.end == call_range.end)
         .expect("external call identity after changing its source");
-    let Some(StaticFact::Known {
-        value: Some(callable),
-    }) = after_call.resolved_callable.as_ref()
+    let Some(StaticFact::Known { value: Some(callable) }) = after_call.resolved_callable.as_ref()
     else {
         panic!(
             "compiler stopped resolving the external function after source mutation: {after_call:?}"
@@ -337,10 +290,7 @@ fn imported_source_without_metadata_hash_cannot_be_used_as_source_evidence() {
     let source_file = source_map
         .load_file(eko::path::Path::new(&source_path))
         .expect("load the source file bytes");
-    assert!(
-        source_file.src_hash.is_none(),
-        "this models legacy metadata without a source hash"
-    );
+    assert!(source_file.src_hash.is_none(), "this models legacy metadata without a source hash");
 
     let frontend::rustc_span::SourceFile {
         name,
@@ -369,9 +319,7 @@ fn imported_source_without_metadata_hash_cannot_be_used_as_source_evidence() {
     let span = Span::with_root_ctxt(imported.start_pos, imported.end_position());
     assert!(
         matches!(
-            source_map.span_to_source(span, |source, start, end| {
-                Ok(source[start..end].to_owned())
-            }),
+            source_map.span_to_snippet(span),
             Err(SpanSnippetError::SourceNotAvailable { .. })
         ),
         "a readable path without the metadata hash must remain unavailable to attestation"

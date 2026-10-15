@@ -1,9 +1,8 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxHashMap;
-use rustc_macros::{Decodable, Encodable, Walkable};
 use crate::rustc_span::{Ident, Span, Symbol};
+use alloc::vec::Vec;
+use rustc_macros::{Decodable, Encodable, Walkable};
 
 use crate::rustc_ast::Expr;
 use crate::rustc_ast::token::LitKind;
@@ -81,6 +80,12 @@ pub struct FormatArguments {
     num_unnamed_args: usize,
     num_explicit_args: usize,
     names: FxHashMap<Symbol, usize>,
+}
+
+impl Default for FormatArguments {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FormatArguments {
@@ -164,10 +169,10 @@ pub enum FormatArgumentKind {
 
 impl FormatArgumentKind {
     pub fn ident(&self) -> Option<Ident> {
-        match self {
-            &Self::Normal => None,
-            &Self::Named(id) => Some(id),
-            &Self::Captured(id) => Some(id),
+        match *self {
+            Self::Normal => None,
+            Self::Named(id) => Some(id),
+            Self::Captured(id) => Some(id),
         }
     }
 }

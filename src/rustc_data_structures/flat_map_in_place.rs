@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::{mem, ptr};
@@ -87,6 +82,13 @@ pub unsafe trait FlatMapInPlaceVec {
     type Elem;
 
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Set the vector length after initializing or moving elements in its allocation.
+    ///
+    /// # Safety
+    /// `len` must not exceed the initialized prefix of the allocation.
     unsafe fn set_len(&mut self, len: usize);
     fn as_ptr(&self) -> *const Self::Elem;
     fn as_mut_ptr(&mut self) -> *mut Self::Elem;

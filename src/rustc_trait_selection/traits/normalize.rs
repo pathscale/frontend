@@ -3,10 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -16,13 +12,13 @@ use crate::rustc_infer::infer::{InferCtxt, InferOk};
 use crate::rustc_infer::traits::{
     FromSolverError, Normalized, Obligation, PredicateObligations, TraitEngine, TraitErrors,
 };
-use rustc_macros::extension;
-use crate::span_bug;
 use crate::rustc_middle::traits::{ObligationCause, ObligationCauseCode};
 use crate::rustc_middle::ty::{
     self, AliasTerm, Term, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitable,
     TypeVisitableExt, TypingMode, Unnormalized,
 };
+use crate::span_bug;
+use rustc_macros::extension;
 use thin_vec::ThinVec;
 use tracing::{debug, instrument};
 
@@ -42,7 +38,8 @@ impl<'tcx> At<'_, 'tcx> {
         value: Unnormalized<'tcx, T>,
     ) -> InferOk<'tcx, T> {
         if self.infcx.next_trait_solver() {
-            let Normalized { value, obligations } = crate::rustc_trait_selection::solve::normalize(*self, value);
+            let Normalized { value, obligations } =
+                crate::rustc_trait_selection::solve::normalize(*self, value);
             InferOk { value, obligations }
         } else {
             let mut selcx = SelectionContext::new(self.infcx);

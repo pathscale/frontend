@@ -6,8 +6,8 @@ use crate::rustc_ast::node_id::NodeMap;
 use crate::rustc_ast::*;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::{HirId, Target, find_attr};
-use crate::span_bug;
 use crate::rustc_span::Span;
+use crate::span_bug;
 
 use super::{LoweringContext, MoveExprInitializerFinder, MoveExprState};
 use crate::rustc_ast_lowering::FnDeclKind;
@@ -93,6 +93,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
     ///     || __move_expr_1.len()
     /// }
     /// ```
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn lower_expr_plain_closure_with_move_exprs(
         &mut self,
         expr_hir_id: HirId,
@@ -180,6 +184,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
     // Lowers the actual plain closure node and body. The body is lowered while a
     // `MoveExprState` is active, so `move(...)` occurrences become synthetic
     // local uses and the caller can later add the matching initializers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn lower_expr_closure(
         &mut self,
         attrs: &[hir::Attribute],
@@ -301,6 +309,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
     // body shape. This path pushes `None` for `move_expr_bindings`, so any
     // `move(...)` in the coroutine body gets a targeted unsupported-position
     // error instead of being collected like a plain closure occurrence.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn lower_expr_coroutine_closure(
         &mut self,
         binder: &ClosureBinder,
@@ -335,7 +347,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
             // Transform `async |x: u8| -> X { ... }` into
             // `|x: u8| || -> X { ... }`.
-            let body_id = this.lower_body(|this| {
+
+            this.lower_body(|this| {
                 let ((parameters, expr), _) = this.with_move_expr_bindings(None, |this| {
                     this.lower_coroutine_body_with_moved_arguments(
                         &inner_decl,
@@ -350,16 +363,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 this.maybe_forward_track_caller(body.span, closure_hir_id, expr.hir_id);
 
                 (parameters, expr)
-            });
-            body_id
+            })
         });
 
         let bound_generic_params = self.lower_lifetime_binder(closure_id, generic_params);
         // We need to lower the declaration outside the new scope, because we
         // have to conserve the state of being inside a loop condition for the
         // closure argument types.
-        let fn_decl =
-            self.lower_fn_decl(&decl, closure_id, fn_decl_span, FnDeclKind::Closure, None);
+        let fn_decl = self.lower_fn_decl(decl, closure_id, fn_decl_span, FnDeclKind::Closure, None);
 
         if let Const::Yes(span) = constness {
             self.dcx().span_err(span, "const coroutines are not supported");

@@ -12,9 +12,12 @@ use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::symbol::sym;
 use crate::rustc_span::{Span, Symbol};
 
-pub(crate) fn enabled_names(features: &crate::rustc_feature::Features, span: Span) -> Vec<&'static str> {
+pub(crate) fn enabled_names(
+    features: &crate::rustc_feature::Features,
+    span: Span,
+) -> Vec<&'static str> {
     ExternAbi::ALL_VARIANTS
-        .into_iter()
+        .iter()
         .filter(|abi| extern_abi_enabled(features, span, **abi).is_ok())
         .map(|abi| abi.as_str())
         .collect()

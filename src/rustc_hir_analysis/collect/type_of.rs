@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
@@ -16,7 +11,9 @@ use crate::rustc_hir::intravisit::VisitorExt;
 use crate::rustc_hir::{self as hir, AmbigArg, HirId};
 use crate::rustc_middle::ty::print::{with_forced_trimmed_paths, with_types_for_suggestion};
 use crate::rustc_middle::ty::util::IntTypeExt;
-use crate::rustc_middle::ty::{self, DefiningScopeKind, IsSuggestable, Ty, TyCtxt, TypeVisitableExt};
+use crate::rustc_middle::ty::{
+    self, DefiningScopeKind, IsSuggestable, Ty, TyCtxt, TypeVisitableExt,
+};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{DUMMY_SP, Ident, Span};
 use tracing::instrument;
@@ -182,11 +179,13 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::EarlyBinder<'_
             }
             ItemKind::TyAlias(_, _, self_ty) => icx.lower_ty(self_ty),
             ItemKind::Impl(hir::Impl { self_ty, .. }) => match self_ty.find_self_aliases() {
-                spans if spans.len() > 0 => {
-                    let guar = tcx.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::SelfInImplSelf {
-                        span: spans.into(),
-                        note: (),
-                    });
+                spans if !spans.is_empty() => {
+                    let guar = tcx.dcx().emit_err(
+                        crate::rustc_hir_analysis::diagnostics::SelfInImplSelf {
+                            span: spans.into(),
+                            note: (),
+                        },
+                    );
                     Ty::new_error(tcx, guar)
                 }
                 _ => icx.lower_ty(self_ty),
@@ -360,8 +359,8 @@ pub(super) fn type_of_opaque_hir_typeck(
 }
 
 fn anon_const_type_of<'tcx>(icx: &ItemCtxt<'tcx>, def_id: LocalDefId) -> Ty<'tcx> {
-    use hir::*;
     use crate::rustc_middle::ty::Ty;
+    use hir::*;
     let tcx = icx.tcx;
     let hir_id = tcx.local_def_id_to_hir_id(def_id);
 
@@ -403,16 +402,16 @@ fn anon_const_type_of<'tcx>(icx: &ItemCtxt<'tcx>, def_id: LocalDefId) -> Ty<'tcx
 }
 
 fn const_arg_anon_type_of<'tcx>(icx: &ItemCtxt<'tcx>, arg_hir_id: HirId, span: Span) -> Ty<'tcx> {
-    use hir::*;
     use crate::rustc_middle::ty::Ty;
+    use hir::*;
 
     let tcx = icx.tcx;
 
     match tcx.parent_hir_node(arg_hir_id) {
         // Array length const arguments do not have `type_of` fed as there is never a corresponding
         // generic parameter definition.
-        Node::Ty(&hir::Ty { kind: TyKind::Array(_, ref constant), .. })
-        | Node::Expr(&Expr { kind: ExprKind::Repeat(_, ref constant), .. })
+        Node::Ty(&hir::Ty { kind: TyKind::Array(_, constant), .. })
+        | Node::Expr(&Expr { kind: ExprKind::Repeat(_, constant), .. })
             if constant.hir_id == arg_hir_id =>
         {
             tcx.types.usize
@@ -552,7 +551,7 @@ fn check_feature_inherent_assoc_ty(tcx: TyCtxt<'_>, span: Span) {
         use crate::rustc_session::diagnostics::feature_err;
         use crate::rustc_span::sym;
         feature_err(
-            &tcx.sess,
+            tcx.sess,
             sym::inherent_associated_types,
             span,
             "inherent associated types are unstable",

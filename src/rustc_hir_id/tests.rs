@@ -1,8 +1,8 @@
-use alloc::string::ToString;
 use crate::rustc_hashes::Hash64;
 use crate::rustc_span::def_id::{DefPathHash, StableCrateId};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{Symbol, create_session_globals_then};
+use alloc::string::ToString;
 
 use crate::rustc_hir_id::definitions::{DefKey, DefPathData, DisambiguatedDefPathData};
 

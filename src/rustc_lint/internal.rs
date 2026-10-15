@@ -4,8 +4,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -175,6 +173,10 @@ fn has_unstable_into_iter_predicate<'tcx>(
 /// Checks whether an expression is a function or method call and, if so, returns its `DefId`,
 /// `Span`, `GenericArgs`, and arguments. This is a slight augmentation of a similarly named Clippy
 /// function, `get_callee_generic_args_and_args`.
+#[expect(
+    clippy::type_complexity,
+    reason = "call analysis returns the resolved identity, arguments and their source spans together"
+)]
 fn get_callee_span_generic_args_and_args<'tcx>(
     cx: &LateContext<'tcx>,
     expr: &'tcx Expr<'tcx>,
@@ -240,56 +242,52 @@ impl<'tcx> LateLintPass<'tcx> for TyTyKind {
     }
 
     fn check_ty(&mut self, cx: &LateContext<'_>, ty: &'tcx hir::Ty<'tcx, hir::AmbigArg>) {
-        match &ty.kind {
-            hir::TyKind::Path(hir::QPath::Resolved(_, path)) => {
-                if lint_ty_kind_usage(cx, &path.res) {
-                    let span = match cx.tcx.parent_hir_node(ty.hir_id) {
-                        hir::Node::PatExpr(hir::PatExpr {
-                            kind: hir::PatExprKind::Path(qpath),
-                            ..
-                        })
-                        | hir::Node::Pat(hir::Pat {
-                            kind:
-                                hir::PatKind::TupleStruct(qpath, ..) | hir::PatKind::Struct(qpath, ..),
-                            ..
-                        })
-                        | hir::Node::Expr(
-                            hir::Expr { kind: hir::ExprKind::Path(qpath), .. }
-                            | &hir::Expr { kind: hir::ExprKind::Struct(qpath, ..), .. },
-                        ) => {
-                            if let hir::QPath::TypeRelative(qpath_ty, ..) = qpath
-                                && qpath_ty.hir_id == ty.hir_id
-                            {
-                                Some(path.span)
-                            } else {
-                                None
-                            }
+        if let hir::TyKind::Path(hir::QPath::Resolved(_, path)) = &ty.kind {
+            if lint_ty_kind_usage(cx, &path.res) {
+                let span = match cx.tcx.parent_hir_node(ty.hir_id) {
+                    hir::Node::PatExpr(hir::PatExpr {
+                        kind: hir::PatExprKind::Path(qpath),
+                        ..
+                    })
+                    | hir::Node::Pat(hir::Pat {
+                        kind: hir::PatKind::TupleStruct(qpath, ..) | hir::PatKind::Struct(qpath, ..),
+                        ..
+                    })
+                    | hir::Node::Expr(
+                        hir::Expr { kind: hir::ExprKind::Path(qpath), .. }
+                        | &hir::Expr { kind: hir::ExprKind::Struct(qpath, ..), .. },
+                    ) => {
+                        if let hir::QPath::TypeRelative(qpath_ty, ..) = qpath
+                            && qpath_ty.hir_id == ty.hir_id
+                        {
+                            Some(path.span)
+                        } else {
+                            None
                         }
-                        _ => None,
-                    };
-
-                    match span {
-                        Some(span) => {
-                            cx.emit_span_lint(
-                                USAGE_OF_TY_TYKIND,
-                                path.span,
-                                TykindKind { suggestion: span },
-                            );
-                        }
-                        None => cx.emit_span_lint(USAGE_OF_TY_TYKIND, path.span, TykindDiag),
                     }
-                } else if !ty.span.from_expansion()
-                    && path.segments.len() > 1
-                    && let Some(ty) = is_ty_or_ty_ctxt(cx, path)
-                {
-                    cx.emit_span_lint(
-                        USAGE_OF_QUALIFIED_TY,
-                        path.span,
-                        TyQualified { ty, suggestion: path.span },
-                    );
+                    _ => None,
+                };
+
+                match span {
+                    Some(span) => {
+                        cx.emit_span_lint(
+                            USAGE_OF_TY_TYKIND,
+                            path.span,
+                            TykindKind { suggestion: span },
+                        );
+                    }
+                    None => cx.emit_span_lint(USAGE_OF_TY_TYKIND, path.span, TykindDiag),
                 }
+            } else if !ty.span.from_expansion()
+                && path.segments.len() > 1
+                && let Some(ty) = is_ty_or_ty_ctxt(cx, path)
+            {
+                cx.emit_span_lint(
+                    USAGE_OF_QUALIFIED_TY,
+                    path.span,
+                    TyQualified { ty, suggestion: path.span },
+                );
             }
-            _ => {}
         }
     }
 }
@@ -563,10 +561,10 @@ impl<'tcx> LateLintPass<'tcx> for SpanUseEqCtxt {
             lhs,
             rhs,
         ) = expr.kind
+            && is_span_ctxt_call(cx, lhs)
+            && is_span_ctxt_call(cx, rhs)
         {
-            if is_span_ctxt_call(cx, lhs) && is_span_ctxt_call(cx, rhs) {
-                cx.emit_span_lint(SPAN_USE_EQ_CTXT, expr.span, SpanUseEqCtxtDiag);
-            }
+            cx.emit_span_lint(SPAN_USE_EQ_CTXT, expr.span, SpanUseEqCtxtDiag);
         }
     }
 }
@@ -680,7 +678,7 @@ impl EarlyLintPass for BadUseOfFindAttr {
                 PatKind::TupleStruct(_, path, fields) => {
                     path_contains_attribute_kind(cx, path);
                     for field in fields {
-                        find_attr_kind_in_pat(cx, &field);
+                        find_attr_kind_in_pat(cx, field);
                     }
                 }
                 PatKind::Or(options) => {
@@ -770,8 +768,8 @@ fn pat_is_not_exhaustive_heuristic(pat: &hir::Pat<'_>) -> Option<(Span, &'static
         hir::PatKind::Or(..) => None,
         hir::PatKind::Never => None,
         hir::PatKind::Tuple(..) => None,
-        hir::PatKind::Deref(pat) => pat_is_not_exhaustive_heuristic(&*pat),
-        hir::PatKind::Ref(pat, _, _) => pat_is_not_exhaustive_heuristic(&*pat),
+        hir::PatKind::Deref(pat) => pat_is_not_exhaustive_heuristic(pat),
+        hir::PatKind::Ref(pat, _, _) => pat_is_not_exhaustive_heuristic(pat),
         hir::PatKind::Expr(..) => None,
         hir::PatKind::Guard(..) => None,
         hir::PatKind::Range(..) => None,
@@ -820,24 +818,19 @@ impl<'tcx> LateLintPass<'tcx> for RustcMustMatchExhaustively {
     }
 
     fn check_stmt(&mut self, cx: &LateContext<'tcx>, stmt: &'tcx crate::rustc_hir::Stmt<'tcx>) {
-        match stmt.kind {
-            crate::rustc_hir::StmtKind::Let(let_stmt) => {
-                if let_stmt.els.is_some()
-                    && let Some(attr_span) =
-                        is_rustc_must_match_exhaustively(cx, let_stmt.pat.hir_id)
-                {
-                    cx.emit_span_lint(
-                        RUSTC_MUST_MATCH_EXHAUSTIVELY,
-                        let_stmt.span,
-                        RustcMustMatchExhaustivelyNotExhaustive {
-                            attr_span,
-                            pat_span: let_stmt.pat.span,
-                            message: "using `let else` only matches on one variant (try using `match`)",
-                        },
-                    );
-                }
-            }
-            _ => {}
+        if let crate::rustc_hir::StmtKind::Let(let_stmt) = stmt.kind
+            && let_stmt.els.is_some()
+            && let Some(attr_span) = is_rustc_must_match_exhaustively(cx, let_stmt.pat.hir_id)
+        {
+            cx.emit_span_lint(
+                RUSTC_MUST_MATCH_EXHAUSTIVELY,
+                let_stmt.span,
+                RustcMustMatchExhaustivelyNotExhaustive {
+                    attr_span,
+                    pat_span: let_stmt.pat.span,
+                    message: "using `let else` only matches on one variant (try using `match`)",
+                },
+            );
         }
     }
 }

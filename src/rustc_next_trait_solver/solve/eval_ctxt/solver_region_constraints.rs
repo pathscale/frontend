@@ -1,7 +1,5 @@
 //! Logic for `-Zassumptions-on-binders` stuff
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 #[cfg(feature = "nightly")]
 use crate::rustc_data_structures::transitive_relation::TransitiveRelationBuilder;
 use crate::rustc_type_ir::ClauseKind::*;
@@ -17,6 +15,8 @@ use crate::rustc_type_ir::{
     AliasTy, Binder, ClauseKind, InferCtxtLike, Interner, OutlivesClause, Region, TypeVisitable,
     TypeVisitableExt, TypeVisitor, UniverseIndex, max_universe,
 };
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use tracing::{debug, instrument};
 
 use crate::rustc_next_trait_solver::delegate::SolverDelegate;
@@ -134,7 +134,7 @@ where
         debug!(?smallest_universe, largest_universe);
 
         let constraint = ((smallest_universe + 1)..=largest_universe)
-            .map(|u| UniverseIndex::from_usize(u))
+            .map(UniverseIndex::from_usize)
             .rev()
             .fold(constraint, |constraint, u| {
                 eagerly_handle_placeholders_in_universe(&**self.delegate, constraint, u)
@@ -171,9 +171,7 @@ where
         components: &[Component<I>],
         r: Region<I>,
     ) -> RegionConstraint<I> {
-        RegionConstraint::And(
-            components.into_iter().map(|c| self.destructure_component(c, r)).collect(),
-        )
+        RegionConstraint::And(components.iter().map(|c| self.destructure_component(c, r)).collect())
     }
 
     fn destructure_component(&mut self, c: &Component<I>, r: Region<I>) -> RegionConstraint<I> {

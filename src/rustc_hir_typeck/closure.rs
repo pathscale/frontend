@@ -3,11 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::iter;
@@ -163,7 +158,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 };
 
                 // Resume type defaults to `()` if the coroutine has no argument.
-                let resume_ty = liberated_sig.inputs().get(0).copied().unwrap_or(tcx.types.unit);
+                let resume_ty = liberated_sig.inputs().first().copied().unwrap_or(tcx.types.unit);
 
                 // Coroutines that come from coroutine closures have not yet determined
                 // their kind ty, so make a fresh infer var which will be constrained
@@ -863,8 +858,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             )?;
             all_obligations.extend(obligations);
 
-            let inputs =
-                supplied_sig.inputs().into_iter().map(|&ty| self.resolve_vars_if_possible(ty));
+            let inputs = supplied_sig.inputs().iter().map(|&ty| self.resolve_vars_if_possible(ty));
 
             let fn_sig_kind = FnSigKind::default()
                 .set_abi(ExternAbi::RustCall)
@@ -899,7 +893,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // First, convert the types that the user supplied (if any).
         let supplied_arguments = decl.inputs.iter().map(|a| lowerer.lower_ty(a));
         let supplied_return = match decl.output {
-            hir::FnRetTy::Return(ref output) => lowerer.lower_ty(output),
+            hir::FnRetTy::Return(output) => lowerer.lower_ty(output),
             hir::FnRetTy::DefaultReturn(_) => match closure_kind {
                 // In the case of the async block that we create for a function body,
                 // we expect the return type of the block to match that of the enclosing
@@ -1061,15 +1055,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return None;
         }
 
-        let Some(output_assoc_item) = self
+        let output_assoc_item = self
             .tcx
             .associated_item_def_ids(trait_def_id)
             .iter()
             .find(|&&item| self.tcx.item_name(item) == sym::Output)
-            .copied()
-        else {
-            return None;
-        };
+            .copied()?;
         if output_assoc_item != predicate.def_id() {
             span_bug!(
                 cause_span,
@@ -1105,7 +1096,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             err_ty
         });
 
-        if let hir::FnRetTy::Return(ref output) = decl.output {
+        if let hir::FnRetTy::Return(output) = decl.output {
             lowerer.lower_ty(output);
         }
 

@@ -206,7 +206,9 @@ impl<'a> Parser<'a> {
     /// ```ebnf
     /// GenericParams = (GenericParam ("," GenericParam)* ","?)?
     /// ```
-    pub(super) fn parse_generic_params(&mut self) -> PResult<'a, crate::rustc_ast::ArenaVec<ast::GenericParam>> {
+    pub(super) fn parse_generic_params(
+        &mut self,
+    ) -> PResult<'a, crate::rustc_ast::ArenaVec<ast::GenericParam>> {
         let mut params = ast::ArenaVec::new();
         let mut done = false;
         let prev = self.parsing_generics;

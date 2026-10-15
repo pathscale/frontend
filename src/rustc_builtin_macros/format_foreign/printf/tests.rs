@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -62,25 +59,25 @@ fn test_parse() {
     assert_pns_eq_sub!("%s",
         { None, "", None, None, None, "s", (0, 2), });
     assert_pns_eq_sub!("%06d",
-        { None, "0", Some(N::Num(6)), None, None, "d", (0, 4), });
+        { None, "0", Some(N::Fixed(6)), None, None, "d", (0, 4), });
     assert_pns_eq_sub!("%4.2f",
-        { None, "", Some(N::Num(4)), Some(N::Num(2)), None, "f", (0, 5), });
+        { None, "", Some(N::Fixed(4)), Some(N::Fixed(2)), None, "f", (0, 5), });
     assert_pns_eq_sub!("%#x",
         { None, "#", None, None, None, "x", (0, 3), });
     assert_pns_eq_sub!("%-10s",
-        { None, "-", Some(N::Num(10)), None, None, "s", (0, 5), });
+        { None, "-", Some(N::Fixed(10)), None, None, "s", (0, 5), });
     assert_pns_eq_sub!("%*s",
         { None, "", Some(N::Next), None, None, "s", (0, 3), });
     assert_pns_eq_sub!("%-10.*s",
-        { None, "-", Some(N::Num(10)), Some(N::Next), None, "s", (0, 7), });
+        { None, "-", Some(N::Fixed(10)), Some(N::Next), None, "s", (0, 7), });
     assert_pns_eq_sub!("%-*.*s",
         { None, "-", Some(N::Next), Some(N::Next), None, "s", (0, 6), });
     assert_pns_eq_sub!("%.6i",
-        { None, "", None, Some(N::Num(6)), None, "i", (0, 4), });
+        { None, "", None, Some(N::Fixed(6)), None, "i", (0, 4), });
     assert_pns_eq_sub!("%+i",
         { None, "+", None, None, None, "i", (0, 3), });
     assert_pns_eq_sub!("%08X",
-        { None, "0", Some(N::Num(8)), None, None, "X", (0, 4), });
+        { None, "0", Some(N::Fixed(8)), None, None, "X", (0, 4), });
     assert_pns_eq_sub!("%lu",
         { None, "", None, None, Some("l"), "u", (0, 3), });
     assert_pns_eq_sub!("%Iu",
@@ -92,9 +89,9 @@ fn test_parse() {
     assert_pns_eq_sub!("%'d",
         { None, "'", None, None, None, "d", (0, 3), });
     assert_pns_eq_sub!("%10s",
-        { None, "", Some(N::Num(10)), None, None, "s", (0, 4), });
+        { None, "", Some(N::Fixed(10)), None, None, "s", (0, 4), });
     assert_pns_eq_sub!("%-10.10s",
-        { None, "-", Some(N::Num(10)), Some(N::Num(10)), None, "s", (0, 8), });
+        { None, "-", Some(N::Fixed(10)), Some(N::Fixed(10)), None, "s", (0, 8), });
     assert_pns_eq_sub!("%1$d",
         { Some(1), "", None, None, None, "d", (0, 4), });
     assert_pns_eq_sub!("%2$.*3$d",
@@ -102,7 +99,7 @@ fn test_parse() {
     assert_pns_eq_sub!("%1$*2$.*3$d",
         { Some(1), "", Some(N::Arg(2)), Some(N::Arg(3)), None, "d", (0, 11), });
     assert_pns_eq_sub!("%-8ld",
-        { None, "-", Some(N::Num(8)), None, Some("l"), "d", (0, 5), });
+        { None, "-", Some(N::Fixed(8)), None, Some("l"), "d", (0, 5), });
 }
 
 #[test]

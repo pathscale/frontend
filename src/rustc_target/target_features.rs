@@ -42,16 +42,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_macros::StableHash;
 use crate::rustc_span::{Symbol, sym};
+use rustc_macros::StableHash;
 
 use crate::rustc_target::spec::{Arch, FloatAbi, LlvmAbi, RustcAbi, Target};
 
@@ -134,7 +130,7 @@ impl Stability {
                     Some(nightly_feature)
                 }
             }
-            Stability::Stable { .. } => None,
+            Stability::Stable => None,
             Stability::InternalOnly { .. } => {
                 panic!("internal-only features should not reach this far")
             }
@@ -152,9 +148,9 @@ impl Stability {
     /// `requires_nightly`.)
     pub fn toggle_allowed(&self) -> Result<(), &'static str> {
         match self {
-            Stability::Unstable(_)
-            | Stability::CfgStableToggleUnstable(_)
-            | Stability::Stable { .. } => Ok(()),
+            Stability::Unstable(_) | Stability::CfgStableToggleUnstable(_) | Stability::Stable => {
+                Ok(())
+            }
             Stability::InternalOnly { reason, hard_error: _ } => Err(reason),
         }
     }
@@ -1123,23 +1119,18 @@ pub fn feature_to_arch_names(feature: &str) -> Vec<&'static str> {
 // certain size to have their "proper" ABI on each architecture. An empty feature name means
 // that the given length is unconditionally available.
 // Note that they must be kept sorted by vector size.
-const X86_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
+const X86_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] =
     &[(128, "sse"), (256, "avx"), (512, "avx512f")]; // FIXME: might need changes for AVX10.
-const AARCH64_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(128, "neon")];
+const AARCH64_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(128, "neon")];
 
-const ARM_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
+const ARM_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] =
     &[(128, "neon"), (128, "mve")];
 
-const AMDGPU_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(1024, "")];
-const POWERPC_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(128, "altivec")];
-const WASM_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(128, "simd128")];
-const S390X_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(128, "vector")];
-const RISCV_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] = &[
+const AMDGPU_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(1024, "")];
+const POWERPC_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(128, "altivec")];
+const WASM_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(128, "simd128")];
+const S390X_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(128, "vector")];
+const RISCV_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[
     (32, "zvl32b"),
     (64, "zvl64b"),
     (128, "zvl128b"),
@@ -1154,19 +1145,16 @@ const RISCV_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'stat
     (65536, "zvl65536b"),
 ];
 // Always error on SPARC, as the necessary target features cannot be enabled in Rust at the moment.
-const SPARC_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[/*(64, "vis")*/];
+const SPARC_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[/*(64, "vis")*/];
 
-const HEXAGON_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] = &[
+const HEXAGON_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[
     (512, "hvx-length64b"),   // HvxVector in 64-byte mode
     (1024, "hvx-length128b"), // HvxVector in 128-byte mode, or HvxVectorPair in 64-byte mode
     (2048, "hvx-length128b"), // HvxVectorPair in 128-byte mode
 ];
-const MIPS_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(128, "msa")];
-const CSKY_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
-    &[(128, "vdspv1")];
-const LOONGARCH_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &'static [(u64, &'static str)] =
+const MIPS_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(128, "msa")];
+const CSKY_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] = &[(128, "vdspv1")];
+const LOONGARCH_FEATURES_FOR_CORRECT_FIXED_LENGTH_VECTOR_ABI: &[(u64, &str)] =
     &[(128, "lsx"), (256, "lasx")];
 
 #[derive(Copy, Clone, Debug)]

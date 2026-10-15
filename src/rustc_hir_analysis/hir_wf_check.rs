@@ -1,19 +1,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::intravisit::{self, Visitor, VisitorExt};
 use crate::rustc_hir::{self as hir, AmbigArg, ForeignItem, ForeignItemKind};
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::traits::{ObligationCause, ObligationCauseCode, WellFormedLoc};
-use crate::bug;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt, TypingMode, fold_regions};
 use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_trait_selection::traits::{self, ObligationCtxt};
@@ -215,14 +210,14 @@ pub(super) fn diagnostic_hir_wf_check<'tcx>(
         WellFormedLoc::Param { function: _, param_idx } => {
             let fn_decl = tcx.hir_fn_decl_by_hir_id(hir_id).unwrap();
             // Get return type
-            if param_idx as usize == fn_decl.inputs.len() {
+            if param_idx == fn_decl.inputs.len() {
                 match fn_decl.output {
                     hir::FnRetTy::Return(ty) => vec![ty],
                     // The unit type `()` is always well-formed
                     hir::FnRetTy::DefaultReturn(_span) => vec![],
                 }
             } else {
-                vec![&fn_decl.inputs[param_idx as usize]]
+                vec![&fn_decl.inputs[param_idx]]
             }
         }
     };

@@ -1,29 +1,24 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::num::NonZero;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 // `parking_lot_lite_hack` has no `Condvar`: upstream's is built on `parking_lot_core`'s thread
 // parking, which is the part the fork dropped. The one in `eko::thread` is a
 // `pthread_cond_t`, so the latch below takes its `Mutex` too - a condvar and the lock it releases
 // have to be the same pair.
-use eko::thread::{Condvar, Mutex as WaitMutex};
-use parking_lot::Mutex;
 use crate::rustc_data_structures::hash_table::HashTable;
 use crate::rustc_data_structures::sharded::Sharded;
 use crate::rustc_errors::QueryDiagnostics;
 use crate::rustc_span::Span;
+use eko::thread::{Condvar, Mutex as WaitMutex};
+use parking_lot::Mutex;
 
 use crate::rustc_middle::queries::TaggedQueryKey;
 
@@ -325,15 +320,16 @@ impl<'tcx> QueryLatch<'tcx> {
 
         // A cycle through this edge is a chain of waits from the awaited job's thread back to this
         // one (see `QueryWaitGraph::edges`). Only then is the snapshot taken, to report it.
-        if query.is_some() && chain_reaches(&graph_guard, me, waitee_thread) {
-            if let Some(cycle) = detect_cycle() {
-                // Our edge closes the cycle. Take it back out, so the graph holds no cycle
-                // again, and report instead of sleeping. The removal is under `graph` too,
-                // like every other change to the latch edges.
-                self.remove_waiter(&waiter);
-                drop(graph_guard);
-                return Err(cycle);
-            }
+        if query.is_some()
+            && chain_reaches(&graph_guard, me, waitee_thread)
+            && let Some(cycle) = detect_cycle()
+        {
+            // Our edge closes the cycle. Take it back out, so the graph holds no cycle
+            // again, and report instead of sleeping. The removal is under `graph` too,
+            // like every other change to the latch edges.
+            self.remove_waiter(&waiter);
+            drop(graph_guard);
+            return Err(cycle);
         }
         graph_guard.push((me, waitee_thread));
 

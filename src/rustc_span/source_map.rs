@@ -16,7 +16,6 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use eko::file;
@@ -56,7 +55,7 @@ pub fn original_sp(sp: Span, enclosing_sp: Span) -> Span {
 mod monotonic {
     use alloc::vec;
     use alloc::vec::Vec;
-    use core::ops::{Deref, DerefMut};
+    use core::ops::Deref;
 
     /// A `MonotonicVec` is a `Vec` which can only be grown.
     /// Once inserted, an element can never be removed or swapped,
@@ -414,11 +413,10 @@ impl SourceMap {
         });
 
         debug_assert_eq!(source_file.stable_id, stable_id);
-        self.register_source_file(stable_id, source_file)
-            .unwrap_or_else(|OffsetOverflowError| {
-                eko::eprintln!("fatal error: source map position overflow");
-                crate::rustc_span::fatal_error::FatalError.raise()
-            })
+        self.register_source_file(stable_id, source_file).unwrap_or_else(|OffsetOverflowError| {
+            eko::eprintln!("fatal error: source map position overflow");
+            crate::rustc_span::fatal_error::FatalError.raise()
+        })
     }
 
     fn try_new_source_file(
@@ -450,6 +448,10 @@ impl SourceMap {
     /// crate. The source code of such an "imported `SourceFile`" is not available,
     /// but we still know enough to generate accurate debuginfo location
     /// information for things inlined from other crates.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn new_imported_source_file(
         &self,
         filename: FileName,
@@ -693,6 +695,10 @@ impl SourceMap {
     /// Extracts the source surrounding the given `Span` using the `extract_source` function. The
     /// extract function takes three arguments: a string slice containing the source, an index in
     /// the slice for the beginning of the span and an index in the slice for the end of the span.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves structured source-map failures across the established snippet API"
+    )]
     pub fn span_to_source<F, T>(
         &self,
         sp: Span,
@@ -735,6 +741,10 @@ impl SourceMap {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "keeps source-map errors structured while checking a span through the shared extraction path"
+    )]
     pub fn is_span_accessible(&self, sp: Span) -> bool {
         self.span_to_source(sp, |src, start_index, end_index| {
             Ok(src.get(start_index..end_index).is_some())
@@ -743,6 +753,10 @@ impl SourceMap {
     }
 
     /// Inspects a source slice while its file or external-source read guard remains alive.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the structured source-map error passed through the snippet inspection callback"
+    )]
     pub fn with_snippet<T>(
         &self,
         sp: Span,
@@ -755,6 +769,10 @@ impl SourceMap {
     }
 
     /// Returns the source snippet as `String` corresponding to the given `Span`.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the public structured source-map error type"
+    )]
     pub fn span_to_snippet(&self, sp: Span) -> Result<String, SpanSnippetError> {
         self.span_to_source(sp, |src, start_index, end_index| {
             src.get(start_index..end_index)
@@ -767,6 +785,10 @@ impl SourceMap {
         Some(self.indentation_before(sp)?.len())
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "keeps indentation lookup on the shared structured source-map extraction path"
+    )]
     pub fn indentation_before(&self, sp: Span) -> Option<String> {
         self.span_to_source(sp, |src, start_index, _| {
             let before = &src[..start_index];
@@ -780,6 +802,10 @@ impl SourceMap {
     }
 
     /// Returns the source snippet as `String` before the given `Span`.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the public structured source-map error type"
+    )]
     pub fn span_to_prev_source(&self, sp: Span) -> Result<String, SpanSnippetError> {
         self.span_to_source(sp, |src, start_index, _| {
             src.get(..start_index).map(|s| s.to_string()).ok_or(SpanSnippetError::IllFormedSpan(sp))
@@ -856,6 +882,10 @@ impl SourceMap {
     }
 
     /// Returns the source snippet as `String` after the given `Span`.
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the public structured source-map error type"
+    )]
     pub fn span_to_next_source(&self, sp: Span) -> Result<String, SpanSnippetError> {
         self.span_to_source(sp, |src, _, end_index| {
             src.get(end_index..).map(|s| s.to_string()).ok_or(SpanSnippetError::IllFormedSpan(sp))
@@ -863,6 +893,10 @@ impl SourceMap {
     }
 
     /// Extends the given `Span` while the next character matches the predicate
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the structured source-map error returned by span extension"
+    )]
     pub fn span_extend_while(
         &self,
         span: Span,
@@ -881,6 +915,10 @@ impl SourceMap {
     }
 
     /// Extends the given `Span` to previous character while the previous character matches the predicate
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the structured source-map error returned by span extension"
+    )]
     pub fn span_extend_prev_while(
         &self,
         span: Span,
@@ -930,6 +968,10 @@ impl SourceMap {
     /// the algorithm searches if the next character is '>' or ')' after skipping white space
     /// then searches the previous character to match '<' or '(' after skipping white space
     /// return true if wrapped by '<>' or '()'
+    #[expect(
+        clippy::result_large_err,
+        reason = "keeps wrapper detection on the shared structured source-map extraction path"
+    )]
     pub fn span_wrapped_by_angle_or_parentheses(&self, span: Span) -> bool {
         self.span_to_source(span, |src, start_index, end_index| {
             if src.get(start_index..end_index).is_none() {
@@ -942,7 +984,7 @@ impl SourceMap {
             let mut found_right_angle = false;
             while let Some(cc) = end_src.chars().nth(i) {
                 if cc == ' ' {
-                    i = i + 1;
+                    i += 1;
                 } else if cc == '>' {
                     // found > in the right;
                     found_right_angle = true;
@@ -963,7 +1005,7 @@ impl SourceMap {
                     if i == 0 {
                         return Ok(false);
                     }
-                    i = i - 1;
+                    i -= 1;
                 } else if cc == '<' {
                     // found < in the left
                     if !found_right_angle {
@@ -1174,7 +1216,7 @@ impl SourceMap {
     pub fn get_source_file(&self, filename: &FileName) -> Option<Arc<SourceFile>> {
         for sf in self.files.borrow().source_files.iter() {
             if *filename == sf.name {
-                return Some(Arc::clone(&sf));
+                return Some(Arc::clone(sf));
             }
         }
         None

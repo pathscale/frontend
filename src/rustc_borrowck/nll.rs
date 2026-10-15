@@ -3,20 +3,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
-use eko::path::PathBuf;
 use alloc::sync::Arc;
 use core::str::FromStr;
 
+use crate::find_attr;
 use crate::polonius_engine::{Algorithm, AllFacts, Output};
 use crate::rustc_data_structures::frozen::Frozen;
-use crate::find_attr;
 use crate::rustc_index::IndexSlice;
 use crate::rustc_middle::mir::pretty::PrettyPrintMirOptions;
 use crate::rustc_middle::mir::{Body, MirDumper, PassWhere, Promoted};
@@ -33,7 +29,7 @@ use crate::rustc_borrowck::diagnostics::RegionErrors;
 use crate::rustc_borrowck::handle_placeholders::compute_sccs_applying_placeholder_outlives_constraints;
 use crate::rustc_borrowck::polonius::PoloniusContext;
 use crate::rustc_borrowck::polonius::legacy::{
-    PoloniusFacts, PoloniusFactsExt, PoloniusLocationTable, PoloniusOutput,
+    PoloniusFacts, PoloniusLocationTable, PoloniusOutput,
 };
 use crate::rustc_borrowck::region_infer::RegionInferenceContext;
 use crate::rustc_borrowck::type_check::MirTypeckRegionConstraints;
@@ -102,11 +98,11 @@ pub(crate) fn compute_closure_requirements_modulo_opaques<'tcx>(
     // Computing the region graph should take at least some of it by reference/`Rc`.
     let lowered_constraints = compute_sccs_applying_placeholder_outlives_constraints(
         constraints.clone(),
-        &universal_region_relations,
+        universal_region_relations,
         infcx,
     );
     let mut regioncx = RegionInferenceContext::new(
-        &infcx,
+        infcx,
         lowered_constraints,
         universal_region_relations.clone(),
         location_map,
@@ -119,6 +115,10 @@ pub(crate) fn compute_closure_requirements_modulo_opaques<'tcx>(
 /// Computes the (non-lexical) regions from the input MIR.
 ///
 /// This may result in errors being reported.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+)]
 pub(crate) fn compute_regions<'tcx>(
     root_cx: &BorrowCheckRootCtxt<'_, 'tcx>,
     infcx: &BorrowckInferCtxt<'tcx>,
@@ -132,7 +132,7 @@ pub(crate) fn compute_regions<'tcx>(
     mut polonius_facts: Option<AllFacts<RustcFacts>>,
     mut polonius_context: Option<PoloniusContext>,
 ) -> NllOutput<'tcx> {
-    let polonius_output = root_cx.consumer.as_ref().map_or(false, |c| c.polonius_output())
+    let polonius_output = root_cx.consumer.as_ref().is_some_and(|c| c.polonius_output())
         || infcx.tcx.sess.opts.unstable_opts.polonius.is_legacy_enabled();
 
     let lowered_constraints = compute_sccs_applying_placeholder_outlives_constraints(
@@ -263,7 +263,7 @@ pub(crate) fn emit_nll_mir<'tcx>(
                 writeln!(out, "|")?;
             }
 
-            if borrow_set.len() > 0 {
+            if !borrow_set.is_empty() {
                 writeln!(out, "| Borrows")?;
                 for (borrow_idx, borrow_data) in borrow_set.iter_enumerated() {
                     writeln!(

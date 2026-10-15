@@ -2,11 +2,11 @@ use alloc::string::String;
 use core::fmt::{self, Write};
 use core::mem::{self, discriminant};
 
+use crate::bug;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHasher};
 use crate::rustc_hashes::Hash64;
 use crate::rustc_hir::def_id::{CrateNum, DefId};
 use crate::rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
-use crate::bug;
 use crate::rustc_middle::ty::print::{PrettyPrinter, Print, PrintError, Printer};
 use crate::rustc_middle::ty::{
     self, GenericArg, GenericArgKind, Instance, ReifyReason, Ty, TyCtxt, TypeVisitableExt,
@@ -73,7 +73,7 @@ pub(super) fn mangle<'tcx>(
         | ty::InstanceKind::Shim(ty::ShimKind::FutureDropPoll(_, _, _)) = instance.def
         {
             // Add the name of the dropped type to the symbol name
-            &*instance.args
+            instance.args
         } else if let ty::InstanceKind::Shim(ty::ShimKind::AsyncDropGlue(_, ty)) = instance.def {
             let ty::Coroutine(_, cor_args) = ty.kind() else {
                 bug!();

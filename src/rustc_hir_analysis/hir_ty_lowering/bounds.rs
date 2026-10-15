@@ -1,30 +1,26 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_errors::codes::*;
-use crate::struct_span_code_err;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::{PolyTraitRef, find_attr};
-use crate::bug;
 use crate::rustc_middle::ty::{
     self as ty, IsSuggestable, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitableExt,
     TypeVisitor, Upcast,
 };
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, kw};
 use crate::rustc_trait_selection::traits;
+use crate::struct_span_code_err;
 use tracing::{debug, instrument};
 
 use crate::rustc_hir_analysis::diagnostics;
@@ -95,8 +91,8 @@ fn search_bounds_for<'tcx>(
     }
 }
 
-fn collect_bounds<'a, 'tcx>(
-    hir_bounds: &'a [hir::GenericBound<'tcx>],
+fn collect_bounds<'tcx>(
+    hir_bounds: &[hir::GenericBound<'tcx>],
     context: ImpliedBoundsContext<'tcx>,
     target_did: DefId,
 ) -> CollectedBound {
@@ -124,9 +120,7 @@ fn collect_sizedness_bounds<'tcx>(
     let collect = |lang_item| {
         tcx.lang_items()
             .get(lang_item)
-            .map_or_else(CollectedBound::default, |did| {
-                collect_bounds(hir_bounds, context, did)
-            })
+            .map_or_else(CollectedBound::default, |did| collect_bounds(hir_bounds, context, did))
     };
     let sized = collect(LangItem::Sized);
     let meta_sized = collect(LangItem::MetaSized);
@@ -390,6 +384,10 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
     /// The `constraint` data however is from *inside* the binder
     /// (e.g., `&'a u32`) and hence may reference bound regions.
     #[instrument(level = "debug", skip(self, bounds, duplicates, path_span))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+    )]
     pub(super) fn lower_assoc_item_constraint(
         &self,
         hir_ref_id: hir::HirId,
@@ -501,7 +499,9 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         match constraint.kind {
             hir::AssocItemConstraintKind::Equality { .. } if let ty::AssocTag::Fn = assoc_tag => {
                 return Err(self.dcx().emit_err(
-                    crate::rustc_hir_analysis::diagnostics::ReturnTypeNotationEqualityBound { span: constraint.span },
+                    crate::rustc_hir_analysis::diagnostics::ReturnTypeNotationEqualityBound {
+                        span: constraint.span,
+                    },
                 ));
             }
             // Lower an equality constraint like `Item = u32` as found in HIR bound `T: Iterator<Item = u32>`
@@ -639,7 +639,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         let tcx = self.tcx();
         match qpath {
             hir::QPath::Resolved(opt_self_ty, path)
-                if let [mod_segments @ .., trait_segment, item_segment] = &path.segments[..]
+                if let [mod_segments @ .., trait_segment, item_segment] = path.segments
                     && item_segment.args.is_some_and(|args| {
                         matches!(
                             args.parenthesized,
@@ -818,12 +818,14 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         {
             alias_ty
         } else {
-            return Err(self.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::ReturnTypeNotationOnNonRpitit {
-                span: path_span,
-                ty: tcx.liberate_late_bound_regions(item_def_id, output),
-                fn_span: tcx.hir_span_if_local(item_def_id),
-                note: (),
-            }));
+            return Err(self.dcx().emit_err(
+                crate::rustc_hir_analysis::diagnostics::ReturnTypeNotationOnNonRpitit {
+                    span: path_span,
+                    ty: tcx.liberate_late_bound_regions(item_def_id, output),
+                    fn_span: tcx.hir_span_if_local(item_def_id),
+                    note: (),
+                },
+            ));
         };
 
         // Finally, move the fn return type's bound vars over to account for the early bound
@@ -872,9 +874,9 @@ pub(crate) fn check_assoc_const_binding_type<'tcx>(
     let mut guar = ty.visit_with(&mut collector).break_value();
 
     let tcx = cx.tcx();
-    let ty_note = ty
-        .make_suggestable(tcx, false, None)
-        .map(|ty| crate::rustc_hir_analysis::diagnostics::TyOfAssocConstBindingNote { assoc_const, ty });
+    let ty_note = ty.make_suggestable(tcx, false, None).map(|ty| {
+        crate::rustc_hir_analysis::diagnostics::TyOfAssocConstBindingNote { assoc_const, ty }
+    });
 
     let enclosing_item_owner_id = tcx
         .hir_parent_owner_iter(hir_id)
@@ -884,22 +886,24 @@ pub(crate) fn check_assoc_const_binding_type<'tcx>(
     for index in collector.params {
         let param = generics.param_at(index as _, tcx);
         let is_self_param = param.name == kw::SelfUpper;
-        guar.get_or_insert(cx.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::ParamInTyOfAssocConstBinding {
-            span: assoc_const.span,
-            assoc_const,
-            param_name: param.name,
-            param_def_kind: tcx.def_descr(param.def_id),
-            param_category: if is_self_param {
-                "self"
-            } else if param.kind.is_synthetic() {
-                "synthetic"
-            } else {
-                "normal"
+        guar.get_or_insert(cx.dcx().emit_err(
+            crate::rustc_hir_analysis::diagnostics::ParamInTyOfAssocConstBinding {
+                span: assoc_const.span,
+                assoc_const,
+                param_name: param.name,
+                param_def_kind: tcx.def_descr(param.def_id),
+                param_category: if is_self_param {
+                    "self"
+                } else if param.kind.is_synthetic() {
+                    "synthetic"
+                } else {
+                    "normal"
+                },
+                param_defined_here_label:
+                    (!is_self_param).then(|| tcx.def_ident_span(param.def_id).unwrap()),
+                ty_note,
             },
-            param_defined_here_label:
-                (!is_self_param).then(|| tcx.def_ident_span(param.def_id).unwrap()),
-            ty_note,
-        }));
+        ));
     }
     for var_def_id in collector.vars {
         guar.get_or_insert(cx.dcx().emit_err(

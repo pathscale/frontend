@@ -1,4 +1,3 @@
-
 use crate::polonius_engine::facts::FactTypes;
 use crate::polonius_engine::output::{InitializationContext, Output};
 
@@ -69,36 +68,30 @@ fn compute_transitive_paths<T: FactTypes>(
         // ancestor_path(Grandparent, Child) :-
         //    ancestor_path(Parent, Child),
         //    child_path(Parent, Grandparent).
-        ancestor_path.from_join(
-            &ancestor_path,
-            &child_path,
-            |&_parent, &child, &grandparent| (grandparent, child),
-        );
+        ancestor_path.from_join(&ancestor_path, &child_path, |&_parent, &child, &grandparent| {
+            (grandparent, child)
+        });
 
         // moving a path moves its children
         // path_moved_at(Child, Point) :-
         //     path_moved_at(Parent, Point),
         //     ancestor_path(Parent, Child).
-        path_moved_at.from_join(&path_moved_at, &ancestor_path, |&_parent, &p, &child| {
-            (child, p)
-        });
+        path_moved_at.from_join(&path_moved_at, &ancestor_path, |&_parent, &p, &child| (child, p));
 
         // initialising x at p initialises all x:s children
         // path_assigned_at(Child, point) :-
         //     path_assigned_at(Parent, point),
         //     ancestor_path(Parent, Child).
-        path_assigned_at.from_join(&path_assigned_at, &ancestor_path, |&_parent, &p, &child| {
-            (child, p)
-        });
+        path_assigned_at
+            .from_join(&path_assigned_at, &ancestor_path, |&_parent, &p, &child| (child, p));
 
         // accessing x at p accesses all x:s children at p (actually,
         // accesses should be maximally precise and this shouldn't happen?)
         // path_accessed_at(Child, point) :-
         //   path_accessed_at(Parent, point),
         //   ancestor_path(Parent, Child).
-        path_accessed_at.from_join(&path_accessed_at, &ancestor_path, |&_parent, &p, &child| {
-            (child, p)
-        });
+        path_accessed_at
+            .from_join(&path_accessed_at, &ancestor_path, |&_parent, &p, &child| (child, p));
 
         // path_begins_with_var(Child, Var) :-
         //   path_begins_with_var(Parent, Var)
@@ -201,8 +194,7 @@ fn compute_move_errors<T: FactTypes>(
             &path_maybe_uninitialized_on_exit,
             (
                 cfg_edge.extend_with(|&(_path, source_node)| source_node),
-                ctx.path_accessed_at
-                    .extend_with(|&(path, _source_node)| path),
+                ctx.path_accessed_at.extend_with(|&(path, _source_node)| path),
             ),
             |&(path, _source_node), &target_node| (path, target_node),
         );
@@ -210,19 +202,11 @@ fn compute_move_errors<T: FactTypes>(
 
     if output.dump_enabled {
         for &(path, location) in path_maybe_initialized_on_exit.complete().iter() {
-            output
-                .path_maybe_initialized_on_exit
-                .entry(location)
-                .or_default()
-                .push(path);
+            output.path_maybe_initialized_on_exit.entry(location).or_default().push(path);
         }
 
         for &(path, location) in path_maybe_uninitialized_on_exit.complete().iter() {
-            output
-                .path_maybe_uninitialized_on_exit
-                .entry(location)
-                .or_default()
-                .push(path);
+            output.path_maybe_uninitialized_on_exit.entry(location).or_default().push(path);
         }
     }
 
@@ -251,7 +235,6 @@ pub(super) fn compute<T: FactTypes>(
     cfg_edge: &Relation<(T::Point, T::Point)>,
     output: &mut Output<T>,
 ) -> InitializationResult<T> {
-
     let transitive_paths = compute_transitive_paths::<T>(
         ctx.child_path,
         ctx.path_assigned_at_base,
@@ -261,22 +244,13 @@ pub(super) fn compute<T: FactTypes>(
     );
     info!("initialization phase 1 completed");
 
-    let InitializationStatus {
-        var_maybe_partly_initialized_on_exit,
-        move_error,
-    } = compute_move_errors::<T>(transitive_paths, cfg_edge, output);
-    info!(
-        "initialization phase 2: {} move errors",
-        move_error.elements.len()
-    );
+    let InitializationStatus { var_maybe_partly_initialized_on_exit, move_error } =
+        compute_move_errors::<T>(transitive_paths, cfg_edge, output);
+    info!("initialization phase 2: {} move errors", move_error.elements.len());
 
     if output.dump_enabled {
         for &(var, location) in var_maybe_partly_initialized_on_exit.iter() {
-            output
-                .var_maybe_partly_initialized_on_exit
-                .entry(location)
-                .or_default()
-                .push(var);
+            output.var_maybe_partly_initialized_on_exit.entry(location).or_default().push(var);
         }
     }
 

@@ -183,8 +183,10 @@ mod bool {
         let alts = [b0, b1, b2];
 
         let into_layout = |alts: Vec<_>| {
-            alts.into_iter()
-                .fold(layout::Tree::<Def, crate::Never, crate::Never>::uninhabited(), layout::Tree::<Def, crate::Never, crate::Never>::or)
+            alts.into_iter().fold(
+                layout::Tree::<Def, crate::Never, crate::Never>::uninhabited(),
+                layout::Tree::<Def, crate::Never, crate::Never>::or,
+            )
         };
 
         let into_set = |alts: Vec<_>| {
@@ -353,7 +355,10 @@ mod char {
                 (0xFFFFFFFF, no),
             ] {
                 let src_layout =
-                    layout::tree::Tree::<Def, crate::Never, crate::Never>::from_big_endian(order, src.to_be_bytes());
+                    layout::tree::Tree::<Def, crate::Never, crate::Never>::from_big_endian(
+                        order,
+                        src.to_be_bytes(),
+                    );
 
                 let a = is_transmutable(&src_layout, &char_layout, Assume::default());
                 assert_eq!(a, answer, "endian:{order:?},\nsrc:{src:x}");

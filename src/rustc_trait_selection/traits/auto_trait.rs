@@ -4,11 +4,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::collections::VecDeque;
@@ -25,7 +20,9 @@ use tracing::debug;
 use super::*;
 use crate::rustc_trait_selection::diagnostics::UnableToConstructConstantValue;
 use crate::rustc_trait_selection::infer::TypeFreshener;
-use crate::rustc_trait_selection::infer::region_constraints::{ConstraintKind, RegionConstraintData};
+use crate::rustc_trait_selection::infer::region_constraints::{
+    ConstraintKind, RegionConstraintData,
+};
 use crate::rustc_trait_selection::regions::OutlivesEnvironmentBuildExt;
 use crate::rustc_trait_selection::traits::project::ProjectAndUnifyResult;
 
@@ -183,7 +180,7 @@ impl<'tcx> AutoTraitFinder<'tcx> {
         }
 
         let outlives_env = OutlivesEnvironment::new(&infcx, CRATE_DEF_ID, full_env, []);
-        let _ = infcx.process_registered_region_obligations(&outlives_env, DUMMY_SP);
+        infcx.process_registered_region_obligations(&outlives_env, DUMMY_SP);
 
         let region_data = infcx.inner.borrow_mut().unwrap_region_constraints().data().clone();
 
@@ -414,7 +411,7 @@ impl<'tcx> AutoTraitFinder<'tcx> {
             new_env = ty::ParamEnv::new(tcx, normalized_preds);
         }
 
-        let final_user_env = ty::ParamEnv::new(tcx, user_computed_clauses.into_iter());
+        let final_user_env = ty::ParamEnv::new(tcx, user_computed_clauses);
         debug!(
             "evaluate_nested_obligations(ty={:?}, trait_did={:?}): succeeded with '{:?}' \
              '{:?}'",
@@ -456,70 +453,67 @@ impl<'tcx> AutoTraitFinder<'tcx> {
         user_computed_clauses.retain(|&old_clause| {
             if let (ty::ClauseKind::Trait(new_trait), ty::ClauseKind::Trait(old_trait)) =
                 (new_clause.kind().skip_binder(), old_clause.kind().skip_binder())
+                && new_trait.def_id() == old_trait.def_id()
             {
-                if new_trait.def_id() == old_trait.def_id() {
-                    let new_args = new_trait.trait_ref.args;
-                    let old_args = old_trait.trait_ref.args;
+                let new_args = new_trait.trait_ref.args;
+                let old_args = old_trait.trait_ref.args;
 
-                    if !new_args.terms().eq(old_args.terms()) {
-                        // We can't compare lifetimes if the types are different,
-                        // so skip checking `old_clause`.
-                        return true;
-                    }
+                if !new_args.terms().eq(old_args.terms()) {
+                    // We can't compare lifetimes if the types are different,
+                    // so skip checking `old_clause`.
+                    return true;
+                }
 
-                    for (new_region, old_region) in
-                        iter::zip(new_args.regions(), old_args.regions())
-                    {
-                        match (new_region.kind(), old_region.kind()) {
-                            // If both predicates have an `ReBound` (a HRTB) in the
-                            // same spot, we do nothing.
-                            (ty::ReBound(_, _), ty::ReBound(_, _)) => {}
+                for (new_region, old_region) in iter::zip(new_args.regions(), old_args.regions()) {
+                    match (new_region.kind(), old_region.kind()) {
+                        // If both predicates have an `ReBound` (a HRTB) in the
+                        // same spot, we do nothing.
+                        (ty::ReBound(_, _), ty::ReBound(_, _)) => {}
 
-                            (ty::ReBound(_, _), _) | (_, ty::ReVar(_)) => {
-                                // One of these is true:
-                                // The new predicate has a HRTB in a spot where the old
-                                // predicate does not (if they both had a HRTB, the previous
-                                // match arm would have executed). A HRBT is a 'stricter'
-                                // bound than anything else, so we want to keep the newer
-                                // predicate (with the HRBT) in place of the old predicate.
-                                //
-                                // OR
-                                //
-                                // The old predicate has a region variable where the new
-                                // predicate has some other kind of region. An region
-                                // variable isn't something we can actually display to a user,
-                                // so we choose their new predicate (which doesn't have a region
-                                // variable).
-                                //
-                                // In both cases, we want to remove the old predicate,
-                                // from `user_computed_clauses`, and replace it with the new
-                                // one. Having both the old and the new
-                                // predicate in a `ParamEnv` would confuse `SelectionContext`.
-                                //
-                                // We're currently in the predicate passed to 'retain',
-                                // so we return `false` to remove the old predicate from
-                                // `user_computed_clauses`.
-                                return false;
-                            }
-                            (_, ty::ReBound(_, _)) | (ty::ReVar(_), _) => {
-                                // This is the opposite situation as the previous arm.
-                                // One of these is true:
-                                //
-                                // The old predicate has a HRTB lifetime in a place where the
-                                // new predicate does not.
-                                //
-                                // OR
-                                //
-                                // The new predicate has a region variable where the old
-                                // predicate has some other type of region.
-                                //
-                                // We want to leave the old
-                                // predicate in `user_computed_clauses`, and skip adding
-                                // new_clause to `user_computed_params`.
-                                should_add_new = false
-                            }
-                            _ => {}
+                        (ty::ReBound(_, _), _) | (_, ty::ReVar(_)) => {
+                            // One of these is true:
+                            // The new predicate has a HRTB in a spot where the old
+                            // predicate does not (if they both had a HRTB, the previous
+                            // match arm would have executed). A HRBT is a 'stricter'
+                            // bound than anything else, so we want to keep the newer
+                            // predicate (with the HRBT) in place of the old predicate.
+                            //
+                            // OR
+                            //
+                            // The old predicate has a region variable where the new
+                            // predicate has some other kind of region. An region
+                            // variable isn't something we can actually display to a user,
+                            // so we choose their new predicate (which doesn't have a region
+                            // variable).
+                            //
+                            // In both cases, we want to remove the old predicate,
+                            // from `user_computed_clauses`, and replace it with the new
+                            // one. Having both the old and the new
+                            // predicate in a `ParamEnv` would confuse `SelectionContext`.
+                            //
+                            // We're currently in the predicate passed to 'retain',
+                            // so we return `false` to remove the old predicate from
+                            // `user_computed_clauses`.
+                            return false;
                         }
+                        (_, ty::ReBound(_, _)) | (ty::ReVar(_), _) => {
+                            // This is the opposite situation as the previous arm.
+                            // One of these is true:
+                            //
+                            // The old predicate has a HRTB lifetime in a place where the
+                            // new predicate does not.
+                            //
+                            // OR
+                            //
+                            // The new predicate has a region variable where the old
+                            // predicate has some other type of region.
+                            //
+                            // We want to leave the old
+                            // predicate in `user_computed_clauses`, and skip adding
+                            // new_clause to `user_computed_params`.
+                            should_add_new = false
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -801,17 +795,17 @@ impl<'tcx> AutoTraitFinder<'tcx> {
                             // when we started out trying to unify
                             // some inference variables. See the comment above
                             // for more information
-                            if p.term().skip_binder().has_infer_types() {
-                                if !self.evaluate_nested_obligations(
+                            if p.term().skip_binder().has_infer_types()
+                                && !self.evaluate_nested_obligations(
                                     ty,
                                     v.into_iter(),
                                     computed_clauses,
                                     fresh_preds,
                                     predicates,
                                     selcx,
-                                ) {
-                                    return false;
-                                }
+                                )
+                            {
+                                return false;
                             }
                         }
                         ProjectAndUnifyResult::FailedNormalization => {

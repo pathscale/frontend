@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_data_structures::sync::{Lock, run_stage};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::LocalDefId;
@@ -7,6 +5,8 @@ use crate::rustc_hir::{HirId, ItemLocalId, intravisit};
 use crate::rustc_index::bit_set::GrowableBitSet;
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::ty::TyCtxt;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub fn check_crate(tcx: TyCtxt<'_>) {
     // One stage over the modules. Each module's errors are that item's output, collected in its
@@ -69,7 +69,7 @@ impl<'a, 'hir> HirIdValidator<'a, 'hir> {
             let pretty_owner = self.tcx.hir_def_path(owner.def_id).to_string_no_crate_verbose();
 
             let missing_items: Vec<_> = (0..=max as u32)
-                .map(|i| ItemLocalId::from_u32(i))
+                .map(ItemLocalId::from_u32)
                 .filter(|&local_id| !self.hir_ids_seen.contains(local_id))
                 .map(|local_id| self.tcx.hir_id_to_string(HirId { owner, local_id }))
                 .collect();

@@ -329,7 +329,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                     let state_place = scrutinee_place_builder.to_place(this);
                     let state_result = this.temp(state_ty, expr_span);
-                    let state_result_place = Place::from(state_result);
+                    let state_result_place = state_result;
 
                     // This is logic for the labeled block: a block is a drop scope, hence
                     // `in_scope`, and a labeled block can be broken out of with a `break 'label`,

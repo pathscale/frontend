@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::assert_matches;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::rustc_data_structures::undo_log::{Rollback, UndoLogs};
@@ -8,7 +8,9 @@ use crate::rustc_middle::ty::{self, OpaqueTypeKey, ProvisionalHiddenType};
 use tracing::debug;
 
 use crate::rustc_infer::infer::unify_key::{ConstVidKey, RegionVidKey};
-use crate::rustc_infer::infer::{InferCtxtInner, SolverRegionConstraint, region_constraints, type_variable};
+use crate::rustc_infer::infer::{
+    InferCtxtInner, SolverRegionConstraint, region_constraints, type_variable,
+};
 use crate::rustc_infer::traits;
 
 pub struct Snapshot<'tcx> {

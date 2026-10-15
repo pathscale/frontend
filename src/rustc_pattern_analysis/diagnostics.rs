@@ -1,8 +1,8 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::Ty;
 use crate::rustc_span::Span;
+use alloc::string::String;
+use alloc::vec::Vec;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_pattern_analysis::rustc::{RustcPatCtxt, WitnessPat};
 
@@ -34,7 +34,7 @@ impl Uncovered {
     where
         'tcx: 'p,
     {
-        let witness_1 = cx.print_witness_pat(witnesses.get(0).unwrap());
+        let witness_1 = cx.print_witness_pat(witnesses.first().unwrap());
         Self {
             span,
             count: witnesses.len(),

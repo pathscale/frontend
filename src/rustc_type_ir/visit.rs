@@ -41,11 +41,11 @@
 //! - u.visit_with(visitor)
 //! ```
 
-#[allow(unused_imports)]
-use {alloc::boxed::Box, alloc::vec::Vec};
+use alloc::sync::Arc;
 use core::fmt;
 use core::ops::ControlFlow;
-use alloc::sync::Arc;
+#[allow(unused_imports)]
+use {alloc::boxed::Box, alloc::vec::Vec};
 
 pub use crate::rustc_ast_ir::visit::VisitorResult;
 pub use crate::rustc_ast_ir::{try_visit, walk_visitable_list};

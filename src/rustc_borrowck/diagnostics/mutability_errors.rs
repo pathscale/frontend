@@ -2,7 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -10,15 +9,13 @@ use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
-use either::Either;
-use hir::{ExprKind, Param};
+use crate::bug;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_errors::{Applicability, Diag};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::{self as hir, BindingMode, ByRef, Expr, Node};
-use crate::bug;
 use crate::rustc_middle::hir::place::PlaceBase;
 use crate::rustc_middle::mir::visit::PlaceContext;
 use crate::rustc_middle::mir::{
@@ -31,6 +28,8 @@ use crate::rustc_span::{BytePos, DesugaringKind, Span, Symbol, kw, sym};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::infer::InferCtxtExt;
 use crate::rustc_trait_selection::traits;
+use either::Either;
+use hir::{ExprKind, Param};
 use tracing::{debug, trace};
 
 use crate::rustc_borrowck::diagnostics::BorrowedContentSource;
@@ -512,19 +511,19 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 {
                     if upvar_ident.name == kw::SelfLower {
                         for (_, node) in self.infcx.tcx.hir_parent_iter(upvar_hir_id) {
-                            if let Some(fn_decl) = node.fn_decl() {
-                                if !matches!(
+                            if let Some(fn_decl) = node.fn_decl()
+                                && !matches!(
                                     fn_decl.implicit_self(),
                                     hir::ImplicitSelfKind::RefImm | hir::ImplicitSelfKind::RefMut
-                                ) {
-                                    err.span_suggestion_verbose(
-                                        upvar_ident.span.shrink_to_lo(),
-                                        "consider changing this to be mutable",
-                                        "mut ",
-                                        Applicability::MachineApplicable,
-                                    );
-                                    break;
-                                }
+                                )
+                            {
+                                err.span_suggestion_verbose(
+                                    upvar_ident.span.shrink_to_lo(),
+                                    "consider changing this to be mutable",
+                                    "mut ",
+                                    Applicability::MachineApplicable,
+                                );
+                                break;
                             }
                         }
                     } else {
@@ -901,7 +900,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 suggested: false,
                 infcx: self.infcx,
             };
-            v.visit_body(&body);
+            v.visit_body(body);
             if !v.suggested {
                 err.help(format!(
                     "to modify a `{ty}`, use `.get_mut()`, `.insert()` or the entry API",
@@ -979,7 +978,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         let def_id = self.body.source.def_id();
         if let Some(local_def_id) = def_id.as_local()
             && let Some(body) = self.infcx.tcx.hir_maybe_body_owned_by(local_def_id)
-            && let Some(hir_id) = (BindingFinder { span: pat_span }).visit_body(&body).break_value()
+            && let Some(hir_id) = (BindingFinder { span: pat_span }).visit_body(body).break_value()
             && let node = self.infcx.tcx.hir_node(hir_id)
             && let hir::Node::LetStmt(hir::LetStmt {
                 pat: hir::Pat { kind: hir::PatKind::Ref(_, _, _), .. },
@@ -1190,7 +1189,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         access_place: Place<'tcx>,
     ) {
         let place = access_place.as_ref();
-        for (index, elem) in place.projection.into_iter().enumerate() {
+        for (index, elem) in place.projection.iter().enumerate() {
             if let ProjectionElem::Deref = elem {
                 if index == 0 {
                     if self.body.local_decls[local].is_ref_for_guard() {
@@ -1449,7 +1448,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 ..
             })) => {
                 // Check if the RHS is from desugaring.
-                let first_assignment = find_assignments(&self.body, local).first().copied();
+                let first_assignment = find_assignments(self.body, local).first().copied();
                 let first_assignment_stmt = first_assignment
                     .and_then(|loc| self.body[loc.block].statements.get(loc.statement_index));
                 trace!(?first_assignment_stmt);
@@ -1629,7 +1628,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         let hir_id = if let Some(local_def_id) = def_id.as_local()
             && let Some(body) = self.infcx.tcx.hir_maybe_body_owned_by(local_def_id)
         {
-            BindingFinder { span: sugg_span }.visit_body(&body).break_value()
+            BindingFinder { span: sugg_span }.visit_body(body).break_value()
         } else {
             None
         };
@@ -1932,7 +1931,7 @@ fn suggest_ampmut<'tcx>(
         if let Rvalue::Ref(_, BorrowKind::Shared, place) = rvalue
             && place.projection.len() == 1
             && place.projection[0] == ProjectionElem::Deref
-            && let Some(assign) = find_assignments(&body, place.local).first()
+            && let Some(assign) = find_assignments(body, place.local).first()
         {
             // If this is a usertype ascription (`let _x: &T = _y`) then pierce through it as either we want
             // to suggest `&mut` on the expression (handled here) or we return `None` and let the caller

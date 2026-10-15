@@ -43,7 +43,6 @@
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -214,6 +213,10 @@ impl SessionGlobals {
     }
 
     /// Isolate compressed-span allocation until the parse has been validated.
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the isolated span table stays in the speculative caller-thread parse"
+    )]
     pub(crate) fn fork_for_parse(&self) -> (Self, usize) {
         let spans = self.span_interner.lock().clone();
         let baseline = spans.len();
@@ -1905,7 +1908,7 @@ pub struct SourceFileHash {
 impl Display for SourceFileHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}=", self.kind)?;
-        for byte in self.value[0..self.hash_len()].into_iter() {
+        for byte in self.value[0..self.hash_len()].iter() {
             write!(f, "{byte:02x}")?;
         }
         Ok(())
@@ -1983,7 +1986,8 @@ impl SourceFileLines {
 /// small crates where very little of `std`'s metadata is used.
 #[derive(Clone)]
 pub struct SourceFileDiffs {
-    /// Always 1, 2, or 4. Always as small as possible, while being big
+    /// Zero marks deferred analysis of the in-memory source. Otherwise 1, 2, or 4,
+    /// always as small as possible, while being big
     /// enough to hold the length of the longest line in the source file.
     /// The 1 case is by far the most common.
     bytes_per_diff: usize,
@@ -2072,14 +2076,14 @@ impl<S: SpanEncoder> Encodable<S> for SourceFile {
         self.normalized_source_len.encode(s);
         self.unnormalized_source_len.encode(s);
 
-        // We are always in `Lines` form by the time we reach here.
-        assert!(self.lines.read().is_lines());
         let lines = self.lines();
+        // Materializing deferred lines also freezes them before encoding.
+        assert!(self.lines.read().is_lines());
         // Store the length.
         s.emit_u32(lines.len() as u32);
 
         // Compute and store the difference list.
-        if lines.len() != 0 {
+        if !lines.is_empty() {
             let max_line_length = if lines.len() == 1 {
                 0
             } else {
@@ -2249,7 +2253,7 @@ impl SourceFile {
         hash_kind: Option<SourceFileHashAlgorithm>,
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
     ) -> Result<Self, OffsetOverflowError> {
-        Self::new_with_newlines(name, src, hash_kind, checksum_hash_kind, &[])
+        Self::new_inner(name, src, hash_kind, checksum_hash_kind, None)
     }
 
     /// Constructs a `SourceFile`, optionally using validated LF byte offsets for ASCII text.
@@ -2260,6 +2264,16 @@ impl SourceFile {
         hash_kind: Option<SourceFileHashAlgorithm>,
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
         newlines: &[u32],
+    ) -> Result<Self, OffsetOverflowError> {
+        Self::new_inner(name, src, hash_kind, checksum_hash_kind, Some(newlines))
+    }
+
+    fn new_inner(
+        name: FileName,
+        src: impl Into<Arc<String>>,
+        hash_kind: Option<SourceFileHashAlgorithm>,
+        checksum_hash_kind: Option<SourceFileHashAlgorithm>,
+        newlines: Option<&[u32]>,
     ) -> Result<Self, OffsetOverflowError> {
         let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
@@ -2289,21 +2303,32 @@ impl SourceFile {
             return Err(OffsetOverflowError);
         }
 
-        let (lines, multibyte_chars) = if !source_needs_normalization
-            && src.is_ascii()
-            && valid_newline_offsets(src.as_bytes(), newlines)
-        {
-            let mut lines = Vec::with_capacity(newlines.len() + 1);
-            lines.push(RelativeBytePos::from_u32(0));
-            lines.extend(newlines.iter().map(|&offset| {
-                RelativeBytePos::from_u32(offset + 1)
-            }));
-            if lines.last().copied() == Some(RelativeBytePos::from_usize(src.len())) {
-                lines.pop();
+        let (lines, multibyte_chars) = match newlines {
+            Some(newlines)
+                if !source_needs_normalization
+                    && src.is_ascii()
+                    && valid_newline_offsets(src.as_bytes(), newlines) =>
+            {
+                (
+                    FreezeLock::frozen(SourceFileLines::Lines(lines_from_newline_offsets(
+                        src.len(),
+                        newlines,
+                    ))),
+                    Vec::new(),
+                )
             }
-            (lines, Vec::new())
-        } else {
-            analyze_source_file::analyze_source_file(&src)
+            None if !source_needs_normalization && src.is_ascii() => (
+                FreezeLock::new(SourceFileLines::Diffs(SourceFileDiffs {
+                    bytes_per_diff: 0,
+                    num_diffs: 0,
+                    raw_diffs: Vec::new(),
+                })),
+                Vec::new(),
+            ),
+            _ => {
+                let (lines, multibyte_chars) = analyze_source_file::analyze_source_file(&src);
+                (FreezeLock::frozen(SourceFileLines::Lines(lines)), multibyte_chars)
+            }
         };
 
         Ok(SourceFile {
@@ -2315,7 +2340,7 @@ impl SourceFile {
             start_pos: BytePos::from_u32(0),
             normalized_source_len: RelativeBytePos::from_u32(normalized_source_len),
             unnormalized_source_len,
-            lines: FreezeLock::frozen(SourceFileLines::Lines(lines)),
+            lines,
             multibyte_chars,
             normalized_pos,
             stable_id,
@@ -2323,9 +2348,21 @@ impl SourceFile {
         })
     }
 
-    /// Compatibility hook for callers that discover newline offsets after construction.
-    /// Source files freeze their line table in `new`, so late offsets cannot replace it.
-    pub fn supply_precomputed_newlines(&self, _newlines: &[u32]) {}
+    /// Supplies validated LF byte offsets while an ASCII source's line table is deferred.
+    pub fn supply_precomputed_newlines(&self, newlines: &[u32]) {
+        if !self.lines.is_frozen() {
+            let Some(mut guard) = self.lines.try_write() else { return };
+            if matches!(&*guard, SourceFileLines::Diffs(diffs) if diffs.bytes_per_diff == 0)
+                && let Some(src) = self.src.as_deref()
+                && self.normalized_pos.is_empty()
+                && src.is_ascii()
+                && valid_newline_offsets(src.as_bytes(), newlines)
+            {
+                *guard = SourceFileLines::Lines(lines_from_newline_offsets(src.len(), newlines));
+                FreezeWriteGuard::freeze(guard);
+            }
+        }
+    }
 
     /// This converts the `lines` field to contain `SourceFileLines::Lines` if needed and freezes
     /// it.
@@ -2333,6 +2370,13 @@ impl SourceFile {
         let mut guard = if let Some(guard) = self.lines.try_write() { guard } else { return };
 
         let SourceFileDiffs { bytes_per_diff, num_diffs, raw_diffs } = match &*guard {
+            SourceFileLines::Diffs(diffs) if diffs.bytes_per_diff == 0 => {
+                let src = self.src.as_deref().map(String::as_str).unwrap_or("");
+                let (lines, _) = analyze_source_file::analyze_source_file(src);
+                *guard = SourceFileLines::Lines(lines);
+                FreezeWriteGuard::freeze(guard);
+                return;
+            }
             SourceFileLines::Diffs(diffs) => diffs,
             SourceFileLines::Lines(..) => {
                 FreezeWriteGuard::freeze(guard);
@@ -2349,7 +2393,7 @@ impl SourceFile {
         assert_eq!(*num_diffs, raw_diffs.len() / bytes_per_diff);
         match bytes_per_diff {
             1 => {
-                lines.extend(raw_diffs.into_iter().map(|&diff| {
+                lines.extend(raw_diffs.iter().map(|&diff| {
                     line_start = line_start + RelativeBytePos(diff as u32);
                     line_start
                 }));
@@ -2638,7 +2682,7 @@ impl SourceFile {
                 tracing::info!("couldn't find line {line} {:?}", self.name);
                 return (line, col_or_chpos, col_or_chpos.0);
             };
-            let display_col = code.chars().take(col_or_chpos.0).map(|ch| char_width(ch)).sum();
+            let display_col = code.chars().take(col_or_chpos.0).map(char_width).sum();
             (line, col_or_chpos, display_col)
         } else {
             // This is never meant to happen?
@@ -2652,9 +2696,7 @@ pub fn char_width(ch: char) -> usize {
     // just accept that sometimes the code line will be longer than desired.
     match ch {
         '\t' => 4,
-        // Keep the following list in sync with `crate::rustc_errors::emitter::OUTPUT_REPLACEMENTS`. These
-        // are control points that we replace before printing with a visible codepoint for the sake
-        // of being able to point at them with underlines.
+        // Control characters reserve one diagnostic column for underline positioning.
         '\u{0000}' | '\u{0001}' | '\u{0002}' | '\u{0003}' | '\u{0004}' | '\u{0005}'
         | '\u{0006}' | '\u{0007}' | '\u{0008}' | '\u{000B}' | '\u{000C}' | '\u{000D}'
         | '\u{000E}' | '\u{000F}' | '\u{0010}' | '\u{0011}' | '\u{0012}' | '\u{0013}'
@@ -2677,16 +2719,28 @@ fn needs_normalization(src: &str) -> bool {
 }
 
 fn valid_newline_offsets(src: &[u8], newlines: &[u32]) -> bool {
-    let mut supplied = 0;
-    for (index, &byte) in src.iter().enumerate() {
-        if byte == b'\n' {
-            if newlines.get(supplied).copied() != u32::try_from(index).ok() {
-                return false;
-            }
-            supplied += 1;
+    let mut cursor = 0usize;
+    for &offset in newlines {
+        let idx = offset as usize;
+        if idx < cursor || idx >= src.len() || src[idx] != b'\n' {
+            return false;
         }
+        if memchr::memchr(b'\n', &src[cursor..idx]).is_some() {
+            return false;
+        }
+        cursor = idx + 1;
     }
-    supplied == newlines.len()
+    memchr::memchr(b'\n', &src[cursor..]).is_none()
+}
+
+fn lines_from_newline_offsets(src_len: usize, newlines: &[u32]) -> Vec<RelativeBytePos> {
+    let mut lines = Vec::with_capacity(newlines.len() + 1);
+    lines.push(RelativeBytePos::from_u32(0));
+    lines.extend(newlines.iter().map(|&offset| RelativeBytePos::from_u32(offset + 1)));
+    if lines.last().copied() == Some(RelativeBytePos::from_usize(src_len)) {
+        lines.pop();
+    }
+    lines
 }
 
 /// Normalizes the source code and records the normalizations.

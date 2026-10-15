@@ -46,6 +46,10 @@ impl TokenCursor {
         Some(Self { inner: Cursor::Source(cursor) })
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retains construction from a prebuilt indexed source tape")
+    )]
     pub(crate) fn from_indexed_tape(tape: Arc<IndexedSourceTape>) -> Self {
         Self { inner: Cursor::Source(OnDemandCursor::from_tape(tape)) }
     }
@@ -68,12 +72,12 @@ impl TokenCursor {
 
     pub(crate) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
         match &self.inner {
-            Cursor::Source(cursor) => {
-                cursor.detached_for_group(group_idx).map(|cursor| Self { inner: Cursor::Source(cursor) })
-            }
-            Cursor::Flat(cursor) => {
-                cursor.detached_for_group(group_idx).map(|cursor| Self { inner: Cursor::Flat(cursor) })
-            }
+            Cursor::Source(cursor) => cursor
+                .detached_for_group(group_idx)
+                .map(|cursor| Self { inner: Cursor::Source(cursor) }),
+            Cursor::Flat(cursor) => cursor
+                .detached_for_group(group_idx)
+                .map(|cursor| Self { inner: Cursor::Flat(cursor) }),
             Cursor::Trees(_) => None,
         }
     }

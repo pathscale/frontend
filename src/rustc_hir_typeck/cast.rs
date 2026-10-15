@@ -3,7 +3,7 @@
 //! A cast `e as U` is valid if one of the following holds:
 //! * `e` has type `T` and `T` coerces to `U`; *coercion-cast*
 //! * `e` has type `*T`, `U` is `*U_0`, and either `U_0: Sized` or
-//!    pointer_kind(`T`) = pointer_kind(`U_0`); *ptr-ptr-cast*
+//!   pointer_kind(`T`) = pointer_kind(`U_0`); *ptr-ptr-cast*
 //! * `e` has type `*T` and `U` is a numeric type, while `T: Sized`; *ptr-addr-cast*
 //! * `e` is an integer and `U` is `*U_0`, while `U_0: Sized`; *addr-ptr-cast*
 //! * `e` has type `T` and `T` and `U` are any numeric types; *numeric-cast*
@@ -31,8 +31,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -46,7 +44,6 @@ use crate::rustc_hir::{self as hir, ExprKind};
 use crate::rustc_infer::infer::DefineOpaqueTypes;
 use crate::rustc_infer::traits::ObligationCauseCode;
 use crate::rustc_lint_defs::builtin::{TRIVIAL_CASTS, TRIVIAL_NUMERIC_CASTS};
-use rustc_macros::{TypeFoldable, TypeVisitable};
 use crate::rustc_middle::mir::Mutability;
 use crate::rustc_middle::ty::adjustment::AllowTwoPhase;
 use crate::rustc_middle::ty::cast::{CastKind, CastTy};
@@ -58,6 +55,7 @@ use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{DUMMY_SP, Span, sym};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
 use crate::rustc_trait_selection::traits::{self, ObligationCtxt, TraitEngine};
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument};
 
 use super::FnCtxt;
@@ -490,7 +488,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
                     }
 
                     if !sugg_mutref
-                        && sugg == None
+                        && sugg.is_none()
                         && fcx.may_coerce(
                             Ty::new_ref(fcx.tcx, reg, self.expr_ty, mutbl),
                             self.cast_ty,

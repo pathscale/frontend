@@ -2,18 +2,15 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_ast::token::{Delimiter, TokenKind};
 use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 use crate::rustc_ast::{
-    Attribute, DUMMY_NODE_ID, EiiDecl, EiiImpl, ItemKind, MetaItem, Mutability, Path, StmtKind,
-    Visibility, ast,
+    DUMMY_NODE_ID, EiiDecl, EiiImpl, ItemKind, MetaItem, Mutability, Path, StmtKind, Visibility,
+    ast,
 };
 use crate::rustc_ast_pretty::pprust::path_to_string;
 use crate::rustc_expand::base::{Annotatable, ExtCtxt};
@@ -540,7 +537,7 @@ pub(crate) fn eii_declaration(
         return vec![item];
     }
 
-    let Some(extern_item_path) = list.get(0).and_then(|i| i.meta_item()).map(|i| i.path.clone())
+    let Some(extern_item_path) = list.first().and_then(|i| i.meta_item()).map(|i| i.path.clone())
     else {
         ecx.dcx().emit_err(EiiExternTargetExpectedList { span: meta_item.span });
         return vec![item];

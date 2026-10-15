@@ -5,15 +5,14 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::iter;
 use crate::assert_matches;
+use core::iter;
 
 use crate::rustc_ast::{self as ast, GenericParamKind, attr, join_path_idents};
 use crate::rustc_ast_pretty::pprust;
@@ -26,7 +25,9 @@ use thin_vec::{ThinVec, thin_vec};
 use tracing::debug;
 
 use crate::rustc_builtin_macros::diagnostics;
-use crate::rustc_builtin_macros::util::{check_builtin_macro_attribute, warn_on_duplicate_attribute};
+use crate::rustc_builtin_macros::util::{
+    check_builtin_macro_attribute, warn_on_duplicate_attribute,
+};
 
 /// #[test_case] is used by custom test authors to mark tests
 /// When building for test, it needs to make the item public and gensym the name
@@ -72,18 +73,15 @@ pub(crate) fn expand_test_case(
         ast::ItemKind::Static(s) => Some(&mut s.ident),
         _ => None,
     };
-    match ident {
-        Some(ident) => {
-            ident.span = ident.span.with_ctxt(sp.ctxt());
-            let test_path_symbol = Symbol::intern(&item_path(
-                // skip the name of the root module
-                &ecx.current_expansion.module.mod_path[1..],
-                ident,
-            ));
-            item.vis = ast::Visibility { span: item.vis.span, kind: ast::VisibilityKind::Public };
-            item.attrs.push(ecx.attr_name_value_str(sym::rustc_test_marker, test_path_symbol, sp));
-        }
-        None => {}
+    if let Some(ident) = ident {
+        ident.span = ident.span.with_ctxt(sp.ctxt());
+        let test_path_symbol = Symbol::intern(&item_path(
+            // skip the name of the root module
+            &ecx.current_expansion.module.mod_path[1..],
+            ident,
+        ));
+        item.vis = ast::Visibility { span: item.vis.span, kind: ast::VisibilityKind::Public };
+        item.attrs.push(ecx.attr_name_value_str(sym::rustc_test_marker, test_path_symbol, sp));
     }
 
     let ret = if is_stmt {
@@ -292,7 +290,8 @@ pub(crate) fn expand_test_or_bench(
                 cx.attr_name_value_str(sym::rustc_test_marker, test_path_symbol, attr_sp),
                 // #[doc(hidden)]
                 cx.attr_nested_word(sym::doc, sym::hidden, attr_sp),
-            ].into(),
+            ]
+            .into(),
             // const $ident: test::TestDescAndFn =
             ast::ItemKind::Const(
                 ast::ConstItem {

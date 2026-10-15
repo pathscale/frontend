@@ -1,6 +1,6 @@
-use alloc::boxed::Box;
 use crate::rustc_attr_ir::diagnostic::Directive;
 use crate::rustc_feature::AttributeStability;
+use alloc::boxed::Box;
 
 use crate::rustc_attr_parsing::attributes::diagnostic::*;
 use crate::rustc_attr_parsing::attributes::prelude::*;

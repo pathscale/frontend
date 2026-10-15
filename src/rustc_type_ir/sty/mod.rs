@@ -17,7 +17,8 @@ use crate::rustc_type_ir::{
 
 /// Use this rather than `RegionKind`, whenever possible.
 #[derive_where(Clone, Copy, PartialEq, Eq, Hash; I: Interner)]
-#[cfg_attr(feature = "nightly", derive(StableHash_NoContext))]#[derive(GenericTypeVisitable, Lift_Generic)]
+#[cfg_attr(feature = "nightly", derive(StableHash_NoContext))]
+#[derive(GenericTypeVisitable, Lift_Generic)]
 pub struct Region<I: Interner>(pub I::InternedRegionKind);
 
 // These are only the `inherent` trait methods that have been ported across
@@ -112,40 +113,40 @@ impl<I: Interner> Region<I> {
 
         match self.0.get() {
             RegionKind::ReVar(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_INFER;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_RE_INFER;
             }
             RegionKind::RePlaceholder(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_PLACEHOLDER;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_RE_PLACEHOLDER;
             }
             RegionKind::ReEarlyParam(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_PARAM;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_RE_PARAM;
             }
             RegionKind::ReLateParam { .. } => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_LOCAL_REGIONS;
             }
             RegionKind::ReStatic => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
             }
             RegionKind::ReBound(BoundVarIndexKind::Canonical, _) => {
-                flags = flags | TypeFlags::HAS_RE_BOUND;
-                flags = flags | TypeFlags::HAS_CANONICAL_BOUND;
+                flags |= TypeFlags::HAS_RE_BOUND;
+                flags |= TypeFlags::HAS_CANONICAL_BOUND;
             }
             RegionKind::ReBound(BoundVarIndexKind::Bound(..), _) => {
-                flags = flags | TypeFlags::HAS_RE_BOUND;
+                flags |= TypeFlags::HAS_RE_BOUND;
             }
             RegionKind::ReErased => {
-                flags = flags | TypeFlags::HAS_RE_ERASED;
+                flags |= TypeFlags::HAS_RE_ERASED;
             }
             RegionKind::ReError(_) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_ERROR;
+                flags |= TypeFlags::HAS_FREE_REGIONS;
+                flags |= TypeFlags::HAS_RE_ERROR;
             }
         }
         debug!("type_flags({:?}) = {:?}", self, flags);

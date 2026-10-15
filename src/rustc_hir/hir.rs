@@ -28,13 +28,13 @@ use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_error_messages::{DiagArgValue, IntoDiagArg};
 use crate::rustc_hir_id::{HirId, ItemLocalId, ItemLocalMap, OwnerId};
 use crate::rustc_index::IndexVec;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{
     BytePos, DUMMY_SP, DesugaringKind, ErrorGuaranteed, Ident, LocalExpnId, Span, Spanned, Symbol,
     kw, sym,
 };
 use crate::rustc_target::asm::InlineAsmRegOrRegClass;
+use rustc_macros::{Decodable, Encodable, StableHash};
 use tracing::debug;
 
 use crate::rustc_hir::def::{CtorKind, DefKind, MacroKinds, PerNS, Res};
@@ -318,7 +318,7 @@ impl Lifetime {
 
         match (self.syntax, self.source) {
             // The user wrote `'a` or `'_`.
-            (ExplicitBound | ExplicitAnonymous, _) => (self.ident.span, format!("{new_lifetime}")),
+            (ExplicitBound | ExplicitAnonymous, _) => (self.ident.span, new_lifetime.to_string()),
 
             // The user wrote `Path<T>`, and omitted the `'_,`.
             (Implicit, Path { angle_brackets: AngleBrackets::Full }) => {
@@ -327,7 +327,7 @@ impl Lifetime {
 
             // The user wrote `Path<>`, and omitted the `'_`..
             (Implicit, Path { angle_brackets: AngleBrackets::Empty }) => {
-                (self.ident.span, format!("{new_lifetime}"))
+                (self.ident.span, new_lifetime.to_string())
             }
 
             // The user wrote `Path` and omitted the `<'_>`.
@@ -413,7 +413,7 @@ impl<'hir> PathSegment<'hir> {
     }
 
     pub fn args(&self) -> &GenericArgs<'hir> {
-        if let Some(ref args) = self.args { args } else { GenericArgs::NONE }
+        if let Some(args) = self.args { args } else { GenericArgs::NONE }
     }
 }
 
@@ -1144,11 +1144,13 @@ impl<'hir> Generics<'hir> {
             return self.span.shrink_to_hi();
         }
 
-        let is_param_explicit = |par: &&GenericParam<'_>| match par.kind {
-            GenericParamKind::Type { .. }
-            | GenericParamKind::Const { .. }
-            | GenericParamKind::Lifetime { kind: LifetimeParamKind::Explicit } => true,
-            _ => false,
+        let is_param_explicit = |par: &&GenericParam<'_>| {
+            matches!(
+                par.kind,
+                GenericParamKind::Type { .. }
+                    | GenericParamKind::Const { .. }
+                    | GenericParamKind::Lifetime { kind: LifetimeParamKind::Explicit }
+            )
         };
 
         // Find the span of the type parameter.
@@ -2291,21 +2293,21 @@ impl Expr<'_> {
     /// on the given expression should be considered a place expression.
     pub fn is_place_expr(&self, mut allow_projections_from: impl FnMut(&Self) -> bool) -> bool {
         match self.kind {
-            ExprKind::Path(QPath::Resolved(_, ref path)) => {
+            ExprKind::Path(QPath::Resolved(_, path)) => {
                 matches!(path.res, Res::Local(..) | Res::Def(DefKind::Static { .. }, _) | Res::Err)
             }
 
             // Type ascription inherits its place expression kind from its
             // operand. See:
             // https://github.com/rust-lang/rfcs/blob/master/text/0803-type-ascription.md#type-ascription-and-temporaries
-            ExprKind::Type(ref e, _) => e.is_place_expr(allow_projections_from),
+            ExprKind::Type(e, _) => e.is_place_expr(allow_projections_from),
 
             // Unsafe binder cast preserves place-ness of the sub-expression.
             ExprKind::UnsafeBinderCast(_, e, _) => e.is_place_expr(allow_projections_from),
 
             ExprKind::Unary(UnOp::Deref, _) => true,
 
-            ExprKind::Field(ref base, _) | ExprKind::Index(ref base, _, _) => {
+            ExprKind::Field(base, _) | ExprKind::Index(base, _, _) => {
                 allow_projections_from(base) || base.is_place_expr(allow_projections_from)
             }
 
@@ -2467,15 +2469,15 @@ impl Expr<'_> {
 
     /// To a first-order approximation, is this a pattern?
     pub fn is_approximately_pattern(&self) -> bool {
-        match &self.kind {
+        matches!(
+            &self.kind,
             ExprKind::Array(_)
-            | ExprKind::Call(..)
-            | ExprKind::Tup(_)
-            | ExprKind::Lit(_)
-            | ExprKind::Path(_)
-            | ExprKind::Struct(..) => true,
-            _ => false,
-        }
+                | ExprKind::Call(..)
+                | ExprKind::Tup(_)
+                | ExprKind::Lit(_)
+                | ExprKind::Path(_)
+                | ExprKind::Struct(..)
+        )
     }
 
     /// Whether this and the `other` expression are the same for purposes of an indexing operation.
@@ -3768,6 +3770,10 @@ impl FnDeclFlags {
     /// argument, and no splatting.
     /// To modify these flags, use the `set_*` methods, for readability.
     // FIXME: use Default instead when that trait is const stable.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "retains the const-compatible constructor used before Default can be called in const contexts"
+    )]
     pub fn default() -> Self {
         Self { flags: 0, splatted: 0 }
             .set_implicit_self(ImplicitSelfKind::None)
@@ -4017,7 +4023,7 @@ impl<'hir> FnRetTy<'hir> {
     pub fn span(&self) -> Span {
         match *self {
             Self::DefaultReturn(span) => span,
-            Self::Return(ref ty) => ty.span,
+            Self::Return(ty) => ty.span,
         }
     }
 
@@ -4657,9 +4663,8 @@ impl ItemKind<'_> {
                 _,
                 VariantData::Struct { recovered: ast::Recovered::Yes(_), .. },
             ) => true,
-            ItemKind::Enum(_, _, def) => def.variants.iter().any(|v| match v.data {
-                VariantData::Struct { recovered: ast::Recovered::Yes(_), .. } => true,
-                _ => false,
+            ItemKind::Enum(_, _, def) => def.variants.iter().any(|v| {
+                matches!(v.data, VariantData::Struct { recovered: ast::Recovered::Yes(_), .. })
             }),
             _ => false,
         }
@@ -5025,7 +5030,7 @@ impl<'hir> Node<'hir> {
                 ItemKind::TyAlias(_, _, ty)
                 | ItemKind::Static(_, _, ty, _)
                 | ItemKind::Const(_, _, ty, _) => Some(ty),
-                ItemKind::Impl(impl_item) => Some(&impl_item.self_ty),
+                ItemKind::Impl(impl_item) => Some(impl_item.self_ty),
                 _ => None,
             },
             Node::TraitItem(it) => match it.kind {

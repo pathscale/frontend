@@ -17,8 +17,6 @@
 //! An implementation of union-find. See the `unify` module for more
 //! details.
 
-
-
 pub mod snapshot_vec;
 pub mod undo_log;
 pub mod unify;

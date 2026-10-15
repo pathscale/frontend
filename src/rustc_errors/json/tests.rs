@@ -3,9 +3,7 @@
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 // `json.rs` no longer imports `Mutex` - the sink type it needed it for is gone - so the glob

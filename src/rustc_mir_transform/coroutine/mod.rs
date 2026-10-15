@@ -53,10 +53,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -426,7 +424,7 @@ impl<'tcx> MutVisitor<'tcx> for TransformVisitor<'tcx> {
         if let Some(&Some((ty, variant_index, idx))) = self.remap.get(place.local) {
             replace_base(place, self.make_field(variant_index, idx, ty), self.tcx);
         }
-        if let Some(new_projection) = self.process_projection(&place.projection, location) {
+        if let Some(new_projection) = self.process_projection(place.projection, location) {
             place.projection = self.tcx.mk_place_elems(&new_projection);
         }
     }

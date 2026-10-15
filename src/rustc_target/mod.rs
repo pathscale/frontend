@@ -10,7 +10,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![expect(internal_features)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
@@ -30,13 +29,6 @@
 // ---------------------------------------------------------------------------------------------
 // No `std::` is left in this crate's `src/`; the only remaining reason to link std is the
 // `#[test]` harness below, which is std's.
-#[cfg(test)]
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use eko::path::{Path, PathBuf};
 

@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::ops::Not;
 
@@ -14,7 +8,6 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::{Node, find_attr};
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::traits::TraitErrors;
-use crate::span_bug;
 use crate::rustc_middle::ty::{self, TyCtxt, TypingMode, Unnormalized};
 use crate::rustc_session::config::EntryFnType;
 use crate::rustc_span::def_id::{CRATE_DEF_ID, DefId, LocalDefId};
@@ -22,6 +15,7 @@ use crate::rustc_span::{ErrorGuaranteed, Span};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::regions::InferCtxtRegionExt;
 use crate::rustc_trait_selection::traits::{self, ObligationCause, ObligationCauseCode};
+use crate::span_bug;
 
 use super::check_function_signature;
 use crate::rustc_hir_analysis::diagnostics;

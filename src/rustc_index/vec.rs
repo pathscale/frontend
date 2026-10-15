@@ -1,10 +1,10 @@
-#[allow(unused_imports)]
-use {alloc::vec::Vec};
 use alloc::borrow::{Borrow, BorrowMut};
+use alloc::vec;
+#[allow(unused_imports)]
+use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut, RangeBounds};
-use alloc::vec;
 use core::{fmt, slice};
 
 #[cfg(feature = "nightly")]
@@ -125,6 +125,10 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "the inherent method is retained as part of the existing API"
+    )]
     pub fn into_iter(self) -> vec::IntoIter<T> {
         self.raw.into_iter()
     }

@@ -22,8 +22,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -93,6 +91,7 @@ use crate::rustc_errors::timings::TimingRecord;
 // The snippet emitter is gone. This compiler is built to be driven by a program rather than read
 // under source lines in colour had no consumer, and it was what pulled in `annotate-snippets`,
 // `anstream`, `anstyle` and `termize`. `plain_emitter` is what remains.
+#[expect(clippy::zero_prefixed_literal, reason = "diagnostic numbers retain four-digit spelling")]
 pub mod codes;
 mod decorate_diag;
 mod diagnostic;
@@ -100,7 +99,6 @@ mod diagnostic_impls;
 pub mod emitter;
 pub mod formatting;
 pub mod json;
-mod lock;
 pub mod plain_emitter;
 // A par item's diagnostics as its owned output, and a query's as its own: collected while they
 // run, forwarded with their results, replayed in serial order. See its module docs for the
@@ -180,6 +178,10 @@ impl Suggestions {
             Suggestions::Sealed(suggestions) => suggestions.len(),
             Suggestions::Disabled => 0,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -286,9 +288,9 @@ fn as_substr<'a>(original: &'a str, suggestion: &'a str) -> Option<(usize, &'a s
         .sum();
     let original = &original[common_prefix..];
     let suggestion = &suggestion[common_prefix..];
-    if suggestion.ends_with(original) {
+    if let Some(trimmed_suggestion) = suggestion.strip_suffix(original) {
         let common_suffix = original.len();
-        Some((common_prefix, &suggestion[..suggestion.len() - original.len()], common_suffix))
+        Some((common_prefix, trimmed_suggestion, common_suffix))
     } else {
         None
     }
@@ -469,6 +471,10 @@ fn track_diagnostic(
 
 /// Diagnostics emitted by `DiagCtxtInner::emit_diagnostic` are passed through this function. Used
 /// for tracking by incremental, to replay diagnostics as necessary.
+#[expect(
+    clippy::type_complexity,
+    reason = "preserves the diagnostic tracking callback signature without boxing or changing dispatch"
+)]
 pub static TRACK_DIAGNOSTIC: AtomicRef<
     fn(DiagInner, &mut dyn FnMut(DiagInner) -> Option<ErrorGuaranteed>) -> Option<ErrorGuaranteed>,
 > = AtomicRef::new(&(default_track_diagnostic as _));
@@ -514,16 +520,14 @@ impl Drop for DiagCtxtInner {
         // suggest where this happened and how to avoid it.
         // `std::thread::panicking()` was `false` here: with `panic = "abort"` there is no
         // unwinding, so a drop glue can never be running because of a panic in the first place.
-        if !self.has_printed && !self.suppressed_expected_diag {
-            if self.must_produce_diag.is_some() {
-                // The captured `Backtrace` that used to name the `set_must_produce_diag` call site
-                // is gone with std; only the fact that the call happened survives.
-                panic!(
-                    "`trimmed_def_paths` called, diagnostics were expected but none were emitted. \
+        if !self.has_printed && !self.suppressed_expected_diag && self.must_produce_diag.is_some() {
+            // The captured `Backtrace` that used to name the `set_must_produce_diag` call site
+            // is gone with std; only the fact that the call happened survives.
+            panic!(
+                "`trimmed_def_paths` called, diagnostics were expected but none were emitted. \
                     Use `with_no_trimmed_paths` for debugging. (no backtrace: the compiler no \
                     longer links std, so the call site cannot be captured.)"
-                );
-            }
+            );
         }
     }
 }
@@ -750,15 +754,12 @@ impl<'a> DiagCtxtHandle<'a> {
         new_err: Diag<'_>,
     ) -> ErrorGuaranteed {
         let old_err = self.inner.borrow_mut().steal(key, span, DcxRef::of(self.dcx));
-        match old_err {
-            Some((old_err, guar, _)) => {
-                assert_eq!(old_err.level, Error);
-                assert!(guar.is_some());
-                // Because `old_err` has already been counted, it can only be
-                // safely cancelled because the `new_err` supplants it.
-                Diag::<ErrorGuaranteed>::new_diagnostic(self, old_err).cancel();
-            }
-            None => {}
+        if let Some((old_err, guar, _)) = old_err {
+            assert_eq!(old_err.level, Error);
+            assert!(guar.is_some());
+            // Because `old_err` has already been counted, it can only be
+            // safely cancelled because the `new_err` supplants it.
+            Diag::<ErrorGuaranteed>::new_diagnostic(self, old_err).cancel();
         };
         new_err.emit()
     }
@@ -852,7 +853,7 @@ impl<'a> DiagCtxtHandle<'a> {
         };
 
         match (errors.len(), warnings.len()) {
-            (0, 0) => return,
+            (0, 0) => (),
             (0, _) => {
                 // Use `ForceWarning` rather than `Warning` to guarantee emission, e.g. with a
                 // configuration like `--cap-lints allow --force-warn bare_trait_objects`.
@@ -1586,7 +1587,7 @@ impl DiagCtxtInner {
     }
 
     fn has_errors_excluding_lint_errors(&self) -> Option<ErrorGuaranteed> {
-        self.err_guars.get(0).map(|(guar, _)| *guar).or_else(|| {
+        self.err_guars.first().map(|(guar, _)| *guar).or_else(|| {
             if let Some((_diag, guar, _)) = self
                 .stashed_diagnostics
                 .values()
@@ -1602,9 +1603,9 @@ impl DiagCtxtInner {
 
     fn has_errors(&self) -> Option<ErrorGuaranteed> {
         self.err_guars
-            .get(0)
+            .first()
             .map(|(guar, _)| *guar)
-            .or_else(|| self.lint_err_guars.get(0).map(|(guar, _)| *guar))
+            .or_else(|| self.lint_err_guars.first().map(|(guar, _)| *guar))
             .or_else(|| {
                 self.stashed_diagnostics.values().find_map(|stashed_diagnostics| {
                     stashed_diagnostics.values().find_map(|(_, guar, _)| *guar)
@@ -1613,7 +1614,7 @@ impl DiagCtxtInner {
     }
 
     fn has_errors_or_delayed_bugs(&self) -> Option<ErrorGuaranteed> {
-        self.has_errors().or_else(|| self.delayed_bugs.get(0).map(|(_, guar)| guar).copied())
+        self.has_errors().or_else(|| self.delayed_bugs.first().map(|(_, guar)| guar).copied())
     }
 
     fn flush_delayed(&mut self) {
@@ -1673,7 +1674,7 @@ impl DiagCtxtInner {
                 // nothing at all. `try_format_diag_message` does the substitution and
                 // `diag_message_source` hands back the raw template when it cannot, which is
                 // exactly what the two emitters do.
-                _ = write!(out, "delayed bug: {message}\n");
+                _ = writeln!(out, "delayed bug: {message}");
             }
 
             let mut bug = if decorate { bug.decorate() } else { bug.inner };

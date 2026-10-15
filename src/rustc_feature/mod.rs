@@ -30,7 +30,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 use alloc::string::String;
 mod accepted;
 mod builtin_attrs;
@@ -82,7 +81,10 @@ impl UnstableFeatures {
     ///
     /// `None` is both "unset" and "not UTF-8", which is the distinction this function collapsed
     /// on its own line anyway - it called `.ok()` on the `Result` and never looked at the error.
-    fn from_environment_value(krate: Option<&str>, env_var_rustc_bootstrap: Option<String>) -> Self {
+    fn from_environment_value(
+        krate: Option<&str>,
+        env_var_rustc_bootstrap: Option<String>,
+    ) -> Self {
         // `true` if this is a feature-staged build, i.e., on the beta or stable channel.
         let disable_unstable_features =
             option_env!("CFG_DISABLE_UNSTABLE_FEATURES").is_some_and(|s| s != "0");

@@ -3,16 +3,14 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::ops::ControlFlow;
 use alloc::borrow::Cow;
+use core::ops::ControlFlow;
 use hashbrown::hash_set;
-use eko::path::PathBuf;
 
 use crate::rustc_ast::ast::LitKind;
 use crate::rustc_ast::{LitIntType, TraitObjectSyntax};
@@ -85,14 +83,13 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 if let ObligationCauseCode::WellFormed(Some(wf_loc)) =
                     root_obligation.cause.code().peel_derives()
                     && !obligation.predicate.has_non_region_infer()
-                {
-                    if let Some(cause) = self.tcx.diagnostic_hir_wf_check((
+                    && let Some(cause) = self.tcx.diagnostic_hir_wf_check((
                         tcx.erase_and_anonymize_regions(obligation.predicate),
                         *wf_loc,
-                    )) {
-                        obligation.cause = cause.clone();
-                        span = obligation.cause.span;
-                    }
+                    ))
+                {
+                    obligation.cause = cause.clone();
+                    span = obligation.cause.span;
                 }
 
                 if let ObligationCauseCode::CompareImplItem {
@@ -440,16 +437,14 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
 
                         if let ObligationCauseCode::Coercion { source, target } =
                             *obligation.cause.code().peel_derives()
+                            && self.tcx.is_lang_item(leaf_trait_predicate.def_id(), LangItem::Sized)
                         {
-                            if self.tcx.is_lang_item(leaf_trait_predicate.def_id(), LangItem::Sized)
-                            {
-                                self.suggest_borrowing_for_object_cast(
-                                    &mut err,
-                                    root_obligation,
-                                    source,
-                                    target,
-                                );
-                            }
+                            self.suggest_borrowing_for_object_cast(
+                                &mut err,
+                                root_obligation,
+                                source,
+                                target,
+                            );
                         }
 
                         if let Some((msg, span)) = type_def {
@@ -573,7 +568,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                             obligation.param_env,
                         );
                         self.try_to_add_help_message(
-                            &root_obligation,
+                            root_obligation,
                             &obligation,
                             leaf_trait_predicate,
                             &mut err,
@@ -840,21 +835,21 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         let mut base_cause = obligation.cause.code().clone();
         let mut applied_do_not_recommend = false;
         loop {
-            if let ObligationCauseCode::ImplDerived(ref c) = base_cause {
-                if self.tcx.do_not_recommend_impl(c.impl_or_alias_def_id) {
-                    let code = (*c.derived.parent_code).clone();
-                    // Keep more precise spans that still point within the parent obligation,
-                    // but do not let hidden impl details move the span outside of it.
-                    if code == *root_obligation.cause.code()
-                        && root_obligation.cause.span.eq_ctxt(obligation.cause.span)
-                        && !root_obligation.cause.span.contains(obligation.cause.span)
-                    {
-                        obligation.cause.span = root_obligation.cause.span;
-                    }
-                    obligation.cause.map_code(|_| code);
-                    obligation.predicate = c.derived.parent_trait_pred.upcast(self.tcx);
-                    applied_do_not_recommend = true;
+            if let ObligationCauseCode::ImplDerived(ref c) = base_cause
+                && self.tcx.do_not_recommend_impl(c.impl_or_alias_def_id)
+            {
+                let code = (*c.derived.parent_code).clone();
+                // Keep more precise spans that still point within the parent obligation,
+                // but do not let hidden impl details move the span outside of it.
+                if code == *root_obligation.cause.code()
+                    && root_obligation.cause.span.eq_ctxt(obligation.cause.span)
+                    && !root_obligation.cause.span.contains(obligation.cause.span)
+                {
+                    obligation.cause.span = root_obligation.cause.span;
                 }
+                obligation.cause.map_code(|_| code);
+                obligation.predicate = c.derived.parent_trait_pred.upcast(self.tcx);
+                applied_do_not_recommend = true;
             }
             if let Some(parent_cause) = base_cause.parent() {
                 base_cause = parent_cause.clone();
@@ -1008,16 +1003,14 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
 
         let self_ty = trait_pred.self_ty().skip_binder();
 
-        let (expected_kind, trait_prefix) =
-            if let Some(expected_kind) = self.tcx.fn_trait_kind_from_def_id(trait_pred.def_id()) {
-                (expected_kind, "")
-            } else if let Some(expected_kind) =
-                self.tcx.async_fn_trait_kind_from_def_id(trait_pred.def_id())
-            {
-                (expected_kind, "Async")
-            } else {
-                return None;
-            };
+        let (expected_kind, trait_prefix) = if let Some(expected_kind) =
+            self.tcx.fn_trait_kind_from_def_id(trait_pred.def_id())
+        {
+            (expected_kind, "")
+        } else {
+            let expected_kind = self.tcx.async_fn_trait_kind_from_def_id(trait_pred.def_id())?;
+            (expected_kind, "Async")
+        };
 
         let (closure_def_id, found_args, has_self_borrows) = match *self_ty.kind() {
             ty::Closure(def_id, args) => {
@@ -1050,13 +1043,13 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             && !found_kind.extends(expected_kind)
         {
             let mut err = self.report_closure_error(
-                &obligation,
+                obligation,
                 closure_def_id,
                 found_kind,
                 expected_kind,
                 trait_prefix,
             );
-            self.note_obligation_cause(&mut err, &obligation);
+            self.note_obligation_cause(&mut err, obligation);
             return Some(err.emit());
         }
 
@@ -1077,7 +1070,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 kind: expected_kind.as_str(),
                 coro_kind,
             });
-            self.note_obligation_cause(&mut err, &obligation);
+            self.note_obligation_cause(&mut err, obligation);
             return Some(err.emit());
         }
 
@@ -1193,9 +1186,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             let ty::Adt(def, args) = prev_ty.kind() else {
                 return None;
             };
-            let Some(arg) = args.get(1) else {
-                return None;
-            };
+            let arg = args.get(1)?;
             if !self.tcx.is_diagnostic_item(sym::Result, def.did()) {
                 return None;
             }
@@ -2126,6 +2117,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         candidates
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     pub(super) fn report_similar_impl_candidates(
         &self,
         impl_candidates: &[ImplCandidate<'tcx>],
@@ -2145,10 +2140,12 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 .filter(|def_id| !self.tcx.do_not_recommend_impl(*def_id))
                 // Ignore automatically derived impls and `!Trait` impls.
                 .map(|def_id| (self.tcx.impl_trait_header(def_id), def_id))
-                .filter_map(|(header, def_id)| {
-                    (header.polarity == ty::ImplPolarity::Positive
-                        || self.tcx.is_automatically_derived(def_id))
-                    .then(|| (header.trait_ref.instantiate_identity().skip_norm_wip(), def_id))
+                .filter(|&(header, def_id)| {
+                    header.polarity == ty::ImplPolarity::Positive
+                        || self.tcx.is_automatically_derived(def_id)
+                })
+                .map(|(header, def_id)| {
+                    (header.trait_ref.instantiate_identity().skip_norm_wip(), def_id)
                 })
                 .filter(|(trait_ref, _)| {
                     let self_ty = trait_ref.self_ty();
@@ -2269,7 +2266,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
 
                     if let [child, ..] = &err.children[..]
                         && child.level == Level::Help
-                        && let Some(line) = child.messages.get(0)
+                        && let Some(line) = child.messages.first()
                         && let Some(line) = line.0.as_str()
                         && line.starts_with("the trait")
                         && line.contains("is not implemented for")
@@ -2654,7 +2651,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         // we filter before checking if `impl_candidates` is empty
         // to get the fallback solution if we filtered out any impls
         let impl_candidates = impl_candidates
-            .into_iter()
+            .iter()
             .cloned()
             .filter(|cand| !self.tcx.do_not_recommend_impl(cand.impl_def_id))
             .collect::<Vec<_>>();
@@ -2897,17 +2894,19 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 return false;
             }
             trait_generics.own_params.iter().zip(other_trait_generics.own_params.iter()).all(
-                |(a, b)| match (&a.kind, &b.kind) {
-                    (ty::GenericParamDefKind::Lifetime, ty::GenericParamDefKind::Lifetime)
-                    | (
-                        ty::GenericParamDefKind::Type { .. },
-                        ty::GenericParamDefKind::Type { .. },
+                |(a, b)| {
+                    matches!(
+                        (&a.kind, &b.kind),
+                        (ty::GenericParamDefKind::Lifetime, ty::GenericParamDefKind::Lifetime)
+                            | (
+                                ty::GenericParamDefKind::Type { .. },
+                                ty::GenericParamDefKind::Type { .. },
+                            )
+                            | (
+                                ty::GenericParamDefKind::Const { .. },
+                                ty::GenericParamDefKind::Const { .. },
+                            )
                     )
-                    | (
-                        ty::GenericParamDefKind::Const { .. },
-                        ty::GenericParamDefKind::Const { .. },
-                    ) => true,
-                    _ => false,
                 },
             )
         };
@@ -3305,16 +3304,12 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
 
         let mut derefs = (self.autoderef_steps)(inner_ty).into_iter();
         derefs.next(); // skip the first one, which is inner_ty itself
-        let deref_target = derefs.into_iter().next()?.0;
+        let deref_target = derefs.next()?.0;
 
         let cast_ty = Ty::new_ref(self.tcx, region, deref_target, mutbl);
 
-        let Some(from_def_id) = self.tcx.get_diagnostic_item(sym::From) else {
-            return None;
-        };
-        let Some(try_from_def_id) = self.tcx.get_diagnostic_item(sym::TryFrom) else {
-            return None;
-        };
+        let from_def_id = self.tcx.get_diagnostic_item(sym::From)?;
+        let try_from_def_id = self.tcx.get_diagnostic_item(sym::TryFrom)?;
 
         if self.has_impl_for_type(
             param_env,
@@ -3323,9 +3318,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 from_def_id,
                 self.tcx.mk_args(&[self_ty.into(), cast_ty.into()]),
             ),
-        ) {
-            Some(cast_ty)
-        } else if self.has_impl_for_type(
+        ) || self.has_impl_for_type(
             param_env,
             ty::TraitRef::new(
                 self.tcx,
@@ -3374,6 +3367,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn try_to_add_help_message(
         &self,
         root_obligation: &PredicateObligation<'tcx>,
@@ -3782,7 +3779,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         let args_str = |arguments: &[ArgKind], other: &[ArgKind]| {
             let arg_length = arguments.len();
             let distinct = matches!(other, &[ArgKind::Tuple(..)]);
-            match (arg_length, arguments.get(0)) {
+            match (arg_length, arguments.first()) {
                 (1, Some(ArgKind::Tuple(_, fields))) => {
                     format!("a single {}-tuple as argument", fields.len())
                 }
@@ -3829,20 +3826,20 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 );
             }
 
-            if let &[ArgKind::Tuple(_, ref fields)] = &found_args[..] {
-                if fields.len() == expected_args.len() {
-                    let sugg = fields
-                        .iter()
-                        .map(|(name, _)| name.to_owned())
-                        .collect::<Vec<String>>()
-                        .join(", ");
-                    err.span_suggestion_verbose(
-                        found_span,
-                        "change the closure to take multiple arguments instead of a single tuple",
-                        format!("|{sugg}|"),
-                        Applicability::MachineApplicable,
-                    );
-                }
+            if let &[ArgKind::Tuple(_, ref fields)] = &found_args[..]
+                && fields.len() == expected_args.len()
+            {
+                let sugg = fields
+                    .iter()
+                    .map(|(name, _)| name.to_owned())
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                err.span_suggestion_verbose(
+                    found_span,
+                    "change the closure to take multiple arguments instead of a single tuple",
+                    format!("|{sugg}|"),
+                    Applicability::MachineApplicable,
+                );
             }
             if let &[ArgKind::Tuple(_, ref fields)] = &expected_args[..]
                 && fields.len() == found_args.len()
@@ -3890,6 +3887,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
     /// Checks if the type implements one of `Fn`, `FnMut`, or `FnOnce`
     /// in that order, and returns the generic type corresponding to the
     /// argument of that trait (corresponding to the closure arguments).
+    #[expect(
+        clippy::result_unit_err,
+        reason = "Err(()) signals that no Fn-family trait matched; callers use it only as a sentinel."
+    )]
     pub fn type_implements_fn_trait(
         &self,
         param_env: ty::ParamEnv<'tcx>,

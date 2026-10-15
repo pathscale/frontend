@@ -1,8 +1,8 @@
-use alloc::string::String;
 use crate::rustc_ast::LitKind;
 use crate::rustc_attr_ir::{DeprecatedSince, Deprecation, VERSION_PLACEHOLDER};
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_lint_defs::builtin::UNUSED_ATTRIBUTES;
+use alloc::string::String;
 
 use super::prelude::*;
 use super::util::parse_version;
@@ -218,9 +218,7 @@ impl SingleAttributeParser for DeprecatedParser {
 fn parse_since(since: Symbol, is_rustc: bool) -> DeprecatedSince {
     if since.as_str() == "TBD" {
         DeprecatedSince::Future
-    } else if since.as_str() == VERSION_PLACEHOLDER {
-        DeprecatedSince::NonStandard(since)
-    } else if !is_rustc {
+    } else if since.as_str() == VERSION_PLACEHOLDER || !is_rustc {
         DeprecatedSince::NonStandard(since)
     } else if let Some(version) = parse_version(since) {
         DeprecatedSince::RustcVersion(version)

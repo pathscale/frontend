@@ -3,18 +3,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
+use crate::assert_matches;
 use alloc::borrow::Cow;
+use core::mem;
 use core::num::NonZero;
 use core::ops::Deref;
-use core::mem;
-use crate::assert_matches;
 
 use crate::rustc_errors::{Diag, ErrorGuaranteed};
 use crate::rustc_hir::attrs::lang_items::LangItem;
@@ -25,7 +21,6 @@ use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_middle::mir::visit::Visitor;
 use crate::rustc_middle::mir::*;
-use crate::span_bug;
 use crate::rustc_middle::ty::adjustment::PointerCoercion;
 use crate::rustc_middle::ty::{self, Ty, TypeVisitableExt};
 use crate::rustc_mir_dataflow::Analysis;
@@ -34,6 +29,7 @@ use crate::rustc_span::{Span, Symbol, sym};
 use crate::rustc_trait_selection::traits::{
     Obligation, ObligationCause, ObligationCauseCode, ObligationCtxt,
 };
+use crate::span_bug;
 use tracing::{instrument, trace};
 
 use super::ops::{self, NonConstOp, Status};
@@ -203,17 +199,17 @@ impl<'mir, 'tcx> Checker<'mir, 'tcx> {
             .get_or_insert_with(|| {
                 // A local is "transient" if it is guaranteed dead at all `Return`.
                 // So first compute the say of "maybe live" locals at each program point.
-                let always_live_locals = &always_storage_live_locals(&ccx.body);
+                let always_live_locals = &always_storage_live_locals(ccx.body);
                 let mut maybe_storage_live =
                     MaybeStorageLive::new(Cow::Borrowed(always_live_locals))
-                        .iterate_to_fixpoint(ccx.tcx, &ccx.body, None)
-                        .into_results_cursor(&ccx.body);
+                        .iterate_to_fixpoint(ccx.tcx, ccx.body, None)
+                        .into_results_cursor(ccx.body);
 
                 // And then check all `Return` in the MIR, and if a local is "maybe live" at a
                 // `Return` then it is definitely not transient.
                 let mut transient = DenseBitSet::new_filled(ccx.body.local_decls.len());
                 // Make sure to only visit reachable blocks, the dataflow engine can ICE otherwise.
-                for (bb, data) in traversal::reachable(&ccx.body) {
+                for (bb, data) in traversal::reachable(ccx.body) {
                     if data.terminator().kind == TerminatorKind::Return {
                         let location = ccx.body.terminator_loc(bb);
                         maybe_storage_live.seek_after_primary_effect(location);

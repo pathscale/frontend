@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use core::mem;
 use core::ops::ControlFlow;
 
-use itertools::Itertools as _;
+use crate::bug;
 use crate::rustc_ast::visit::{self, Visitor};
 use crate::rustc_ast::{
     self as ast, CRATE_NODE_ID, Crate, DUMMY_NODE_ID, ItemKind, ModKind, NodeId, Path,
@@ -39,18 +39,20 @@ use crate::rustc_lint_defs::builtin::{
     ABSOLUTE_PATHS_NOT_STARTING_WITH_CRATE, AMBIGUOUS_GLOB_IMPORTS, AMBIGUOUS_IMPORT_VISIBILITIES,
     AMBIGUOUS_PANIC_IMPORTS, MACRO_EXPANDED_MACRO_EXPORTS_ACCESSED_BY_ABSOLUTE_PATHS,
 };
-use crate::bug;
 use crate::rustc_middle::ty::{TyCtxt, Visibility};
 use crate::rustc_session::Session;
 use crate::rustc_session::utils::was_invoked_from_cargo;
 use crate::rustc_span::def_id::ModId;
-use crate::rustc_span::edit_distance::{find_best_match_for_name, find_best_match_index_as_if_sorted};
+use crate::rustc_span::edit_distance::{
+    find_best_match_for_name, find_best_match_index_as_if_sorted,
+};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::MacroKind;
 use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{
     BytePos, Ident, RemapPathScopeComponents, Span, Spanned, Symbol, SyntaxContext, kw, sym,
 };
+use itertools::Itertools as _;
 use thin_vec::{ThinVec, thin_vec};
 use tracing::{debug, instrument};
 
@@ -60,39 +62,44 @@ use crate::rustc_resolve::diagnostics::{
     MaybeMissingMacroRulesName,
 };
 use crate::rustc_resolve::hygiene::Macros20NormalizedSyntaxContext;
-use crate::rustc_resolve::imports::{Import, ImportKind, UnresolvedImportError, import_path_to_string};
+use crate::rustc_resolve::imports::{
+    Import, ImportKind, UnresolvedImportError, import_path_to_string,
+};
 use crate::rustc_resolve::late::{DiagMetadata, PatternSource, Rib};
 use crate::rustc_resolve::{
     AmbiguityError, AmbiguityKind, AmbiguityWarning, BindingError, BindingKey, CmResolver, Decl,
-    DeclKind,
-    DelayedVisResolutionError, Finalize, ForwardGenericParamBanReason, HasGenericParams, IdentKey,
-    LateDecl, MacroRulesScope, Module, ModuleKind, ModuleOrUniformRoot, ParentScope, PathResult,
-    PrivacyError, Res, ResolutionError, Resolver, Scope, ScopeSet, Segment, UseError, Used,
-    VisResolutionError, path_names_to_string,
+    DeclKind, DelayedVisResolutionError, Finalize, ForwardGenericParamBanReason, HasGenericParams,
+    IdentKey, LateDecl, MacroRulesScope, Module, ModuleKind, ModuleOrUniformRoot, ParentScope,
+    PathResult, PrivacyError, Res, ResolutionError, Resolver, Scope, ScopeSet, Segment, UseError,
+    Used, VisResolutionError, path_names_to_string,
 };
 
 /// A vector of spans and replacements, a message and applicability.
-pub(crate) type Suggestion = (Vec<(Span, String)>, String, Applicability);
+pub(in crate::rustc_resolve) type Suggestion = (Vec<(Span, String)>, String, Applicability);
 
 /// Potential candidate for an undeclared or out-of-scope label - contains the ident of a
 /// similarly named label and whether or not it is reachable.
-pub(crate) type LabelSuggestion = (Ident, bool);
+pub(in crate::rustc_resolve) type LabelSuggestion = (Ident, bool);
 
 #[derive(Clone)]
-pub(crate) struct StructCtor {
+pub(in crate::rustc_resolve) struct StructCtor {
     pub res: Res,
     pub vis: Visibility<ModId>,
     pub field_visibilities: Vec<Visibility<ModId>>,
 }
 
 impl StructCtor {
-    pub(crate) fn has_private_fields<'ra>(&self, m: Module<'ra>, r: &Resolver<'ra, '_>) -> bool {
+    pub(in crate::rustc_resolve) fn has_private_fields<'ra>(
+        &self,
+        m: Module<'ra>,
+        r: &Resolver<'ra, '_>,
+    ) -> bool {
         self.field_visibilities.iter().any(|&vis| !r.is_accessible_from(vis, m))
     }
 }
 
 #[derive(Debug)]
-pub(crate) enum SuggestionTarget {
+pub(in crate::rustc_resolve) enum SuggestionTarget {
     /// The target has a similar name as the name used by the programmer (probably a typo)
     SimilarlyNamed,
     /// The target is the only valid item that can be used in the corresponding context
@@ -100,7 +107,7 @@ pub(crate) enum SuggestionTarget {
 }
 
 #[derive(Debug)]
-pub(crate) struct TypoSuggestion {
+pub(in crate::rustc_resolve) struct TypoSuggestion {
     pub candidate: Symbol,
     /// The source location where the name is defined; None if the name is not defined
     /// in source e.g. primitives
@@ -110,20 +117,24 @@ pub(crate) struct TypoSuggestion {
 }
 
 impl TypoSuggestion {
-    pub(crate) fn new(candidate: Symbol, span: Span, res: Res) -> TypoSuggestion {
+    pub(in crate::rustc_resolve) fn new(candidate: Symbol, span: Span, res: Res) -> TypoSuggestion {
         Self { candidate, span: Some(span), res, target: SuggestionTarget::SimilarlyNamed }
     }
-    pub(crate) fn typo_from_name(candidate: Symbol, res: Res) -> TypoSuggestion {
+    pub(in crate::rustc_resolve) fn typo_from_name(candidate: Symbol, res: Res) -> TypoSuggestion {
         Self { candidate, span: None, res, target: SuggestionTarget::SimilarlyNamed }
     }
-    pub(crate) fn single_item(candidate: Symbol, span: Span, res: Res) -> TypoSuggestion {
+    pub(in crate::rustc_resolve) fn single_item(
+        candidate: Symbol,
+        span: Span,
+        res: Res,
+    ) -> TypoSuggestion {
         Self { candidate, span: Some(span), res, target: SuggestionTarget::SingleItem }
     }
 }
 
 /// A free importable items suggested in case of resolution failure.
 #[derive(Debug)]
-pub(crate) struct ImportSuggestion {
+pub(in crate::rustc_resolve) struct ImportSuggestion {
     pub did: Option<DefId>,
     pub descr: &'static str,
     pub path: Path,
@@ -153,7 +164,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     ///
     /// Multiple unresolved import errors within the same use tree are combined into a single
     /// diagnostic.
-    pub(crate) fn throw_unresolved_import_error(
+    pub(in crate::rustc_resolve) fn throw_unresolved_import_error(
         &mut self,
         mut errors: Vec<(Import<'_>, UnresolvedImportError)>,
         glob_error: bool,
@@ -231,7 +242,8 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         "<unnamed crate>".to_string()
                     };
                     let unresolved = import_error.segment.map(|s| s.name).unwrap_or(kw::Underscore);
-                    let args = FormatArgs { unresolved: unresolved.to_string(), ..FormatArgs::new(this) };
+                    let args =
+                        FormatArgs { unresolved: unresolved.to_string(), ..FormatArgs::new(this) };
 
                     directive.eval(None, &args)
                 } else {
@@ -345,11 +357,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn dcx(&self) -> DiagCtxtHandle<'tcx> {
+    pub(in crate::rustc_resolve) fn dcx(&self) -> DiagCtxtHandle<'tcx> {
         self.tcx.dcx()
     }
 
-    pub(crate) fn report_errors(&mut self, krate: &Crate, use_injections: Vec<UseError<'tcx>>) {
+    pub(in crate::rustc_resolve) fn report_errors(
+        &mut self,
+        krate: &Crate,
+        use_injections: Vec<UseError<'tcx>>,
+    ) {
         self.report_delayed_vis_resolution_errors();
         self.report_with_use_injections(krate, use_injections);
 
@@ -441,7 +457,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn report_conflict(
+    pub(in crate::rustc_resolve) fn report_conflict(
         &mut self,
         ident: IdentKey,
         ns: Namespace,
@@ -703,7 +719,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// Buffers its lint where this resolver writes (the resolver, or a late unit's sink).
-    pub(crate) fn lint_if_path_starts_with_module(
+    pub(in crate::rustc_resolve) fn lint_if_path_starts_with_module(
         &mut self,
         finalize: Finalize,
         path: &[Segment],
@@ -711,7 +727,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     ) {
         let Finalize { node_id, root_span, .. } = finalize;
 
-        let first_name = match path.get(0) {
+        let first_name = match path.first() {
             // In the 2018 edition this lint is a hard error, so nothing to do
             Some(seg) if seg.ident.span.is_rust_2015() && self.tcx.sess.is_rust_2015() => {
                 seg.ident.name
@@ -765,7 +781,9 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
                         (format!("crate{opt_colon}{s}"), Applicability::MachineApplicable)
                     }
-                    Err(_) => ("crate::rustc_resolve::<path>".to_string(), Applicability::HasPlaceholders),
+                    Err(_) => {
+                        ("crate::rustc_resolve::<path>".to_string(), Applicability::HasPlaceholders)
+                    }
                 };
                 diagnostics::AbsPathWithModule {
                     sugg: diagnostics::AbsPathWithModuleSugg {
@@ -781,7 +799,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 }
 
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
-    pub(crate) fn add_module_candidates(
+    pub(in crate::rustc_resolve) fn add_module_candidates(
         &self,
         module: Module<'ra>,
         names: &mut Vec<TypoSuggestion>,
@@ -800,15 +818,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     ///
     /// This takes the error provided, combines it with the span and any additional spans inside the
     /// error and emits it.
-    pub(crate) fn report_error(
+    pub(in crate::rustc_resolve) fn report_error(
         &self,
         span: Span,
         resolution_error: ResolutionError<'ra>,
     ) -> ErrorGuaranteed {
-        self.into_struct_error(span, resolution_error).emit()
+        self.struct_error(span, resolution_error).emit()
     }
 
-    pub(crate) fn into_struct_error(
+    pub(in crate::rustc_resolve) fn struct_error(
         &self,
         span: Span,
         resolution_error: ResolutionError<'ra>,
@@ -1004,7 +1022,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         name,
                         Namespace::ValueNS,
                         &parent_scope,
-                        &|res: Res| {
+                        |res: Res| {
                             matches!(
                                 res,
                                 Res::Def(
@@ -1420,7 +1438,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn report_vis_error(
+    pub(in crate::rustc_resolve) fn report_vis_error(
         &mut self,
         vis_resolution_error: VisResolutionError,
     ) -> ErrorGuaranteed {
@@ -1444,7 +1462,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 suggestion,
                 help,
                 message,
-            } => self.into_struct_error(
+            } => self.struct_error(
                 span,
                 ResolutionError::FailedToResolve {
                     segment,
@@ -1468,7 +1486,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         .emit()
     }
 
-    pub(crate) fn def_path_str(&self, mut def_id: DefId) -> String {
+    pub(in crate::rustc_resolve) fn def_path_str(&self, mut def_id: DefId) -> String {
         // We can't use `def_path_str` in resolve.
         let mut path = vec![def_id];
         while let Some(parent) = self.tcx.opt_parent(def_id) {
@@ -1501,7 +1519,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             .join("::")
     }
 
-    pub(crate) fn add_scope_set_candidates(
+    pub(in crate::rustc_resolve) fn add_scope_set_candidates(
         &self,
         suggestions: &mut Vec<TypoSuggestion>,
         scope_set: ScopeSet<'ra>,
@@ -1515,11 +1533,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 Scope::DeriveHelpers(expn_id) => {
                     let res = Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper);
                     if filter_fn(res) {
-                        suggestions.extend(this.helper_attrs.get(&expn_id).into_iter().flatten().map(
-                            |&(ident, orig_ident_span, _)| {
-                                TypoSuggestion::new(ident.name, orig_ident_span, res)
-                            },
-                        ));
+                        suggestions.extend(
+                            this.helper_attrs.get(&expn_id).into_iter().flatten().map(
+                                |&(ident, orig_ident_span, _)| {
+                                    TypoSuggestion::new(ident.name, orig_ident_span, res)
+                                },
+                            ),
+                        );
                     }
                 }
                 Scope::DeriveHelpersCompat => {
@@ -1850,17 +1870,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             Some(Stability {
                 level: StabilityLevel::Unstable { implied_by, .. }, feature, ..
             }) => {
-                if span.allows_unstable(feature) {
-                    true
-                } else if self.features.enabled(feature) {
-                    true
-                } else if let Some(implied_by) = implied_by
-                    && self.features.enabled(implied_by)
-                {
-                    true
-                } else {
-                    false
-                }
+                span.allows_unstable(feature)
+                    || self.features.enabled(feature)
+                    || implied_by.is_some_and(|implied_by| self.features.enabled(implied_by))
             }
             Some(_) => true,
             None => false,
@@ -1874,7 +1886,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     ///
     /// N.B., the method does not look into imports, but this is not a problem,
     /// since we report the definitions (thus, the de-aliased imports).
-    pub(crate) fn lookup_import_candidates<FilterFn>(
+    pub(in crate::rustc_resolve) fn lookup_import_candidates<FilterFn>(
         &self,
         lookup_ident: Ident,
         namespace: Namespace,
@@ -1963,7 +1975,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// The caller brings every crate's macros into `extern_macro_map` first
     /// (`Resolver::register_macros_for_all_crates`), so that unused `derive` macros can be
     /// suggested: that is a write, and a frozen resolver cannot make it.
-    pub(crate) fn unresolved_macro_suggestions(
+    pub(in crate::rustc_resolve) fn unresolved_macro_suggestions(
         &mut self,
         err: &mut Diag<'_>,
         macro_kind: MacroKind,
@@ -2151,7 +2163,6 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
         if self.macro_names.contains(&IdentKey::new(ident)) {
             err.subdiagnostic(AddedMacroUse);
-            return;
         }
     }
 }
@@ -2238,7 +2249,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             if let Some(best_match) = find_best_match_for_name(&all_attr_names, ident.name, None)
                 && let Some(macros) = all_attrs.get(&best_match)
             {
-                let mut macros: Vec<String> = macros.into_iter().map(|d| d.to_string()).collect();
+                let mut macros: Vec<String> = macros.iter().map(|d| d.to_string()).collect();
                 macros.sort();
                 macros.dedup();
                 let msg = match &macros[..] {
@@ -2260,7 +2271,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn add_typo_suggestion(
+    pub(in crate::rustc_resolve) fn add_typo_suggestion(
         &self,
         err: &mut Diag<'_>,
         suggestion: Option<TypoSuggestion>,
@@ -2414,17 +2425,17 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 help_msgs.push(format!("use `::{ident}` to refer to this {thing} unambiguously"))
             }
 
-            if kind != AmbiguityKind::GlobVsGlob {
-                if let Scope::ModuleNonGlobs(module, _) | Scope::ModuleGlobs(module, _) = scope {
-                    if module == self.graph_root.to_module() {
-                        help_msgs.push(format!(
-                            "use `crate::rustc_resolve::{ident}` to refer to this {thing} unambiguously"
-                        ));
-                    } else if module.is_normal() {
-                        help_msgs.push(format!(
-                            "use `self::{ident}` to refer to this {thing} unambiguously"
-                        ));
-                    }
+            if kind != AmbiguityKind::GlobVsGlob
+                && let Scope::ModuleNonGlobs(module, _) | Scope::ModuleGlobs(module, _) = scope
+            {
+                if module == self.graph_root.to_module() {
+                    help_msgs.push(format!(
+                        "use `crate::rustc_resolve::{ident}` to refer to this {thing} unambiguously"
+                    ));
+                } else if module.is_normal() {
+                    help_msgs.push(format!(
+                        "use `self::{ident}` to refer to this {thing} unambiguously"
+                    ));
                 }
             }
 
@@ -2632,7 +2643,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 outer_ident,
                 this_res.ns().unwrap_or(Namespace::TypeNS),
                 &parent_scope,
-                &|res: Res| res == this_res,
+                |res: Res| res == this_res,
             );
             // Shorten candidate paths using `super::` or `self::` when possible.
             for suggestion in &mut import_suggestions {
@@ -2678,7 +2689,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             if let Res::Def(_, d) = res
                 && let Some(fields) = self.field_visibility_spans.get(&d)
             {
-                let spans = fields.iter().map(|span| *span).collect();
+                let spans = fields.to_vec();
                 let sugg = diagnostics::ConsiderMakingTheFieldPublic {
                     spans,
                     number_of_fields: fields.len(),
@@ -2713,7 +2724,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                     })
                 })
                 .collect();
-            if let Some(&def_id) = path.get(0)
+            if let Some(&def_id) = path.first()
                 && let Some(path) = path_names
             {
                 if let Some(def_id) = def_id.as_local() {
@@ -2817,7 +2828,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                                 .module_path
                                 .iter()
                                 .filter(|seg| seg.ident.name != kw::PathRoot)
-                                .map(|seg| seg.ident.clone())
+                                .map(|seg| seg.ident)
                                 .chain(core::iter::once(ident))
                                 .collect::<Vec<_>>(),
                         )
@@ -2970,7 +2981,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn find_similarly_named_module_or_crate(
+    pub(in crate::rustc_resolve) fn find_similarly_named_module_or_crate(
         &self,
         ident: Symbol,
         current_module: Module<'ra>,
@@ -3009,7 +3020,11 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// Writes nothing: its lookups pass no `Finalize`, so they go through a read-only
     /// resolver (`cm`). It is a `CmResolver` method for one read, the span of a local binding,
     /// which during late resolution is in the unit's sink.
-    pub(crate) fn report_path_resolution_error(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
+    pub(in crate::rustc_resolve) fn report_path_resolution_error(
         &self,
         path: &[Segment],
         opt_ns: Option<Namespace>, // `None` indicates a module path in import
@@ -3032,14 +3047,14 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             [.., prev] => {
                 if prev.ident.name == kw::PathRoot && self.tcx.sess.edition() > Edition::Edition2015
                 {
-                    format!("the list of imported crates")
+                    "the list of imported crates".to_string()
                 } else if prev.ident.name == kw::PathRoot || prev.ident.name == kw::Crate {
-                    format!("the crate root")
+                    "the crate root".to_string()
                 } else {
                     format!("`{}`", prev.ident)
                 }
             }
-            _ => format!("this scope"),
+            _ => "this scope".to_string(),
         };
         let message = format!("cannot find `{ident}` in {scope}");
 
@@ -3048,7 +3063,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             let mut candidates = self.lookup_import_candidates(ident, TypeNS, parent_scope, is_mod);
             candidates
                 .sort_by_cached_key(|c| (c.path.segments.len(), pprust::path_to_string(&c.path)));
-            if let Some(candidate) = candidates.get(0) {
+            if let Some(candidate) = candidates.first() {
                 let path = {
                     // remove the possible common prefix of the path
                     let len = candidate.path.segments.len();
@@ -3393,7 +3408,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     /// Adds suggestions for a path that cannot be resolved.
     #[instrument(level = "debug", skip(self, parent_scope))]
-    pub(crate) fn make_path_suggestion(
+    pub(in crate::rustc_resolve) fn make_path_suggestion(
         &mut self,
         mut path: Vec<Segment>,
         parent_scope: &ParentScope<'ra>,
@@ -3544,7 +3559,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     ///    = note: this could be because a macro annotated with `#[macro_export]` will be exported
     ///            at the root of the crate instead of the module where it is defined
     /// ```
-    pub(crate) fn check_for_module_export_macro(
+    pub(in crate::rustc_resolve) fn check_for_module_export_macro(
         &mut self,
         import: Import<'ra>,
         module: ModuleOrUniformRoot<'ra>,
@@ -3680,7 +3695,12 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Finds a cfg-ed out item inside `module` with the matching name.
-    pub(crate) fn find_cfg_stripped(&self, err: &mut Diag<'_>, segment: &Symbol, module: DefId) {
+    pub(in crate::rustc_resolve) fn find_cfg_stripped(
+        &self,
+        err: &mut Diag<'_>,
+        segment: &Symbol,
+        module: DefId,
+    ) {
         let local_items;
         let symbols = if module.is_local() {
             local_items = self
@@ -3726,18 +3746,16 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 if m.is_local() {
                     for importer in m.glob_importers.borrow_checked(r).iter() {
                         if let Some(next_parent_module) = importer.parent_scope.module.opt_def_id()
-                        {
-                            if next_parent_module == module
+                            && (next_parent_module == module
                                 || comes_from_same_module_for_glob(
                                     r,
                                     next_parent_module,
                                     module,
                                     visited,
-                                )
-                            {
-                                res = true;
-                                break;
-                            }
+                                ))
+                        {
+                            res = true;
+                            break;
                         }
                     }
                 }
@@ -3766,7 +3784,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn struct_ctor(&self, def_id: DefId) -> Option<StructCtor> {
+    pub(in crate::rustc_resolve) fn struct_ctor(&self, def_id: DefId) -> Option<StructCtor> {
         match def_id.as_local() {
             Some(def_id) => self.struct_ctors.get(&def_id).cloned(),
             None => {
@@ -3786,7 +3804,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Gets the `#[diagnostic::on_unknown]` attribute data associated with this `DefId`.
-    pub(crate) fn on_unknown_data(&self, def_id: DefId) -> Option<&Directive> {
+    pub(in crate::rustc_resolve) fn on_unknown_data(&self, def_id: DefId) -> Option<&Directive> {
         match def_id.as_local() {
             Some(local) => Some(self.on_unknown_data.get(&local)?.directive.as_ref()),
             None => find_attr!(self.tcx, def_id, OnUnknown{ directive } => directive)?.as_deref(),
@@ -3885,7 +3903,7 @@ fn extend_span_to_previous_binding(sess: &Session, binding_span: Span) -> Option
     Some(binding_span.with_lo(BytePos(
         // Take away the number of bytes for the characters we've found and an
         // extra for the comma.
-        binding_span.lo().0 - (prev_comma.as_bytes().len() as u32) - 1,
+        binding_span.lo().0 - (prev_comma.len() as u32) - 1,
     )))
 }
 
@@ -3950,7 +3968,7 @@ enum FoundUse {
 }
 
 /// Whether a binding is part of a pattern or a use statement. Used for diagnostics.
-pub(crate) enum DiagMode {
+pub(in crate::rustc_resolve) enum DiagMode {
     Normal,
     /// The binding is part of a pattern
     Pattern,
@@ -3964,7 +3982,7 @@ pub(crate) enum DiagMode {
     },
 }
 
-pub(crate) fn import_candidates(
+pub(in crate::rustc_resolve) fn import_candidates(
     tcx: TyCtxt<'_>,
     err: &mut Diag<'_>,
     // This is `None` if all placement locations are inside expansions
@@ -3992,6 +4010,10 @@ type PathString<'a> = (String, &'a str, Option<Span>, &'a Option<String>, bool);
 /// entities with that name in all crates. This method allows outputting the
 /// results of this search in a programmer-friendly way. If any entities are
 /// found and suggested, returns `true`, otherwise returns `false`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Resolver helper keeps its established arguments explicit across call sites."
+)]
 fn show_candidates(
     tcx: TyCtxt<'_>,
     err: &mut Diag<'_>,
@@ -4044,8 +4066,9 @@ fn show_candidates(
             path_strings.extract_if(.., |p| p.0.starts_with("core::")).collect::<Vec<_>>();
         let std_path_strings =
             path_strings.extract_if(.., |p| p.0.starts_with("std::")).collect::<Vec<_>>();
-        let foreign_crate_path_strings =
-            path_strings.extract_if(.., |p| !p.0.starts_with("crate::rustc_resolve::")).collect::<Vec<_>>();
+        let foreign_crate_path_strings = path_strings
+            .extract_if(.., |p| !p.0.starts_with("crate::rustc_resolve::"))
+            .collect::<Vec<_>>();
 
         // We list the `crate` local paths first.
         // Then we list the `std`/`core` paths.
@@ -4326,12 +4349,12 @@ fn is_span_suitable_for_use_injection(s: Span) -> bool {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct OnUnknownData {
-    pub(crate) directive: Box<Directive>,
+pub(in crate::rustc_resolve) struct OnUnknownData {
+    pub(in crate::rustc_resolve) directive: Box<Directive>,
 }
 
 impl OnUnknownData {
-    pub(crate) fn from_attrs(
+    pub(in crate::rustc_resolve) fn from_attrs(
         r: &Resolver<'_, '_>,
         attrs: &[ast::Attribute],
     ) -> Option<OnUnknownData> {

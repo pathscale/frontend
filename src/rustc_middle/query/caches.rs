@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use eko::thread::OnceLock;
 
@@ -39,6 +33,10 @@ pub trait QueryCache: Sized {
     fn complete(&self, key: Self::Key, value: Self::Value, index: DepNodeIndex);
 
     /// Calls a closure on each entry in this cache.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the callback exposes each cache entry and its dependency node"
+    )]
     fn for_each(&self, f: &mut dyn FnMut(&Self::Key, &Self::Value, DepNodeIndex));
 
     /// Returns the number of entries currently in this cache.
@@ -46,6 +44,10 @@ pub trait QueryCache: Sized {
     /// Useful for reserving capacity in data structures that will hold the
     /// output of a call to [`Self::for_each`].
     fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// In-memory cache for queries whose keys aren't suitable for any of the

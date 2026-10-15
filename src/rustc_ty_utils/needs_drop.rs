@@ -1,14 +1,14 @@
 //! Check whether a type has (potentially) non-trivial drop glue.
 
-use alloc::vec::Vec;
+use crate::bug;
+use crate::find_attr;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_hir::def_id::DefId;
-use crate::find_attr;
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::util::{AlwaysRequiresDrop, needs_drop_components};
 use crate::rustc_middle::ty::{self, EarlyBinder, GenericArgsRef, Ty, TyCtxt, Unnormalized};
 use crate::rustc_structures::Limit;
+use alloc::vec::Vec;
 use tracing::{debug, instrument};
 
 use crate::rustc_ty_utils::diagnostics::NeedsDropOverflow;
@@ -31,8 +31,7 @@ fn needs_drop_raw<'tcx>(
         adt_has_dtor,
         DropTysOptions::default(),
     )
-    .filter(filter_array_elements(tcx, query.typing_env))
-    .next()
+    .find(filter_array_elements(tcx, query.typing_env))
     .is_some();
 
     debug!("needs_drop_raw({:?}) = {:?}", query, res);
@@ -55,8 +54,7 @@ fn needs_async_drop_raw<'tcx>(
         adt_has_async_dtor,
         DropTysOptions::default().recurse_into_box_for_async_drop(),
     )
-    .filter(filter_array_elements_async(tcx, query.typing_env))
-    .next()
+    .find(filter_array_elements_async(tcx, query.typing_env))
     .is_some();
 
     debug!("needs_async_drop_raw({:?}) = {:?}", query, res);
@@ -103,8 +101,7 @@ fn has_significant_drop_raw<'tcx>(
         adt_consider_insignificant_dtor(tcx),
         DropTysOptions::default().only_significant(),
     )
-    .filter(filter_array_elements(tcx, query.typing_env))
-    .next()
+    .find(filter_array_elements(tcx, query.typing_env))
     .is_some();
     debug!("has_significant_drop_raw({:?}) = {:?}", query, res);
     res

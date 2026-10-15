@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_middle::mir::visit::{PlaceContext, Visitor};
@@ -77,11 +71,8 @@ impl GatherUsedMutsVisitor<'_, '_, '_, '_> {
 impl<'tcx> Visitor<'tcx> for GatherUsedMutsVisitor<'_, '_, '_, 'tcx> {
     fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
         debug!("visit_terminator: terminator={:?}", terminator);
-        match &terminator.kind {
-            TerminatorKind::Call { destination, .. } => {
-                self.remove_never_initialized_mut_locals(*destination);
-            }
-            _ => {}
+        if let TerminatorKind::Call { destination, .. } = &terminator.kind {
+            self.remove_never_initialized_mut_locals(*destination);
         }
 
         self.super_terminator(terminator, location);

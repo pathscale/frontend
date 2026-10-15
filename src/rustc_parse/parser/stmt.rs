@@ -1,6 +1,5 @@
 use crate::rustc_ast::ptr::P;
 use alloc::borrow::Cow;
-use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::ops::Bound;
@@ -443,17 +442,17 @@ impl<'a> Parser<'a> {
     }
 
     fn check_let_else_init_bool_expr(&self, init: &ast::Expr) {
-        if let ast::ExprKind::Binary(op, ..) = init.kind {
-            if op.node.is_lazy() {
-                self.dcx().emit_err(diagnostics::InvalidExpressionInLetElse {
-                    span: init.span,
-                    operator: op.node.as_str(),
-                    sugg: diagnostics::WrapInParentheses::Expression {
-                        left: init.span.shrink_to_lo(),
-                        right: init.span.shrink_to_hi(),
-                    },
-                });
-            }
+        if let ast::ExprKind::Binary(op, ..) = init.kind
+            && op.node.is_lazy()
+        {
+            self.dcx().emit_err(diagnostics::InvalidExpressionInLetElse {
+                span: init.span,
+                operator: op.node.as_str(),
+                sugg: diagnostics::WrapInParentheses::Expression {
+                    left: init.span.shrink_to_lo(),
+                    right: init.span.shrink_to_hi(),
+                },
+            });
         }
     }
 
@@ -645,7 +644,7 @@ impl<'a> Parser<'a> {
                 // for _ in x 0.0 {}
                 e.span_suggestion_verbose(
                     between,
-                    format!("you might have meant to write a field access"),
+                    "you might have meant to write a field access".to_string(),
                     ".".to_string(),
                     Applicability::MaybeIncorrect,
                 );
@@ -992,7 +991,7 @@ impl<'a> Parser<'a> {
                     && !matches!(self.token.kind, token::Eof | token::Semi | token::CloseBrace) =>
             {
                 // The user has written `#[attr] expr` which is unsupported. (#106020)
-                let guar = self.attr_on_non_tail_expr(&expr);
+                let guar = self.attr_on_non_tail_expr(expr);
                 // We already emitted an error, so don't emit another type error
                 let sp = expr.span.to(self.prev_token.span);
                 *expr = self.mk_expr_err(sp, guar);
@@ -1032,9 +1031,8 @@ impl<'a> Parser<'a> {
 
                             match &expr.kind {
                                 ExprKind::Path(None, ast::Path { segments, .. })
-                                    if let [segment] = segments.as_slice() =>
-                                {
-                                    if self.token == token::Colon
+                                    if let [segment] = segments.as_slice()
+                                        && self.token == token::Colon
                                         && self.look_ahead(1, |token| {
                                             token.is_metavar_block()
                                                 || matches!(
@@ -1044,29 +1042,28 @@ impl<'a> Parser<'a> {
                                                         token::IdentIsRaw::No
                                                     ) | token::OpenBrace
                                                 )
-                                        })
-                                    {
-                                        let snapshot = self.create_snapshot_for_diagnostic();
-                                        let label = Label {
-                                            ident: Ident::from_str_and_span(
-                                                &format!("'{}", segment.ident),
-                                                segment.ident.span,
-                                            ),
-                                        };
-                                        match self.parse_expr_labeled(label, false) {
-                                            Ok(labeled_expr) => {
-                                                e.cancel();
-                                                self.dcx().emit_err(MalformedLoopLabel {
-                                                    span: label.ident.span,
-                                                    suggestion: label.ident.span.shrink_to_lo(),
-                                                });
-                                                *expr = labeled_expr;
-                                                break 'break_recover None;
-                                            }
-                                            Err(err) => {
-                                                err.cancel();
-                                                self.restore_snapshot(snapshot);
-                                            }
+                                        }) =>
+                                {
+                                    let snapshot = self.create_snapshot_for_diagnostic();
+                                    let label = Label {
+                                        ident: Ident::from_str_and_span(
+                                            &format!("'{}", segment.ident),
+                                            segment.ident.span,
+                                        ),
+                                    };
+                                    match self.parse_expr_labeled(label, false) {
+                                        Ok(labeled_expr) => {
+                                            e.cancel();
+                                            self.dcx().emit_err(MalformedLoopLabel {
+                                                span: label.ident.span,
+                                                suggestion: label.ident.span.shrink_to_lo(),
+                                            });
+                                            *expr = labeled_expr;
+                                            break 'break_recover None;
+                                        }
+                                        Err(err) => {
+                                            err.cancel();
+                                            self.restore_snapshot(snapshot);
                                         }
                                     }
                                 }

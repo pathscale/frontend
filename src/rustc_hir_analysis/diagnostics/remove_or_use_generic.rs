@@ -1,12 +1,10 @@
+use alloc::string::ToString;
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
@@ -38,23 +36,22 @@ impl<'tcx> Visitor<'tcx> for ParamUsageVisitor<'tcx> {
     type Result = ControlFlow<()>;
 
     fn visit_path(&mut self, path: &Path<'tcx>, _id: HirId) -> Self::Result {
-        if let Some(res_def_id) = path.res.opt_def_id() {
-            if res_def_id == self.param_def_id {
-                self.found = true;
-                return ControlFlow::Break(());
-            }
+        if let Some(res_def_id) = path.res.opt_def_id()
+            && res_def_id == self.param_def_id
+        {
+            self.found = true;
+            return ControlFlow::Break(());
         }
         intravisit::walk_path(self, path)
     }
 
     fn visit_lifetime(&mut self, lifetime: &'tcx crate::rustc_hir::Lifetime) -> Self::Result {
-        if let LifetimeKind::Param(id) = lifetime.kind {
-            if let Some(local_def_id) = self.param_def_id.as_local() {
-                if id == local_def_id {
-                    self.found = true;
-                    return ControlFlow::Break(());
-                }
-            }
+        if let LifetimeKind::Param(id) = lifetime.kind
+            && let Some(local_def_id) = self.param_def_id.as_local()
+            && id == local_def_id
+        {
+            self.found = true;
+            return ControlFlow::Break(());
         }
         walk_lifetime(self, lifetime)
     }
@@ -207,7 +204,7 @@ pub(crate) fn suggest_to_remove_or_use_generic(
             Applicability::MaybeIncorrect,
         );
         if suggestions.len() == 2 {
-            let msg = format!("or use it");
+            let msg = "or use it".to_string();
             diag.span_suggestion(
                 suggestions[1].0,
                 msg,

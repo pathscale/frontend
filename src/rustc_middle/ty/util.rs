@@ -3,10 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -74,7 +70,7 @@ impl<'tcx> fmt::Display for Discr<'tcx> {
                 let size = ty::tls::with(|tcx| Integer::from_int_ty(&tcx, ity).size());
                 let x = self.val;
                 // sign extend the raw representation to be an i128
-                let x = size.sign_extend(x) as i128;
+                let x = size.sign_extend(x);
                 write!(fmt, "{x}")
             }
             _ => write!(fmt, "{}", self.val),
@@ -268,7 +264,7 @@ impl<'tcx> TyCtxt<'tcx> {
         // This is currently used to allow us to walk a ValTree
         // in lockstep with the type in order to get the ValTree branch that
         // corresponds to an unsized field.
-        mut f: impl FnMut() -> (),
+        mut f: impl FnMut(),
     ) -> Ty<'tcx> {
         let recursion_limit = self.recursion_limit();
         for iteration in 0.. {
@@ -1679,9 +1675,7 @@ where
             }
             Ok(intern(folder.cx(), &new_list))
         }
-        Some((_, Err(err))) => {
-            return Err(err);
-        }
+        Some((_, Err(err))) => Err(err),
         None => Ok(list),
     }
 }

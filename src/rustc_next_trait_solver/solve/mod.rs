@@ -11,7 +11,6 @@
 //! For a high-level overview of how this solver works, check out the relevant
 //! section of the rustc-dev-guide.
 
-use alloc::vec::Vec;
 mod assembly;
 mod effect_goals;
 mod eval_ctxt;
@@ -21,10 +20,10 @@ mod project_goals;
 mod search_graph;
 mod trait_goals;
 
-use derive_where::derive_where;
 use crate::rustc_type_ir::inherent::*;
 pub use crate::rustc_type_ir::solve::*;
 use crate::rustc_type_ir::{self as ty, Interner, Region, TypeVisitableExt};
+use derive_where::derive_where;
 use tracing::instrument;
 
 pub use self::eval_ctxt::{
@@ -252,14 +251,10 @@ where
 
         let ct_ty = match ct.kind() {
             ty::ConstKind::Infer(_) => {
-                return self
-                    .evaluate_added_goals_and_make_canonical_response(Certainty::AMBIGUOUS)
-                    .map_err(Into::into);
+                return self.evaluate_added_goals_and_make_canonical_response(Certainty::AMBIGUOUS);
             }
             ty::ConstKind::Error(_) => {
-                return self
-                    .evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
-                    .map_err(Into::into);
+                return self.evaluate_added_goals_and_make_canonical_response(Certainty::Yes);
             }
             ty::ConstKind::Alias(ty::IsRigid::Yes, alias_const) => {
                 alias_const.type_of(self.cx()).skip_norm_wip()
@@ -281,7 +276,7 @@ where
         };
 
         self.eq(goal.param_env, ct_ty, ty)?;
-        self.evaluate_added_goals_and_make_canonical_response(Certainty::Yes).map_err(Into::into)
+        self.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
     }
 }
 

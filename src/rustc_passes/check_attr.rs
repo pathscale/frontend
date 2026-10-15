@@ -5,16 +5,16 @@
 //! conflicts between multiple such attributes attached to the same
 //! item.
 
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use alloc::borrow::ToOwned;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::cell::Cell;
 use core::slice;
 
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_ast::{AttrStyle, MetaItemKind, ast};
-use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_attr_parsing::AttributeParser;
+use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_errors::{DiagCtxtHandle, IntoDiagArg, MultiSpan, msg};
 use crate::rustc_feature::BUILTIN_ATTRIBUTE_MAP;
@@ -37,7 +37,6 @@ use crate::rustc_lint_defs::builtin::{
     MALFORMED_DIAGNOSTIC_FORMAT_LITERALS, MISPLACED_DIAGNOSTIC_ATTRIBUTES, REPEATED_REPRS,
     UNUSED_ATTRIBUTES,
 };
-use rustc_macros::Diagnostic;
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::traits::ObligationCause;
@@ -51,6 +50,7 @@ use crate::rustc_structures::CrateType;
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::infer::{TyCtxtInferExt, ValuePairs};
 use crate::rustc_trait_selection::traits::{ObligationCtxt, TraitErrors};
+use rustc_macros::Diagnostic;
 
 use crate::rustc_passes::diagnostics;
 use crate::rustc_passes::item_likes::{item_like_count, item_like_weight, visit_item_like};
@@ -108,7 +108,10 @@ pub(crate) enum ProcMacroKind {
 }
 
 impl IntoDiagArg for ProcMacroKind {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        _: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         match self {
             ProcMacroKind::Attribute => "attribute proc macro",
             ProcMacroKind::Derive => "derive proc macro",
@@ -151,8 +154,8 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                         [sym::allow | sym::expect | sym::warn | sym::deny | sym::forbid, ..] => {}
 
                         [name, rest @ ..] => {
-                            if let Some(_) = BUILTIN_ATTRIBUTE_MAP.get(name) {
-                                if rest.len() > 0
+                            if BUILTIN_ATTRIBUTE_MAP.get(name).is_some() {
+                                if !rest.is_empty()
                                     && AttributeParser::is_parsed_attribute(slice::from_ref(name))
                                 {
                                     // Check if we tried to use a builtin attribute as an attribute
@@ -292,12 +295,12 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
             AttributeKind::NeedsAllocator => (),
             AttributeKind::NeedsPanicRuntime => (),
             AttributeKind::NoBuiltins => (),
-            AttributeKind::NoCore { .. } => (),
+            AttributeKind::NoCore => (),
             AttributeKind::NoImplicitPrelude => (),
             AttributeKind::NoLink => (),
             AttributeKind::NoMain => (),
             AttributeKind::NoMangle(..) => (),
-            AttributeKind::NoStd { .. } => (),
+            AttributeKind::NoStd => (),
             AttributeKind::OnUnknown { .. } => (),
             AttributeKind::OnUnmatchedArgs { .. } => (),
             AttributeKind::Opaque => (),
@@ -573,37 +576,36 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
 
     /// Checks use of generic formatting parameters in `#[diagnostic::on_unimplemented]`
     fn check_diagnostic_on_unimplemented(&self, hir_id: HirId, directive: Option<&Directive>) {
-        if let Some(directive) = directive {
-            if let Node::Item(Item {
+        if let Some(directive) = directive
+            && let Node::Item(Item {
                 kind: ItemKind::Trait { ident: trait_name, generics, .. },
                 ..
             }) = self.tcx.hir_node(hir_id)
-            {
-                directive.visit_params(&mut |argument_name, span| {
-                    let has_generic = generics.params.iter().any(|p| {
-                        if !matches!(p.kind, GenericParamKind::Lifetime { .. })
-                            && let ParamName::Plain(name) = p.name
-                            && name.name == argument_name
-                        {
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                    if !has_generic {
-                        self.tcx.emit_node_span_lint(
-                            MALFORMED_DIAGNOSTIC_FORMAT_LITERALS,
-                            hir_id,
-                            span,
-                            diagnostics::UnknownFormatParameterForOnUnimplementedAttr {
-                                argument_name,
-                                trait_name: *trait_name,
-                                help: !directive.is_rustc_attr,
-                            },
-                        )
+        {
+            directive.visit_params(&mut |argument_name, span| {
+                let has_generic = generics.params.iter().any(|p| {
+                    if !matches!(p.kind, GenericParamKind::Lifetime { .. })
+                        && let ParamName::Plain(name) = p.name
+                        && name.name == argument_name
+                    {
+                        true
+                    } else {
+                        false
                     }
-                })
-            }
+                });
+                if !has_generic {
+                    self.tcx.emit_node_span_lint(
+                        MALFORMED_DIAGNOSTIC_FORMAT_LITERALS,
+                        hir_id,
+                        span,
+                        diagnostics::UnknownFormatParameterForOnUnimplementedAttr {
+                            argument_name,
+                            trait_name: *trait_name,
+                            help: !directive.is_rustc_attr,
+                        },
+                    )
+                }
+            })
         }
     }
 
@@ -653,97 +655,94 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                         attr_path_span,
                         DiagnosticOnConstOnlyForNonConstTraitImpls { item_span },
                     );
-                    return;
                 }
-                Constness::NotConst => return,
+                Constness::NotConst => (),
             }
         }
     }
 
     /// Checks use of generic formatting parameters in `#[diagnostic::on_move]`
     fn check_diagnostic_on_move(&self, hir_id: HirId, directive: Option<&Directive>) {
-        if let Some(directive) = directive {
-            if let Node::Item(Item {
+        if let Some(directive) = directive
+            && let Node::Item(Item {
                 kind:
                     ItemKind::Struct(_, generics, _)
                     | ItemKind::Enum(_, generics, _)
                     | ItemKind::Union(_, generics, _),
                 ..
             }) = self.tcx.hir_node(hir_id)
-            {
-                directive.visit_params(&mut |argument_name, span| {
-                    let has_generic = generics.params.iter().any(|p| {
-                        if !matches!(p.kind, GenericParamKind::Lifetime { .. })
-                            && let ParamName::Plain(name) = p.name
-                            && name.name == argument_name
-                        {
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                    if !has_generic {
-                        self.tcx.emit_node_span_lint(
-                            MALFORMED_DIAGNOSTIC_FORMAT_LITERALS,
-                            hir_id,
-                            span,
-                            diagnostics::OnMoveMalformedFormatLiterals { name: argument_name },
-                        )
+        {
+            directive.visit_params(&mut |argument_name, span| {
+                let has_generic = generics.params.iter().any(|p| {
+                    if !matches!(p.kind, GenericParamKind::Lifetime { .. })
+                        && let ParamName::Plain(name) = p.name
+                        && name.name == argument_name
+                    {
+                        true
+                    } else {
+                        false
                     }
                 });
-            }
+                if !has_generic {
+                    self.tcx.emit_node_span_lint(
+                        MALFORMED_DIAGNOSTIC_FORMAT_LITERALS,
+                        hir_id,
+                        span,
+                        diagnostics::OnMoveMalformedFormatLiterals { name: argument_name },
+                    )
+                }
+            });
         }
     }
 
     fn check_diagnostic_on_type_error(&self, hir_id: HirId, directive: Option<&Directive>) {
-        if let Some(directive) = directive {
-            if let Node::Item(Item {
+        if let Some(directive) = directive
+            && let Node::Item(Item {
                 kind:
                     ItemKind::Struct(_, generics, _)
                     | ItemKind::Enum(_, generics, _)
                     | ItemKind::Union(_, generics, _),
                 ..
             }) = self.tcx.hir_node(hir_id)
-            {
-                let generic_count = generics
-                    .params
-                    .iter()
-                    .filter(|p| !matches!(p.kind, GenericParamKind::Lifetime { .. }))
-                    .count();
+        {
+            let generic_count = generics
+                .params
+                .iter()
+                .filter(|p| !matches!(p.kind, GenericParamKind::Lifetime { .. }))
+                .count();
 
-                // Enforce: at most one generic
-                if generic_count != 1 {
-                    self.tcx.emit_node_span_lint(
-                        MALFORMED_DIAGNOSTIC_ATTRIBUTES,
-                        hir_id,
-                        generics.span,
-                        diagnostics::OnTypeErrorNotExactlyOneGeneric { count: generic_count },
-                    );
-                }
+            // Enforce: at most one generic
+            if generic_count != 1 {
+                self.tcx.emit_node_span_lint(
+                    MALFORMED_DIAGNOSTIC_ATTRIBUTES,
+                    hir_id,
+                    generics.span,
+                    diagnostics::OnTypeErrorNotExactlyOneGeneric { count: generic_count },
+                );
+            }
 
-                directive.visit_params(&mut |argument_name, span| {
-                    let has_generic = generics.params.iter().any(|p| {
-                        if !matches!(p.kind, GenericParamKind::Lifetime { .. })
-                            && let ParamName::Plain(name) = p.name
-                            && name.name == argument_name
-                        {
-                            true
-                        } else {
-                            false
-                        }
-                    });
-
-                    let is_allowed = argument_name == sym::Expected || argument_name == sym::Found;
-                    if !(has_generic | is_allowed) {
-                        self.tcx.emit_node_span_lint(
-                            MALFORMED_DIAGNOSTIC_FORMAT_LITERALS,
-                            hir_id,
-                            span,
-                            diagnostics::OnTypeErrorMalformedFormatLiterals { name: argument_name },
-                        )
+            directive.visit_params(&mut |argument_name, span| {
+                let has_generic = generics.params.iter().any(|p| {
+                    if !matches!(p.kind, GenericParamKind::Lifetime { .. })
+                        && let ParamName::Plain(name) = p.name
+                        && name.name == argument_name
+                    {
+                        true
+                    } else {
+                        false
                     }
                 });
-            }
+
+                let is_allowed = argument_name == sym::Expected || argument_name == sym::Found;
+                if !(has_generic | is_allowed) {
+                    self.tcx.emit_node_span_lint(
+                        MALFORMED_DIAGNOSTIC_FORMAT_LITERALS,
+                        hir_id,
+                        span,
+                        diagnostics::OnTypeErrorMalformedFormatLiterals { name: argument_name },
+                    )
+                }
+            });
         }
     }
 
@@ -787,7 +786,7 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                 let abi = fn_sig.header.abi;
                 if abi.is_rustic_abi() && !self.tcx.features().naked_functions_rustic_abi() {
                     feature_err(
-                        &self.tcx.sess,
+                        self.tcx.sess,
                         sym::naked_functions_rustic_abi,
                         fn_sig.span,
                         format!(
@@ -810,21 +809,17 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
         target: Target,
         item: Option<&'tcx Item<'tcx>>,
     ) {
-        match target {
-            Target::Struct => {
-                if let hir::Item {
-                    kind: hir::ItemKind::Struct(_, _, hir::VariantData::Struct { fields, .. }),
-                    ..
-                } = item.unwrap()
-                    && fields.iter().any(|f| f.default.is_some())
-                {
-                    self.dcx().emit_err(diagnostics::NonExhaustiveWithDefaultFieldValues {
-                        attr_span,
-                        defn_span: span,
-                    });
-                }
-            }
-            _ => {}
+        if target == Target::Struct
+            && let hir::Item {
+                kind: hir::ItemKind::Struct(_, _, hir::VariantData::Struct { fields, .. }),
+                ..
+            } = item.unwrap()
+            && fields.iter().any(|f| f.default.is_some())
+        {
+            self.dcx().emit_err(diagnostics::NonExhaustiveWithDefaultFieldValues {
+                attr_span,
+                defn_span: span,
+            });
         }
     }
 
@@ -894,7 +889,6 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
         }
         if self.tcx.hir_opt_name(hir_id) == Some(alias) {
             self.tcx.dcx().emit_err(diagnostics::DocAliasNotAnAlias { span, attr_str: alias });
-            return;
         }
     }
 
@@ -932,13 +926,13 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
         };
         match item.kind {
             ItemKind::Enum(_, generics, _) | ItemKind::Struct(_, generics, _)
-                if generics.params.len() != 0 => {}
+                if !generics.params.is_empty() => {}
             ItemKind::Trait { generics, items, .. }
-                if generics.params.len() != 0
+                if !generics.params.is_empty()
                     || items.iter().any(|item| {
                         matches!(self.tcx.def_kind(item.owner_id), DefKind::AssocTy)
                     }) => {}
-            ItemKind::TyAlias(_, generics, _) if generics.params.len() != 0 => {}
+            ItemKind::TyAlias(_, generics, _) if !generics.params.is_empty() => {}
             _ => {
                 self.dcx().emit_err(diagnostics::DocSearchUnboxInvalid { span });
             }
@@ -1318,12 +1312,10 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
         target: Target,
     ) {
         match target {
-            Target::Fn | Target::Method(_) => {
-                if !self.tcx.is_const_fn(hir_id.expect_owner().to_def_id()) {
-                    self.tcx
-                        .dcx()
-                        .emit_err(diagnostics::RustcAllowConstFnUnstable { attr_span, span });
-                }
+            Target::Fn | Target::Method(_)
+                if !self.tcx.is_const_fn(hir_id.expect_owner().to_def_id()) =>
+            {
+                self.tcx.dcx().emit_err(diagnostics::RustcAllowConstFnUnstable { attr_span, span });
             }
             _ => {}
         }
@@ -1377,7 +1369,7 @@ impl<'tcx> CheckAttrVisitor<'tcx> {
                 sym::expect,
             ]) && let Some(meta) = attr.meta_item_list()
                 && meta.iter().any(|meta| {
-                    meta.meta_item().map_or(false, |item| {
+                    meta.meta_item().is_some_and(|item| {
                         item.path == sym::linker_messages || item.path == sym::linker_info
                     })
                 })

@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -486,7 +482,7 @@ pub(super) fn explicit_item_bounds_with_filter(
                 parent: _,
                 in_trait_or_impl: None | Some(hir::RpitContext::TraitImpl),
             }
-            | crate::rustc_hir::OpaqueTyOrigin::TyAlias { parent: _, .. } => {
+            | crate::rustc_hir::OpaqueTyOrigin::TyAlias { .. } => {
                 let args = GenericArgs::identity_for_item(tcx, def_id);
                 let item_ty = Ty::new_opaque(tcx, ty::IsRigid::No, def_id.to_def_id(), args);
                 let bounds = opaque_type_bounds(tcx, def_id, bounds, item_ty, *span, filter);

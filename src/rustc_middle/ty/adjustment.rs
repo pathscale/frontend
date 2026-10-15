@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_hir as hir;
@@ -167,12 +161,12 @@ impl OverloadedDeref {
 /// - using `x.some_method()` syntax, where some_method takes `&mut self`,
 /// - using `Foo::some_method(&mut x, ...)` syntax,
 /// - binary assignment operators (`+=`, `-=`, `*=`, etc.).
-/// Anything else should be rejected until generalized two-phase borrow support
-/// is implemented. Right now, dataflow can't handle the general case where there
-/// is more than one use of a mutable borrow, and we don't want to accept too much
-/// new code via two-phase borrows, so we try to limit where we create two-phase
-/// capable mutable borrows.
-/// See #49434 for tracking.
+///   Anything else should be rejected until generalized two-phase borrow support
+///   is implemented. Right now, dataflow can't handle the general case where there
+///   is more than one use of a mutable borrow, and we don't want to accept too much
+///   new code via two-phase borrows, so we try to limit where we create two-phase
+///   capable mutable borrows.
+///   See #49434 for tracking.
 #[derive(Copy, Clone, PartialEq, Debug, TyEncodable, TyDecodable, StableHash)]
 pub enum AllowTwoPhase {
     Yes,

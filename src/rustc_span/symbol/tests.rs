@@ -1,13 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
-
 
 use super::*;
 use crate::rustc_span::create_default_session_globals_then;
@@ -122,7 +118,7 @@ fn symbol_indices_stale_miss_finds_the_later_insert() {
     // Same table.
     let a: &'static [u8] = b"alpha";
     intern_shared(&strs, &indices, &lock, b"seed");
-    let stale = indices.find(a, symbol_hash(a), &strs).err().expect("absent");
+    let stale = indices.find(a, symbol_hash(a), &strs).expect_err("absent");
     let first = intern_shared(&strs, &indices, &lock, a);
     // SAFETY: single-threaded test, the one writer.
     let again = unsafe { indices.find_or_insert(a, symbol_hash(a), &strs, stale, || a) };
@@ -130,7 +126,7 @@ fn symbol_indices_stale_miss_finds_the_later_insert() {
 
     // Across growth: the miss names a table that is no longer current.
     let b: &'static [u8] = b"beta";
-    let stale = indices.find(b, symbol_hash(b), &strs).err().expect("absent");
+    let stale = indices.find(b, symbol_hash(b), &strs).expect_err("absent");
     let first = intern_shared(&strs, &indices, &lock, b);
     for n in 0..4 * SYMBOL_INDICES_FIRST_SLOTS {
         let s: &'static [u8] = leaked(format!("filler_{n}"));
@@ -148,7 +144,6 @@ fn symbol_indices_stale_miss_finds_the_later_insert() {
         assert_eq!(indices.find(s, symbol_hash(s), &strs).ok(), Some(local as u32));
     }
 }
-
 
 /// A test string that lives as long as the tables that hold it.
 fn leaked(s: String) -> &'static [u8] {

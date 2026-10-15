@@ -2,11 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_ast::tokenstream::TokenStream;
@@ -52,15 +47,15 @@ pub(crate) fn warn_on_duplicate_attribute(ecx: &ExtCtxt<'_>, item: &Annotatable,
         Annotatable::Variant(variant) => Some(&variant.attrs),
         _ => None,
     };
-    if let Some(attrs) = attrs {
-        if let Some(attr) = attr::find_by_name(attrs, name) {
-            ecx.psess().buffer_lint(
-                DUPLICATE_MACRO_ATTRIBUTES,
-                attr.span,
-                ecx.current_expansion.lint_node_id,
-                diagnostics::DuplicateMacroAttribute,
-            );
-        }
+    if let Some(attrs) = attrs
+        && let Some(attr) = attr::find_by_name(attrs, name)
+    {
+        ecx.psess().buffer_lint(
+            DUPLICATE_MACRO_ATTRIBUTES,
+            attr.span,
+            ecx.current_expansion.lint_node_id,
+            diagnostics::DuplicateMacroAttribute,
+        );
     }
 }
 
@@ -79,7 +74,7 @@ pub(crate) struct ExprToSpannedString {
 }
 
 /// - `Ok` is returned when the conversion to a string literal is unsuccessful,
-/// but another type of expression is obtained instead.
+///   but another type of expression is obtained instead.
 /// - `Err` is returned when the conversion process fails.
 type UnexpectedExprKind<'a> = Result<(Diag<'a>, bool /* has_suggestions */), ErrorGuaranteed>;
 

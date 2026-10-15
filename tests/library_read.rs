@@ -247,9 +247,7 @@ fn a_library_read_is_incomplete_only_where_reading_lost_input() {
     }
 
     let dir = Scratch::new("builtin-clone-derive");
-    let source = format!(
-        "{LANG}#[derive(Clone)] pub struct CloneOnly;\n"
-    );
+    let source = format!("{LANG}#[derive(Clone)] pub struct CloneOnly;\n");
     let (read, _) = read_fixture(&dir, "clone_derive", &source, true);
     let facts = read.expect("a builtin derive keeps its source item");
     assert!(facts.complete, "{:?}", facts.diagnostics);
@@ -516,7 +514,9 @@ fn read_chain(
             let get = facts
                 .definitions
                 .iter()
-                .filter(|definition| definition.name == "get" && definition.def_path.contains("str"))
+                .filter(|definition| {
+                    definition.name == "get" && definition.def_path.contains("str")
+                })
                 .filter_map(|definition| definition.signature.as_ref())
                 // `str::get` itself: `&self` and one generic index, not a `SliceIndex` impl's
                 // `get(self, slice: &str)`.
@@ -623,8 +623,9 @@ mod plan {
         fn parse(text: &str) -> Manifest {
             let mut manifest = Manifest { edition: "2015".to_string(), ..Manifest::default() };
             // Each dependency's fields, gathered from wherever the manifest writes them.
-            let mut deps: BTreeMap<(Option<String>, Kind, String), Vec<(String, Value)>> =
-                BTreeMap::new();
+            type DependencyKey = (Option<String>, Kind, String);
+            type DependencyFields = Vec<(String, Value)>;
+            let mut deps: BTreeMap<DependencyKey, DependencyFields> = BTreeMap::new();
             for entry in toml::parse(text) {
                 let table: Vec<&str> = entry.table.iter().map(String::as_str).collect();
                 let key: Vec<&str> = entry.key.iter().map(String::as_str).collect();
@@ -670,7 +671,7 @@ mod plan {
                 let flag = |names: &[&str], default: bool| {
                     names
                         .iter()
-                        .find_map(|name| field(*name).and_then(Value::as_bool))
+                        .find_map(|name| field(name).and_then(Value::as_bool))
                         .unwrap_or(default)
                 };
                 manifest.deps.push(DepDecl {

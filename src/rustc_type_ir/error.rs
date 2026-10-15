@@ -1,5 +1,5 @@
-use derive_where::derive_where;
 use crate::rustc_abi::ExternAbi;
+use derive_where::derive_where;
 use rustc_macros::{GenericTypeVisitable, TypeFoldable_Generic, TypeVisitable_Generic};
 
 use crate::rustc_type_ir::solve::{NoSolution, NoSolutionOrRerunNonErased};
@@ -20,7 +20,8 @@ impl<T> ExpectedFound<T> {
 
 // Data structures used in type unification
 #[derive_where(Clone, Copy, PartialEq, Debug; I: Interner)]
-#[derive(TypeVisitable_Generic, GenericTypeVisitable)]pub enum TypeError<I: Interner> {
+#[derive(TypeVisitable_Generic, GenericTypeVisitable)]
+pub enum TypeError<I: Interner> {
     Mismatch,
     PolarityMismatch(#[type_visitable(ignore)] ExpectedFound<ty::ClausePolarity>),
     SafetyMismatch(#[type_visitable(ignore)] ExpectedFound<I::Safety>),
@@ -62,12 +63,12 @@ impl<I: Interner> Eq for TypeError<I> {}
 
 impl<I: Interner> TypeError<I> {
     pub fn involves_regions(self) -> bool {
-        match self {
+        matches!(
+            self,
             TypeError::RegionsDoesNotOutlive(_, _)
-            | TypeError::RegionsInsufficientlyPolymorphic(_, _)
-            | TypeError::RegionsPlaceholderMismatch => true,
-            _ => false,
-        }
+                | TypeError::RegionsInsufficientlyPolymorphic(_, _)
+                | TypeError::RegionsPlaceholderMismatch
+        )
     }
 
     pub fn must_include_note(self) -> bool {

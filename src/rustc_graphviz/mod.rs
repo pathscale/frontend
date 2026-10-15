@@ -110,11 +110,10 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use core::fmt::{self, Write};
-#[macro_use]
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::borrow::Cow;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::{self, Write};
 
 use LabelText::*;
 
@@ -232,6 +231,10 @@ impl<'a> Id<'a> {
     ///
     /// Passing an invalid string (containing spaces, brackets,
     /// quotes, ...) will return an empty `Err` value.
+    #[expect(
+        clippy::result_unit_err,
+        reason = "identifier validation retains its established unit failure contract"
+    )]
     pub fn new<Name: Into<Cow<'a, str>>>(name: Name) -> Result<Id<'a>, ()> {
         let name = name.into();
         match name.chars().next() {
@@ -467,7 +470,7 @@ where
         }
 
         if let Some(s) = g.node_shape(n) {
-            write!(text, "[shape={}]", &s.to_dot_string()).unwrap();
+            write!(text, "[shape={}]", s.to_dot_string()).unwrap();
         }
 
         writeln!(text, ";").unwrap();

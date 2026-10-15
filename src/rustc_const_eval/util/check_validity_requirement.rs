@@ -1,20 +1,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 // `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::{BackendRepr, FieldsShape, Scalar, Variants};
+use crate::rustc_middle::bug;
 use crate::rustc_middle::ty::layout::{
-    HasTyCtxt, LayoutCx, LayoutError, LayoutOf, TyAndLayout, ValidityRequirement,
+    LayoutCx, LayoutError, LayoutOf, TyAndLayout, ValidityRequirement,
 };
 use crate::rustc_middle::ty::{PseudoCanonicalInput, ScalarInt, Ty, TyCtxt};
-use crate::rustc_middle::bug;
 
 /// Determines whether the layout permits raw initialization by transmuting memory into `T`.
 /// `init_kind` specifies whether the memory is zero-initialized or filled with `0x01`.

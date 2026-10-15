@@ -51,7 +51,7 @@ where
     match (a.kind(), b.kind()) {
         (ty::Error(e), _) | (_, ty::Error(e)) => {
             infcx.set_tainted_by_errors(e);
-            return Ok(Ty::new_error(infcx.cx(), e));
+            Ok(Ty::new_error(infcx.cx(), e))
         }
 
         // Relate integral variables to other types
@@ -216,6 +216,10 @@ where
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the relation inputs and constructor are independent type arguments"
+)]
 pub fn combine_ty_args<Infcx, I, R>(
     infcx: &Infcx,
     relation: &mut R,

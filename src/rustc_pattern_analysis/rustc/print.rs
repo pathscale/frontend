@@ -13,8 +13,8 @@ use alloc::string::String;
 use alloc::string::ToString;
 use core::fmt;
 
-use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::bug;
+use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_middle::ty::{self, AdtDef, Ty, TyCtxt};
 use crate::rustc_span::sym;
 
@@ -70,9 +70,9 @@ pub(crate) fn write_struct_like<'tcx>(
             };
             Some((variant, name))
         }
-        EnumInfo::NotEnum => ty.ty_adt_def().and_then(|adt_def| {
-            Some((adt_def.non_enum_variant(), tcx.def_path_str(adt_def.did())))
-        }),
+        EnumInfo::NotEnum => ty
+            .ty_adt_def()
+            .map(|adt_def| (adt_def.non_enum_variant(), tcx.def_path_str(adt_def.did()))),
     };
 
     let mut start_or_comma = start_or_comma();

@@ -38,7 +38,9 @@ fn has_ignore_attr(attrs: &[Attribute], name: &'static str, meta: &'static str) 
     ignored
 }
 
-pub(crate) fn type_visitable_derive(mut s: synstructure::Structure<'_>) -> proc_macro2::TokenStream {
+pub(crate) fn type_visitable_derive(
+    mut s: synstructure::Structure<'_>,
+) -> proc_macro2::TokenStream {
     if let syn::Data::Union(_) = s.ast().data {
         panic!("cannot derive on union")
     }
@@ -322,10 +324,10 @@ fn transform_type_parameters(
                 None
             };
 
-            if let Some(path) = path {
-                if (self.visit)(path, i, &mut self.generic_parameter_bounds).is_break() {
-                    return;
-                }
+            if let Some(path) = path
+                && (self.visit)(path, i, &mut self.generic_parameter_bounds).is_break()
+            {
+                return;
             }
 
             syn::visit_mut::visit_type_path_mut(self, i);

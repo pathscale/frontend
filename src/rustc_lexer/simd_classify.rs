@@ -73,15 +73,15 @@ trait ByteBlock {
     fn non_ascii(&self) -> u64;
 }
 
-#[cfg(target_arch = "aarch64")]
-use self::neon::Block as NativeBlock;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-use self::avx2::Block as NativeBlock;
 #[cfg(not(any(
     target_arch = "aarch64",
     all(target_arch = "x86_64", target_feature = "avx2"),
 )))]
 use self::SwarBlock as NativeBlock;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+use self::avx2::Block as NativeBlock;
+#[cfg(target_arch = "aarch64")]
+use self::neon::Block as NativeBlock;
 
 #[inline]
 fn whitespace(block: &impl ByteBlock) -> u64 {
@@ -387,9 +387,7 @@ mod neon {
                 // these unsigned comparisons and the AND operate solely in
                 // registers with no pointer, alignment, bounds or aliasing
                 // requirements. The upper bound excludes non-ASCII bytes.
-                unsafe {
-                    vandq_u8(vcgeq_u8(word, vdupq_n_u8(lo)), vcleq_u8(word, vdupq_n_u8(hi)))
-                }
+                unsafe { vandq_u8(vcgeq_u8(word, vdupq_n_u8(lo)), vcleq_u8(word, vdupq_n_u8(hi))) }
             })
         }
 

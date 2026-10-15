@@ -1,11 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use core::fmt;
@@ -19,8 +15,8 @@ use crate::rustc_data_structures::stable_hash::{
 use crate::rustc_data_structures::unhash::Unhasher;
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::Idx;
-use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use crate::rustc_serialize::{Decodable, Encodable};
+use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 
 use crate::rustc_span::{SpanDecoder, SpanEncoder, Symbol};
 
@@ -297,7 +293,7 @@ impl DefId {
 
     #[inline]
     pub fn as_local(self) -> Option<LocalDefId> {
-        self.is_local().then(|| LocalDefId { local_def_index: self.index })
+        self.is_local().then_some(LocalDefId { local_def_index: self.index })
     }
 
     #[inline]
@@ -421,12 +417,7 @@ impl<D: SpanDecoder> Decodable<D> for LocalDefId {
     }
 }
 
-crate::define_id_collections!(
-    LocalDefIdMap,
-    LocalDefIdSet,
-    LocalDefIdMapEntry,
-    LocalDefId
-);
+crate::define_id_collections!(LocalDefIdMap, LocalDefIdSet, LocalDefIdMapEntry, LocalDefId);
 
 impl StableHash for DefId {
     #[inline]

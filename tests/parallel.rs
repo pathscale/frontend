@@ -17,7 +17,7 @@
 //! A `std` program, because the catcher needs `std`.
 
 use frontend::frontend_facts::{
-    CrateFacts, Checked, analyze_source_with_width, check_source_with_width,
+    Checked, CrateFacts, analyze_source_with_width, check_source_with_width,
 };
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
@@ -128,7 +128,6 @@ fn inputs() -> Vec<String> {
     all.extend(FILES.iter().map(|source| format!("{LANG}{source}")));
     all
 }
-
 
 /// What both entry points say about every input, at one width.
 #[derive(Debug, PartialEq)]

@@ -2,8 +2,6 @@ use alloc::vec::Vec;
 use core::mem;
 use core::ops::ControlFlow;
 
-#[cfg(feature = "nightly")]
-use rustc_macros::StableHash;
 use crate::rustc_type_ir::data_structures::HashSet;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::region_constraint::{RegionConstraint, evaluate_solver_constraint};
@@ -22,6 +20,8 @@ use crate::rustc_type_ir::{
     OpaqueTypeKey, PredicateKind, Region, TypeFoldable, TypeSuperVisitable, TypeVisitable,
     TypeVisitableExt, TypeVisitor, TypingMode, eager_resolve_vars,
 };
+#[cfg(feature = "nightly")]
+use rustc_macros::StableHash;
 use thin_vec::ThinVec;
 use tracing::{Level, debug, instrument, trace, warn};
 
@@ -146,6 +146,10 @@ where
 
     pub(super) search_graph: &'a mut SearchGraph<D>,
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "each nested goal retains its source and optional stall reason"
+    )]
     nested_goals: Vec<(GoalSource, Goal<I, I::Predicate>, Option<GoalStalledOn<I>>)>,
 
     pub(super) origin_span: I::Span,
@@ -211,6 +215,10 @@ pub trait SolverDelegateEvalExt: SolverDelegate {
 
     // FIXME: This is only exposed because we need to use it in `analyse.rs`
     // which is not yet uplifted. Once that's done, we should remove this.
+    #[expect(
+        clippy::type_complexity,
+        reason = "proof tracing returns both normalization goals and evaluation details"
+    )]
     fn evaluate_root_goal_for_proof_tree(
         &self,
         goal: Goal<Self::Interner, <Self::Interner as Interner>::Predicate>,

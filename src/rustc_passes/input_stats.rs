@@ -2,10 +2,6 @@
 // pieces of AST and HIR. The resulting numbers are good approximations but not
 // completely accurate (some things might be counted twice, others missed).
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::borrow::ToOwned;
 use crate::rustc_ast::visit::BoundKind;
 use crate::rustc_ast::{self as ast, AttrVec, NodeId, visit as ast_visit};
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -14,6 +10,9 @@ use crate::rustc_hir::{self as hir, AmbigArg, HirId, intravisit as hir_visit};
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::Span;
 use crate::rustc_span::def_id::LocalDefId;
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 struct NodeStats {
     count: usize,

@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -14,7 +10,9 @@ use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_index::interval::IntervalSet;
 use crate::rustc_infer::infer::canonical::QueryRegionConstraints;
 use crate::rustc_infer::traits::TraitErrors;
-use crate::rustc_middle::mir::{BasicBlock, Body, ConstraintCategory, HasLocalDecls, Local, Location};
+use crate::rustc_middle::mir::{
+    BasicBlock, Body, ConstraintCategory, HasLocalDecls, Local, Location,
+};
 use crate::rustc_middle::traits::query::DropckOutlivesResult;
 use crate::rustc_middle::ty::relate::Relate;
 use crate::rustc_middle::ty::{Ty, TyCtxt, TypeVisitable, TypeVisitableExt};
@@ -499,10 +497,10 @@ impl<'a, 'typeck, 'tcx> LivenessContext<'a, 'typeck, 'tcx> {
             // case), there are a few dozens compared to e.g. thousands or tens of thousands of
             // locals and move paths.
             let _timer = tcx.prof.generic_activity("borrowck_dataflow_maybe_inits");
-            let flow_inits = MaybeInitializedPlaces::new(tcx, body, self.move_data)
+
+            MaybeInitializedPlaces::new(tcx, body, self.move_data)
                 .iterate_to_fixpoint(tcx, body, Some("borrowck"))
-                .into_results_cursor(body);
-            flow_inits
+                .into_results_cursor(body)
         })
     }
 }
@@ -668,7 +666,7 @@ impl<'tcx> LivenessContext<'_, '_, 'tcx> {
                 // Do this inside of a probe because we don't particularly care (or want)
                 // any region side-effects of this operation in our infcx.
                 typeck.infcx.probe(|_| {
-                    let ocx = ObligationCtxt::new_with_diagnostics(&typeck.infcx);
+                    let ocx = ObligationCtxt::new_with_diagnostics(typeck.infcx);
                     let errors = match dropck_outlives::compute_dropck_outlives_with_errors(
                         &ocx,
                         typeck.infcx.param_env.and(goal),

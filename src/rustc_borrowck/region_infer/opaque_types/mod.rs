@@ -1,15 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::iter;
 use alloc::sync::Arc;
+use core::iter;
 
 use crate::rustc_data_structures::frozen::Frozen;
 use crate::rustc_data_structures::fx::FxIndexMap;
@@ -17,7 +14,6 @@ use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_infer::infer::outlives::env::RegionBoundPairs;
 use crate::rustc_infer::infer::{InferCtxt, NllRegionVariableOrigin, OpaqueTypeStorageEntries};
 use crate::rustc_infer::traits::ObligationCause;
-use rustc_macros::extension;
 use crate::rustc_middle::mir::{Body, ConstraintCategory};
 use crate::rustc_middle::ty::{
     self, DefiningScopeKind, DefinitionSiteHiddenType, FallibleTypeFolder, Flags, GenericArg,
@@ -31,6 +27,7 @@ use crate::rustc_trait_selection::opaque_types::{
 };
 use crate::rustc_trait_selection::solve::NoSolution;
 use crate::rustc_trait_selection::traits::query::type_op::custom::CustomTypeOp;
+use rustc_macros::extension;
 use tracing::{debug, instrument};
 
 use super::reverse_sccs::ReverseSccGraph;
@@ -210,6 +207,10 @@ struct DefiningUse<'tcx> {
 ///
 /// It also means that this whole function is not really soundness critical as we
 /// recheck all uses of the opaques regardless.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+)]
 pub(crate) fn compute_definition_site_hidden_types<'tcx>(
     def_id: LocalDefId,
     infcx: &BorrowckInferCtxt<'tcx>,
@@ -262,7 +263,7 @@ fn collect_defining_uses<'tcx>(
     let mut defining_uses = vec![];
     for &(opaque_type_key, hidden_type) in opaque_types {
         let non_nll_opaque_type_key = opaque_type_key.fold_captured_lifetime_args(infcx.tcx, |r| {
-            nll_var_to_universal_region(&rcx, r.as_var()).unwrap_or(r)
+            nll_var_to_universal_region(rcx, r.as_var()).unwrap_or(r)
         });
         if let Err(err) = opaque_type_has_defining_use_args(
             infcx,
@@ -376,14 +377,13 @@ fn compute_definition_site_hidden_types_from_defining_uses<'tcx>(
         // the hidden type becomes the opaque type itself. In this case, this was an opaque
         // usage of the opaque type and we can ignore it. This check is mirrored in typeck's
         // writeback.
-        if !rcx.infcx.tcx.use_typing_mode_post_typeck_until_borrowck() {
-            if let &ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, args, .. }) =
+        if !rcx.infcx.tcx.use_typing_mode_post_typeck_until_borrowck()
+            && let &ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, args, .. }) =
                 hidden_type.ty.skip_binder().kind()
-                && def_id == opaque_type_key.def_id.to_def_id()
-                && args == opaque_type_key.args
-            {
-                continue;
-            }
+            && def_id == opaque_type_key.def_id.to_def_id()
+            && args == opaque_type_key.args
+        {
+            continue;
         }
 
         // Check that all opaque types have the same region parameters if they have the same
@@ -536,6 +536,10 @@ impl<'tcx> FallibleTypeFolder<TyCtxt<'tcx>> for ToArgRegionsFolder<'_, 'tcx> {
 ///
 /// It does this by equating the hidden type of each use with the instantiated final
 /// hidden type of the opaque.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+)]
 pub(crate) fn apply_definition_site_hidden_types<'tcx>(
     infcx: &BorrowckInferCtxt<'tcx>,
     body: &Body<'tcx>,

@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::attrs::CoverageAttrKind;
 use crate::find_attr;
@@ -99,11 +93,8 @@ fn coverage_codegen_info<'tcx>(
     // Any BCB not in this set was optimized away.
     let mut bcbs_seen = DenseBitSet::new_empty(mir_info.priority_list.len());
     for kind in all_coverage_in_mir_body(mir_body) {
-        match *kind {
-            CoverageKind::VirtualCounter { bcb } => {
-                bcbs_seen.insert(bcb);
-            }
-            _ => {}
+        if let CoverageKind::VirtualCounter { bcb } = *kind {
+            bcbs_seen.insert(bcb);
         }
     }
 

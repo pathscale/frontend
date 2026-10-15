@@ -1,6 +1,5 @@
 //! This module ensures that if a function's ABI requires a particular target feature,
 //! that target feature is enabled both on the callee and all callers.
-use alloc::string::ToString;
 use crate::rustc_abi::{BackendRepr, CanonAbi, ExternAbi, RegKind, X86Call};
 use crate::rustc_hir::{CRATE_HIR_ID, HirId};
 use crate::rustc_middle::mir::{self, Location, traversal};
@@ -8,6 +7,7 @@ use crate::rustc_middle::ty::{self, Instance, InstanceKind, Ty, TyCtxt};
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::{DUMMY_SP, Span, Symbol, sym};
 use crate::rustc_target::callconv::{FnAbi, PassMode};
+use alloc::string::ToString;
 
 use crate::rustc_monomorphize::diagnostics;
 

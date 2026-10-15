@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -15,11 +12,11 @@ use crate::rustc_infer::traits::{
     ImplDerivedHostCause, ImplSource, Obligation, ObligationCause, ObligationCauseCode,
     PredicateObligation,
 };
-use crate::span_bug;
 use crate::rustc_middle::traits::query::NoSolution;
 use crate::rustc_middle::ty::elaborate::elaborate;
 use crate::rustc_middle::ty::fast_reject::DeepRejectCtxt;
 use crate::rustc_middle::ty::{self, Ty, Unnormalized};
+use crate::span_bug;
 use thin_vec::{ThinVec, thin_vec};
 
 use super::SelectionContext;
@@ -43,7 +40,7 @@ pub fn evaluate_host_effect_obligation<'tcx>(
         );
     }
 
-    let ref obligation = selcx.infcx.resolve_vars_if_possible(obligation.clone());
+    let obligation = &selcx.infcx.resolve_vars_if_possible(obligation.clone());
 
     // Force ambiguity for infer self ty.
     if obligation.predicate.self_ty().is_ty_var() {

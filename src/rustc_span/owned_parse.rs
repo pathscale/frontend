@@ -24,6 +24,10 @@ unsafe impl Sync for OwnedParseGlobals {}
 
 impl OwnedParseGlobals {
     /// Share an existing parse context only when its conditional locks are synchronized.
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the checked wrapper provides the Send and Sync contract for shared parse identities"
+    )]
     pub fn share(globals: &SessionGlobals) -> Option<Self> {
         globals.can_share_for_parse().then(|| Self(Arc::new(globals.share_for_parse())))
     }
@@ -33,7 +37,8 @@ impl OwnedParseGlobals {
         // Only construction needs this latch. It restores the caller's selected width before
         // parsing, so a serial parse still creates no pool task.
         let _mode = enter_session_width(2);
-        let mut globals = SessionGlobals::new_with_symbol_source_len(edition, &[], None, source_len);
+        let mut globals =
+            SessionGlobals::new_with_symbol_source_len(edition, &[], None, source_len);
         globals.source_map = Some(source_map);
         Self::share(&globals).expect("file parse globals were constructed synchronized")
     }

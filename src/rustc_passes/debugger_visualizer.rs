@@ -1,6 +1,5 @@
 //! Detecting usage of the `#[debugger_visualizer]` attribute.
 
-use alloc::vec::Vec;
 use crate::rustc_ast::{ItemKind, ast};
 use crate::rustc_attr_parsing::AttributeParser;
 use crate::rustc_hir::Attribute;
@@ -10,13 +9,14 @@ use crate::rustc_middle::query::{LocalCrate, Providers};
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_session::Session;
 use crate::rustc_span::sym;
+use alloc::vec::Vec;
 
 use crate::rustc_passes::diagnostics::DebugVisualizerUnreadable;
 
 impl DebuggerVisualizerCollector<'_> {
     fn check_for_debugger_visualizer(&mut self, attrs: &[ast::Attribute]) {
         if let Some(Attribute::Parsed(AttributeKind::DebuggerVisualizer(visualizers))) =
-            AttributeParser::parse_limited_sym(&self.sess, attrs, &[sym::debugger_visualizer])
+            AttributeParser::parse_limited_sym(self.sess, attrs, &[sym::debugger_visualizer])
         {
             for DebugVisualizer { span, visualizer_type, path } in visualizers {
                 let file = match self.sess.resolve_path(path.as_str(), span) {
@@ -73,7 +73,7 @@ fn debugger_visualizers(tcx: TyCtxt<'_>, _: LocalCrate) -> Vec<DebuggerVisualize
     let krate = &tcx.resolver_for_lowering().1;
 
     let mut visitor = DebuggerVisualizerCollector { sess: tcx.sess, visualizers: Vec::new() };
-    crate::rustc_ast::visit::Visitor::visit_crate(&mut visitor, &*krate.borrow());
+    crate::rustc_ast::visit::Visitor::visit_crate(&mut visitor, &krate.borrow());
 
     // We are collecting visualizers in AST-order, which is deterministic,
     // so we don't need to do any explicit sorting in order to get a

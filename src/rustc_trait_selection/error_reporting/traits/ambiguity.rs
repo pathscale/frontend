@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -10,7 +8,9 @@ use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
-use crate::rustc_errors::{Applicability, Diag, E0283, E0284, E0790, MultiSpan, struct_span_code_err};
+use crate::rustc_errors::{
+    Applicability, Diag, E0283, E0284, E0790, MultiSpan, struct_span_code_err,
+};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{DefKind, Res};
@@ -22,14 +22,18 @@ use crate::rustc_infer::traits::{
     Obligation, ObligationCause, ObligationCauseCode, PolyTraitObligation, PredicateObligation,
 };
 use crate::rustc_middle::ty::print::PrintPolyTraitClauseExt;
-use crate::rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitable as _, TypeVisitableExt as _, Unnormalized};
+use crate::rustc_middle::ty::{
+    self, Ty, TyCtxt, TypeVisitable as _, TypeVisitableExt as _, Unnormalized,
+};
 use crate::rustc_session::diagnostics::feature_err_unstable_feature_bound;
 use crate::rustc_span::{DUMMY_SP, ErrorGuaranteed, Span};
 use tracing::{debug, instrument};
 
 use crate::rustc_trait_selection::error_reporting::TypeErrCtxt;
 use crate::rustc_trait_selection::error_reporting::infer::need_type_info::TypeAnnotationNeeded;
-use crate::rustc_trait_selection::error_reporting::traits::{FindExprBySpan, to_pretty_impl_header};
+use crate::rustc_trait_selection::error_reporting::traits::{
+    FindExprBySpan, to_pretty_impl_header,
+};
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use crate::rustc_trait_selection::traits::{FulfillmentError, ObligationCtxt};
 
@@ -67,8 +71,9 @@ pub fn compute_applicable_impls_for_diagnostics<'tcx>(
                 Unnormalized::new_wip(impl_trait_ref),
             );
 
-            if let Err(_) =
-                ocx.eq(&ObligationCause::dummy(), param_env, obligation_trait_ref, impl_trait_ref)
+            if ocx
+                .eq(&ObligationCause::dummy(), param_env, obligation_trait_ref, impl_trait_ref)
+                .is_err()
             {
                 return false;
             }
@@ -129,12 +134,10 @@ pub fn compute_applicable_impls_for_diagnostics<'tcx>(
                 Unnormalized::new_wip(param_env_predicate.trait_ref),
             );
 
-            if let Err(_) = ocx.eq(
-                &ObligationCause::dummy(),
-                param_env,
-                obligation_trait_ref,
-                param_env_trait_ref,
-            ) {
+            if ocx
+                .eq(&ObligationCause::dummy(), param_env, obligation_trait_ref, param_env_trait_ref)
+                .is_err()
+            {
                 return false;
             }
 
@@ -363,11 +366,11 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     {
                         let tr = self.tcx.short_string(
                             clause.print_modifiers_and_trait_path(),
-                            &mut err.long_ty_path(),
+                            err.long_ty_path(),
                         );
                         err.note(format!("the type must implement `{tr}`"));
                     } else {
-                        let pred = self.tcx.short_string(predicate, &mut err.long_ty_path());
+                        let pred = self.tcx.short_string(predicate, err.long_ty_path());
                         err.note(format!("cannot satisfy `{pred}`"));
                     }
                     let impl_candidates =
@@ -396,7 +399,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         self.tcx.hir_maybe_body_owned_by(obligation.cause.body_def_id)
                 {
                     let mut expr_finder = FindExprBySpan::new(span, self.tcx);
-                    expr_finder.visit_expr(&body.value);
+                    expr_finder.visit_expr(body.value);
 
                     if let Some(hir::Expr {
                         kind:
@@ -690,7 +693,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     ).with_help(format!("The feature can be enabled by marking the current item with `#[unstable_feature_bound({sym})]`"))
                 } else {
                     feature_err_unstable_feature_bound(
-                        &self.tcx.sess,
+                        self.tcx.sess,
                         sym,
                         span,
                         format!("use of unstable library feature `{sym}`"),
@@ -736,11 +739,11 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     if let ty::Infer(_) = clause.self_ty().skip_binder().kind() {
                         let tr = self.tcx.short_string(
                             clause.print_modifiers_and_trait_path(),
-                            &mut err.long_ty_path(),
+                            err.long_ty_path(),
                         );
                         format!("the type must also implement `{tr}`")
                     } else {
-                        let pred = self.tcx.short_string(related_pred, &mut err.long_ty_path());
+                        let pred = self.tcx.short_string(related_pred, err.long_ty_path());
                         let note = format!("cannot satisfy `{pred}`");
                         // The self type is known, so the `impl`s that could have applied to it are
                         // few and worth pointing at, like the blamed bound does. When it is still
@@ -763,7 +766,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     }
                 }
                 ty::PredicateKind::Clause(ty::ClauseKind::Projection(_)) => {
-                    let pred = self.tcx.short_string(related_pred, &mut err.long_ty_path());
+                    let pred = self.tcx.short_string(related_pred, err.long_ty_path());
                     format!("cannot satisfy `{pred}`")
                 }
                 _ => {
@@ -861,7 +864,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
 
         if self.tainted_by_errors().is_some()
             && (crate_names.len() == 1
-                && spans.len() == 0
+                && spans.is_empty()
                 && ["`core`", "`alloc`", "`std`"].contains(&crate_names[0].as_str())
                 || predicate.visit_with(&mut HasNumericInferVisitor).is_break())
         {

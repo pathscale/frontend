@@ -1,16 +1,11 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def_id::DefId;
-use crate::bug;
 use crate::rustc_middle::ty::{
     self, Flags, GenericArgsRef, Region, RegionVid, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable,
     TypeVisitor,
@@ -169,7 +164,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for CollectMemberConstraintsVisitor<'_, '_,
 
     fn visit_region(&mut self, r: Region<'tcx>) {
         match r.kind() {
-            ty::ReBound(..) => return,
+            ty::ReBound(..) => (),
             ty::ReVar(vid) => {
                 let scc = self.rcx.constraint_sccs.scc(vid);
                 self.member_constraints.entry(scc).or_default().push(self.defining_use);

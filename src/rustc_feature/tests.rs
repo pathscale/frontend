@@ -1,5 +1,5 @@
-use alloc::string::ToString;
 use super::UnstableFeatures;
+use alloc::string::ToString;
 
 #[test]
 fn rustc_bootstrap_parsing() {

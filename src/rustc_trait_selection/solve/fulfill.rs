@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::marker::PhantomData;
@@ -160,7 +155,7 @@ impl<'tcx, E: 'tcx> FulfillmentCtxt<'tcx, E> {
                 Ok(GoalEvaluation { certainty, .. }) => Ok(*certainty),
                 Err(NoSolution) => Err(NoSolution),
             };
-            (inspector)(infcx, &obligation, result);
+            (inspector)(infcx, obligation, result);
         }
     }
 }
@@ -231,7 +226,7 @@ where
                     obligation.cause.span,
                     opt_stalled_on.take(),
                 );
-                Self::inspect_evaluated_obligation(infcx, &obligation, &result);
+                Self::inspect_evaluated_obligation(infcx, obligation, &result);
                 let GoalEvaluation { goal, certainty, has_changed, stalled_on } = match result {
                     Ok(result) => result,
                     Err(NoSolution) => {
@@ -416,12 +411,7 @@ where
         .pending
         .drain(..)
         .map(|(obligation, _)| NextSolverError::Ambiguity(obligation))
-        .chain(
-            cx.obligations
-                .overflowed
-                .drain(..)
-                .map(|obligation| NextSolverError::Overflow(obligation)),
-        )
+        .chain(cx.obligations.overflowed.drain(..).map(NextSolverError::Overflow))
         .map(|e| E::from_solver_error(infcx, e))
         .collect()
 }

@@ -5,11 +5,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 pub mod auto_trait;
@@ -38,7 +34,6 @@ use core::ops::ControlFlow;
 
 use crate::rustc_errors::ErrorGuaranteed;
 pub use crate::rustc_infer::traits::*;
-use rustc_macros::TypeVisitable;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::error::{ExpectedFound, TypeError};
 use crate::rustc_middle::ty::{
@@ -48,6 +43,7 @@ use crate::rustc_middle::ty::{
 };
 use crate::rustc_span::Span;
 use crate::rustc_span::def_id::DefId;
+use rustc_macros::TypeVisitable;
 use tracing::{debug, instrument};
 
 pub use self::coherence::{
@@ -462,7 +458,7 @@ pub fn normalize_param_env_or_error<'tcx>(
     // can be sure that no errors should occur.
     let mut clauses: Vec<_> = util::elaborate(
         tcx,
-        unnormalized_env.caller_bounds().into_iter().map(|clause| {
+        unnormalized_env.caller_bounds().map(|clause| {
             if tcx.features().generic_const_exprs() || tcx.next_trait_solver_globally() {
                 return clause;
             }
@@ -969,8 +965,11 @@ fn is_impossible_associated_item(
         tcx.impl_trait_ref(impl_def_id).instantiate(tcx, fresh_args).skip_norm_wip();
 
     let mut visitor = ReferencesOnlyParentGenerics { tcx, generics, trait_item_def_id };
-    let predicates_for_trait = gen_clauses.clauses.iter().filter_map(|(clause, span)| {
-        clause.visit_with(&mut visitor).is_continue().then(|| {
+    let predicates_for_trait = gen_clauses
+        .clauses
+        .iter()
+        .filter(|&(clause, _span)| clause.visit_with(&mut visitor).is_continue())
+        .map(|(clause, span)| {
             Obligation::new(
                 tcx,
                 ObligationCause::dummy_with_span(*span),
@@ -979,8 +978,7 @@ fn is_impossible_associated_item(
                     .instantiate(tcx, impl_trait_ref.args)
                     .skip_norm_wip(),
             )
-        })
-    });
+        });
 
     let ocx = ObligationCtxt::new(&infcx);
     ocx.register_obligations(predicates_for_trait);

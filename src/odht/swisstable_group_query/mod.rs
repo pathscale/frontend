@@ -13,8 +13,8 @@ cfg_if::cfg_if! {
     }
 }
 
-pub use imp::GroupQuery;
 pub use imp::GROUP_SIZE;
+pub use imp::GroupQuery;
 
 // While GROUP_SIZE is target-dependent for performance reasons,
 // we always do probing as if it was the same as REFERENCE_GROUP_SIZE.
@@ -33,8 +33,8 @@ mod tests {
 
     fn full_group() -> [u8; GROUP_SIZE] {
         let mut group = [0; GROUP_SIZE];
-        for i in 0..group.len() {
-            group[i] = i as u8;
+        for (i, slot) in group.iter_mut().enumerate() {
+            *slot = i as u8;
         }
         group
     }
@@ -62,8 +62,8 @@ mod tests {
         for filled_up_to_index in 0..=(GROUP_SIZE - 2) {
             let mut group = EMPTY_GROUP;
 
-            for i in 0..=filled_up_to_index {
-                group[i] = 42;
+            for slot in group.iter_mut().take(filled_up_to_index + 1) {
+                *slot = 42;
             }
 
             let mut q = GroupQuery::from(&group, 77);

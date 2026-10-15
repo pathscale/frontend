@@ -2,21 +2,21 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::ops::ControlFlow;
 use alloc::borrow::Cow;
 use core::cmp::Ordering;
 use core::iter;
+use core::ops::ControlFlow;
 
-use hir::def_id::{DefId, DefIdMap, LocalDefId};
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_errors::codes::*;
-use crate::rustc_errors::{Applicability, ErrorGuaranteed, MultiSpan, pluralize, struct_span_code_err};
+use crate::rustc_errors::{
+    Applicability, ErrorGuaranteed, MultiSpan, pluralize, struct_span_code_err,
+};
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::intravisit::VisitorExt;
 use crate::rustc_hir::{self as hir, AmbigArg, GenericParamKind, ImplItemKind, intravisit};
@@ -37,10 +37,13 @@ use crate::rustc_trait_selection::solve::NextSolverError;
 use crate::rustc_trait_selection::traits::{
     self, FromSolverError, FulfillmentError, ObligationCause, ObligationCauseCode, ObligationCtxt,
 };
+use hir::def_id::{DefId, DefIdMap, LocalDefId};
 use tracing::{debug, instrument};
 
 use super::potentially_plural_count;
-use crate::rustc_hir_analysis::diagnostics::{LifetimesOrBoundsMismatchOnTrait, MethodShouldReturnFuture};
+use crate::rustc_hir_analysis::diagnostics::{
+    LifetimesOrBoundsMismatchOnTrait, MethodShouldReturnFuture,
+};
 
 pub(super) mod refine;
 
@@ -703,10 +706,7 @@ pub(super) fn collect_return_position_impl_trait_in_trait_tys<'tcx>(
     // RPITs.
     let errors = ocx.evaluate_obligations_error_on_ambiguity();
     if let TraitErrors::HasErrors(errors) = errors {
-        if let Err(guar) = try_report_async_mismatch(tcx, infcx, &errors, trait_m, impl_m, impl_sig)
-        {
-            return Err(guar);
-        }
+        try_report_async_mismatch(tcx, infcx, &errors, trait_m, impl_m, impl_sig)?;
 
         let guar = infcx.err_ctxt().report_fulfillment_errors(errors);
         return Err(guar);
@@ -1829,7 +1829,7 @@ fn compare_number_of_method_arguments<'tcx>(
                 //        ^^^^^^^^^^^^^^^^
                 let arg_idents = tcx.fn_arg_idents(impl_m.def_id);
                 let first_lo = arg_idents
-                    .get(0)
+                    .first()
                     .and_then(|id| id.map(|id| id.span.lo()))
                     .unwrap_or(first.span.lo());
                 Some(impl_m_sig.span.with_lo(first_lo).with_hi(last.span.hi()))
@@ -2108,7 +2108,7 @@ fn compare_generic_param_kinds<'tcx>(
             // this is exhaustive so that anyone adding new generic param kinds knows
             // to make sure this error is reported for them.
             (Const { .. }, Const { .. }) | (Type { .. }, Type { .. }) => false,
-            (Lifetime { .. }, _) | (_, Lifetime { .. }) => {
+            (Lifetime, _) | (_, Lifetime) => {
                 bug!("lifetime params are expected to be filtered by `ty_const_params_of`")
             }
         } {
@@ -2134,7 +2134,7 @@ fn compare_generic_param_kinds<'tcx>(
                     )
                 }
                 Type { .. } => format!("{prefix} type parameter"),
-                Lifetime { .. } => span_bug!(
+                Lifetime => span_bug!(
                     tcx.def_span(param.def_id),
                     "lifetime params are expected to be filtered by `ty_const_params_of`"
                 ),
@@ -2608,7 +2608,7 @@ pub(super) fn check_type_bounds<'tcx>(
 /// - `normalize_impl_ty_args` would be `[A, B, ^0.0]` (`^0.0` here is the bound var with db 0 and index 0)
 /// - `normalize_impl_ty` would be `Wrapper<A, B, ^0.0>`
 /// - `rebased_args` would be `[(A, B), u32, ^0.0]`, combining the args from
-///    the *trait* with the generic associated type parameters (as bound vars).
+///   the *trait* with the generic associated type parameters (as bound vars).
 ///
 /// A note regarding the use of bound vars here:
 /// Imagine as an example

@@ -2,14 +2,13 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hashbrown::hash_map::Entry;
 use core::slice;
+use hashbrown::hash_map::Entry;
 
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::FxHashSet;
@@ -21,7 +20,9 @@ use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::intravisit::VisitorExt;
-use crate::rustc_hir::{self as hir, AmbigArg, ExprKind, GenericArg, HirId, Node, QPath, intravisit};
+use crate::rustc_hir::{
+    self as hir, AmbigArg, ExprKind, GenericArg, HirId, Node, QPath, intravisit,
+};
 use crate::rustc_hir_analysis::hir_ty_lowering::errors::GenericsArgsErrExtend;
 use crate::rustc_hir_analysis::hir_ty_lowering::generics::{
     check_generic_arg_count_for_value_path, lower_generic_args,
@@ -929,7 +930,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     match kind {
                         hir::ClosureKind::CoroutineClosure(_) => {
                             // FIXME(async_closures): Implement this.
-                            return None;
+                            None
                         }
                         hir::ClosureKind::Closure => Some((def_id, fn_decl)),
                         hir::ClosureKind::Coroutine(hir::CoroutineKind::Desugared(
@@ -995,7 +996,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 .is_some_and(|(output, inputs)| {
                     output.is_unit()
                         && inputs
-                            .get(0)
+                            .first()
                             .and_then(|self_ty| self_ty.ref_mutability())
                             .is_some_and(crate::rustc_ast::Mutability::is_mut)
                 })
@@ -1164,7 +1165,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return (ty, res);
         }
 
-        if let Err(_) = generics_err {
+        if generics_err.is_err() {
             // Don't try to infer type parameters when prohibited generic arguments were given.
             user_self_ty = None;
         }
@@ -1664,11 +1665,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         while let hir::Node::Expr(parent_expr) = self.tcx.parent_hir_node(expr_id) {
             match &parent_expr.kind {
-                hir::ExprKind::Assign(lhs, ..) | hir::ExprKind::AssignOp(_, lhs, ..) => {
-                    if lhs.hir_id == expr_id {
-                        contained_in_place = true;
-                        break;
-                    }
+                hir::ExprKind::Assign(lhs, ..) | hir::ExprKind::AssignOp(_, lhs, ..)
+                    if lhs.hir_id == expr_id =>
+                {
+                    contained_in_place = true;
+                    break;
                 }
                 _ => (),
             }

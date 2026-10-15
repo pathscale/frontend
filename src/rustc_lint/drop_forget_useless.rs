@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::{Arm, Expr, ExprKind, Node, StmtKind};
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass};
@@ -282,8 +277,8 @@ impl<'tcx> LateLintPass<'tcx> for DropForgetUseless {
                         },
                     );
                 }
-                _ => return,
-            };
+                _ => (),
+            }
         }
     }
 }
@@ -302,10 +297,10 @@ fn is_single_call_in_arm<'tcx>(
     arg: &'tcx Expr<'_>,
     drop_expr: &'tcx Expr<'_>,
 ) -> bool {
-    if arg.can_have_side_effects() {
-        if let Node::Arm(Arm { body, .. }) = cx.tcx.parent_hir_node(drop_expr.hir_id) {
-            return body.hir_id == drop_expr.hir_id;
-        }
+    if arg.can_have_side_effects()
+        && let Node::Arm(Arm { body, .. }) = cx.tcx.parent_hir_node(drop_expr.hir_id)
+    {
+        return body.hir_id == drop_expr.hir_id;
     }
     false
 }

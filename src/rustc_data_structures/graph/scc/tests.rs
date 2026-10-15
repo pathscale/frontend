@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use super::*;
 use crate::rustc_data_structures::graph::tests::TestGraph;
@@ -275,16 +270,16 @@ fn bench_sccc_once() {
     +--7-10<-+
          */
     fn make_3_clique(slice: &mut [(usize, usize)], base: usize) {
-        slice[0] = (base + 0, base + 1);
+        slice[0] = (base, base + 1);
         slice[1] = (base + 1, base + 2);
-        slice[2] = (base + 2, base + 0);
+        slice[2] = (base + 2, base);
     }
     // Not actually a clique but strongly connected.
     fn make_4_clique(slice: &mut [(usize, usize)], base: usize) {
-        slice[0] = (base + 0, base + 1);
+        slice[0] = (base, base + 1);
         slice[1] = (base + 1, base + 2);
         slice[2] = (base + 2, base + 3);
-        slice[3] = (base + 3, base + 0);
+        slice[3] = (base + 3, base);
         slice[4] = (base + 1, base + 3);
         slice[5] = (base + 2, base + 1);
     }

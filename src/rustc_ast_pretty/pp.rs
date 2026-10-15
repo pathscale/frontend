@@ -138,7 +138,7 @@ mod ring;
 
 use alloc::borrow::Cow;
 use alloc::collections::VecDeque;
-use core::{cmp, iter};
+use core::cmp;
 
 use ring::RingBuffer;
 
@@ -269,6 +269,12 @@ impl Drop for BoxMarker {
     }
 }
 
+impl Default for Printer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Printer {
     pub fn new() -> Self {
         Printer {
@@ -286,7 +292,7 @@ impl Printer {
     }
 
     pub(crate) fn last_token(&self) -> Option<&Token> {
-        self.last_token_still_buffered().or_else(|| self.last_printed.as_ref())
+        self.last_token_still_buffered().or(self.last_printed.as_ref())
     }
 
     pub(crate) fn last_token_still_buffered(&self) -> Option<&Token> {
@@ -480,7 +486,7 @@ impl Printer {
         // But that is significantly slower. This code is sufficiently hot, and indents can get
         // sufficiently large, that the difference is significant on some workloads.
         self.out.reserve(self.pending_indentation as usize);
-        self.out.extend(iter::repeat(' ').take(self.pending_indentation as usize));
+        self.out.extend(core::iter::repeat_n(' ', self.pending_indentation as usize));
         self.pending_indentation = 0;
 
         self.out.push_str(string);

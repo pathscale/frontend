@@ -56,7 +56,7 @@ impl<T: Eq> Eq for WithCachedTypeInfo<T> {}
 
 impl<T: Ord> PartialOrd for WithCachedTypeInfo<T> {
     fn partial_cmp(&self, other: &WithCachedTypeInfo<T>) -> Option<Ordering> {
-        Some(self.internee.cmp(&other.internee))
+        Some(self.cmp(other))
     }
 }
 

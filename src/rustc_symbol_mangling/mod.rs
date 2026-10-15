@@ -88,7 +88,6 @@
 //! DefPaths which are much more robust in the face of changes to the code base.
 // core has the macro behind the feature; std re-exports it at its root ungated.
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -102,9 +101,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
@@ -113,6 +109,8 @@ use crate::rustc_middle::mono::{InstantiationMode, MonoItem};
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{self, Instance, InstanceKind, TyCtxt};
 use crate::rustc_session::config::SymbolManglingVersion;
+use alloc::string::String;
+use alloc::string::ToString;
 use tracing::debug;
 
 mod export;
@@ -193,11 +191,11 @@ pub fn symbol_name_from_attrs<'tcx>(
 ) -> Option<String> {
     let def_id = instance_kind.def_id();
 
-    if let Some(def_id) = def_id.as_local() {
-        if tcx.proc_macro_decls_static(()) == Some(def_id) {
-            let stable_crate_id = tcx.stable_crate_id(LOCAL_CRATE);
-            return Some(crate::rustc_session::generate_proc_macro_decls_symbol(stable_crate_id));
-        }
+    if let Some(def_id) = def_id.as_local()
+        && tcx.proc_macro_decls_static(()) == Some(def_id)
+    {
+        let stable_crate_id = tcx.stable_crate_id(LOCAL_CRATE);
+        return Some(crate::rustc_session::generate_proc_macro_decls_symbol(stable_crate_id));
     }
 
     // FIXME(eddyb) Precompute a custom symbol name based on attributes.

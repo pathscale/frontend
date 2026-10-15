@@ -122,7 +122,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
         print_indented!(self, format!("region_scope: {:?}", region_scope), depth_lvl + 1);
         print_indented!(self, format!("safety_mode: {:?}", safety_mode), depth_lvl + 1);
 
-        if stmts.len() > 0 {
+        if !stmts.is_empty() {
             print_indented!(self, "stmts: [", depth_lvl + 1);
             for stmt in stmts.iter() {
                 self.print_stmt(*stmt, depth_lvl + 2);
@@ -247,7 +247,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
                 print_indented!(self, "fun:", depth_lvl + 1);
                 self.print_expr(*fun, depth_lvl + 2);
 
-                if args.len() > 0 {
+                if !args.is_empty() {
                     print_indented!(self, "args: [", depth_lvl + 1);
                     for arg in args.iter() {
                         self.print_expr(*arg, depth_lvl + 2);
@@ -506,7 +506,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
             }
             Adt(adt_expr) => {
                 print_indented!(self, "Adt {", depth_lvl);
-                self.print_adt_expr(&**adt_expr, depth_lvl + 1);
+                self.print_adt_expr(adt_expr, depth_lvl + 1);
                 print_indented!(self, "}", depth_lvl);
             }
             PlaceTypeAscription { source, user_ty, user_ty_span } => {
@@ -546,7 +546,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
             Closure(closure_expr) => {
                 print_indented!(self, "Closure {", depth_lvl);
                 print_indented!(self, "closure_expr:", depth_lvl + 1);
-                self.print_closure_expr(&**closure_expr, depth_lvl + 2);
+                self.print_closure_expr(closure_expr, depth_lvl + 2);
                 print_indented!(self, "}", depth_lvl);
             }
             Literal { lit, neg } => {
@@ -588,7 +588,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
             InlineAsm(expr) => {
                 print_indented!(self, "InlineAsm {", depth_lvl);
                 print_indented!(self, "expr:", depth_lvl + 1);
-                self.print_inline_asm_expr(&**expr, depth_lvl + 2);
+                self.print_inline_asm_expr(expr, depth_lvl + 2);
                 print_indented!(self, "}", depth_lvl);
             }
             ThreadLocalRef(def_id) => {
@@ -758,7 +758,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
                 print_indented!(self, format!("args: {:?}", args), depth_lvl + 2);
                 print_indented!(self, format!("variant_index: {:?}", variant_index), depth_lvl + 2);
 
-                if subpatterns.len() > 0 {
+                if !subpatterns.is_empty() {
                     print_indented!(self, "subpatterns: [", depth_lvl + 2);
                     for field_pat in subpatterns.iter() {
                         self.print_pat(&field_pat.pattern, depth_lvl + 3);
@@ -876,7 +876,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
         print_indented!(self, format!("closure_id: {:?}", closure_id), depth_lvl + 1);
         print_indented!(self, format!("args: {:?}", args), depth_lvl + 1);
 
-        if upvars.len() > 0 {
+        if !upvars.is_empty() {
             print_indented!(self, "upvars: [", depth_lvl + 1);
             for upvar in upvars.iter() {
                 self.print_expr(*upvar, depth_lvl + 2);
@@ -889,7 +889,7 @@ impl<'a, 'tcx> ThirPrinter<'a, 'tcx> {
 
         print_indented!(self, format!("movability: {:?}", movability), depth_lvl + 1);
 
-        if fake_reads.len() > 0 {
+        if !fake_reads.is_empty() {
             print_indented!(self, "fake_reads: [", depth_lvl + 1);
             for (fake_read_expr, cause, hir_id) in fake_reads.iter() {
                 print_indented!(self, "(", depth_lvl + 2);

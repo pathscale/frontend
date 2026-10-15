@@ -97,7 +97,7 @@ impl<'a, Ty> Deref for TyAndLayout<'a, Ty> {
 
 impl<'a, Ty> AsRef<LayoutData<FieldIdx, VariantIdx>> for TyAndLayout<'a, Ty> {
     fn as_ref(&self) -> &LayoutData<FieldIdx, VariantIdx> {
-        &*self.layout.0.0
+        self.layout.0.0
     }
 }
 
@@ -164,12 +164,10 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
             BackendRepr::Scalar(scalar) => {
                 matches!(scalar.primitive(), Primitive::Float(Float::F32 | Float::F64))
             }
-            BackendRepr::Memory { .. } => {
-                if self.fields.count() == 1 && self.fields.offset(0).bytes() == 0 {
-                    self.field(cx, 0).is_single_fp_element(cx)
-                } else {
-                    false
-                }
+            BackendRepr::Memory { .. }
+                if self.fields.count() == 1 && self.fields.offset(0).bytes() == 0 =>
+            {
+                self.field(cx, 0).is_single_fp_element(cx)
             }
             _ => false,
         }
@@ -182,12 +180,10 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
     {
         match self.backend_repr {
             BackendRepr::SimdVector { .. } => self.size == expected_size,
-            BackendRepr::Memory { .. } => {
-                if self.fields.count() == 1 && self.fields.offset(0).bytes() == 0 {
-                    self.field(cx, 0).is_single_vector_element(cx, expected_size)
-                } else {
-                    false
-                }
+            BackendRepr::Memory { .. }
+                if self.fields.count() == 1 && self.fields.offset(0).bytes() == 0 =>
+            {
+                self.field(cx, 0).is_single_vector_element(cx, expected_size)
             }
             _ => false,
         }

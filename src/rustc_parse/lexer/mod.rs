@@ -589,7 +589,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                     } else {
                         // Reset the state so we just lex the `'r`.
                         self.pos = start + BytePos(2);
-                        self.cursor = Cursor::new(&str_before[2 as usize..], FrontmatterAllowed::No);
+                        self.cursor = Cursor::new(&str_before[2_usize..], FrontmatterAllowed::No);
 
                         let prefix_span = self.mk_sp(start, self.pos);
                         self.psess.buffer_lint(
@@ -720,11 +720,10 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 move |dcx, level| {
                     let spans: Vec<_> = content
                         .char_indices()
-                        .filter_map(|(i, c)| {
-                            TEXT_FLOW_CONTROL_CHARS.contains(&c).then(|| {
-                                let lo = span.lo() + BytePos(2 + i as u32);
-                                (c, span.with_lo(lo).with_hi(lo + BytePos(c.len_utf8() as u32)))
-                            })
+                        .filter(|&(_i, c)| TEXT_FLOW_CONTROL_CHARS.contains(&c))
+                        .map(|(i, c)| {
+                            let lo = span.lo() + BytePos(2 + i as u32);
+                            (c, span.with_lo(lo).with_hi(lo + BytePos(c.len_utf8() as u32)))
                         })
                         .collect();
                     let characters = spans
@@ -811,11 +810,10 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         // Obtain the `Span`s for each of the forbidden chars.
         let spans: Vec<_> = text
             .char_indices()
-            .filter_map(|(i, c)| {
-                TEXT_FLOW_CONTROL_CHARS.contains(&c).then(|| {
-                    let lo = span.lo() + BytePos(i as u32 + padding);
-                    (c, span.with_lo(lo).with_hi(lo + BytePos(c.len_utf8() as u32)))
-                })
+            .filter(|&(_i, c)| TEXT_FLOW_CONTROL_CHARS.contains(&c))
+            .map(|(i, c)| {
+                let lo = span.lo() + BytePos(i as u32 + padding);
+                (c, span.with_lo(lo).with_hi(lo + BytePos(c.len_utf8() as u32)))
             })
             .collect();
 
@@ -891,7 +889,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
         let content = &real_s[line_end..last_line_start];
         if let Some(cr_offset) = content.find('\r') {
             let cr_pos = start + BytePos((real_start + line_end + cr_offset) as u32);
-            let span = self.mk_sp(cr_pos, cr_pos + BytePos(1 as u32));
+            let span = self.mk_sp(cr_pos, cr_pos + BytePos(1_u32));
             self.dcx().emit_err(crate::rustc_parse::diagnostics::BareCrFrontmatter { span });
         }
 

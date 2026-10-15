@@ -1,22 +1,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
-use itertools::{Either, Itertools};
 use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_middle::mir::visit::{TyContext, Visitor};
 use crate::rustc_middle::mir::{Body, Local, Location, SourceInfo};
-use crate::span_bug;
 use crate::rustc_middle::ty::relate::Relate;
 use crate::rustc_middle::ty::{GenericArgsRef, Region, RegionVid, Ty, TyCtxt, TypeVisitable};
 use crate::rustc_mir_dataflow::move_paths::MoveData;
 use crate::rustc_mir_dataflow::points::DenseLocationMap;
+use crate::span_bug;
+use itertools::{Either, Itertools};
 use tracing::debug;
 
 use super::TypeChecker;
@@ -47,7 +42,7 @@ pub(super) fn generate<'tcx>(
     let num_region_vars = typeck.infcx.num_region_vars();
     let mut free_regions = regions_that_outlive_free_regions(
         num_region_vars,
-        &typeck.universal_regions,
+        typeck.universal_regions,
         &typeck.constraints.outlives_constraints,
     );
 
@@ -62,7 +57,7 @@ pub(super) fn generate<'tcx>(
     // FIXME: this NLL optimization idea, to reduce work to relevant locals only, still makes sense
     // for polonius, and should be investigated to improve liveness performance.
     if typeck.tcx().sess.opts.unstable_opts.polonius.is_next_enabled()
-        && typeck.borrow_set.len() > 0
+        && !typeck.borrow_set.is_empty()
     {
         let (_, boring_locals) =
             compute_relevant_live_locals(typeck.tcx(), &free_regions, typeck.body);
@@ -83,7 +78,7 @@ pub(super) fn generate<'tcx>(
     record_regular_live_regions(
         typeck.tcx(),
         &mut typeck.constraints.liveness_constraints,
-        &typeck.universal_regions,
+        typeck.universal_regions,
         &mut typeck.polonius_context,
         typeck.body,
     );
@@ -100,9 +95,8 @@ fn compute_relevant_live_locals<'tcx>(
     body: &Body<'tcx>,
 ) -> (Vec<Local>, Vec<Local>) {
     // A region outside the set's domain is simply not in it, as with the hash set this was.
-    let is_free = |vid: RegionVid| {
-        vid.index() < free_regions.domain_size() && free_regions.contains(vid)
-    };
+    let is_free =
+        |vid: RegionVid| vid.index() < free_regions.domain_size() && free_regions.contains(vid);
     let (boring_locals, relevant_live_locals): (Vec<_>, Vec<_>) =
         body.local_decls.iter_enumerated().partition_map(|(local, local_decl)| {
             if tcx.all_free_regions_meet(&local_decl.ty, |r| is_free(r.as_var())) {

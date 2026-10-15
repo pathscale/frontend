@@ -2,16 +2,13 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::{AttrVec, VisibilityKind, ast, token};
-use crate::rustc_expand::base::{DummyResult, ExpandResult, ExtCtxt, MacEager, MacroExpanderResult};
+use crate::rustc_expand::base::{
+    DummyResult, ExpandResult, ExtCtxt, MacEager, MacroExpanderResult,
+};
 use crate::rustc_span::Span;
 use smallvec::SmallVec;
 

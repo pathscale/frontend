@@ -5,10 +5,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -17,7 +16,7 @@ use core::cmp;
 use core::fmt::{self, Display};
 use core::ops::ControlFlow;
 
-use hir::def::DefKind;
+use crate::bug;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_errors::{Diag, EmissionGuarantee};
 use crate::rustc_hir as hir;
@@ -28,8 +27,6 @@ use crate::rustc_infer::infer::DefineOpaqueTypes;
 use crate::rustc_infer::infer::at::ToTrace;
 use crate::rustc_infer::infer::relate::TypeRelation;
 use crate::rustc_infer::traits::{ImplSource, PredicateObligations, TraitObligation};
-use rustc_macros::{TypeFoldable, TypeVisitable};
-use crate::bug;
 use crate::rustc_middle::dep_graph::{DepKind, DepNodeIndex};
 pub use crate::rustc_middle::traits::select::*;
 use crate::rustc_middle::ty::abstract_const::NotConstEvaluatable;
@@ -41,6 +38,8 @@ use crate::rustc_middle::ty::{
     Unnormalized, Upcast, elaborate, may_use_unstable_feature,
 };
 use crate::rustc_next_trait_solver::solve::AliasBoundKind;
+use hir::def::DefKind;
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument, trace};
 
 use self::EvaluationResult::*;
@@ -56,9 +55,13 @@ use super::{
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::infer::{InferCtxt, InferOk, TypeFreshener};
 use crate::rustc_trait_selection::solve::InferCtxtSelectExt as _;
-use crate::rustc_trait_selection::traits::normalize::{normalize_with_depth, normalize_with_depth_to};
+use crate::rustc_trait_selection::traits::normalize::{
+    normalize_with_depth, normalize_with_depth_to,
+};
 use crate::rustc_trait_selection::traits::project::{ProjectAndUnifyResult, ProjectionCacheKeyExt};
-use crate::rustc_trait_selection::traits::{EvaluateConstErr, ProjectionCacheKey, effects, sizedness_fast_path};
+use crate::rustc_trait_selection::traits::{
+    EvaluateConstErr, ProjectionCacheKey, effects, sizedness_fast_path,
+};
 
 mod _match;
 mod candidate_assembly;
@@ -396,7 +399,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                         );
                         if !trait_ref.references_error() {
                             let self_ty = trait_ref.self_ty();
-                            let self_ty = self_ty.has_concrete_skeleton().then(|| self_ty);
+                            let self_ty = self_ty.has_concrete_skeleton().then_some(self_ty);
                             let cause = if let Conflict::Upstream = conflict {
                                 IntercrateAmbiguityCause::UpstreamCrateUpdate { trait_ref, self_ty }
                             } else {
@@ -436,9 +439,9 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         // Coherence must not rely on a reservation impl's absence: a goal it may prove is
         // ambiguous there, as it was in every rustc that had them.
         if self.typing_mode().is_coherence()
-            && candidates
-                .iter()
-                .any(|c| matches!(*c, ImplCandidate(def_id) if self.tcx().impl_is_reservation(def_id)))
+            && candidates.iter().any(
+                |c| matches!(*c, ImplCandidate(def_id) if self.tcx().impl_is_reservation(def_id)),
+            )
         {
             return Ok(None);
         }
@@ -1369,7 +1372,6 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 dep_node,
                 result,
             );
-            return;
         } else {
             debug!(?trait_pred, ?result, "insert_evaluation_cache local");
             self.infcx.evaluation_cache.insert((param_env, trait_pred), dep_node, result);
@@ -1480,7 +1482,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         let trait_ref = predicate.skip_binder().trait_ref;
 
         // The error type is uninhabited, so the empty match is `into_ok` without the gate.
-        coherence::trait_ref_is_knowable(self.infcx, trait_ref, |ty| Ok::<_, crate::Never>(ty))
+        coherence::trait_ref_is_knowable(self.infcx, trait_ref, Ok::<_, crate::Never>)
             .unwrap_or_else(|never| match never {})
     }
 
@@ -1905,8 +1907,9 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
             match alias_bounds
                 .clone()
                 .filter_map(|(idx, kind)| (kind == AliasBoundKind::SelfBounds).then_some(idx))
-                .try_reduce_option(|c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) })
-            {
+                .try_reduce_option(
+                    |c1, c2| if has_non_region_infer { None } else { Some(c1.min(c2)) },
+                ) {
                 Some(Some(idx)) => {
                     return Some(ProjectionCandidate { idx, kind: AliasBoundKind::SelfBounds });
                 }
@@ -2083,10 +2086,8 @@ impl<'tcx> SelectionContext<'_, 'tcx> {
         // we still use modulo regions here. This is fine as specialization currently
         // assumes that specializing impls have to be always applicable, meaning that
         // the only allowed region constraints may be constraints also present on the default impl.
-        if lhs_evaluation.must_apply_modulo_regions() {
-            if tcx.specializes((lhs, victim)) {
-                return true;
-            }
+        if lhs_evaluation.must_apply_modulo_regions() && tcx.specializes((lhs, victim)) {
+            return true;
         }
 
         match tcx.impls_are_allowed_to_overlap(lhs, victim) {

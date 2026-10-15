@@ -1,19 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::Debug;
 use core::ops::ControlFlow;
 
+use crate::bug;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_infer::traits::util::PredicateSet;
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{
     self, GenericArgs, GenericParamDefKind, Ty, TyCtxt, TypeVisitableExt, Unnormalized, Upcast,
@@ -218,7 +214,8 @@ fn own_existential_vtable_entries_iter(
         tcx.associated_items(trait_def_id).in_definition_order().filter(|item| item.is_fn());
 
     // Now list each method's DefId (for within its trait).
-    let own_entries = trait_methods.filter_map(move |&trait_method| {
+
+    trait_methods.filter_map(move |&trait_method| {
         debug!("own_existential_vtable_entry: trait_method={:?}", trait_method);
         let def_id = trait_method.def_id;
 
@@ -234,9 +231,7 @@ fn own_existential_vtable_entries_iter(
         }
 
         Some(def_id)
-    });
-
-    own_entries
+    })
 }
 
 /// Given a trait `trait_ref`, iterates the vtable entries

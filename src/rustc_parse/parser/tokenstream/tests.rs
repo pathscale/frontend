@@ -1,8 +1,8 @@
-use alloc::borrow::ToOwned;
-use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_ast::token::{self, IdentIsRaw};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_span::{BytePos, Span, create_default_session_globals_then, sym};
+use alloc::borrow::ToOwned;
 
 use crate::rustc_parse::parser::tests::string_to_stream;
 
@@ -29,7 +29,7 @@ fn test_concat() {
         eq_res.push_stream_with_gluing(test_snd);
         assert_eq!(test_res.iter().count(), 5);
         assert_eq!(eq_res.iter().count(), 5);
-        assert_eq!(cmp_token_stream(&test_res, &eq_res), true);
+        assert!(cmp_token_stream(&test_res, &eq_res));
     })
 }
 
@@ -74,7 +74,7 @@ fn test_diseq_0() {
     create_default_session_globals_then(|| {
         let test_res = string_to_ts("::bar::baz");
         let test_eqs = string_to_ts("bar::baz");
-        assert_eq!(test_res == test_eqs, false)
+        assert!(test_res != test_eqs)
     })
 }
 
@@ -83,7 +83,7 @@ fn test_diseq_1() {
     create_default_session_globals_then(|| {
         let test_res = string_to_ts("(bar,baz)");
         let test_eqs = string_to_ts("bar,baz");
-        assert_eq!(test_res == test_eqs, false)
+        assert!(test_res != test_eqs)
     })
 }
 
@@ -95,9 +95,9 @@ fn test_is_empty() {
             TokenStream::token_alone(token::Ident(sym::character('a'), IdentIsRaw::No), sp(0, 1));
         let test2 = string_to_ts("foo(bar::baz)");
 
-        assert_eq!(test0.is_empty(), true);
-        assert_eq!(test1.is_empty(), false);
-        assert_eq!(test2.is_empty(), false);
+        assert!(test0.is_empty());
+        assert!(!test1.is_empty());
+        assert!(!test2.is_empty());
     })
 }
 

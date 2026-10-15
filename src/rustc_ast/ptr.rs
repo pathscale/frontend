@@ -18,7 +18,7 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
@@ -31,6 +31,37 @@ const HEADER_BYTES: usize = 64;
 const MAX_NODE_BYTES: usize = 1024;
 /// Ownership counts acquired together by a chunk's sole allocating thread.
 const COUNT_BATCH: usize = 256;
+
+static CHUNK_ALLOCS: AtomicU64 = AtomicU64::new(0);
+static CHUNK_BATCH_RESERVES: AtomicU64 = AtomicU64::new(0);
+static CHUNK_ATOMIC_RELEASES: AtomicU64 = AtomicU64::new(0);
+static CHUNK_DEALLOCS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArenaMetrics {
+    pub chunk_allocs: u64,
+    pub chunk_batch_reserves: u64,
+    pub chunk_atomic_releases: u64,
+    pub chunk_deallocs: u64,
+}
+
+#[inline]
+pub fn arena_metrics() -> ArenaMetrics {
+    ArenaMetrics {
+        chunk_allocs: CHUNK_ALLOCS.load(Ordering::Relaxed),
+        chunk_batch_reserves: CHUNK_BATCH_RESERVES.load(Ordering::Relaxed),
+        chunk_atomic_releases: CHUNK_ATOMIC_RELEASES.load(Ordering::Relaxed),
+        chunk_deallocs: CHUNK_DEALLOCS.load(Ordering::Relaxed),
+    }
+}
+
+#[inline]
+pub fn reset_arena_metrics() {
+    CHUNK_ALLOCS.store(0, Ordering::Relaxed);
+    CHUNK_BATCH_RESERVES.store(0, Ordering::Relaxed);
+    CHUNK_ATOMIC_RELEASES.store(0, Ordering::Relaxed);
+    CHUNK_DEALLOCS.store(0, Ordering::Relaxed);
+}
 
 #[repr(C, align(64))]
 struct ChunkHeader {
@@ -54,6 +85,7 @@ fn new_chunk() -> NonNull<ChunkHeader> {
     // SAFETY: the fresh chunk is aligned to CHUNK_BYTES, has room for the header, and is
     // uniquely owned. This initializes the header before any reference to it is formed.
     unsafe { chunk.as_ptr().write(ChunkHeader { live: AtomicUsize::new(1) }) };
+    CHUNK_ALLOCS.fetch_add(1, Ordering::Relaxed);
     chunk
 }
 
@@ -85,10 +117,12 @@ unsafe fn release_counts(chunk: NonNull<ChunkHeader>, counts: usize) {
     // The same discipline as Arc: every count holder's writes happen before the free.
     // SAFETY: the owned counts keep this aligned, initialized header in bounds and alive;
     // shared access touches only its atomic counter, never the allocation payloads.
+    CHUNK_ATOMIC_RELEASES.fetch_add(1, Ordering::Relaxed);
     if unsafe { chunk.as_ref() }.live.fetch_sub(counts, Ordering::Release) == counts {
         fence(Ordering::Acquire);
         // SAFETY: this is the original aligned allocation base and layout. The last counts
         // are gone after the acquire fence, so no live values or references need the bytes.
+        CHUNK_DEALLOCS.fetch_add(1, Ordering::Relaxed);
         unsafe { dealloc(chunk.as_ptr().cast(), chunk_layout()) };
     }
 }
@@ -191,9 +225,12 @@ pub(crate) fn with_drop_batch<R>(f: impl FnOnce() -> R) -> R {
     }
 
     let _batch = Batch(
-        CURRENT.with(Current::new, |cur| {
-            cur.drop_depth = cur.drop_depth.checked_add(1).expect("AST drop batch depth overflow");
-        }).is_some(),
+        CURRENT
+            .with(Current::new, |cur| {
+                cur.drop_depth =
+                    cur.drop_depth.checked_add(1).expect("AST drop batch depth overflow");
+            })
+            .is_some(),
     );
     // The TLS borrow has ended before f can recurse, allocate, or switch ParseArena.
     f()
@@ -206,16 +243,13 @@ pub(crate) struct ParseArena(Option<Current>);
 #[cfg(feature = "parallel")]
 impl ParseArena {
     pub(crate) fn enter() -> Self {
-        Self(CURRENT.with(
-            Current::new,
-            |current| {
-                current.flush_pending();
-                let mut next = Current::new();
-                // Batch scopes belong to the thread's call stack, not an allocation epoch.
-                next.drop_depth = core::mem::take(&mut current.drop_depth);
-                core::mem::replace(current, next)
-            },
-        ))
+        Self(CURRENT.with(Current::new, |current| {
+            current.flush_pending();
+            let mut next = Current::new();
+            // Batch scopes belong to the thread's call stack, not an allocation epoch.
+            next.drop_depth = core::mem::take(&mut current.drop_depth);
+            core::mem::replace(current, next)
+        }))
     }
 }
 
@@ -223,14 +257,11 @@ impl ParseArena {
 impl Drop for ParseArena {
     fn drop(&mut self) {
         if let Some(mut previous) = self.0.take() {
-            let retired = CURRENT.with(
-                Current::new,
-                |current| {
-                    current.flush_pending();
-                    previous.drop_depth = core::mem::take(&mut current.drop_depth);
-                    core::mem::replace(current, previous)
-                },
-            );
+            let retired = CURRENT.with(Current::new, |current| {
+                current.flush_pending();
+                previous.drop_depth = core::mem::take(&mut current.drop_depth);
+                core::mem::replace(current, previous)
+            });
             drop(retired);
         }
     }
@@ -239,43 +270,53 @@ impl Drop for ParseArena {
 /// Room for one node of layout, transferring one reserved count to it.
 #[inline]
 fn alloc_node(layout: Layout) -> NonNull<u8> {
-    let slot = CURRENT.with(
-        Current::new,
-        |cur| {
-            let align = layout.align();
-            let mut offset = (cur.next + align - 1) & !(align - 1);
-            let chunk = match cur.chunk {
-                Some(chunk) if offset + layout.size() < CHUNK_BYTES => chunk,
-                _ => {
-                    cur.retire();
-                    let chunk = new_chunk();
-                    cur.chunk = Some(chunk);
-                    offset = HEADER_BYTES;
-                    chunk
-                }
-            };
-            cur.next = offset + layout.size();
-            if cur.reserved == 0 {
-                // SAFETY: the current-chunk pin keeps this aligned, initialized header in
-                // bounds and alive. Shared access touches only the atomic counter, and only
-                // this thread reserves counts; other threads may release issued counts.
-                let count = unsafe { chunk.as_ref() }
-                    .live
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                        let available = (isize::MAX as usize).saturating_sub(count);
-                        (available != 0).then(|| count + available.min(COUNT_BATCH))
-                    })
-                    .expect("AST chunk count overflow");
-                cur.reserved = ((isize::MAX as usize) - count).min(COUNT_BATCH);
+    let slot = CURRENT.with(Current::new, |cur| {
+        let align = layout.align();
+        let mut offset = (cur.next + align - 1) & !(align - 1);
+        let chunk = match cur.chunk {
+            Some(chunk) if offset + layout.size() < CHUNK_BYTES => chunk,
+            _ => {
+                cur.retire();
+                let chunk = new_chunk();
+                cur.chunk = Some(chunk);
+                offset = HEADER_BYTES;
+                chunk
             }
-            // One reserved count becomes the returned allocation's owned count.
-            cur.reserved -= 1;
-            // SAFETY: offset is rounded to the layout's alignment and lies after the header;
-            // offset + size is strictly inside the live chunk. These fresh, uninitialized
-            // bytes are uniquely allocated, and no reference is formed, even for a ZST.
-            unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(offset)) }
-        },
-    );
+        };
+        cur.next = offset + layout.size();
+        if cur.reserved == 0 {
+            // SAFETY: the current-chunk pin keeps this aligned, initialized header in
+            // bounds and alive. Shared access touches only the atomic counter, and only
+            // this thread reserves counts; other threads may release issued counts.
+            let live = unsafe { &chunk.as_ref().live };
+            let mut count = live.load(Ordering::Relaxed);
+            loop {
+                let available = (isize::MAX as usize).saturating_sub(count);
+                assert!(available != 0, "AST chunk count overflow");
+                let reserved = count + available.min(COUNT_BATCH);
+                match live.compare_exchange_weak(
+                    count,
+                    reserved,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(previous) => {
+                        count = previous;
+                        break;
+                    }
+                    Err(actual) => count = actual,
+                }
+            }
+            cur.reserved = ((isize::MAX as usize) - count).min(COUNT_BATCH);
+            CHUNK_BATCH_RESERVES.fetch_add(1, Ordering::Relaxed);
+        }
+        // One reserved count becomes the returned allocation's owned count.
+        cur.reserved -= 1;
+        // SAFETY: offset is rounded to the layout's alignment and lies after the header;
+        // offset + size is strictly inside the live chunk. These fresh, uninitialized
+        // bytes are uniquely allocated, and no reference is formed, even for a ZST.
+        unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(offset)) }
+    });
     // Out of thread-local keys: a chunk of its own, whose one count is the node's.
     slot.unwrap_or_else(|| {
         let chunk = new_chunk();
@@ -337,11 +378,7 @@ fn fits_in_chunk(layout: Layout) -> bool {
 #[inline]
 pub(crate) fn alloc_slice_bytes(layout: Layout) -> NonNull<u8> {
     assert!(layout.size() != 0);
-    if fits_in_chunk(layout) {
-        alloc_node(layout)
-    } else {
-        alloc_bytes(layout)
-    }
+    if fits_in_chunk(layout) { alloc_node(layout) } else { alloc_bytes(layout) }
 }
 
 /// Releases an initialized or uninitialized list buffer after its elements are gone.
@@ -385,19 +422,19 @@ pub(crate) unsafe fn try_grow_in_chunk_in_place(
         return false;
     }
     let chunk = chunk_of(ptr);
-    CURRENT.with(Current::new, |cur| {
-        if cur.chunk != Some(chunk) {
-            return false;
-        }
-        let offset = ptr.as_ptr() as usize - chunk.as_ptr() as usize;
-        if offset + old_layout.size() != cur.next
-            || offset + new_layout.size() >= CHUNK_BYTES
-        {
-            return false;
-        }
-        cur.next = offset + new_layout.size();
-        true
-    }).unwrap_or(false)
+    CURRENT
+        .with(Current::new, |cur| {
+            if cur.chunk != Some(chunk) {
+                return false;
+            }
+            let offset = ptr.as_ptr() as usize - chunk.as_ptr() as usize;
+            if offset + old_layout.size() != cur.next || offset + new_layout.size() >= CHUNK_BYTES {
+                return false;
+            }
+            cur.next = offset + new_layout.size();
+            true
+        })
+        .unwrap_or(false)
 }
 
 /// Releases list/slice storage, reclaiming the active chunk's tip when possible.
@@ -413,15 +450,17 @@ pub(crate) unsafe fn try_grow_in_chunk_in_place(
 pub(crate) unsafe fn dealloc_slice_bytes(ptr: NonNull<u8>, layout: Layout) {
     if fits_in_chunk(layout) {
         let chunk = chunk_of(ptr);
-        let returned = CURRENT.with(Current::new, |cur| {
-            if cur.chunk == Some(chunk) {
-                let offset = ptr.as_ptr() as usize - chunk.as_ptr() as usize;
-                if offset + layout.size() == cur.next {
-                    cur.next = offset;
+        let returned = CURRENT
+            .with(Current::new, |cur| {
+                if cur.chunk == Some(chunk) {
+                    let offset = ptr.as_ptr() as usize - chunk.as_ptr() as usize;
+                    if offset + layout.size() == cur.next {
+                        cur.next = offset;
+                    }
                 }
-            }
-            cur.release_from_chunk(chunk);
-        }).is_some();
+                cur.release_from_chunk(chunk);
+            })
+            .is_some();
         if !returned {
             // SAFETY: TLS did not consume the allocation's count. It still keeps the aligned,
             // initialized header alive, and the caller no longer accesses the payload.

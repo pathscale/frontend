@@ -1,9 +1,10 @@
-use alloc::vec::Vec;
+use crate::bug;
 use crate::rustc_abi::Size;
 use crate::rustc_ast::{self as ast, UintTy};
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use crate::bug;
-use crate::rustc_middle::ty::{self, LitToConstInput, ScalarInt, Ty, TyCtxt, TypeVisitableExt as _};
+use crate::rustc_middle::ty::{
+    self, LitToConstInput, ScalarInt, Ty, TyCtxt, TypeVisitableExt as _,
+};
 use tracing::trace;
 
 use crate::rustc_mir_build::builder::parse_float_into_scalar;

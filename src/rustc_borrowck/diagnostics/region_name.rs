@@ -1,10 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -204,7 +202,10 @@ impl Display for RegionName {
 }
 
 impl crate::rustc_errors::IntoDiagArg for RegionName {
-    fn into_diag_arg(self, path: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        path: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         self.to_string().into_diag_arg(path)
     }
 }
@@ -481,16 +482,13 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             });
                         }
                     }
-                    ty::ReEarlyParam(ebr) => {
-                        if ebr.is_named() {
-                            let def_id =
-                                tcx.generics_of(parent_def_id).region_param(ebr, tcx).def_id;
-                            let span = tcx.hir_span_if_local(def_id).unwrap_or(DUMMY_SP);
-                            return Some(RegionName {
-                                name: ebr.name,
-                                source: RegionNameSource::NamedEarlyParamRegion(span),
-                            });
-                        }
+                    ty::ReEarlyParam(ebr) if ebr.is_named() => {
+                        let def_id = tcx.generics_of(parent_def_id).region_param(ebr, tcx).def_id;
+                        let span = tcx.hir_span_if_local(def_id).unwrap_or(DUMMY_SP);
+                        return Some(RegionName {
+                            name: ebr.name,
+                            source: RegionNameSource::NamedEarlyParamRegion(span),
+                        });
                     }
                     _ => {}
                 }

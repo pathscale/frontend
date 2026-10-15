@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use core::iter::Enumerate;
 
 use crate::rustc_hir_id::HirId;

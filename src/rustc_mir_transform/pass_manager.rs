@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use core::sync::atomic::Ordering;
@@ -282,7 +279,8 @@ fn run_passes_inner<'tcx>(
     }
 
     if unknown_found {
-        let mut valid_pass_names = crate::rustc_mir_transform::PASS_NAMES.iter().copied().collect::<Vec<_>>();
+        let mut valid_pass_names =
+            crate::rustc_mir_transform::PASS_NAMES.iter().copied().collect::<Vec<_>>();
         valid_pass_names.sort();
         tcx.dcx().emit_note(diagnostics::ValidPassNames { valid_passes: valid_pass_names.into() });
     }
@@ -292,7 +290,8 @@ fn run_passes_inner<'tcx>(
     {
         let used_passes: FxIndexSet<_> = passes.iter().map(|p| p.name()).collect();
 
-        let undeclared = used_passes.difference(&*crate::rustc_mir_transform::PASS_NAMES).collect::<Vec<_>>();
+        let undeclared =
+            used_passes.difference(&*crate::rustc_mir_transform::PASS_NAMES).collect::<Vec<_>>();
         if let Some((name, rest)) = undeclared.split_first() {
             let mut err =
                 tcx.dcx().struct_bug(format!("pass `{name}` is not declared in `PASS_NAMES`"));

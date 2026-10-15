@@ -22,7 +22,7 @@ pub(crate) fn coroutine_hidden_types<'tcx>(
             .map_or_else(|| [].iter(), |l| l.field_tys.iter())
             .filter(|decl| !decl.ignore_for_traits)
             .map(|decl| {
-                let ty = fold_regions(tcx, decl.ty, |re, debruijn| {
+                fold_regions(tcx, decl.ty, |re, debruijn| {
                     assert_eq!(re, tcx.lifetimes.re_erased);
                     let var = ty::BoundVar::from_usize(vars.len());
                     vars.push(ty::BoundVariableKind::Region(ty::BoundRegionKind::Anon));
@@ -31,8 +31,7 @@ pub(crate) fn coroutine_hidden_types<'tcx>(
                         debruijn,
                         ty::BoundRegion { var, kind: ty::BoundRegionKind::Anon },
                     )
-                });
-                ty
+                })
             }),
     );
 
@@ -56,7 +55,7 @@ fn compute_assumptions<'tcx>(
     bound_tys: &'tcx ty::List<Ty<'tcx>>,
 ) -> &'tcx ty::List<ty::ArgOutlivesClause<'tcx>> {
     if tcx.next_trait_solver_globally() || !tcx.sess.opts.unstable_opts.higher_ranked_assumptions {
-        return &ty::List::empty();
+        return ty::List::empty();
     }
 
     let infcx = tcx

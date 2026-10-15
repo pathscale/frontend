@@ -5,9 +5,6 @@ pub enum EntryPointType {
     /// This function is not an entrypoint.
     None,
     /// This is a function called `main` at the root level.
-    /// ```
-    /// fn main() {}
-    /// ```
     MainNamed,
     /// This is a function with the `#[rustc_main]` attribute.
     /// Used by the testing harness to create the test entrypoint.

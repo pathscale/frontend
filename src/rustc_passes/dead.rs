@@ -8,7 +8,6 @@ use core::mem;
 use core::ops::ControlFlow;
 use core::sync::atomic::Ordering;
 
-use hir::def_id::{LocalDefIdMap, LocalDefIdSet};
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::sync::{DynSend, DynSync, StageScope, cost, stages};
@@ -28,6 +27,7 @@ use crate::rustc_middle::ty::{self, AssocTag, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{Symbol, kw};
 use crate::rustc_structures::CrateType;
+use hir::def_id::{LocalDefIdMap, LocalDefIdSet};
 
 use crate::rustc_passes::diagnostics::{
     ChangeFields, DeadCodePubInBinaryNote, IgnoredDerivedImpls, MultipleDeadCodes, ParentInfo,
@@ -277,22 +277,19 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
                     if let (Res::Local(id_l), Res::Local(id_r)) = (
                         typeck_results.qpath_res(qpath_l, lhs.hir_id),
                         typeck_results.qpath_res(qpath_r, rhs.hir_id),
-                    ) {
-                        if id_l == id_r {
-                            return true;
-                        }
+                    ) && id_l == id_r
+                    {
+                        return true;
                     }
-                    return false;
+                    false
                 }
                 (hir::ExprKind::Field(lhs_l, ident_l), hir::ExprKind::Field(lhs_r, ident_r)) => {
                     if ident_l == ident_r {
                         return check_for_self_assign_helper(typeck_results, lhs_l, lhs_r);
                     }
-                    return false;
+                    false
                 }
-                _ => {
-                    return false;
-                }
+                _ => false,
             }
         }
 
@@ -741,7 +738,7 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
             hir::ExprKind::MethodCall(..) => {
                 self.lookup_and_handle_method(expr.hir_id);
             }
-            hir::ExprKind::Field(ref lhs, ..) => {
+            hir::ExprKind::Field(lhs, ..) => {
                 if self.typeck_results().opt_field_index(expr.hir_id).is_some() {
                     self.handle_field_access(lhs, expr.hir_id);
                 } else {
@@ -761,7 +758,7 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
             hir::ExprKind::OffsetOf(..) => {
                 self.handle_offset_of(expr);
             }
-            hir::ExprKind::Assign(ref lhs, ..) => {
+            hir::ExprKind::Assign(lhs, ..) => {
                 self.handle_assign(lhs);
                 self.check_for_self_assign(expr);
             }
@@ -804,17 +801,14 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
     }
 
     fn visit_pat_expr(&mut self, expr: &'tcx crate::rustc_hir::PatExpr<'tcx>) -> Self::Result {
-        match &expr.kind {
-            crate::rustc_hir::PatExprKind::Path(qpath) => {
-                // mark the type of variant live when meeting E::V in expr
-                if let ty::Adt(adt, _) = self.typeck_results().node_type(expr.hir_id).kind() {
-                    self.check_def_id(adt.did());
-                }
-
-                let res = self.typeck_results().qpath_res(qpath, expr.hir_id);
-                self.handle_res(res);
+        if let crate::rustc_hir::PatExprKind::Path(qpath) = &expr.kind {
+            // mark the type of variant live when meeting E::V in expr
+            if let ty::Adt(adt, _) = self.typeck_results().node_type(expr.hir_id).kind() {
+                self.check_def_id(adt.did());
             }
-            _ => {}
+
+            let res = self.typeck_results().qpath_res(qpath, expr.hir_id);
+            self.handle_res(res);
         }
         intravisit::walk_pat_expr(self, expr)
     }
@@ -917,14 +911,14 @@ fn has_allow_dead_code_or_lang_attr(
 ///
 /// We want to explicitly consider as live:
 /// * Item annotated with #[allow(dead_code)]
-///       This is done so that if we want to suppress warnings for a
-///       group of dead functions, we only have to annotate the "root".
-///       For example, if both `f` and `g` are dead and `f` calls `g`,
-///       then annotating `f` with `#[allow(dead_code)]` will suppress
-///       warning for both `f` and `g`.
+///   This is done so that if we want to suppress warnings for a
+///   group of dead functions, we only have to annotate the "root".
+///   For example, if both `f` and `g` are dead and `f` calls `g`,
+///   then annotating `f` with `#[allow(dead_code)]` will suppress
+///   warning for both `f` and `g`.
 ///
 /// * Item annotated with #[lang=".."]
-///       Lang items are always callable from elsewhere.
+///   Lang items are always callable from elsewhere.
 ///
 /// For trait methods and implementations of traits, we are not certain that the definitions are
 /// live at this stage. We record them in `unsolved_items` for later examination.
@@ -984,17 +978,15 @@ fn maybe_record_as_seed<'tcx>(
                 own: ComesFromAllowExpect::No,
             });
         }
-        DefKind::Const { .. } => {
-            if tcx.item_name(owner_id.def_id) == kw::Underscore {
-                // `const _` is always live, as that syntax only exists for the side effects
-                // of type checking and evaluating the constant expression, and marking them
-                // as dead code would defeat that purpose.
-                push_into_worklist(WorkItem {
-                    id: owner_id.def_id,
-                    propagated: ComesFromAllowExpect::No,
-                    own: ComesFromAllowExpect::No,
-                });
-            }
+        DefKind::Const { .. } if tcx.item_name(owner_id.def_id) == kw::Underscore => {
+            // `const _` is always live, as that syntax only exists for the side effects
+            // of type checking and evaluating the constant expression, and marking them
+            // as dead code would defeat that purpose.
+            push_into_worklist(WorkItem {
+                id: owner_id.def_id,
+                propagated: ComesFromAllowExpect::No,
+                own: ComesFromAllowExpect::No,
+            });
         }
         _ => {}
     }
@@ -1349,7 +1341,7 @@ impl<'tcx> DeadVisitor<'tcx> {
         // `IndexMap<(Level, StableLintExpectationId), (DefId, Symbol)>`
         dead_codes.sort_by_key(|v| v.level_plus.0);
         for group in dead_codes.chunk_by(|a, b| a.level_plus == b.level_plus) {
-            self.lint_at_single_level(&group, participle, Some(def_id), report_on);
+            self.lint_at_single_level(group, participle, Some(def_id), report_on);
         }
     }
 
@@ -1446,6 +1438,10 @@ fn check_mod_deathness(tcx: TyCtxt<'_>, module: LocalModId) {
 
 /// One stage in `scope` over the module's free items, then its foreign items: item `i` reports
 /// the `i`th of them if `reported` says so.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 fn lint_dead_codes<'scope, 'tcx: 'scope>(
     scope: &'scope StageScope<'scope, '_>,
     tcx: TyCtxt<'tcx>,
@@ -1538,11 +1534,11 @@ fn lint_dead_free_item<'tcx>(visitor: &mut DeadVisitor<'tcx>, module: LocalModId
                 continue;
             }
 
-            let is_positional = variant.fields.raw.first().is_some_and(|field| {
-                field.name.as_str().starts_with(|c: char| c.is_ascii_digit())
-            });
-            let report_on =
-                if is_positional { ReportOn::TupleField } else { ReportOn::NamedField };
+            let is_positional =
+                variant.fields.raw.first().is_some_and(|field| {
+                    field.name.as_str().starts_with(|c: char| c.is_ascii_digit())
+                });
+            let report_on = if is_positional { ReportOn::TupleField } else { ReportOn::NamedField };
             let dead_fields = variant
                 .fields
                 .iter()

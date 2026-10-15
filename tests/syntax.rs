@@ -148,10 +148,7 @@ fn a_sole_input_parameter_is_an_exact_hole() {
         panic!("expected a quote template");
     };
     assert_eq!(rules[0].holes.len(), 1);
-    assert!(matches!(
-        &rules[0].holes[0],
-        SchemaHole::Exact(ExactPart::InputTokens)
-    ));
+    assert!(matches!(&rules[0].holes[0], SchemaHole::Exact(ExactPart::InputTokens)));
 }
 
 #[test]

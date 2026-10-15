@@ -32,14 +32,13 @@
 //!
 //! [gen-kill]: https://en.wikipedia.org/wiki/Data-flow_analysis#Bit_vector_problems
 
+use crate::bug;
 use crate::rustc_index::bit_set::{DenseBitSet, MixedBitSet};
 use crate::rustc_index::{Idx, IndexVec};
-use crate::bug;
 use crate::rustc_middle::mir::{
     self, BasicBlock, BasicBlockData, CallReturnPlaces, Location, TerminatorEdges,
 };
 use crate::rustc_middle::ty::TyCtxt;
-use tracing::error;
 
 use super::fmt::DebugWithContext;
 
@@ -86,8 +85,8 @@ impl<T: Idx> BitSetExt<T> for MixedBitSet<T> {
 /// following invariant:
 ///
 /// > If the dataflow state **before** some point in the program changes to be greater
-/// than the prior state **before** that point, the dataflow state **after** that point must
-/// also change to be greater than the prior state **after** that point.
+/// > than the prior state **before** that point, the dataflow state **after** that point must
+/// > also change to be greater than the prior state **after** that point.
 ///
 /// This invariant guarantees that the dataflow state at a given point in the program increases
 /// monotonically until fixpoint is reached. Note that this monotonicity requirement only applies
@@ -289,9 +288,9 @@ pub trait Analysis<'tcx> {
     /// saved.
     fn iterate_to_fixpoint<'mir>(
         self,
-        tcx: TyCtxt<'tcx>,
+        _tcx: TyCtxt<'tcx>,
         body: &'mir mir::Body<'tcx>,
-        pass_name: Option<&'static str>,
+        _pass_name: Option<&'static str>,
     ) -> Results<'tcx, Self>
     where
         Self: Sized,
@@ -383,9 +382,7 @@ pub trait Analysis<'tcx> {
             }
         }
 
-        let results = Results { analysis: self, entry_states };
-
-        results
+        Results { analysis: self, entry_states }
     }
 }
 

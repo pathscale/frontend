@@ -198,6 +198,8 @@ where
 {
     /// Run every item in input order and return its completed slots.
     pub fn release(self) -> Arc<Slots<O>> {
-        Arc::new(Slots { values: (0..self.len).map(|index| (self.f)(&self.input, index)).collect() })
+        Arc::new(Slots {
+            values: (0..self.len).map(|index| (self.f)(&self.input, index)).collect(),
+        })
     }
 }

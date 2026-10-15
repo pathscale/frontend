@@ -1,22 +1,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::Debug;
 
 use crate::polonius_engine::{AllFacts, Atom, Output};
-use rustc_macros::extension;
 use crate::rustc_middle::mir::Local;
 use crate::rustc_middle::ty::{RegionVid, TyCtxt};
 use crate::rustc_mir_dataflow::move_paths::MovePathIndex;
+use rustc_macros::extension;
 
-use super::{LocationIndex, PoloniusLocationTable};
+use super::LocationIndex;
 use crate::rustc_borrowck::BorrowIndex;
 
 #[derive(Copy, Clone, Debug)]
@@ -70,7 +64,6 @@ impl PoloniusFacts {
     fn enabled(tcx: TyCtxt<'_>) -> bool {
         tcx.sess.opts.unstable_opts.polonius.is_legacy_enabled()
     }
-
 }
 
 impl Atom for BorrowIndex {
@@ -84,17 +77,3 @@ impl Atom for LocationIndex {
         self.as_usize()
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

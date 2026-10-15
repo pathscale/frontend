@@ -6,11 +6,11 @@
 //!
 //! [c]: https://rust-lang.github.io/chalk/book/canonical_queries/canonicalization.html
 
-use rustc_macros::extension;
 use crate::rustc_middle::ty::{
     self, DelayedMap, Ty, TyCtxt, TypeFlags, TypeFoldable, TypeFolder, TypeSuperFoldable,
     TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor,
 };
+use rustc_macros::extension;
 
 use crate::rustc_infer::infer::canonical::{Canonical, CanonicalVarValues};
 

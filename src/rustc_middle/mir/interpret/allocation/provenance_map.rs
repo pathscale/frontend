@@ -4,11 +4,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cmp;
@@ -16,8 +12,8 @@ use core::ops::{Range, RangeBounds};
 
 use crate::rustc_abi::{HasDataLayout, Size};
 use crate::rustc_data_structures::sorted_map::SortedMap;
-use rustc_macros::StableHash;
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_macros::StableHash;
 use tracing::trace;
 
 use super::{AllocRange, CtfeProvenance, Provenance, alloc_range};
@@ -246,7 +242,7 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
             }
             // The final provenance is the expected one we found along the way, or wildcard if
             // we didn't find any.
-            Some(expected.map(|(prov, _addr)| prov).or_else(|| Prov::WILDCARD).unwrap())
+            Some(expected.map(|(prov, _addr)| prov).or(Prov::WILDCARD).unwrap())
         };
         if prov.is_none() && !Prov::OFFSET_IS_ADDR {
             // There are some bytes with provenance here but overall the provenance does not add up.
@@ -301,16 +297,16 @@ impl<Prov: Provenance> ProvenanceMap<Prov> {
         }
         // Read ptr_size many bytes starting at ptr_pos.
         let mut bytes = [0u8; 8];
-        (&mut bytes[..ptr_size.bytes_usize()])
+        bytes[..ptr_size.bytes_usize()]
             .copy_from_slice(&data_bytes[ptr_pos.bytes_usize()..][..ptr_size.bytes_usize()]);
         // Yield the fragments of this pointer.
         either::Right(
             (ptr_pos.bytes()..(ptr_pos + ptr_size).bytes())
                 .map(Size::from_bytes)
                 .filter(move |pos| pos_range.contains(pos))
-                .map(
-                move |pos| (pos, PointerFrag { idx: (pos - ptr_pos).bytes() as u8, bytes, prov }),
-            ),
+                .map(move |pos| {
+                    (pos, PointerFrag { idx: (pos - ptr_pos).bytes() as u8, bytes, prov })
+                }),
         )
     }
 

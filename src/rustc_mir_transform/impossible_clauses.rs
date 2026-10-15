@@ -29,11 +29,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_middle::mir::{Body, START_BLOCK, TerminatorKind};
@@ -81,8 +76,8 @@ pub(crate) fn has_impossible_clauses<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> 
 
     // Some `Sized` clauses that mention local generics are still impossible
     // for every instantiation, e.g. `dyn Trait<T>: Sized`.
-    if let Some(sized_trait) = tcx.lang_items().sized_trait() {
-        if clauses
+    if let Some(sized_trait) = tcx.lang_items().sized_trait()
+        && clauses
             .clauses
             .iter()
             .copied()
@@ -91,7 +86,6 @@ pub(crate) fn has_impossible_clauses<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> 
         {
             return true;
         }
-    }
 
     let clauses = clauses.clauses.into_iter().map(Unnormalized::skip_norm_wip).filter(|c| {
         !c.has_type_flags(

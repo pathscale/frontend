@@ -11,7 +11,6 @@ use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::{Symbol, kw, sym};
-use alloc::string::String;
 use alloc::vec::Vec;
 use rustc_macros::{BlobDecodable, Encodable, PrintAttribute, StableHash};
 
@@ -28,6 +27,12 @@ pub struct LanguageItems {
     reverse_items: FxIndexMap<DefId, LangItem>,
     /// Lang items that were not found during collection.
     pub missing: Vec<LangItem>,
+}
+
+impl Default for LanguageItems {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LanguageItems {
@@ -483,9 +488,9 @@ pub enum GenericRequirement {
     Exact(usize),
 }
 
-pub static FN_TRAITS: &'static [LangItem] = &[LangItem::Fn, LangItem::FnMut, LangItem::FnOnce];
+pub static FN_TRAITS: &[LangItem] = &[LangItem::Fn, LangItem::FnMut, LangItem::FnOnce];
 
-pub static OPERATORS: &'static [LangItem] = &[
+pub static OPERATORS: &[LangItem] = &[
     LangItem::Add,
     LangItem::Sub,
     LangItem::Mul,
@@ -514,7 +519,7 @@ pub static OPERATORS: &'static [LangItem] = &[
     LangItem::PartialOrd,
 ];
 
-pub static BINARY_OPERATORS: &'static [LangItem] = &[
+pub static BINARY_OPERATORS: &[LangItem] = &[
     LangItem::Add,
     LangItem::Sub,
     LangItem::Mul,

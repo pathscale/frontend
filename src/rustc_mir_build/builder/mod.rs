@@ -20,13 +20,7 @@
 //! `let this = self;` or similar, allowing subsequent code to uniformly refer
 //! to the builder as `this` (and never `self`), even when not nested.
 
-use alloc::string::{String, ToString};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use itertools::Itertools;
 use crate::rustc_abi::{ExternAbi, FieldIdx};
-use rustc_apfloat::Float;
-use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::sorted_map::SortedIndexMultiMap;
 use crate::rustc_errors::ErrorGuaranteed;
@@ -45,6 +39,12 @@ use crate::rustc_middle::ty::{self, ScalarInt, Ty, TyCtxt, TypeVisitableExt, Typ
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{Span, Symbol};
 use crate::rustc_trait_selection::traits::ObligationCtxt;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use itertools::Itertools;
+use rustc_apfloat::Float;
+use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 
 use crate::rustc_mir_build::builder::expr::as_place::PlaceBuilder;
 use crate::rustc_mir_build::builder::scope::LintLevel;
@@ -391,6 +391,10 @@ impl LocalsForNode {
     }
 }
 
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "CFG is the established compiler name for this control-flow graph"
+)]
 struct CFG<'tcx> {
     basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>,
 }
@@ -581,10 +585,10 @@ fn normalized_type_of<'tcx>(infcx: &InferCtxt<'tcx>, def_id: LocalDefId) -> Ty<'
     ocx.deeply_normalize(&cause, tcx.param_env(def_id), ty).unwrap()
 }
 
-fn construct_const<'a, 'tcx>(
+fn construct_const<'tcx>(
     tcx: TyCtxt<'tcx>,
     def: LocalDefId,
-    thir: &'a Thir<'tcx>,
+    thir: &Thir<'tcx>,
     expr: ExprId,
     const_ty: Ty<'tcx>,
 ) -> Body<'tcx> {
@@ -765,6 +769,10 @@ fn construct_error(tcx: TyCtxt<'_>, def_id: LocalDefId, guar: ErrorGuaranteed) -
 }
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn new(
         thir: &'a Thir<'tcx>,
         infcx: InferCtxt<'tcx>,
@@ -836,9 +844,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             self.source_scopes.clone(),
             self.local_decls.clone(),
             self.canonical_user_type_annotations.clone(),
-            self.arg_count.clone(),
+            self.arg_count,
             self.var_debug_info.clone(),
-            self.fn_span.clone(),
+            self.fn_span,
             self.coroutine.clone(),
             None,
         );
@@ -1017,29 +1025,29 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 } => {
                     self.local_decls[local].mutability = mutability;
                     self.local_decls[local].source_info.scope = self.source_scope;
-                    *self.local_decls[local].local_info_mut() =
-                        if let Some(kind) = param.self_kind {
-                            LocalInfo::User(BindingForm::ImplicitSelf(kind))
-                        } else {
-                            let binding_mode = BindingMode(ByRef::No, mutability);
-                            LocalInfo::User(BindingForm::Var(VarBindingForm {
-                                binding_mode,
-                                opt_ty_info: param.ty_span,
-                                opt_match_place: Some((None, span)),
-                                pat_span: span,
-                                introductions: vec![VarBindingIntroduction {
-                                    span,
-                                    is_shorthand: false,
-                                }],
-                            }))
-                        };
+                    *self.local_decls[local].local_info_mut() = if let Some(kind) = param.self_kind
+                    {
+                        LocalInfo::User(BindingForm::ImplicitSelf(kind))
+                    } else {
+                        let binding_mode = BindingMode(ByRef::No, mutability);
+                        LocalInfo::User(BindingForm::Var(VarBindingForm {
+                            binding_mode,
+                            opt_ty_info: param.ty_span,
+                            opt_match_place: Some((None, span)),
+                            pat_span: span,
+                            introductions: vec![VarBindingIntroduction {
+                                span,
+                                is_shorthand: false,
+                            }],
+                        }))
+                    };
                     self.var_indices.insert(var, LocalsForNode::One(local));
                 }
                 _ => {
                     scope = self.declare_bindings(
                         scope,
                         expr_span,
-                        &pat,
+                        pat,
                         None,
                         Some((Some(&place), span)),
                     );
@@ -1063,17 +1071,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             self.cfg.start_new_block().unit()
         } else {
             // Ensure we don't silently codegen functions with fake bodies.
-            match self.tcx.hir_node(self.hir_id) {
-                hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Fn { has_body: false, .. },
-                    ..
-                }) => {
-                    self.tcx.dcx().span_delayed_bug(
-                        expr_span,
-                        format!("fn item without body has reached MIR building: {:?}", self.def_id),
-                    );
-                }
-                _ => {}
+            if let hir::Node::Item(hir::Item {
+                kind: hir::ItemKind::Fn { has_body: false, .. },
+                ..
+            }) = self.tcx.hir_node(self.hir_id)
+            {
+                self.tcx.dcx().span_delayed_bug(
+                    expr_span,
+                    format!("fn item without body has reached MIR building: {:?}", self.def_id),
+                );
             }
             self.expr_into_dest(Place::return_place(), block, expr_id)
         }

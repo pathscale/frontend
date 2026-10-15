@@ -3,9 +3,9 @@ use std::collections::HashSet;
 // `indexmap` is built without `std` here, so the default hasher is gone and the third parameter
 // has to be named. See `Cargo.toml`.
 type IndexMap<K, V> = indexmap::IndexMap<K, V, rustc_hash::FxBuildHasher>;
+use frontend_diag_template::Pattern;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use frontend_diag_template::Pattern;
 use syn::ext::IdentExt;
 
 use crate::diagnostics::error::span_err;
@@ -88,7 +88,7 @@ impl Message {
     pub(crate) fn diag_message(&self) -> TokenStream {
         let message = &self.value;
         self.verify();
-// Kept as an enum *construction*, not a helper call. `Subdiagnostic` expands to
+        // Kept as an enum *construction*, not a helper call. `Subdiagnostic` expands to
         // `format_diag_message(&<this>, ..)`, and a borrow of a constructor expression
         // const-promotes to `'static` while a borrow of a function call does not - swapping in a
         // helper produced E0716 at every derive site. `Cow` is named through `rustc_errors`
@@ -138,7 +138,6 @@ fn verify_message_style(msg_span: Span, message: &str) {
     // Verify that message does not end in `.`
     if message.ends_with(".") && !message.ends_with("...") {
         span_err(msg_span.unwrap(), "message `{value}` ends with a period").emit();
-        return;
     }
 }
 

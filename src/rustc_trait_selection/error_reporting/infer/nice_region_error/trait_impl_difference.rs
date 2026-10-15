@@ -3,8 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -125,16 +123,12 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         let assoc_item = self.tcx().associated_item(trait_item_def_id);
         let mut visitor =
             TypeParamSpanVisitor { tcx: self.tcx(), types: vec![], elided_lifetime_paths: vec![] };
-        match assoc_item.kind {
-            ty::AssocKind::Fn { .. } => {
-                if let Some(hir_id) =
-                    assoc_item.def_id.as_local().map(|id| self.tcx().local_def_id_to_hir_id(id))
-                    && let Some(decl) = self.tcx().hir_fn_decl_by_hir_id(hir_id)
-                {
-                    visitor.visit_fn_decl(decl);
-                }
-            }
-            _ => {}
+        if let ty::AssocKind::Fn { .. } = assoc_item.kind
+            && let Some(hir_id) =
+                assoc_item.def_id.as_local().map(|id| self.tcx().local_def_id_to_hir_id(id))
+            && let Some(decl) = self.tcx().hir_fn_decl_by_hir_id(hir_id)
+        {
+            visitor.visit_fn_decl(decl);
         }
 
         let diag = TraitImplDiff {

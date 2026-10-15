@@ -1,5 +1,4 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
 use alloc::string::String;
 use core::iter;
 

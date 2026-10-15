@@ -24,21 +24,16 @@
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
+use alloc::sync::Arc;
 use core::cell::{OnceCell, RefCell};
 use core::marker::PhantomData;
 use core::ops::{ControlFlow, Deref};
-use alloc::sync::Arc;
 
-use borrow_set::LocalsStateAtExit;
 use crate::polonius_engine::AllFacts;
-use root_cx::BorrowCheckRootCtxt;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::frozen::Frozen;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
@@ -56,7 +51,7 @@ use crate::rustc_lint_defs::builtin::{TAIL_EXPR_DROP_ORDER, UNUSED_MUT};
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{
-    self, ParamEnv, RegionVid, Ty, TyCtxt, TypeFoldable, TypeVisitable, TypingMode, fold_regions,
+    self, ParamEnv, RegionVid, Ty, TyCtxt, TypeVisitable, TypingMode, fold_regions,
 };
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_mir_dataflow::impls::{EverInitializedPlaces, MaybeUninitializedPlaces};
@@ -67,6 +62,8 @@ use crate::rustc_mir_dataflow::points::DenseLocationMap;
 use crate::rustc_mir_dataflow::{Analysis, EntryStates, Results, ResultsVisitor, visit_results};
 use crate::rustc_span::{ErrorGuaranteed, Span, Symbol};
 use crate::rustc_trait_selection::traits::query::type_op::{QueryTypeOp, TypeOp, TypeOpOutput};
+use borrow_set::LocalsStateAtExit;
+use root_cx::BorrowCheckRootCtxt;
 use smallvec::SmallVec;
 use tracing::{debug, instrument};
 
@@ -366,7 +363,7 @@ fn borrowck_collect_region_constraints<'tcx>(
     // `Rc`; see PARALLEL-AUDIT.md for the rule that nothing a nagoya worker runs holds one.
     let location_map = Arc::new(DenseLocationMap::new(body));
 
-    let polonius_input = root_cx.consumer.as_ref().map_or(false, |c| c.polonius_input())
+    let polonius_input = root_cx.consumer.as_ref().is_some_and(|c| c.polonius_input())
         || infcx.tcx.sess.opts.unstable_opts.polonius.is_legacy_enabled();
     let mut polonius_facts =
         (polonius_input || PoloniusFacts::enabled(infcx.tcx)).then_some(PoloniusFacts::default());
@@ -1212,15 +1209,15 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
     ) {
         let (sd, rw) = kind;
 
-        if let Activation(_, borrow_index) = rw {
-            if self.reservation_error_reported.contains(&place_span.0) {
-                debug!(
-                    "skipping access_place for activation of invalid reservation \
+        if let Activation(_, borrow_index) = rw
+            && self.reservation_error_reported.contains(&place_span.0)
+        {
+            debug!(
+                "skipping access_place for activation of invalid reservation \
                      place: {:?} borrow_index: {:?}",
-                    place_span.0, borrow_index
-                );
-                return;
-            }
+                place_span.0, borrow_index
+            );
+            return;
         }
 
         // Check is_empty() first because it's the common case, and doing that
@@ -1458,7 +1455,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
                     session_diagnostics::TailExprDropOrder {
                         borrowed,
                         callback: |diag| {
-                            explain.add_explanation_to_diagnostic(&this, diag, "", None, None);
+                            explain.add_explanation_to_diagnostic(this, diag, "", None, None);
                         },
                     },
                 );
@@ -1683,11 +1680,11 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
             for (place_ref, proj) in place.iter_projections().rev() {
                 // Handle (a)
                 if proj == ProjectionElem::Deref {
-                    match place_ref.ty(this.body(), this.infcx.tcx).ty.kind() {
-                        // We aren't modifying a variable directly
-                        ty::Ref(_, _, hir::Mutability::Mut) => return,
-
-                        _ => {}
+                    // We aren't modifying a variable directly
+                    if let ty::Ref(_, _, hir::Mutability::Mut) =
+                        place_ref.ty(this.body(), this.infcx.tcx).ty.kind()
+                    {
+                        return;
                     }
                 }
 
@@ -2220,8 +2217,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
                     desired_action,
                     (place_span.0, place_span.0, place_span.1),
                     uninit_mpi,
-                );
-                return; // don't bother finding other problems.
+                ); // don't bother finding other problems.
             }
         }
     }
@@ -2747,7 +2743,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, '_, 'tcx> {
     /// be `self` in the current MIR, because that is the only time we directly access the fields
     /// of a closure type.
     fn is_upvar_field_projection(&self, place_ref: PlaceRef<'tcx>) -> Option<FieldIdx> {
-        path_utils::is_upvar_field_projection(self.infcx.tcx, &self.upvars, place_ref, self.body())
+        path_utils::is_upvar_field_projection(self.infcx.tcx, self.upvars, place_ref, self.body())
     }
 
     fn dominators(&self) -> &Dominators<BasicBlock> {

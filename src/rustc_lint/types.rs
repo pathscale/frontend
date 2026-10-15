@@ -1,22 +1,18 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use core::iter;
 
+use crate::bug;
 use crate::rustc_abi::{BackendRepr, TagEncoding, Variants, WrappingRange};
 use crate::rustc_ast as ast;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::{Expr, ExprKind, HirId, find_attr};
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass, impl_lint_pass};
-use crate::bug;
 use crate::rustc_middle::ty::layout::{LayoutOf, SizeSkeleton};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitableExt, Unnormalized};
 use crate::rustc_span::{DUMMY_SP, Span, Symbol, sym};
@@ -387,7 +383,7 @@ fn lint_wide_pointer<'tcx>(
         e.span,
         if is_eq_ne {
             AmbiguousWidePointerComparisons::SpanfulEq {
-                addr_metadata_suggestion: (!is_dyn_comparison).then(|| {
+                addr_metadata_suggestion: (!is_dyn_comparison).then_some({
                     AmbiguousWidePointerComparisonsAddrMetadataSuggestion {
                         ne,
                         deref_left,
@@ -582,7 +578,7 @@ impl<'tcx> LateLintPass<'tcx> for TypeLimits {
                 self.last_visited_negation =
                     Some(NegationInfo { negation_span: e.span, negated_id: expr.hir_id });
             }
-            hir::ExprKind::Binary(binop, ref l, ref r) => {
+            hir::ExprKind::Binary(binop, l, r) => {
                 if is_comparison(binop.node) {
                     if !check_limits(cx, binop.node, l, r) {
                         cx.emit_span_lint(UNUSED_COMPARISONS, e.span, UnusedComparisons);

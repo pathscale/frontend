@@ -2,10 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -104,7 +102,12 @@ impl<'cx, 'a> Context<'cx, 'a> {
             self.span,
             self.cx.item(
                 self.span,
-                core::iter::once(self.cx.attr_nested_word(sym::allow, sym::unused_imports, self.span)).collect(),
+                core::iter::once(self.cx.attr_nested_word(
+                    sym::allow,
+                    sym::unused_imports,
+                    self.span,
+                ))
+                .collect(),
                 ItemKind::Use(UseTree {
                     prefix: self.cx.path(self.span, self.cx.std_path(&[sym::asserting])),
                     kind: UseTreeKind::Nested {

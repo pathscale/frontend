@@ -19,7 +19,13 @@ pub(super) trait TokenTreeSink {
     fn finish(&mut self, start: usize) -> Self::Stream;
     fn is_empty(&self, stream: &Self::Stream) -> bool;
     fn first(&self, stream: &Self::Stream) -> Option<Token>;
-    fn close(&mut self, span: DelimSpan, spacing: DelimSpacing, delim: Delimiter, stream: Self::Stream);
+    fn close(
+        &mut self,
+        span: DelimSpan,
+        spacing: DelimSpacing,
+        delim: Delimiter,
+        stream: Self::Stream,
+    );
 }
 
 #[derive(Default)]
@@ -65,7 +71,13 @@ impl TokenTreeSink for TreeSink {
         }
     }
 
-    fn close(&mut self, span: DelimSpan, spacing: DelimSpacing, delim: Delimiter, stream: TokenStream) {
+    fn close(
+        &mut self,
+        span: DelimSpan,
+        spacing: DelimSpacing,
+        delim: Delimiter,
+        stream: TokenStream,
+    ) {
         self.trees.push(TokenTree::Delimited(span, spacing, delim, stream));
     }
 }
@@ -106,7 +118,13 @@ impl TokenTreeSink for FlatTokenBuffer {
         FlatTokenBuffer::first(self, stream)
     }
 
-    fn close(&mut self, span: DelimSpan, spacing: DelimSpacing, _delim: Delimiter, _stream: Self::Stream) {
+    fn close(
+        &mut self,
+        span: DelimSpan,
+        spacing: DelimSpacing,
+        _delim: Delimiter,
+        _stream: Self::Stream,
+    ) {
         FlatTokenBuffer::close(self, span, spacing);
     }
 }

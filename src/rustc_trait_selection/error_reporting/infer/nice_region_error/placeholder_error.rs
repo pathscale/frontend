@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -10,14 +8,16 @@ use alloc::vec::Vec;
 
 use core::fmt;
 
+use crate::bug;
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_errors::{Applicability, Diag, IntoDiagArg};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::Namespace;
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId};
-use crate::bug;
 use crate::rustc_middle::ty::error::ExpectedFound;
-use crate::rustc_middle::ty::print::{FmtPrinter, Print, PrintTraitRefExt as _, RegionHighlightMode};
+use crate::rustc_middle::ty::print::{
+    FmtPrinter, Print, PrintTraitRefExt as _, RegionHighlightMode,
+};
 use crate::rustc_middle::ty::{
     self, GenericArgsRef, IsSuggestable, RePlaceholder, Region, RegionExt, TyCtxt,
 };
@@ -44,7 +44,10 @@ impl<'tcx, T> IntoDiagArg for Highlighted<'tcx, T>
 where
     T: for<'a> Print<FmtPrinter<'a, 'tcx>> + Copy,
 {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        _: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         crate::rustc_errors::DiagArgValue::Str(self.to_string().into())
     }
 }
@@ -255,6 +258,10 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
     //    = note: `T` must implement `...` for any two lifetimes `'1` and `'2`.
     //    = note: However, the type `T` only implements `...` for some specific lifetime `'2`.
     #[instrument(level = "debug", skip(self))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_trait_placeholder_mismatch(
         &self,
         vid: Option<Region<'tcx>>,
@@ -394,17 +401,17 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
             }
         }
 
-        if let Some(def_id) = coroutine_def_id {
-            if self.tcx().trait_is_auto(trait_def_id) {
-                let c_span = self.tcx().def_span(def_id);
-                let descr = self.tcx().def_descr(def_id);
-                let trait_name = self.tcx().def_path_str(trait_def_id);
+        if let Some(def_id) = coroutine_def_id
+            && self.tcx().trait_is_auto(trait_def_id)
+        {
+            let c_span = self.tcx().def_span(def_id);
+            let descr = self.tcx().def_descr(def_id);
+            let trait_name = self.tcx().def_path_str(trait_def_id);
 
-                err.span_label(
-                    c_span,
-                    format!("this {descr} captures a value whose type is not `{trait_name}`"),
-                );
-            }
+            err.span_label(
+                c_span,
+                format!("this {descr} captures a value whose type is not `{trait_name}`"),
+            );
         }
 
         // When the mismatched trait is an Fn-trait and the self type is a closure with
@@ -459,6 +466,10 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
     /// them needs to be mentioned the closest to the placeholders.
     /// This makes the error messages read better, however at the cost of some complexity
     /// due to the number of combinations we have to deal with.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn explain_actual_impl_that_was_found(
         &self,
         sub_placeholder: Option<Region<'tcx>>,
@@ -520,8 +531,10 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
             {
                 let closure_sig = self_ty.map(|closure| {
                     if let ty::Closure(_, args) = closure.kind() {
-                        self.tcx()
-                            .signature_unclosure(args.as_closure().sig(), crate::rustc_hir::Safety::Safe)
+                        self.tcx().signature_unclosure(
+                            args.as_closure().sig(),
+                            crate::rustc_hir::Safety::Safe,
+                        )
                     } else {
                         bug!("type is not longer closure");
                     }
@@ -553,9 +566,11 @@ impl<'tcx> NiceRegionError<'_, 'tcx> {
         };
 
         let (lt_kind, lifetime_1, lifetime_2) = match (has_sub, has_sup) {
-            (Some(n1), Some(n2)) => {
-                (ActualImplExpectedLifetimeKind::Two, core::cmp::min(n1, n2), core::cmp::max(n1, n2))
-            }
+            (Some(n1), Some(n2)) => (
+                ActualImplExpectedLifetimeKind::Two,
+                core::cmp::min(n1, n2),
+                core::cmp::max(n1, n2),
+            ),
             (Some(n), _) | (_, Some(n)) => (ActualImplExpectedLifetimeKind::Any, n, 0),
             (None, None) => {
                 if let Some(n) = expected_has_vid {

@@ -1,10 +1,10 @@
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use crate::rustc_ast::token::Delimiter;
 use crate::rustc_errors::Diag;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::Span;
 use crate::rustc_span::source_map::SourceMap;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use super::UnmatchedDelim;
 use crate::rustc_parse::diagnostics::MismatchedClosingDelimiter;
@@ -91,10 +91,10 @@ pub(super) fn report_suspicious_mismatch_block(
     for i in 0..matched_spans.len() {
         let (block_span, same_ident) = matched_spans[i];
         if same_ident {
-            for j in i + 1..matched_spans.len() {
-                let (inner_block, inner_same_ident) = matched_spans[j];
+            for matched_span in matched_spans.iter_mut().skip(i + 1) {
+                let (inner_block, inner_same_ident) = *matched_span;
                 if block_span.contains(inner_block) && !inner_same_ident {
-                    matched_spans[j] = (inner_block, true);
+                    *matched_span = (inner_block, true);
                 }
             }
         }

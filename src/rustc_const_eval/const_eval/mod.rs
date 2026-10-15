@@ -9,7 +9,6 @@ mod static_fold;
 mod valtrees;
 
 pub use self::eval_queries::*;
-pub use self::fn_queries::*;
 pub(crate) use self::valtrees::{eval_to_valtree, valtree_to_const_value};
 
 pub fn provide(providers: &mut Providers) {

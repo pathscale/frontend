@@ -167,12 +167,7 @@ fn append_offsets(offsets: &mut Vec<u32>, base: usize, mut mask: u64) {
 }
 
 #[inline]
-fn open_group(
-    index: &mut StructuralIndex,
-    stack: &mut Vec<u32>,
-    delim: DelimKind,
-    offset: usize,
-) {
+fn open_group(index: &mut StructuralIndex, stack: &mut Vec<u32>, delim: DelimKind, offset: usize) {
     // Each group consumes a distinct source byte, so the checked source length
     // also keeps every opening-order ID below the reserved root sentinel.
     let group_id = index.groups.len() as u32;
@@ -186,12 +181,7 @@ fn open_group(
 }
 
 #[inline]
-fn close_group(
-    index: &mut StructuralIndex,
-    stack: &mut Vec<u32>,
-    delim: DelimKind,
-    offset: usize,
-) {
+fn close_group(index: &mut StructuralIndex, stack: &mut Vec<u32>, delim: DelimKind, offset: usize) {
     let Some(group_id) = stack.pop() else {
         index.balanced = false;
         return;

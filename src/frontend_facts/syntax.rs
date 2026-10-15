@@ -240,27 +240,6 @@ fn error_entries(captured: &str) -> Vec<String> {
     super::split_diagnostics(captured).0
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Parsing itself is exercised from `tests/syntax.rs`: it needs a catcher, and a catcher
-    // needs `std`, which this crate does not name. What is left here needs neither.
-
-    #[test]
-    fn entries_keep_location_lines_and_drop_warnings() {
-        let captured = "error: expected expression, found `<eof>`\n  --> a.rs:1:4\n\
-                        warning: unused\n  --> a.rs:1:1\nerror: second\n";
-        assert_eq!(
-            error_entries(captured),
-            vec![
-                "error: expected expression, found `<eof>`\n  --> a.rs:1:4".to_string(),
-                "error: second".to_string(),
-            ]
-        );
-    }
-}
-
 /// Whether the crate whose root file is `root` declares `#![no_core]` itself, read from the
 /// root's inner attributes by the parser and nothing else.
 ///
@@ -323,4 +302,25 @@ fn no_core_declared(
         });
         declared
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Parsing itself is exercised from `tests/syntax.rs`: it needs a catcher, and a catcher
+    // needs `std`, which this crate does not name. What is left here needs neither.
+
+    #[test]
+    fn entries_keep_location_lines_and_drop_warnings() {
+        let captured = "error: expected expression, found `<eof>`\n  --> a.rs:1:4\n\
+                        warning: unused\n  --> a.rs:1:1\nerror: second\n";
+        assert_eq!(
+            error_entries(captured),
+            vec![
+                "error: expected expression, found `<eof>`\n  --> a.rs:1:4".to_string(),
+                "error: second".to_string(),
+            ]
+        );
+    }
 }

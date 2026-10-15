@@ -1,8 +1,7 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_ast::{self as ast, AsmMacro};
 use crate::rustc_span::{Span, Symbol, kw};
+use alloc::vec::Vec;
 
 use super::{ExpKeywordPair, ForceCollect, IdentIsRaw, Trailing, UsePreAttrPos};
 use crate::rustc_parse::{PResult, Parser, diagnostics, exp, token};
@@ -62,7 +61,9 @@ impl ast::HasTokens for AsmAttrVec {
         None
     }
 
-    fn tokens_mut(&mut self) -> Option<&mut Option<crate::rustc_ast::tokenstream::LazyAttrTokenStream>> {
+    fn tokens_mut(
+        &mut self,
+    ) -> Option<&mut Option<crate::rustc_ast::tokenstream::LazyAttrTokenStream>> {
         None
     }
 }

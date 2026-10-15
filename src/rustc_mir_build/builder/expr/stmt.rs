@@ -1,9 +1,9 @@
-use alloc::boxed::Box;
 use crate::rustc_middle::middle::region::{self, TempLifetime};
 use crate::rustc_middle::mir::*;
-use crate::span_bug;
 use crate::rustc_middle::thir::*;
 use crate::rustc_span::Spanned;
+use crate::span_bug;
+use alloc::boxed::Box;
 use tracing::debug;
 
 use crate::rustc_mir_build::builder::scope::{BreakableTarget, LintLevel};

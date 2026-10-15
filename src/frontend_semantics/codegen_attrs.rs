@@ -1,13 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_abi::{Align, ExternAbi};
 use crate::rustc_hir::attrs::{
     AttributeKind, EiiImplResolution, InlineAttr, InstrumentFnAttr as HirInstrumentFnAttr, Linkage,
@@ -17,8 +13,6 @@ use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LOCAL_CRATE, LocalDefId};
 use crate::rustc_hir::{self as hir, Attribute, find_attr};
 use crate::rustc_lint_defs::builtin::{INLINE_NO_SANITIZE, RTSAN_NONBLOCKING_ASYNC};
-use rustc_macros::Diagnostic;
-use crate::bug;
 use crate::rustc_middle::middle::codegen_fn_attrs::{
     CodegenFnAttrFlags, CodegenFnAttrs, InstrumentFnAttr, PatchableFunctionEntry, SanitizerFnAttrs,
 };
@@ -28,6 +22,7 @@ use crate::rustc_middle::ty::{self as ty, TyCtxt};
 use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::{Span, sym};
 use crate::rustc_target::spec::Os;
+use rustc_macros::Diagnostic;
 
 use crate::frontend_semantics::diagnostics;
 use crate::frontend_semantics::target_features::{
@@ -170,7 +165,7 @@ fn process_builtin_attrs(
                     && !attr_span.allows_unstable(sym::closure_track_caller)
                 {
                     feature_err(
-                        &tcx.sess,
+                        tcx.sess,
                         sym::closure_track_caller,
                         *attr_span,
                         "`#[track_caller]` on closures is currently unstable",

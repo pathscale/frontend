@@ -19,7 +19,7 @@ use crate::rustc_span::edit_distance::edit_distance;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
 use ast::token::IdentIsRaw;
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::ThinVec;
 use tracing::debug;
 
 use super::diagnostics::ConsumeClosingDelim;
@@ -72,6 +72,12 @@ impl<'a> Parser<'a> {
 
         let post_attr_lo = self.token.span;
         let start = self.list_scratch.get_mut().items.len();
+        if start == 0 {
+            let cut_hint = self.token_cursor.depth_zero_item_cuts().len();
+            if cut_hint != 0 {
+                self.list_scratch.get_mut().items.reserve(cut_hint);
+            }
+        }
         // Keep the final item owned locally so diagnostics never borrow scratch
         // while calling back into the parser.
         let mut last_item: Option<P<Item>> = None;
@@ -273,6 +279,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses one of the items allowed by the flags.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn parse_item_kind(
         &mut self,
         attrs: &mut AttrVec,
@@ -721,11 +731,9 @@ impl<'a> Parser<'a> {
                 generics_snapshot = Some(self.create_snapshot_for_diagnostic());
             }
 
-            let mut generics = Generics::default();
             // impl A for B {}
             //    /\ this is where `generics.span` should point when there are no type params.
-            generics.span = self.prev_token.span.shrink_to_hi();
-            generics
+            Generics { span: self.prev_token.span.shrink_to_hi(), ..Generics::default() }
         };
 
         // The older spelling, `impl<T> const Trait for T`, which libraries written for an earlier
@@ -1095,24 +1103,24 @@ impl<'a> Parser<'a> {
 
     /// Recover on a doc comment before `}`.
     fn recover_doc_comment_before_brace(&mut self) -> bool {
-        if let token::DocComment(..) = self.token.kind {
-            if self.look_ahead(1, |tok| tok == &token::CloseBrace) {
-                // FIXME: merge with `DocCommentDoesNotDocumentAnything` (E0585)
-                struct_span_code_err!(
-                    self.dcx(),
-                    self.token.span,
-                    E0584,
-                    "found a documentation comment that doesn't document anything",
-                )
-                .with_span_label(self.token.span, "this doc comment doesn't document anything")
-                .with_help(
-                    "doc comments must come before what they document, if a comment was \
+        if let token::DocComment(..) = self.token.kind
+            && self.look_ahead(1, |tok| tok == &token::CloseBrace)
+        {
+            // FIXME: merge with `DocCommentDoesNotDocumentAnything` (E0585)
+            struct_span_code_err!(
+                self.dcx(),
+                self.token.span,
+                E0584,
+                "found a documentation comment that doesn't document anything",
+            )
+            .with_span_label(self.token.span, "this doc comment doesn't document anything")
+            .with_help(
+                "doc comments must come before what they document, if a comment was \
                     intended use `//`",
-                )
-                .emit();
-                self.bump();
-                return true;
-            }
+            )
+            .emit();
+            self.bump();
+            return true;
         }
         false
     }
@@ -1463,7 +1471,7 @@ impl<'a> Parser<'a> {
             let mut attr_span = None;
             let attrs = p.parse_outer_attributes()?;
             if !attrs.is_empty() {
-                let raw_attrs = attrs.take_for_recovery(&p.psess);
+                let raw_attrs = attrs.take_for_recovery(p.psess);
                 attr_span =
                     Some(raw_attrs.first().unwrap().span.to(raw_attrs.last().unwrap().span));
             }
@@ -1690,14 +1698,11 @@ impl<'a> Parser<'a> {
         // FIXME(#100717): needs variant for each `ItemKind` (instead of using `ItemKind::descr()`)
         let span = self.psess.source_map().guess_head_span(span);
         let descr = kind.descr();
-        let help = match kind {
+        let help = !matches!(
+            kind,
             ItemKind::DelegationMac(dm)
-                if matches!(**dm, DelegationMac { suffixes: DelegationSuffixes::Glob(_), .. }) =>
-            {
-                false
-            }
-            _ => true,
-        };
+                if matches!(**dm, DelegationMac { suffixes: DelegationSuffixes::Glob(_), .. })
+        );
         self.dcx().emit_err(diagnostics::BadItemKind { span, descr, ctx, help });
         None
     }
@@ -1825,6 +1830,10 @@ impl<'a> Parser<'a> {
     /// ```ebnf
     /// Const = "const" ($ident | "_") Generics ":" $ty (= $expr)? WhereClause ";" ;
     /// ```
+    #[expect(
+        clippy::type_complexity,
+        reason = "retains the parser's structured const-item result without changing its internal representation"
+    )]
     fn parse_const_item(
         &mut self,
         const_span: Span,
@@ -2387,6 +2396,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a structure field declaration.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps parsed field context explicit at the parser recovery boundary"
+    )]
     fn parse_single_struct_field(
         &mut self,
         adt_ty: &str,
@@ -2521,12 +2534,12 @@ impl<'a> Parser<'a> {
         attrs: AttrVec,
     ) -> PResult<'a, FieldDef> {
         let name = self.parse_field_ident(adt_ty, lo)?;
-        if self.token == token::Bang {
-            if let Err(mut err) = self.unexpected() {
-                // Encounter the macro invocation
-                err.subdiagnostic(MacroExpandsToAdtField { adt_ty });
-                return Err(err);
-            }
+        if self.token == token::Bang
+            && let Err(mut err) = self.unexpected()
+        {
+            // Encounter the macro invocation
+            err.subdiagnostic(MacroExpandsToAdtField { adt_ty });
+            return Err(err);
         }
         self.expect_field_ty_separator()?;
         let ty = self.parse_ty()?;

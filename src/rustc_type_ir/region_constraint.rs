@@ -1,14 +1,16 @@
 //! The bulk of the logic for implementing `-Zassumptions-on-binders`
 
-#[allow(unused_imports)]
-use {alloc::boxed::Box, alloc::vec::Vec};
-use derive_where::derive_where;
-use indexmap::IndexSet;
 #[cfg(feature = "nightly")]
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 #[cfg(feature = "nightly")]
-use crate::rustc_data_structures::transitive_relation::{TransitiveRelation, TransitiveRelationBuilder};
+use crate::rustc_data_structures::transitive_relation::{
+    TransitiveRelation, TransitiveRelationBuilder,
+};
+use derive_where::derive_where;
+use indexmap::IndexSet;
 use tracing::{debug, instrument};
+#[allow(unused_imports)]
+use {alloc::boxed::Box, alloc::vec::Vec};
 
 // Workaround for TransitiveRelation being in rustc_data_structures which isn't accessible on stable
 #[cfg(not(feature = "nightly"))]
@@ -349,11 +351,9 @@ impl<I: Interner, S: Clone + core::fmt::Debug> RegionConstraint<I, S> {
         use RegionConstraint::*;
 
         match (self, other) {
-            (And(a_ands), And(b_ands)) => And(a_ands
-                .into_iter()
-                .chain(b_ands.into_iter())
-                .collect::<Vec<_>>()
-                .into_boxed_slice()),
+            (And(a_ands), And(b_ands)) => {
+                And(a_ands.into_iter().chain(b_ands).collect::<Vec<_>>().into_boxed_slice())
+            }
             (And(ands), other) | (other, And(ands)) => {
                 And(ands.into_iter().chain([other]).collect::<Vec<_>>().into_boxed_slice())
             }
@@ -1082,10 +1082,13 @@ fn alias_outlives_candidates_from_assumptions<Infcx: InferCtxtLike<Interner = I>
 
             // FIXME(#155345): Both sides should be rigid in the future.
             // Currently we can't guarantee that.
-            if let Ok(_) = relation.relate(
-                alias.to_ty(infcx.cx(), IsRigid::No),
-                set_aliases_to_non_rigid(infcx.cx(), alias2).skip_norm_wip(),
-            ) {
+            if relation
+                .relate(
+                    alias.to_ty(infcx.cx(), IsRigid::No),
+                    set_aliases_to_non_rigid(infcx.cx(), alias2).skip_norm_wip(),
+                )
+                .is_ok()
+            {
                 candidates
                     .push(RegionConstraint::And(relation.region_constraints.into_boxed_slice()));
             }
@@ -1098,7 +1101,7 @@ fn alias_outlives_candidates_from_assumptions<Infcx: InferCtxtLike<Interner = I>
     debug!(?prev_universe, ?largest_universe);
 
     ((prev_universe.index() + 1)..=largest_universe.index())
-        .map(|u| UniverseIndex::from_usize(u))
+        .map(UniverseIndex::from_usize)
         .rev()
         .fold(constraint, |constraint, u| {
             eagerly_handle_placeholders_in_universe(infcx, constraint, u)

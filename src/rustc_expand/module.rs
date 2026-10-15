@@ -1,13 +1,11 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use alloc::borrow::ToOwned;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::iter::once;
 use eko::path::{self, Path, PathBuf};
 
 use crate::rustc_ast::{AttrVec, Attribute, Inline, Item, ModSpans};
-use crate::template;
 use crate::rustc_attr_parsing::validate_attr::emit_malformed_attribute;
 use crate::rustc_errors::{Diag, ErrorGuaranteed};
 use crate::rustc_parse::lexer::StripTokens;
@@ -16,6 +14,7 @@ use crate::rustc_session::Session;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::fatal_error::FatalError;
 use crate::rustc_span::{Ident, Span, sym};
+use crate::template;
 
 use crate::rustc_expand::base::ModuleData;
 use crate::rustc_expand::diagnostics::{
@@ -128,11 +127,11 @@ pub(crate) fn mod_dir_path(
             // For example, a `mod z { ... }` inside `x/y.rs` should set the current
             // directory path to `/x/y/z`, not `/x/z` with a relative offset of `y`.
             let mut dir_path = module.dir_path.clone();
-            if let DirOwnership::Owned { relative } = &mut dir_ownership {
-                if let Some(ident) = relative.take() {
-                    // Remove the relative offset.
-                    dir_path.push(ident.as_str());
-                }
+            if let DirOwnership::Owned { relative } = &mut dir_ownership
+                && let Some(ident) = relative.take()
+            {
+                // Remove the relative offset.
+                dir_path.push(ident.as_str());
             }
             dir_path.push(ident.as_str());
 

@@ -1,16 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use hashbrown::hash_map::Entry;
 use core::fmt;
 use core::ops::Index;
+use hashbrown::hash_map::Entry;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexMap, FxIndexSet};
 use crate::rustc_hir::Mutability;
@@ -104,6 +98,10 @@ impl<'tcx> BorrowSet<'tcx> {
     // Public method to support Creusot.
     pub fn len(&self) -> usize {
         self.borrows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.borrows.is_empty()
     }
 
     pub fn iter_enumerated(&self) -> impl Iterator<Item = (BorrowIndex, &BorrowData<'tcx>)> {
@@ -299,6 +297,10 @@ impl<'a, 'tcx> GatherBorrows<'a, 'tcx> {
         idxs
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn gather_reborrows(
         &mut self,
         v: &mut SmallVec<[BorrowData<'tcx>; 1]>,

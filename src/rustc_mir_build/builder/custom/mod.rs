@@ -17,21 +17,25 @@
 //! terminators, and everything below can be found in the `parse::instruction` submodule.
 //!
 
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::{HirId, attrs};
 use crate::rustc_index::{IndexSlice, IndexVec};
-use crate::bug;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::Span;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 mod parse;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub(super) fn build_custom_mir<'tcx>(
     tcx: TyCtxt<'tcx>,
     did: DefId,

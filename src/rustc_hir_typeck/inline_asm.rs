@@ -1,14 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_ast::InlineAsmTemplatePiece;
 use crate::rustc_data_structures::fx::FxIndexSet;
@@ -17,7 +16,6 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_lint_defs::builtin::ASM_SUB_REGISTER;
-use crate::bug;
 use crate::rustc_middle::ty::{
     self, Article, FloatTy, IntTy, Ty, TyCtxt, TypeVisitableExt, UintTy, Unnormalized,
 };
@@ -371,20 +369,20 @@ impl<'a, 'tcx> InlineAsmCtxt<'a, 'tcx> {
         // Also note that this check isn't run when the operand type is never
         // (!). In that case we still need the earlier check to verify that the
         // register class is usable at all.
-        if let Some(feature) = feature {
-            if !self.target_features.contains(feature) {
-                let msg = format!("`{feature}` target feature is not enabled");
-                self.fcx
-                    .dcx()
-                    .struct_span_err(expr.span, msg)
-                    .with_note(format!(
-                        "this is required to use type `{}` with register class `{}`",
-                        ty,
-                        reg_class.name(),
-                    ))
-                    .emit();
-                return Some(asm_ty);
-            }
+        if let Some(feature) = feature
+            && !self.target_features.contains(feature)
+        {
+            let msg = format!("`{feature}` target feature is not enabled");
+            self.fcx
+                .dcx()
+                .struct_span_err(expr.span, msg)
+                .with_note(format!(
+                    "this is required to use type `{}` with register class `{}`",
+                    ty,
+                    reg_class.name(),
+                ))
+                .emit();
+            return Some(asm_ty);
         }
 
         // Check whether a modifier is suggested for using this type.
@@ -399,10 +397,10 @@ impl<'a, 'tcx> InlineAsmCtxt<'a, 'tcx> {
             let mut spans = vec![];
             for piece in template {
                 if let &InlineAsmTemplatePiece::Placeholder { operand_idx, modifier, span } = piece
+                    && operand_idx == idx
+                    && modifier.is_none()
                 {
-                    if operand_idx == idx && modifier.is_none() {
-                        spans.push(span);
-                    }
+                    spans.push(span);
                 }
             }
             if !spans.is_empty() {

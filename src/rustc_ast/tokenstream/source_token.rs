@@ -77,6 +77,13 @@ pub(crate) enum SourceKind {
 }
 
 impl SourceKind {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retains compact source-kind decoding for serialized token tape paths"
+        )
+    )]
     pub(crate) const fn from_raw(raw: u8) -> Self {
         match raw {
             0 => Self::Eq,
@@ -339,6 +346,10 @@ pub(crate) fn token_from_compact_parts(
 }
 
 /// An exact key, including length, because source identifiers contain no NUL.
+#[expect(
+    dead_code,
+    reason = "retains short identifier hashing for the R-series source token index"
+)]
 pub(crate) fn short_key(text: &str) -> Option<u64> {
     let bytes = text.as_bytes();
     if bytes.is_empty() || bytes.len() > 8 || bytes.contains(&0) {
@@ -351,6 +362,10 @@ pub(crate) fn short_key(text: &str) -> Option<u64> {
     Some(key)
 }
 
+#[expect(
+    dead_code,
+    reason = "retains short identifier slot selection for the R-series source token index"
+)]
 pub(crate) fn short_slot(key: u64) -> usize {
     (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 55) as usize
 }

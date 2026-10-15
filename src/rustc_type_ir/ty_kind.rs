@@ -1,17 +1,17 @@
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::Deref;
 
-use derive_where::derive_where;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_ast_ir::Mutability;
 #[cfg(feature = "nightly")]
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
+use crate::rustc_type_ir::data_structures::{NoError, UnifyKey, UnifyValue};
+use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash_NoContext};
-use crate::rustc_type_ir::data_structures::{NoError, UnifyKey, UnifyValue};
 use rustc_macros::{
     GenericTypeVisitable, Lift_Generic, TypeFoldable_Generic, TypeVisitable_Generic,
 };
@@ -433,7 +433,7 @@ impl<I: Interner> fmt::Debug for TyKind<I> {
             Str => write!(f, "str"),
             Array(t, c) => write!(f, "[{t:?}; {c:?}]"),
             Pat(t, p) => write!(f, "pattern_type!({t:?} is {p:?})"),
-            Slice(t) => write!(f, "[{:?}]", &t),
+            Slice(t) => write!(f, "[{:?}]", t),
             RawPtr(ty, mutbl) => write!(f, "*{} {:?}", mutbl.ptr_str(), ty),
             Ref(r, t, m) => write!(f, "&{:?} {}{:?}", r, m.prefix_str(), t),
             FnDef(d, s) => f.debug_tuple("FnDef").field(d).field(&s).finish(),
@@ -846,8 +846,8 @@ impl fmt::Display for InferTy {
         use InferTy::*;
         match *self {
             TyVar(_) => write!(f, "_"),
-            IntVar(_) => write!(f, "{}", "{integer}"),
-            FloatVar(_) => write!(f, "{}", "{float}"),
+            IntVar(_) => write!(f, "{{integer}}"),
+            FloatVar(_) => write!(f, "{{float}}"),
             FreshTy(v) => write!(f, "FreshTy({v})"),
             FreshIntTy(v) => write!(f, "FreshIntTy({v})"),
             FreshFloatTy(v) => write!(f, "FreshFloatTy({v})"),

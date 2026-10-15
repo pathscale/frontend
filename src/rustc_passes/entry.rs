@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_ast::entry::EntryPointType;
 use crate::rustc_errors::codes::*;
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE, LocalDefId};
@@ -8,6 +7,7 @@ use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_session::config::{EntryFnType, sigpipe};
 use crate::rustc_span::{RemapPathScopeComponents, Span};
 use crate::rustc_structures::CrateType;
+use alloc::vec::Vec;
 
 use crate::rustc_passes::diagnostics::{ExternMain, MultipleRustcMain, NoMainErr};
 
@@ -60,14 +60,14 @@ fn check_and_search_item(id: ItemId, ctxt: &mut EntryContext<'_>) {
             ctxt.non_main_fns.push(ctxt.tcx.def_span(id.owner_id));
         }
         EntryPointType::RustcMainAttr => {
-            if ctxt.rustc_main_fn.is_none() {
-                ctxt.rustc_main_fn = Some((id.owner_id.def_id, ctxt.tcx.def_span(id.owner_id)));
-            } else {
+            if let Some((_, first_span)) = ctxt.rustc_main_fn {
                 ctxt.tcx.dcx().emit_err(MultipleRustcMain {
                     span: ctxt.tcx.def_span(id.owner_id.to_def_id()),
-                    first: ctxt.rustc_main_fn.unwrap().1,
+                    first: first_span,
                     additional: ctxt.tcx.def_span(id.owner_id.to_def_id()),
                 });
+            } else {
+                ctxt.rustc_main_fn = Some((id.owner_id.def_id, ctxt.tcx.def_span(id.owner_id)));
             }
         }
     }

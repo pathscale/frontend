@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::assert_matches;
 use core::fmt;
@@ -59,8 +53,8 @@ pub enum ReifyReason {
     ///   method on a `dyn` object).
     /// * A function with `#[track_caller]` is converted to a function pointer
     /// * If KCFI is enabled, creating a function pointer from a method on a dyn-compatible trait.
-    /// This includes the case of converting `::call`-like methods on closure-likes to function
-    /// pointers.
+    ///   This includes the case of converting `::call`-like methods on closure-likes to function
+    ///   pointers.
     FnPtr,
     /// This `ReifyShim` was created to populate a vtable. Currently, this happens when a
     /// `#[track_caller]` mismatch occurs between the implementation of a method and the method.

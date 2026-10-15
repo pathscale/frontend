@@ -3,13 +3,15 @@
 //! RFC for reference.
 
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use derive_where::derive_where;
 use smallvec::{SmallVec, smallvec};
 
 use crate::rustc_type_ir::data_structures::SsoHashSet;
 use crate::rustc_type_ir::inherent::*;
-use crate::rustc_type_ir::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitableExt as _, TypeVisitor};
+use crate::rustc_type_ir::visit::{
+    TypeSuperVisitable, TypeVisitable, TypeVisitableExt as _, TypeVisitor,
+};
 use crate::rustc_type_ir::{self as ty, AliasTy, Interner, OutlivesClause, Region, Unnormalized};
 
 #[derive_where(Debug; I: Interner)]

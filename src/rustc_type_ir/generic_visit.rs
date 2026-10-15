@@ -9,9 +9,9 @@
 //!    for this visit. The reason for this is soundness: rust-analyzer uses this visit to
 //!    garbage collect types, so a missing field can mean a use after free
 
+use alloc::sync::Arc;
 #[allow(unused_imports)]
 use {alloc::boxed::Box, alloc::vec::Vec};
-use alloc::sync::Arc;
 
 use crate::rustc_index::{Idx, IndexVec};
 use smallvec::SmallVec;
@@ -62,9 +62,8 @@ unsafe impl<V, A: GenericTypeVisitable<V>, B: GenericTypeVisitable<V>, C: Generi
 
 unsafe impl<V, T: GenericTypeVisitable<V>> GenericTypeVisitable<V> for Option<T> {
     fn generic_visit_with(&self, visitor: &mut V) {
-        match self {
-            Some(v) => v.generic_visit_with(visitor),
-            None => {}
+        if let Some(v) = self {
+            v.generic_visit_with(visitor)
         }
     }
 }

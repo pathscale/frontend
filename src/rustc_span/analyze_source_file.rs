@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a path
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -286,17 +282,14 @@ fn analyze_source_file_generic(
 
     while i + 8 <= scan_len {
         let word = u64::from_le_bytes(
-            src_bytes[i..i + 8]
-                .try_into()
-                .expect("eight-byte slice has fixed length"),
+            src_bytes[i..i + 8].try_into().expect("eight-byte slice has fixed length"),
         );
         if word & BYTE_HIGH_BITS == 0 {
             let different = word ^ 0x0a0a_0a0a_0a0a_0a0a;
-            let zero_bytes =
-                !(((different & BYTE_LOW_SEVENS).wrapping_add(BYTE_LOW_SEVENS))
-                    | different
-                    | BYTE_LOW_SEVENS)
-                    & BYTE_HIGH_BITS;
+            let zero_bytes = !(((different & BYTE_LOW_SEVENS).wrapping_add(BYTE_LOW_SEVENS))
+                | different
+                | BYTE_LOW_SEVENS)
+                & BYTE_HIGH_BITS;
             let mut newline_mask = (zero_bytes >> 7) & BYTE_LOW_BITS;
             while newline_mask != 0 {
                 let byte_index = newline_mask.trailing_zeros() as usize / 8;

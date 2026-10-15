@@ -1,22 +1,22 @@
 //! Support code for encoding and decoding types.
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::borrow::ToOwned;
 use alloc::borrow::Cow;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 // The hash containers come from hashbrown so that these impls cover the maps the compiler
 // actually uses (`crate::rustc_data_structures::fx` is hashbrown-backed). The impl bodies are generic
 // over `BuildHasher` and go through `collect`/iteration, so they are unchanged by the swap.
-use hashbrown::{HashMap, HashSet};
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::hash::{BuildHasher, Hash};
 use core::marker::PhantomData;
 use core::num::NonZero;
 use eko::path;
-use alloc::rc::Rc;
-use alloc::sync::Arc;
+use hashbrown::{HashMap, HashSet};
 
 use crate::rustc_hashes::{Hash64, Hash128};
 use smallvec::{Array, SmallVec};
@@ -368,7 +368,7 @@ impl<S: Encoder> Encodable<S> for str {
 
 impl<S: Encoder> Encodable<S> for String {
     fn encode(&self, s: &mut S) {
-        s.emit_str(&self);
+        s.emit_str(self);
     }
 }
 
@@ -448,8 +448,8 @@ impl<D: Decoder, const N: usize> Decodable<D> for [u8; N] {
         let len = d.read_usize();
         assert!(len == N);
         let mut v = [0u8; N];
-        for i in 0..len {
-            v[i] = Decodable::decode(d);
+        for value in &mut v {
+            *value = Decodable::decode(d);
         }
         v
     }

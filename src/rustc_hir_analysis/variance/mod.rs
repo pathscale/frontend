@@ -6,23 +6,19 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use itertools::Itertools;
 use crate::rustc_arena::DroplessArena;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
-use crate::span_bug;
 use crate::rustc_middle::ty::{
     self, CrateVariancesMap, GenericArgsRef, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable,
     Unnormalized,
 };
+use crate::span_bug;
+use itertools::Itertools;
 use tracing::{debug, instrument};
 
 /// Defines the `TermsContext` basically houses an arena where we can

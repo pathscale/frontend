@@ -109,7 +109,7 @@ impl<'tcx> MovePath<'tcx> {
         move_paths: &IndexSlice<MovePathIndex, MovePath<'_>>,
         f: impl Fn(MovePathIndex) -> bool,
     ) -> Option<MovePathIndex> {
-        let Some(child) = self.first_child else { return None };
+        let child = self.first_child?;
         let mut todo = vec![child];
 
         while let Some(mpi) = todo.pop() {

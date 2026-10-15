@@ -8,31 +8,21 @@ use crate::rustc_span::def_id::StableCrateId;
 use eko::path::Path;
 
 #[derive(Clone)]
+#[expect(
+    dead_code,
+    reason = "preserves proc-macro metadata kinds and clients for host execution support"
+)]
 pub(crate) enum LoadedProcMacro {
-    CustomDerive {
-        trait_name: String,
-        attributes: Vec<String>,
-        client: ProcMacroClient,
-    },
-    Attr {
-        name: String,
-        client: ProcMacroClient,
-    },
-    Bang {
-        name: String,
-        client: ProcMacroClient,
-    },
+    CustomDerive { trait_name: String, attributes: Vec<String>, client: ProcMacroClient },
+    Attr { name: String, client: ProcMacroClient },
+    Bang { name: String, client: ProcMacroClient },
 }
 
 impl LoadedProcMacro {
     pub(crate) fn client_for(&self, kind: &ProcMacroKind) -> Option<ProcMacroClient> {
         match (self, kind) {
             (
-                Self::CustomDerive {
-                    trait_name,
-                    attributes,
-                    client,
-                },
+                Self::CustomDerive { trait_name, attributes, client },
                 ProcMacroKind::CustomDerive {
                     trait_name: expected_trait_name,
                     attributes: expected_attributes,
@@ -56,10 +46,13 @@ impl LoadedProcMacro {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "retains the dynamic proc-macro symbol lookup entrypoint for metadata loading"
+)]
 pub(crate) fn dlsym_proc_macros(
     _path: &Path,
     _stable_crate_id: StableCrateId,
 ) -> Result<&'static [LoadedProcMacro], String> {
     Err("native proc-macro execution is disabled".to_owned())
 }
-

@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -13,14 +9,16 @@ use core::ops::ControlFlow;
 use crate::rustc_ast as ast;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use crate::rustc_span::{Span, Symbol, kw};
 use crate::rustc_type_ir::{TypeSuperVisitable as _, TypeVisitable, TypeVisitor};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use tracing::instrument;
 
 use super::{Clause, InstantiatedClauses, ParamConst, ParamTy, Ty, TyCtxt, Unnormalized};
 use crate::rustc_middle::ty::region::RegionExt;
-use crate::rustc_middle::ty::{self, ClauseKind, EarlyBinder, GenericArgsRef, Region, RegionKind, TyKind};
+use crate::rustc_middle::ty::{
+    self, ClauseKind, EarlyBinder, GenericArgsRef, Region, RegionKind, TyKind,
+};
 
 #[derive(Clone, Debug, TyEncodable, TyDecodable, StableHash)]
 pub enum GenericParamDefKind {
@@ -425,8 +423,7 @@ impl<'tcx> GenericClauses<'tcx> {
         self,
         tcx: TyCtxt<'tcx>,
         args: GenericArgsRef<'tcx>,
-    ) -> impl Iterator<Item = (Unnormalized<'tcx, Clause<'tcx>>, Span)>
-    + DoubleEndedIterator
+    ) -> impl DoubleEndedIterator<Item = (Unnormalized<'tcx, Clause<'tcx>>, Span)>
     + ExactSizeIterator
     + Clone {
         EarlyBinder::bind_iter(self.clauses).iter_instantiated_copied(tcx, args).map(|u| {
@@ -437,8 +434,7 @@ impl<'tcx> GenericClauses<'tcx> {
 
     pub fn instantiate_own_identity(
         self,
-    ) -> impl Iterator<Item = (Unnormalized<'tcx, Clause<'tcx>>, Span)>
-    + DoubleEndedIterator
+    ) -> impl DoubleEndedIterator<Item = (Unnormalized<'tcx, Clause<'tcx>>, Span)>
     + ExactSizeIterator
     + Clone {
         EarlyBinder::bind_iter(self.clauses).iter_identity_copied().map(|u| {
@@ -577,8 +573,7 @@ impl<'tcx> ConstConditions<'tcx> {
         self,
         tcx: TyCtxt<'tcx>,
         args: GenericArgsRef<'tcx>,
-    ) -> impl Iterator<Item = (Unnormalized<'tcx, ty::PolyTraitRef<'tcx>>, Span)>
-    + DoubleEndedIterator
+    ) -> impl DoubleEndedIterator<Item = (Unnormalized<'tcx, ty::PolyTraitRef<'tcx>>, Span)>
     + ExactSizeIterator
     + Clone {
         EarlyBinder::bind_iter(self.clauses).iter_instantiated_copied(tcx, args).map(|u| {
@@ -589,8 +584,7 @@ impl<'tcx> ConstConditions<'tcx> {
 
     pub fn instantiate_own_identity(
         self,
-    ) -> impl Iterator<Item = (Unnormalized<'tcx, ty::PolyTraitRef<'tcx>>, Span)>
-    + DoubleEndedIterator
+    ) -> impl DoubleEndedIterator<Item = (Unnormalized<'tcx, ty::PolyTraitRef<'tcx>>, Span)>
     + ExactSizeIterator
     + Clone {
         EarlyBinder::bind_iter(self.clauses).iter_identity_copied().map(|u| {

@@ -68,7 +68,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     .is_none()
             {
                 feature_err(
-                    &self.tcx.sess,
+                    self.tcx.sess,
                     sym::asm_experimental_arch,
                     sp,
                     msg!("inline assembly is not stable yet on this architecture"),
@@ -85,7 +85,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         }
         if asm.options.contains(InlineAsmOptions::MAY_UNWIND) && !self.tcx.features().asm_unwind() {
             feature_err(
-                &self.tcx.sess,
+                self.tcx.sess,
                 sym::asm_unwind,
                 sp,
                 msg!("the `may_unwind` option is unstable"),

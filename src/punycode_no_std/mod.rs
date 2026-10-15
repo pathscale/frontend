@@ -12,7 +12,6 @@
 //! The variable names below are the RFC's own (`n`, `delta`, `bias`, `h`, `b`, `m`, `q`,
 //! `t`, `k`), so that the code can be read against section 6.3 line by line.
 
-
 // `String` arrives with the standard prelude and names no path, so a `std::` search cannot see
 // it. That is why this `use` is here and why the crate has to say `alloc` out loud.
 
@@ -38,6 +37,10 @@ const DELIMITER: char = '-';
 ///
 /// `Err(())` means the encoding overflowed a `u32`, which RFC 3492 section 6.4 requires be
 /// detected rather than wrapped. It cannot happen for any real identifier.
+#[expect(
+    clippy::result_unit_err,
+    reason = "the existing encoder API reports invalid input without an allocated error"
+)]
 pub fn encode(input: &str) -> Result<String, ()> {
     let input_len = input.chars().count() as u32;
 

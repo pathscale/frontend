@@ -1,6 +1,3 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_middle::mir::interpret::Scalar;
 use crate::rustc_middle::mir::*;
@@ -8,6 +5,9 @@ use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty;
 use crate::rustc_middle::ty::cast::mir_cast_kind;
 use crate::rustc_span::{Span, Spanned};
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use super::{PResult, ParseCtxt, parse_by_kind};
 use crate::rustc_mir_build::builder::custom::ParseError;

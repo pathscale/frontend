@@ -1,16 +1,11 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
-use hashbrown::hash_map::Entry;
 use alloc::sync::Arc;
 use core::{fmt, mem};
+use hashbrown::hash_map::Entry;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexSet};
 use crate::rustc_data_structures::memmap::Mmap;
@@ -20,8 +15,9 @@ use crate::rustc_data_structures::unord::{UnordMap, UnordSet};
 use crate::rustc_hir::def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE, LocalDefId, StableCrateId};
 use crate::rustc_hir::definitions::DefPathHash;
 use crate::rustc_index::IndexVec;
-use rustc_macros::{Decodable, Encodable};
-use crate::rustc_serialize::opaque::{FileEncodeResult, FileEncoder, IntEncodedWithFixedSize, MemDecoder};
+use crate::rustc_serialize::opaque::{
+    FileEncodeResult, FileEncoder, IntEncodedWithFixedSize, MemDecoder,
+};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use crate::rustc_session::Session;
 use crate::rustc_span::hygiene::{
@@ -31,6 +27,7 @@ use crate::rustc_span::{
     BlobDecoder, BytePos, ByteSymbol, CachingSourceMapView, ExpnData, ExpnHash, RelativeBytePos,
     SourceFile, Span, SpanDecoder, SpanEncoder, Spanned, StableSourceFileId, Symbol,
 };
+use rustc_macros::{Decodable, Encodable};
 
 use crate::rustc_middle::dep_graph::{DepNodeIndex, QuerySideEffect, SerializedDepNodeIndex};
 use crate::rustc_middle::mir::interpret::{AllocDecodingSession, AllocDecodingState};
@@ -159,6 +156,10 @@ impl OnDiskCache {
     ///
     /// The serialized cache has some basic integrity checks, if those checks indicate that the
     /// on-disk data is corrupt, an error is returned.
+    #[expect(
+        clippy::result_unit_err,
+        reason = "cache corruption is reported through the existing unit error contract"
+    )]
     pub fn new(sess: &Session, data: Mmap, start_pos: usize) -> Result<Self, ()> {
         assert!(sess.opts.incremental.is_some());
 
@@ -635,8 +636,8 @@ impl<'a, 'tcx> SpanDecoder for CacheDecoder<'a, 'tcx> {
 
     fn decode_crate_num(&mut self) -> CrateNum {
         let stable_id = StableCrateId::decode(self);
-        let cnum = self.tcx.stable_crate_id_to_crate_num(stable_id);
-        cnum
+
+        self.tcx.stable_crate_id_to_crate_num(stable_id)
     }
 
     // Both the `CrateNum` and the `DefIndex` of a `DefId` can change in between two
@@ -720,7 +721,9 @@ impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for &'tcx [(ty::Clause<'tcx>, S
     }
 }
 
-impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for &'tcx [crate::rustc_ast::InlineAsmTemplatePiece] {
+impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>>
+    for &'tcx [crate::rustc_ast::InlineAsmTemplatePiece]
+{
     #[inline]
     fn decode(d: &mut CacheDecoder<'a, 'tcx>) -> Self {
         RefDecodable::decode(d)
@@ -743,7 +746,9 @@ impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>>
     }
 }
 
-impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for &'tcx crate::rustc_ast::tokenstream::TokenStream {
+impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>>
+    for &'tcx crate::rustc_ast::tokenstream::TokenStream
+{
     #[inline]
     fn decode(d: &mut CacheDecoder<'a, 'tcx>) -> Self {
         RefDecodable::decode(d)
@@ -869,7 +874,11 @@ impl<'a, 'tcx> CacheEncoder<'a, 'tcx> {
 
 impl<'a, 'tcx> SpanEncoder for CacheEncoder<'a, 'tcx> {
     fn encode_syntax_context(&mut self, syntax_context: SyntaxContext) {
-        crate::rustc_span::hygiene::raw_encode_syntax_context(syntax_context, self.hygiene_context, self);
+        crate::rustc_span::hygiene::raw_encode_syntax_context(
+            syntax_context,
+            self.hygiene_context,
+            self,
+        );
     }
 
     fn encode_expn_id(&mut self, expn_id: ExpnId) {

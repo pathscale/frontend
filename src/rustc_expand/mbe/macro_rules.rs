@@ -1,14 +1,14 @@
-use alloc::boxed::Box;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
-use alloc::vec::Vec;
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::Cow;
-use hashbrown::hash_map::Entry;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::{mem, slice};
+use hashbrown::hash_map::Entry;
 
-use ast::token::IdentIsRaw;
+use crate::exp;
 use crate::rustc_ast::token::NtPatKind::*;
 use crate::rustc_ast::token::TokenKind::*;
 use crate::rustc_ast::token::{self, Delimiter, NonterminalKind, Token, TokenKind};
@@ -25,7 +25,6 @@ use crate::rustc_lint_defs::builtin::{
     RUST_2021_INCOMPATIBLE_OR_PATTERNS, SEMICOLON_IN_EXPRESSIONS_FROM_MACROS,
     SEMICOLON_IN_EXPRESSIONS_FROM_NON_LOCAL_MACROS,
 };
-use crate::exp;
 use crate::rustc_parse::parser::{Parser, Recovery};
 use crate::rustc_session::Session;
 use crate::rustc_session::diagnostics::feature_err;
@@ -33,6 +32,7 @@ use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::Transparency;
 use crate::rustc_span::{Ident, Span, Symbol, kw, sym};
+use ast::token::IdentIsRaw;
 use tracing::{debug, instrument, trace, trace_span};
 
 use super::SequenceRepetition;
@@ -43,9 +43,13 @@ use crate::rustc_expand::base::{
     MacroExpanderResult, SyntaxExtension, SyntaxExtensionKind, TTMacroExpander,
 };
 use crate::rustc_expand::diagnostics;
-use crate::rustc_expand::expand::{AstFragment, AstFragmentKind, ensure_complete_parse, parse_ast_fragment};
+use crate::rustc_expand::expand::{
+    AstFragment, AstFragmentKind, ensure_complete_parse, parse_ast_fragment,
+};
 use crate::rustc_expand::mbe::macro_check::check_meta_variables;
-use crate::rustc_expand::mbe::macro_parser::{Ambiguity, ErrorReported, Failure, MatcherLoc, Success, TtParser};
+use crate::rustc_expand::mbe::macro_parser::{
+    Ambiguity, ErrorReported, Failure, MatcherLoc, Success, TtParser,
+};
 use crate::rustc_expand::mbe::quoted::{RulePart, parse_one_tt};
 use crate::rustc_expand::mbe::transcribe::transcribe;
 use crate::rustc_expand::mbe::{self, KleeneOp};
@@ -125,6 +129,10 @@ impl<'a, 'b> ParserAnyMacro<'a, 'b> {
     }
 
     #[instrument(skip(cx, tts, bindings, matched_rule_bindings))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub(crate) fn from_tts<'cx>(
         cx: &'cx mut ExtCtxt<'a>,
         tts: TokenStream,
@@ -351,9 +359,9 @@ impl AttrProcMacro for MacroRulesMacroExpander {
 struct DummyBang(ErrorGuaranteed);
 
 impl BangProcMacro for DummyBang {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        _: &'cx mut ExtCtxt<'_>,
+        _: &mut ExtCtxt<'_>,
         _: Span,
         _: TokenStream,
     ) -> Result<TokenStream, ErrorGuaranteed> {
@@ -433,6 +441,10 @@ impl<'matcher> Tracker<'matcher> for NoopTracker {
 
 /// Expands the rules based macro defined by `rules` for a given input `arg`.
 #[instrument(skip(cx, transparency, arg, rules, on_unmatched_args))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 fn expand_macro<'cx, 'a: 'cx>(
     cx: &'cx mut ExtCtxt<'_>,
     sp: Span,
@@ -511,6 +523,10 @@ fn expand_macro<'cx, 'a: 'cx>(
 
 /// Expands the rules based macro defined by `rules` for a given attribute `args` and `body`.
 #[instrument(skip(cx, transparency, args, body, rules, on_unmatched_args))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 fn expand_macro_attr(
     cx: &mut ExtCtxt<'_>,
     sp: Span,
@@ -726,7 +742,8 @@ pub(super) fn try_match_macro_attr<'matcher, T: Tracker<'matcher>>(
 
         match result {
             Success(body_named_matches) => {
-                psess.gated_spans.merge(gated_spans_snapshot);                named_matches.extend(body_named_matches);
+                psess.gated_spans.merge(gated_spans_snapshot);
+                named_matches.extend(body_named_matches);
                 return Ok((i, rule, named_matches));
             }
             Failure => {
@@ -780,6 +797,10 @@ pub(super) fn try_match_macro_derive<'matcher, T: Tracker<'matcher>>(
 }
 
 /// Converts a macro item into a syntax extension.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub fn compile_declarative_macro(
     sess: &Session,
     features: &Features,

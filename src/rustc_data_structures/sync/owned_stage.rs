@@ -12,14 +12,14 @@ use alloc::vec::Vec;
 /// `run` must use only its owned input and locally created context. Diagnostics and other effects
 /// belong in its output. `weight` estimates relative work without querying compiler state.
 /// Borrowed compiler walks use run_stage on the caller instead.
-pub fn run_owned_stage<In: ?Sized, O>(
+pub fn run_owned_stage<In, O>(
     input: Arc<In>,
     len: usize,
     weight: fn(&In, usize) -> u32,
     run: fn(&In, usize) -> O,
 ) -> Vec<O>
 where
-    In: Send + Sync + 'static,
+    In: ?Sized + Send + Sync + 'static,
     O: Send + 'static,
 {
     #[cfg(feature = "parallel")]

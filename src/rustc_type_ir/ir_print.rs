@@ -1,8 +1,3 @@
-
-#[allow(unused_imports)]
-use alloc::string::ToString;
-#[allow(unused_imports)]
-use core::fmt;
 #[cfg(feature = "nightly")]
 use crate::rustc_type_ir::{AliasConst, ClosureKind};
 use crate::rustc_type_ir::{
@@ -10,6 +5,10 @@ use crate::rustc_type_ir::{
     HostEffectClause, Interner, NormalizesTo, OutlivesClause, PatternKind, Placeholder,
     ProjectionClause, Region, SubtypePredicate, TraitClause, TraitRef,
 };
+#[allow(unused_imports)]
+use alloc::string::ToString;
+#[allow(unused_imports)]
+use core::fmt;
 
 pub trait IrPrint<T> {
     fn print(t: &T, fmt: &mut fmt::Formatter<'_>) -> fmt::Result;

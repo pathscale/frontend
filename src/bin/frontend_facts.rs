@@ -149,9 +149,7 @@ fn main() {
         dependencies: &dependencies,
         cfg: &cfg,
         env: &env,
-        rust_source_base_dir: rust_source_base_dir
-            .as_deref()
-            .map(eko::path::Path::new),
+        rust_source_base_dir: rust_source_base_dir.as_deref().map(eko::path::Path::new),
     };
     if let Some(root) = root {
         if max_input_bytes_explicit {
@@ -238,4 +236,3 @@ fn print_or_exit(json: Result<String, serde_json::Error>) {
         std::process::exit(2);
     }
 }
-

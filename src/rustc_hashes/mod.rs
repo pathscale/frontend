@@ -13,7 +13,6 @@
 //! connect the fact that they can only be produced by a `StableHasher` to their
 //! `Encode`/`Decode` impls.
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -68,8 +67,8 @@ impl FromStableHash for Hash64 {
     type Hash = StableHasherHash;
 
     #[inline]
-    fn from(StableHasherHash([_0, _]): Self::Hash) -> Self {
-        Self { inner: _0 }
+    fn from(StableHasherHash([low, _]): Self::Hash) -> Self {
+        Self { inner: low }
     }
 }
 
@@ -127,8 +126,8 @@ impl FromStableHash for Hash128 {
     type Hash = StableHasherHash;
 
     #[inline]
-    fn from(StableHasherHash([_0, _1]): Self::Hash) -> Self {
-        Self { inner: u128::from(_0) | (u128::from(_1) << 64) }
+    fn from(StableHasherHash([low, high]): Self::Hash) -> Self {
+        Self { inner: u128::from(low) | (u128::from(high) << 64) }
     }
 }
 

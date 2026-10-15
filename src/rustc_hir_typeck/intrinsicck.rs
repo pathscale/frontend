@@ -2,24 +2,21 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use hir::HirId;
+use crate::bug;
 use crate::rustc_abi::Primitive::Pointer;
 use crate::rustc_abi::VariantIdx;
 use crate::rustc_errors::codes::*;
-use crate::struct_span_code_err;
 use crate::rustc_hir as hir;
 use crate::rustc_index::Idx;
-use crate::bug;
 use crate::rustc_middle::ty::layout::{LayoutError, SizeSkeleton};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt, Unnormalized};
 use crate::rustc_span::ErrorGuaranteed;
 use crate::rustc_span::def_id::LocalDefId;
+use crate::struct_span_code_err;
+use hir::HirId;
 use tracing::trace;
 
 /// If the type is `Option<T>`, it will return `T`, otherwise
@@ -28,18 +25,16 @@ fn unpack_option_like<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
     let ty::Adt(def, args) = *ty.kind() else { return ty };
 
     if def.variants().len() == 2 && !def.repr().c() && def.repr().int.is_none() {
-        let data_idx;
-
         let one = VariantIdx::new(1);
         let zero = VariantIdx::ZERO;
 
-        if def.variant(zero).fields.is_empty() {
-            data_idx = one;
+        let data_idx = if def.variant(zero).fields.is_empty() {
+            one
         } else if def.variant(one).fields.is_empty() {
-            data_idx = zero;
+            zero
         } else {
             return ty;
-        }
+        };
 
         if def.variant(data_idx).fields.len() == 1 {
             return def.variant(data_idx).single_field().ty(tcx, args).skip_norm_wip();

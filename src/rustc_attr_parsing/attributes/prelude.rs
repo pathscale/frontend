@@ -15,7 +15,9 @@ pub(super) use crate::rustc_attr_parsing::attributes::{
 };
 // contexts
 #[doc(hidden)]
-pub(super) use crate::rustc_attr_parsing::context::{AcceptContext, FinalizeCheckContext, FinalizeContext};
+pub(super) use crate::rustc_attr_parsing::context::{
+    AcceptContext, FinalizeCheckContext, FinalizeContext,
+};
 #[doc(hidden)]
 pub(super) use crate::rustc_attr_parsing::parser::*;
 // target checking
@@ -23,6 +25,6 @@ pub(super) use crate::rustc_attr_parsing::parser::*;
 pub(super) use crate::rustc_attr_parsing::target_checking::Policy::{Allow, Error, Warn};
 #[doc(hidden)]
 pub(super) use crate::rustc_attr_parsing::target_checking::{ALL_TARGETS, AllowedTargets};
+pub(super) use crate::rustc_attr_parsing::{AttributeTemplate, template};
 #[doc(hidden)]
 pub(super) use crate::unstable;
-pub(super) use crate::rustc_attr_parsing::{AttributeTemplate, template};

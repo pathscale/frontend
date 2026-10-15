@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -138,7 +136,7 @@ impl<'tcx> LateLintPass<'tcx> for NonLocalDefinitions {
                 // 1. We collect all the `hir::Path` from the `Self` type and `Trait` ref
                 // of the `impl` definition
                 let mut collector = PathCollector { paths: Vec::new() };
-                collector.visit_ty_unambig(&impl_.self_ty);
+                collector.visit_ty_unambig(impl_.self_ty);
                 if let Some(of_trait) = impl_.of_trait {
                     collector.visit_trait_ref(&of_trait.trait_ref);
                 }
@@ -284,7 +282,7 @@ impl<'tcx> Visitor<'tcx> for PathCollector<'tcx> {
     type NestedFilter = intravisit::IgnoreNested;
     type Result = ();
     fn visit_path(&mut self, path: &Path<'tcx>, _id: HirId) {
-        self.paths.push(path.clone()); // need to clone, bc of the restricted lifetime
+        self.paths.push(*path); // need to clone, bc of the restricted lifetime
         intravisit::walk_path(self, path)
     }
 }

@@ -2,15 +2,18 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use super::Spacing;
 use super::compact_token::CompactToken;
 use super::source_token::{SourceKind, SourceToken, token_from_compact_parts};
-use super::Spacing;
 use crate::rustc_ast::token::{self, Delimiter, Token};
 use crate::rustc_ast::util::unicode::contains_text_flow_control_chars;
+use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_lexer::keyword_phf::{
     classify_lifetime_keyword_bytes, classify_preinterned_ident_bytes,
 };
-use crate::rustc_lexer::{Base, Cursor, DocStyle, FrontmatterAllowed, LiteralKind, TokenKind};
+use crate::rustc_lexer::{
+    Base, Cursor, DocStyle, FrontmatterAllowed, LiteralKind, TokenKind, TokenScanMeta,
+};
 use crate::rustc_span::{BytePos, DUMMY_SP, Span, Symbol, edition::Edition, sym};
 use rustc_literal_escaper::{Mode, check_for_errors};
 
@@ -41,11 +44,14 @@ pub(crate) struct LiteralMeta {
 pub(crate) struct IndexedSourceTape {
     pub(crate) src: Arc<String>,
     pub(crate) base: BytePos,
+    #[expect(
+        dead_code,
+        reason = "retains the original source start offset in indexed token tape metadata"
+    )]
     pub(crate) start_offset: u32,
     pub(crate) tokens: Vec<CompactToken>,
     pub(crate) token_aux: Vec<u32>,
-    pub(crate) token_lengths: Vec<u32>,
-    pub(crate) token_groups: Vec<u32>,
+    pub(crate) overflow_lengths: Vec<(u32, u32)>,
     pub(crate) literals: Vec<LiteralMeta>,
     pub(crate) groups: Vec<Group>,
     pub(crate) depth_zero_cuts: Vec<u32>,
@@ -66,13 +72,19 @@ impl IndexedSourceTape {
         let end = u32::try_from(src.len()).ok()?;
         base.0.checked_add(end)?;
         let input = src.get(begin as usize..)?;
+        let est = (input.len() / 4).max(16);
         let mut builder = Builder {
             tape: Self {
-                src: src.clone(), base, start_offset: begin,
-                tokens: Vec::new(), token_aux: Vec::new(),
-                token_lengths: Vec::new(), token_groups: Vec::new(),
-                literals: Vec::new(), groups: Vec::new(),
-                depth_zero_cuts: Vec::new(), newlines: Vec::new(),
+                src: src.clone(),
+                base,
+                start_offset: begin,
+                tokens: Vec::with_capacity(est),
+                token_aux: Vec::with_capacity(est),
+                overflow_lengths: Vec::new(),
+                literals: Vec::new(),
+                groups: Vec::new(),
+                depth_zero_cuts: Vec::new(),
+                newlines: Vec::new(),
                 raw_identifier_spans: Vec::new(),
             },
             requests: Vec::new(),
@@ -85,31 +97,71 @@ impl IndexedSourceTape {
         let mut pos = begin;
         let mut pending: Option<SourceToken> = None;
         loop {
-            let raw = cursor.advance_token();
+            // ASCII whitespace uses the metadata lexer below so its newlines
+            // are recorded during scanning. Guarded strings must also reach it.
+            if pending.as_ref().is_none_or(|prev| !prev.kind.is_punct())
+                && matches!(cursor.frontmatter_allowed, FrontmatterAllowed::No)
+                && !matches!(cursor.as_bytes(), [b'#', b'"' | b'#', ..])
+                && let Some(glued) = super::compact_token::try_glue_punct(cursor.as_bytes())
+            {
+                let lo = pos;
+                if let Some(mut previous) = pending.take() {
+                    previous.spacing =
+                        if previous.hi == lo { Spacing::Joint } else { Spacing::Alone };
+                    builder.push(previous)?;
+                }
+                cursor.bump_bytes(glued.len as usize);
+                cursor.reset_pos_within_token();
+                pos = pos.checked_add(u32::from(glued.len))?;
+                builder.push(SourceToken {
+                    lo,
+                    hi: pos,
+                    suffix: 0,
+                    kind: glued.kind,
+                    aux: 0,
+                    spacing: glued.spacing,
+                })?;
+                continue;
+            }
+            let (raw, meta) = cursor.advance_token_with_meta(pos, &mut builder.tape.newlines);
             let lo = pos;
             pos = pos.checked_add(raw.len)?;
             let spelling = src.get(lo as usize..pos as usize)?;
-            builder.record_newlines(lo, spelling.as_bytes());
-            if contains_text_flow_control_chars(spelling) {
-                return None;
+            if meta.tracked {
+                if meta.has_bidi {
+                    return None;
+                }
+            } else {
+                builder.record_newlines(lo, spelling.as_bytes());
+                if contains_text_flow_control_chars(spelling) {
+                    return None;
+                }
             }
             match raw.kind {
-                TokenKind::Whitespace => continue,
-                TokenKind::LineComment { doc_style: None }
-                | TokenKind::BlockComment { doc_style: None, terminated: true } => continue,
+                TokenKind::Whitespace
+                | TokenKind::LineComment { doc_style: None }
+                | TokenKind::BlockComment { doc_style: None, terminated: true } => {
+                    if let Some(mut previous) = pending.take() {
+                        previous.spacing = Spacing::Alone;
+                        builder.push(previous)?;
+                    }
+                    continue;
+                }
                 _ => {}
             }
             let (kind, suffix, aux) = classify(raw.kind)?;
             if raw.len > MAX_INLINE_SPAN {
                 return None;
             }
-            admit(raw.kind, kind, suffix, aux, spelling, edition)?;
+            admit(raw.kind, kind, suffix, aux, spelling, edition, meta)?;
             if kind == SourceKind::Eof && pos != end {
                 return None;
             }
             let next = SourceToken { lo, hi: pos, suffix, kind, aux, spacing: Spacing::Alone };
             if let Some(mut previous) = pending.take() {
-                if previous.hi == next.lo && let Some(glued) = previous.kind.glue(next.kind) {
+                if previous.hi == next.lo
+                    && let Some(glued) = previous.kind.glue(next.kind)
+                {
                     previous.kind = glued;
                     previous.hi = next.hi;
                     pending = Some(previous);
@@ -145,12 +197,32 @@ impl IndexedSourceTape {
         DUMMY_SP
     }
 
+    #[inline]
+    pub(crate) fn token_len(&self, idx: usize) -> u32 {
+        let token = self.tokens[idx];
+        if let Some(len) = token.inline_len() {
+            len
+        } else {
+            let target = idx as u32;
+            let pos = self
+                .overflow_lengths
+                .binary_search_by_key(&target, |&(i, _)| i)
+                .expect("overflow token length recorded");
+            self.overflow_lengths[pos].1
+        }
+    }
+
+    #[inline]
+    pub(crate) fn token_group(&self, idx: usize) -> u32 {
+        if self.tokens[idx].has_group() { self.token_aux[idx] } else { NO_GROUP }
+    }
+
     pub(crate) fn token_span(&self, idx: usize) -> Span {
         let token = self.tokens[idx];
         if token.kind() == SourceKind::Eof {
             return self.eof_span();
         }
-        self.span(token.lo(), token.lo() + self.token_lengths[idx])
+        self.span(token.lo(), token.lo() + self.token_len(idx))
     }
 
     pub(crate) fn materialize_token(&self, idx: usize) -> (Token, Spacing) {
@@ -162,7 +234,12 @@ impl IndexedSourceTape {
             (meta.kind, meta.symbol, meta.suffix)
         });
         token_from_compact_parts(
-            kind, token.spacing(), token.aux(), self.token_span(idx), symbol, literal,
+            kind,
+            token.spacing(),
+            token.aux(),
+            self.token_span(idx),
+            symbol,
+            literal,
         )
     }
 
@@ -256,7 +333,9 @@ impl Builder {
             if group_id == NO_GROUP {
                 return None;
             }
-            let depth = if parent == NO_GROUP { 1 } else {
+            let depth = if parent == NO_GROUP {
+                1
+            } else {
                 self.tape.groups[parent as usize].depth.checked_add(1)?
             };
             let frame = self.frames.last_mut()?;
@@ -266,19 +345,26 @@ impl Builder {
                 && (is(prev, SourceKind::Pound)
                     || is(prev, SourceKind::Bang) && is(prev2, SourceKind::Pound));
             let invocation = is(prev, SourceKind::Bang);
-            let macro_rules = is(prev2, SourceKind::Bang)
-                && prev3.is_some_and(|leaf| leaf.macro_rules);
+            let macro_rules =
+                is(prev2, SourceKind::Bang) && prev3.is_some_and(|leaf| leaf.macro_rules);
             let decl_macro = prev2.is_some_and(|leaf| leaf.decl_macro)
                 || prev3.is_some_and(|leaf| leaf.decl_macro);
             frame.attributes = frame.attributes.checked_add(u32::from(attribute))?;
             frame.remember(None);
             self.frames.push(CountFrame::new(
-                group_id, !attribute && !invocation && !macro_rules && !decl_macro,
+                group_id,
+                !attribute && !invocation && !macro_rules && !decl_macro,
             ));
             self.tape.groups.push(Group {
-                delim, open: self.tape.span(token.lo, token.hi), close: DUMMY_SP,
-                open_idx: index, close_idx: 0, parent, depth,
-                inside_bumps: 0, attr_count: 0,
+                delim,
+                open: self.tape.span(token.lo, token.hi),
+                close: DUMMY_SP,
+                open_idx: index,
+                close_idx: 0,
+                parent,
+                depth,
+                inside_bumps: 0,
+                attr_count: 0,
             });
         } else if let Some(delim) = kind.is_close_delim() {
             if parent == NO_GROUP {
@@ -310,7 +396,9 @@ impl Builder {
             let name = if kind == SourceKind::Ident {
                 let lo = token.lo + if token.aux == 1 { 2 } else { 0 };
                 &self.tape.src[lo as usize..token.hi as usize]
-            } else { "" };
+            } else {
+                ""
+            };
             frame.remember(Some(Leaf {
                 kind,
                 macro_rules: name == "macro_rules",
@@ -337,7 +425,10 @@ impl Builder {
             SourceKind::LineDoc | SourceKind::BlockDoc => {
                 let postfix = u32::from(kind == SourceKind::BlockDoc) * 2;
                 self.request(
-                    token.lo + 3, token.hi - postfix, false, Destination::Token(index as usize),
+                    token.lo + 3,
+                    token.hi - postfix,
+                    false,
+                    Destination::Token(index as usize),
                 );
             }
             _ => {
@@ -346,10 +437,15 @@ impl Builder {
                     let literal = payload as usize;
                     let end = token.lo.checked_add(token.suffix)?;
                     self.tape.literals.push(LiteralMeta {
-                        kind, symbol: sym::empty, suffix: (end < token.hi).then_some(sym::empty),
+                        kind,
+                        symbol: sym::empty,
+                        suffix: (end < token.hi).then_some(sym::empty),
                     });
                     self.request(
-                        token.lo + prefix, end - postfix, false, Destination::Literal(literal),
+                        token.lo + prefix,
+                        end - postfix,
+                        false,
+                        Destination::Literal(literal),
                     );
                     if end < token.hi {
                         self.request(end, token.hi, false, Destination::Suffix(literal));
@@ -357,18 +453,29 @@ impl Builder {
                 }
             }
         }
-        self.tape.tokens.push(CompactToken::new(
-            token.lo, length, kind, token.spacing, token.aux, group_id != NO_GROUP, has_aux,
-        ));
-        self.tape.token_aux.push(payload);
-        self.tape.token_lengths.push(length);
-        self.tape.token_groups.push(group_id);
+        let compact = CompactToken::new(
+            token.lo,
+            length,
+            kind,
+            token.spacing,
+            token.aux,
+            group_id != NO_GROUP,
+            has_aux,
+        );
+        self.tape.tokens.push(compact);
+        // Delimiters never carry symbol or literal payloads, so they share this slot.
+        self.tape.token_aux.push(if group_id != NO_GROUP { group_id } else { payload });
+        if compact.inline_len().is_none() {
+            // Tokens are appended in index order, keeping the sparse table sorted.
+            self.tape.overflow_lengths.push((index, length));
+        }
         Some(())
     }
 
     fn intern(&mut self) {
-        let mut names = Vec::new();
-        let mut missing = Vec::new();
+        let mut unique_names: Vec<&str> = Vec::new();
+        let mut seen: FxHashMap<&str, usize> = FxHashMap::default();
+        let mut missing: Vec<(usize, usize)> = Vec::new();
         let mut resolved = Vec::with_capacity(self.requests.len());
         for (index, request) in self.requests.iter().enumerate() {
             let text = &self.tape.src[request.lo as usize..request.hi as usize];
@@ -379,14 +486,21 @@ impl Builder {
             };
             resolved.push(predefined.unwrap_or(sym::empty));
             if predefined.is_none() {
-                names.push(text);
-                missing.push(index);
+                let unique_idx = if let Some(&unique_idx) = seen.get(text) {
+                    unique_idx
+                } else {
+                    let unique_idx = unique_names.len();
+                    unique_names.push(text);
+                    seen.insert(text, unique_idx);
+                    unique_idx
+                };
+                missing.push((index, unique_idx));
             }
         }
-        let mut symbols = alloc::vec![sym::empty; names.len()];
-        Symbol::intern_batch_from_source(&names, &mut symbols);
-        for (index, symbol) in missing.into_iter().zip(symbols) {
-            resolved[index] = symbol;
+        let mut symbols = alloc::vec![sym::empty; unique_names.len()];
+        Symbol::intern_batch_from_source(&unique_names, &mut symbols);
+        for (req_index, unique_idx) in missing {
+            resolved[req_index] = symbols[unique_idx];
         }
         for (request, symbol) in self.requests.iter().zip(resolved) {
             match request.destination {
@@ -399,21 +513,30 @@ impl Builder {
 }
 
 fn admit(
-    raw: TokenKind, kind: SourceKind, suffix: u32, aux: u8,
-    spelling: &str, edition: Edition,
+    raw: TokenKind,
+    kind: SourceKind,
+    suffix: u32,
+    aux: u8,
+    spelling: &str,
+    edition: Edition,
+    meta: TokenScanMeta,
 ) -> Option<()> {
     if matches!(kind, SourceKind::Ident | SourceKind::Lifetime) {
         if !spelling.is_ascii() {
             return None;
         }
-        if kind == SourceKind::Ident && aux == 1
+        if kind == SourceKind::Ident
+            && aux == 1
             && matches!(&spelling[2..], "" | "_" | "super" | "self" | "Self" | "crate")
         {
             return None;
         }
     }
-    if matches!(kind, SourceKind::LineDoc | SourceKind::BlockDoc) && spelling.contains('\r') {
-        return None;
+    if matches!(kind, SourceKind::LineDoc | SourceKind::BlockDoc) {
+        let has_cr = if meta.tracked { meta.has_cr } else { spelling.contains('\r') };
+        if has_cr {
+            return None;
+        }
     }
     if let TokenKind::Literal { kind: literal, .. } = raw {
         if matches!(kind, SourceKind::CStr | SourceKind::CStrRaw) && !edition.at_least_rust_2021() {
@@ -422,18 +545,20 @@ fn admit(
         if suffix < spelling.len() as u32 && &spelling[suffix as usize..] == "_" {
             return None;
         }
-        if let LiteralKind::Int { base: base @ (Base::Binary | Base::Octal), .. } = literal {
-            if spelling[2..suffix as usize].chars()
+        if let LiteralKind::Int { base: base @ (Base::Binary | Base::Octal), .. } = literal
+            && spelling[2..suffix as usize]
+                .chars()
                 .any(|c| c != '_' && c.to_digit(base as u32).is_none())
-            {
-                return None;
-            }
+        {
+            return None;
         }
         let (_, mode, prefix, postfix) = literal_layout(kind, aux)?;
         let content = spelling.get(prefix as usize..suffix.checked_sub(postfix)? as usize)?;
         if let Some(mode) = mode {
             let needs_check = match mode {
+                Mode::Str if meta.tracked && meta.clean_ascii_str => false,
                 Mode::Str => memchr::memchr3(b'\\', b'"', b'\r', content.as_bytes()).is_some(),
+                Mode::RawStr if meta.tracked => meta.has_cr,
                 Mode::RawStr => memchr::memchr(b'\r', content.as_bytes()).is_some(),
                 _ => true,
             };
@@ -457,7 +582,10 @@ fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
     let mut aux = 0;
     let kind = match kind {
         TokenKind::Ident => S::Ident,
-        TokenKind::RawIdent => { aux = 1; S::Ident }
+        TokenKind::RawIdent => {
+            aux = 1;
+            S::Ident
+        }
         TokenKind::Lifetime { starts_with_number: false } => S::Lifetime,
         TokenKind::Semi => S::Semi,
         TokenKind::Comma => S::Comma,
@@ -502,11 +630,18 @@ fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
                 LiteralKind::Str { terminated: true } => S::Str,
                 LiteralKind::ByteStr { terminated: true } => S::ByteStr,
                 LiteralKind::CStr { terminated: true } => S::CStr,
-                LiteralKind::RawStr { n_hashes: Some(hashes) } => { aux = hashes; S::StrRaw }
-                LiteralKind::RawByteStr { n_hashes: Some(hashes) } => {
-                    aux = hashes; S::ByteStrRaw
+                LiteralKind::RawStr { n_hashes: Some(hashes) } => {
+                    aux = hashes;
+                    S::StrRaw
                 }
-                LiteralKind::RawCStr { n_hashes: Some(hashes) } => { aux = hashes; S::CStrRaw }
+                LiteralKind::RawByteStr { n_hashes: Some(hashes) } => {
+                    aux = hashes;
+                    S::ByteStrRaw
+                }
+                LiteralKind::RawCStr { n_hashes: Some(hashes) } => {
+                    aux = hashes;
+                    S::CStrRaw
+                }
                 _ => return None,
             }
         }

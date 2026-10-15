@@ -1,20 +1,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
-use itertools::Itertools as _;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_infer::infer::TyCtxtInferExt;
-use crate::rustc_lint_defs::builtin::{REFINING_IMPL_TRAIT_INTERNAL, REFINING_IMPL_TRAIT_REACHABLE};
-use crate::span_bug;
+use crate::rustc_lint_defs::builtin::{
+    REFINING_IMPL_TRAIT_INTERNAL, REFINING_IMPL_TRAIT_REACHABLE,
+};
 use crate::rustc_middle::traits::ObligationCause;
 use crate::rustc_middle::ty::print::{with_no_trimmed_paths, with_types_for_signature};
 use crate::rustc_middle::ty::{
@@ -24,7 +20,11 @@ use crate::rustc_middle::ty::{
 use crate::rustc_span::Span;
 use crate::rustc_span::def_id::ModId;
 use crate::rustc_trait_selection::regions::InferCtxtRegionExt;
-use crate::rustc_trait_selection::traits::{ObligationCtxt, elaborate, normalize_param_env_or_error};
+use crate::rustc_trait_selection::traits::{
+    ObligationCtxt, elaborate, normalize_param_env_or_error,
+};
+use crate::span_bug;
+use itertools::Itertools as _;
 
 /// Check that an implementation does not refine an RPITIT from a trait method signature.
 pub(crate) fn check_refining_return_position_impl_trait_in_trait<'tcx>(
@@ -158,7 +158,7 @@ pub(crate) fn check_refining_return_position_impl_trait_in_trait<'tcx>(
     let param_env = ty::ParamEnv::new(tcx, hybrid_clauses);
     let param_env = normalize_param_env_or_error(tcx, param_env, ObligationCause::dummy());
 
-    let ref infcx = tcx.infer_ctxt().build(TypingMode::non_body_analysis());
+    let infcx = &tcx.infer_ctxt().build(TypingMode::non_body_analysis());
     let ocx = ObligationCtxt::new(infcx);
 
     // Normalize the bounds. This has two purposes:

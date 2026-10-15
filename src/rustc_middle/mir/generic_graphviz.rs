@@ -2,9 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -131,9 +130,7 @@ impl<
         let (blk, bgcolor) = (format!("{node:?}"), color);
         write!(
             w,
-            r#"<tr><td bgcolor="{bgcolor}" {attrs} colspan="{colspan}">{blk}</td></tr>"#,
-            attrs = r#"align="center""#,
-            colspan = 1,
+            r#"<tr><td bgcolor="{bgcolor}" align="center" colspan="1">{blk}</td></tr>"#,
             blk = blk,
             bgcolor = bgcolor
         )?;

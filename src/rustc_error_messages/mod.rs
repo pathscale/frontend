@@ -18,19 +18,18 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::Span;
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 mod diagnostic_impls;
-pub use diagnostic_impls::DiagArgFromDisplay;
 use crate::rustc_data_structures::fx::FxIndexMap;
+pub use diagnostic_impls::DiagArgFromDisplay;
 
 /// Abstraction over a message in a diagnostic: one that still has arguments to interpolate, and
 /// one that is already the final text.
@@ -95,7 +94,7 @@ pub struct SpanLabel {
 ///   the error, and would be rendered with `^^^`.
 /// - They can have a *label*. In this case, the label is written next
 ///   to the mark in the snippet when we render.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Encodable, Decodable, StableHash)]
+#[derive(Default, Clone, Debug, Hash, PartialEq, Eq, Encodable, Decodable, StableHash)]
 pub struct MultiSpan {
     primary_spans: Vec<Span>,
     span_labels: Vec<(Span, DiagMessage)>,

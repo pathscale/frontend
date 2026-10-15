@@ -5,10 +5,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -561,11 +557,13 @@ fn check_constraints<'tcx>(
     let mut ret = Ok(());
 
     let mut emit = |descr| {
-        ret = Err(tcx.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::UnsupportedDelegation {
-            span: tcx.def_span(def_id),
-            descr,
-            callee_span: tcx.def_span(sig_id),
-        }));
+        ret = Err(tcx.dcx().emit_err(
+            crate::rustc_hir_analysis::diagnostics::UnsupportedDelegation {
+                span: tcx.def_span(def_id),
+                descr,
+                callee_span: tcx.def_span(sig_id),
+            },
+        ));
     };
 
     if tcx.fn_sig(sig_id).skip_binder().skip_binder().c_variadic() {

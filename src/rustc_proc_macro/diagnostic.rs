@@ -38,7 +38,7 @@ impl MultiSpan for Vec<Span> {
     }
 }
 
-impl<'a> MultiSpan for &'a [Span] {
+impl MultiSpan for &[Span] {
     fn into_spans(self) -> Vec<Span> {
         self.to_vec()
     }
@@ -146,7 +146,11 @@ impl Diagnostic {
 
     /// Emit the diagnostic.
     pub fn emit(self) {
-        fn to_internal(diag: Diagnostic) -> crate::rustc_proc_macro::bridge::Diagnostic<crate::rustc_proc_macro::bridge::client::Span> {
+        fn to_internal(
+            diag: Diagnostic,
+        ) -> crate::rustc_proc_macro::bridge::Diagnostic<
+            crate::rustc_proc_macro::bridge::client::Span,
+        > {
             crate::rustc_proc_macro::bridge::Diagnostic {
                 level: diag.level,
                 message: diag.message,

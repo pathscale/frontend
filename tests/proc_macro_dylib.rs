@@ -71,10 +71,8 @@ pub fn unexpanded(_: ()) {{}}
     })
     .expect("the proc-macro declarations are read");
 
-    let dependencies = [Dependency::new(
-        "fixture_macros",
-        metadata.to_str().expect("a UTF-8 metadata path"),
-    )];
+    let dependencies =
+        [Dependency::new("fixture_macros", metadata.to_str().expect("a UTF-8 metadata path"))];
     let source = format!(
         "{LANG}\
 #[derive(fixture_macros::Unexpanded)]

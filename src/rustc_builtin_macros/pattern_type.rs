@@ -2,18 +2,13 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
+use crate::exp;
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::{AnonConst, DUMMY_NODE_ID, Ty, TyPat, TyPatKind, ast, token};
 use crate::rustc_errors::PResult;
 use crate::rustc_expand::base::{self, DummyResult, ExpandResult, ExtCtxt, MacroExpanderResult};
-use crate::exp;
 use crate::rustc_parse::parser::{CommaRecoveryMode, RecoverColon, RecoverComma};
 use crate::rustc_span::Span;
 
@@ -32,10 +27,7 @@ pub(crate) fn expand<'cx>(
     ExpandResult::Ready(base::MacEager::ty(cx.ty(sp, ast::TyKind::Pat(ty, pat))))
 }
 
-fn parse_pat_ty<'a>(
-    cx: &mut ExtCtxt<'a>,
-    stream: TokenStream,
-) -> PResult<'a, (P<Ty>, Box<TyPat>)> {
+fn parse_pat_ty<'a>(cx: &mut ExtCtxt<'a>, stream: TokenStream) -> PResult<'a, (P<Ty>, Box<TyPat>)> {
     let mut parser = cx.new_parser_from_tts(stream);
 
     let ty = parser.parse_ty()?;

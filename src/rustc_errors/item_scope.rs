@@ -128,6 +128,10 @@ pub(super) enum EventKind {
 }
 
 /// One entry in an item's or a query's diagnostic output.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "diagnostic events keep owned payloads inline to avoid one heap allocation per event"
+)]
 pub(super) enum Event {
     /// Something done to a context, and which context.
     Dcx {
@@ -315,6 +319,10 @@ impl Drop for QueryFrame {
     }
 }
 
+#[expect(
+    clippy::arc_with_non_send_sync,
+    reason = "query diagnostic records are forwarded only through caller-thread scope frames"
+)]
 fn close_frame() -> Option<Arc<QueryDiagnostics>> {
     SCOPES.with(|scopes| {
         let mut scopes = scopes.borrow_mut();
@@ -538,8 +546,7 @@ impl OrderedReplay {
             // that is expected (a stage skips the items a serial run would never reach), so only
             // a gap before any stop is a bug.
             debug_assert_ne!(
-                report,
-                NOT_REPORTED,
+                report, NOT_REPORTED,
                 "item {index} never reported to its OrderedReplay"
             );
             if report == NOT_REPORTED {

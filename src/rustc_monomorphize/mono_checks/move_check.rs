@@ -1,7 +1,3 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::sync::Arc;
-use alloc::rc::Rc;
 use crate::rustc_abi::Size;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::DefId;
@@ -11,6 +7,7 @@ use crate::rustc_middle::mir::{self, Location, traversal};
 use crate::rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeFoldable};
 use crate::rustc_span::{Span, Spanned, sym};
 use crate::rustc_structures::Limit;
+use alloc::vec::Vec;
 use tracing::{debug, trace};
 
 use crate::rustc_monomorphize::diagnostics::LargeAssignmentsLint;

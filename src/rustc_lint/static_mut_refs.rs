@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::DefId;
@@ -15,7 +10,9 @@ use crate::rustc_lint_defs::{declare_lint, declare_lint_pass, fcw};
 use crate::rustc_middle::ty::{Mutability, TyKind};
 use crate::rustc_span::{BytePos, Span};
 
-use crate::rustc_lint::diagnostics::{MutRefSugg, RefOfMutStatic, StaticMutRefsInteriorMutabilitySugg};
+use crate::rustc_lint::diagnostics::{
+    MutRefSugg, RefOfMutStatic, StaticMutRefsInteriorMutabilitySugg,
+};
 use crate::rustc_lint::{LateContext, LateLintPass, LintContext};
 
 declare_lint! {
@@ -70,7 +67,8 @@ declare_lint! {
 
 declare_lint_pass!(StaticMutRefs => [STATIC_MUT_REFS]);
 
-impl<'tcx> LateLintPass<'tcx> for StaticMutRefs {    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'_>) {
+impl<'tcx> LateLintPass<'tcx> for StaticMutRefs {
+    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &Expr<'_>) {
         let err_span = expr.span;
         match expr.kind {
             hir::ExprKind::AddrOf(borrow_kind, m, ex)
@@ -109,7 +107,7 @@ impl<'tcx> LateLintPass<'tcx> for StaticMutRefs {    fn check_expr(&mut self, cx
                     && let Some(method_def_id) = typeck.type_dependent_def_id(expr.hir_id)
                     && let inputs =
                         cx.tcx.fn_sig(method_def_id).skip_binder().inputs().skip_binder()
-                    && let Some(receiver) = inputs.get(0)
+                    && let Some(receiver) = inputs.first()
                     && let TyKind::Ref(_, _, m) = receiver.kind() =>
             {
                 emit_static_mut_refs(

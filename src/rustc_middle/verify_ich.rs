@@ -2,11 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use crate::rustc_data_structures::fingerprint::Fingerprint;
 use crate::rustc_hir::def_id::LOCAL_CRATE;
@@ -75,8 +72,7 @@ fn incremental_verify_ich_failed<'tcx>(
     // process out of thread-local slots. That is read here as "not already inside" - the same
     // answer the old thread-local gave on a thread that had never entered this function - so a
     // failure to allocate the slot costs the terse reentrant message, not the diagnostic.
-    static INSIDE_VERIFY_PANIC: eko::thread::ThreadLocal<bool> =
-        eko::thread::ThreadLocal::new();
+    static INSIDE_VERIFY_PANIC: eko::thread::ThreadLocal<bool> = eko::thread::ThreadLocal::new();
 
     let old_in_panic = INSIDE_VERIFY_PANIC
         .with(|| false, |inside| core::mem::replace(inside, true))

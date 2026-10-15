@@ -43,21 +43,20 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::boxed::Box;
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::result::Result;
 use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use core::hash::Hash;
 use core::ops::{Deref, DerefMut};
-use eko::path::{Path, PathBuf};
+use core::result::Result;
 use core::str::FromStr;
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_abi::{
     Align, CVariadicStatus, CanonAbi, Endian, ExternAbi, Integer, Size, TargetDataLayout,
@@ -65,8 +64,8 @@ use crate::rustc_abi::{
 };
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_error_messages::{DiagArgValue, IntoDiagArg, into_diag_arg_using_display};
-use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use crate::rustc_span::{Symbol, kw, sym};
+use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use serde_json::Value;
 use tracing::debug;
 
@@ -81,9 +80,9 @@ mod consistency;
 mod json;
 mod tuple;
 
+pub use crate::rustc_structures::SanitizerSet;
 pub use abi_map::{AbiMap, AbiMapping};
 pub use base::apple;
-pub use crate::rustc_structures::SanitizerSet;
 pub use tuple::TargetTuple;
 
 /// Linker is called through a C/C++ compiler.
@@ -759,6 +758,10 @@ crate::external_bitflags_debug! { LinkerFeatures }
 
 impl LinkerFeatures {
     /// Parses a single `-C linker-features` well-known feature, not a set of flags.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "returns None for an unsupported CLI feature instead of a FromStr error"
+    )]
     pub fn from_str(s: &str) -> Option<LinkerFeatures> {
         Some(match s {
             "cc" => LinkerFeatures::CC,

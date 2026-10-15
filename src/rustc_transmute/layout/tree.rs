@@ -177,8 +177,8 @@ where
     /// Produces `true` if `Tree` is an inhabited type; otherwise false.
     pub(crate) fn is_inhabited(&self) -> bool {
         match self {
-            Self::Seq(elts) => elts.into_iter().all(|elt| elt.is_inhabited()),
-            Self::Alt(alts) => alts.into_iter().any(|alt| alt.is_inhabited()),
+            Self::Seq(elts) => elts.iter().all(|elt| elt.is_inhabited()),
+            Self::Alt(alts) => alts.iter().any(|alt| alt.is_inhabited()),
             Self::Byte(..) | Self::Ref(..) | Self::Def(..) => true,
         }
     }
@@ -193,7 +193,7 @@ where
         mut bytes: [B; N],
     ) -> Self {
         if order == Endian::Little {
-            (&mut bytes[..]).reverse();
+            bytes[..].reverse();
         }
 
         Self::bytes(bytes)
@@ -214,7 +214,7 @@ where
     /// Produces a new `Tree` where `other` is sequenced after `self`.
     pub(crate) fn then(self, other: Self) -> Self {
         match (self, other) {
-            (Self::Seq(elts), other) | (other, Self::Seq(elts)) if elts.len() == 0 => other,
+            (Self::Seq(elts), other) | (other, Self::Seq(elts)) if elts.is_empty() => other,
             (Self::Seq(mut lhs), Self::Seq(mut rhs)) => {
                 lhs.append(&mut rhs);
                 Self::Seq(lhs)
@@ -234,7 +234,7 @@ where
     /// Produces a new `Tree` accepting either `self` or `other` as alternative layouts.
     pub(crate) fn or(self, other: Self) -> Self {
         match (self, other) {
-            (Self::Alt(alts), other) | (other, Self::Alt(alts)) if alts.len() == 0 => other,
+            (Self::Alt(alts), other) | (other, Self::Alt(alts)) if alts.is_empty() => other,
             (Self::Alt(mut lhs), Self::Alt(rhs)) => {
                 lhs.extend(rhs);
                 Self::Alt(lhs)
@@ -304,17 +304,17 @@ pub(crate) mod rustc {
 
                 ty::Float(nty) => {
                     let width = nty.bit_width() / 8;
-                    Ok(Self::number(width.try_into().unwrap()))
+                    Ok(Self::number(width))
                 }
 
                 ty::Int(nty) => {
                     let width = nty.normalize(pointer_size.bits() as _).bit_width().unwrap() / 8;
-                    Ok(Self::number(width.try_into().unwrap()))
+                    Ok(Self::number(width))
                 }
 
                 ty::Uint(nty) => {
                     let width = nty.normalize(pointer_size.bits() as _).bit_width().unwrap() / 8;
-                    Ok(Self::number(width.try_into().unwrap()))
+                    Ok(Self::number(width))
                 }
 
                 ty::Tuple(members) => Self::from_tuple((ty, layout), members, cx),

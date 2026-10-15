@@ -3,12 +3,9 @@
 //! type, and vice versa.
 
 // Explicit allocation imports keep this module compatible with the crate's no_std prelude.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::hash::{Hash, Hasher};
@@ -2482,6 +2479,10 @@ impl Ident {
     }
 
     /// Maps a string to an identifier with a dummy span.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "constructs an infallible dummy-span identifier rather than parsing a string"
+    )]
     pub fn from_str(string: &str) -> Ident {
         Ident::with_dummy_span(Symbol::intern(string))
     }
@@ -2791,10 +2792,8 @@ impl Symbol {
         let lowercase_sym = Symbol::intern(&lowercase);
         if candidates.contains(&lowercase_sym) {
             Some((lowercase_sym, true))
-        } else if let Some(similar_sym) = find_best_match_for_name(candidates, self, None) {
-            Some((similar_sym, false))
         } else {
-            None
+            find_best_match_for_name(candidates, self, None).map(|similar_sym| (similar_sym, false))
         }
     }
 }
@@ -3210,6 +3209,13 @@ struct SymbolIndices {
 }
 
 impl SymbolIndices {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retains the small-table constructor used by symbol interner tests"
+        )
+    )]
     fn new() -> SymbolIndices {
         Self::with_source_len(0, 0)
     }
@@ -3483,6 +3489,10 @@ impl Drop for SymbolStrs {
 impl Interner {
     /// Creates an `Interner` with the predefined symbols from the `symbols!` macro and
     /// any extra symbols provided by external drivers such as Clippy.
+    #[expect(
+        dead_code,
+        reason = "retains the external-driver constructor for predefined plus extra symbols"
+    )]
     pub(crate) fn with_extra_symbols(extra_symbols: &[&'static str]) -> Self {
         Self::with_extra_symbols_and_source_len(extra_symbols, 0)
     }
@@ -3541,7 +3551,7 @@ impl Interner {
             }
         }
 
-        if conflicting_values.len() != 0 {
+        if !conflicting_values.is_empty() {
             panic!(
                 "duplicate symbols in the rustc symbol list and the extra symbols added by the driver: {:?}",
                 conflicting_values
@@ -3597,9 +3607,8 @@ impl Interner {
                 // store copies the initialized byte slice into the interner's arena, so
                 // no reference into `names` escapes. Duplicate misses reuse the prior entry.
                 let local = unsafe {
-                    self.indices.find_or_insert(bytes, hash, &self.strs, miss, || {
-                        inner.store(bytes, None)
-                    })
+                    self.indices
+                        .find_or_insert(bytes, hash, &self.strs, miss, || inner.store(bytes, None))
                 };
                 out[position] = Symbol::new(global_index(base, local));
             }
@@ -3723,10 +3732,6 @@ pub mod kw {
 ///
 /// Given that `sym` is imported, use them like `sym::symbol_name`.
 /// For example `sym::rustfmt` or `sym::u8`.
-#[diagnostic::on_unknown(
-    label = "`{Unresolved}` is not a pre-interned symbol",
-    note = "consider adding `{Unresolved}` to the `symbols!` invocation in compiler/rustc_span/src/symbol.rs"
-)]
 pub mod sym {
     use super::Symbol;
     // Used from a macro in `librustc_feature/accepted.rs`
@@ -3748,10 +3753,10 @@ pub mod sym {
     /// The first few non-negative integers each have a static symbol and therefore
     /// are fast.
     pub fn integer<N: TryInto<usize> + Copy + itoa::Integer>(n: N) -> Symbol {
-        if let Result::Ok(idx) = n.try_into() {
-            if idx < 10 {
-                return Symbol::new(super::SYMBOL_DIGITS_BASE + idx as u32);
-            }
+        if let Result::Ok(idx) = n.try_into()
+            && idx < 10
+        {
+            return Symbol::new(super::SYMBOL_DIGITS_BASE + idx as u32);
         }
         let mut buffer = itoa::Buffer::new();
         let printed = buffer.format(n);

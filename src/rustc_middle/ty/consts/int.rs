@@ -1,21 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 use core::num::NonZero;
 
 use crate::rustc_abi::Size;
-use rustc_apfloat::Float;
-use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_apfloat::Float;
+use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 
 use crate::rustc_middle::ty::TyCtxt;
 
@@ -127,7 +121,7 @@ impl core::fmt::Debug for ConstInt {
                     2 => write!(fmt, "{}", raw as u16)?,
                     4 => write!(fmt, "{}", raw as u32)?,
                     8 => write!(fmt, "{}", raw as u64)?,
-                    16 => write!(fmt, "{}", raw as u128)?,
+                    16 => write!(fmt, "{}", { raw })?,
                     _ => bug!("ConstInt 0x{:x} with size = {} and signed = {}", raw, size, signed),
                 }
                 if fmt.alternate() {
@@ -152,7 +146,7 @@ impl core::fmt::Debug for ConstInt {
 /// This is a packed struct in order to allow this type to be optimally embedded in enums
 /// (like Scalar).
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
-#[repr(packed)]
+#[repr(Rust, packed)]
 pub struct ScalarInt {
     /// The first `size` bytes of `data` are the value.
     /// Do not try to read less or more bytes than that. The remaining bytes must be 0.
@@ -379,6 +373,10 @@ impl ScalarInt {
     /// Panics if the `size` of the `ScalarInt` is not equal to 1 byte.
     /// Errors if it is not a valid `bool`.
     #[inline]
+    #[expect(
+        clippy::result_unit_err,
+        reason = "invalid boolean scalars have no diagnostic payload at this conversion layer"
+    )]
     pub fn try_to_bool(self) -> Result<bool, ()> {
         match self.to_u8() {
             0 => Ok(false),

@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
@@ -23,16 +20,21 @@ use crate::rustc_hashes::Hash128;
 use crate::rustc_hir::ItemId;
 use crate::rustc_hir::attrs::{InlineAttr, Linkage};
 use crate::rustc_hir::def_id::{CrateNum, DefId, DefIdSet, LOCAL_CRATE};
-use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use crate::rustc_session::config::OptLevel;
-use crate::rustc_span::{Span, Symbol};
+use crate::rustc_span::{Span, Spanned, Symbol};
 use crate::rustc_target::spec::SymbolVisibility;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use tracing::debug;
 
 use crate::rustc_middle::dep_graph::dep_node::{make_compile_codegen_unit, make_compile_mono_item};
 use crate::rustc_middle::dep_graph::{DepNode, WorkProduct, WorkProductId};
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
-use crate::rustc_middle::ty::{self, GenericArgs, Instance, InstanceKind, ShimKind, SymbolName, Ty, TyCtxt};
+use crate::rustc_middle::ty::{
+    self, GenericArgs, Instance, InstanceKind, ShimKind, SymbolName, Ty, TyCtxt,
+};
+
+/// The used and mentioned monomorphization items collected for one instance.
+pub type MonoItemGroups<'tcx> = (&'tcx [Spanned<MonoItem<'tcx>>], &'tcx [Spanned<MonoItem<'tcx>>]);
 
 /// Describes how a monomorphization will be instantiated in object files.
 #[derive(PartialEq)]
@@ -288,7 +290,7 @@ impl<'tcx> MonoItem<'tcx> {
             MonoItem::GlobalAsm(..) => return true,
         };
 
-        !tcx.instantiate_and_check_impossible_clauses((def_id, &args))
+        !tcx.instantiate_and_check_impossible_clauses((def_id, args))
     }
 
     pub fn local_span(&self, tcx: TyCtxt<'tcx>) -> Option<Span> {
@@ -571,8 +573,7 @@ impl<'tcx> CodegenUnit<'tcx> {
         fn item_sort_key<'tcx>(tcx: TyCtxt<'tcx>, item: MonoItem<'tcx>) -> ItemSortKey<'tcx> {
             ItemSortKey(
                 local_item_id(item)
-                    .map(|def_id| tcx.def_span(def_id).find_ancestor_not_from_macro())
-                    .flatten(),
+                    .and_then(|def_id| tcx.def_span(def_id).find_ancestor_not_from_macro()),
                 item.symbol_name(tcx),
             )
         }

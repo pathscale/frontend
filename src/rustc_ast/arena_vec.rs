@@ -88,9 +88,8 @@ impl<T> ArenaVec<T> {
 
         // Finish fallible iteration and allocations before moving existing elements.
         let replacement: Vec<T> = replace_with.into_iter().collect();
-        let final_len = (len - (end - start))
-            .checked_add(replacement.len())
-            .expect("AST list too large");
+        let final_len =
+            (len - (end - start)).checked_add(replacement.len()).expect("AST list too large");
         let mut tail = Vec::with_capacity(len - end);
         let mut removed = Vec::with_capacity(end - start);
         self.0.reserve_exact(final_len);

@@ -1,6 +1,6 @@
+use crate::debug_assert_matches;
 use alloc::string::String;
 use alloc::string::ToString;
-use crate::debug_assert_matches;
 
 use crate::rustc_abi::IntegerType;
 use crate::rustc_data_structures::stable_hash::StableHasher;
@@ -104,7 +104,7 @@ impl<'tcx> AbiStableHash<'tcx> for Ty<'tcx> {
                 args.as_slice().abi_stable_hash(tcx, hasher);
             }
 
-            ty::Tuple(args) if args.len() == 0 => {}
+            ty::Tuple(args) if args.is_empty() => {}
 
             // FIXME: Not yet supported.
             ty::Foreign(_)

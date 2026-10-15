@@ -215,7 +215,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -226,10 +225,10 @@ use alloc::borrow::Cow;
 // The `io::` self-import was unused. `Write` is the `write!` trait, which is `core::fmt::Write`
 // now; `eko::file::File` and `Stream` both implement it.
 use core::fmt::Write;
-use eko::file::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult};
 use core::ops::Deref;
-use eko::path::{Path, PathBuf};
 use core::{cmp, fmt};
+use eko::file::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult};
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_crate_store::CrateSource;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
@@ -253,6 +252,10 @@ use crate::rustc_metadata::rmeta::{METADATA_HEADER, MetadataBlob};
 #[derive(Clone)]
 pub(crate) struct CrateLocator<'a> {
     // Immutable per-session configuration.
+    #[expect(
+        dead_code,
+        reason = "retains the metadata-only selection state for crate search policy"
+    )]
     only_needs_metadata: bool,
     metadata_loader: &'a dyn MetadataLoader,
 
@@ -309,7 +312,10 @@ impl fmt::Display for CrateFlavor {
 }
 
 impl IntoDiagArg for CrateFlavor {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        _: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         match self {
             CrateFlavor::Rlib => DiagArgValue::Str(Cow::Borrowed("rlib")),
             CrateFlavor::Rmeta => DiagArgValue::Str(Cow::Borrowed("rmeta")),
@@ -408,6 +414,10 @@ impl<'a> CrateLocator<'a> {
         self.path_kind = path_kind;
     }
 
+    #[expect(
+        dead_code,
+        reason = "retains target setup for WebAssembly proc-macro metadata loading"
+    )]
     pub(crate) fn for_wasm_proc_macro(&mut self, sess: &'a Session, path_kind: PathKind) {
         self.is_proc_macro = true;
         self.target = &sess.wasm_proc_macro_target;
@@ -644,17 +654,15 @@ impl<'a> CrateLocator<'a> {
         //
         // See also #68149 which provides more detail on why emitting the
         // dependency on the rlib is a bad thing.
-        if slot.is_some() {
-            if m.is_empty() || !self.needs_crate_flavor(flavor) {
-                return Ok(None);
-            }
+        if slot.is_some() && (m.is_empty() || !self.needs_crate_flavor(flavor)) {
+            return Ok(None);
         }
 
         let mut ret: Option<PathBuf> = None;
         let mut err_data: Option<Vec<PathBuf>> = None;
         for lib in m {
             info!("{} reading metadata from: {}", flavor, lib.display());
-            if flavor == CrateFlavor::Rmeta && lib.metadata().is_ok_and(|m| m.len() == 0) {
+            if flavor == CrateFlavor::Rmeta && lib.metadata().is_ok_and(|m| m.is_empty()) {
                 // Empty files will cause get_metadata_section to fail. Rmeta
                 // files can be empty, for example with binaries (which can
                 // often appear with `cargo check` when checking a library as
@@ -663,36 +671,32 @@ impl<'a> CrateLocator<'a> {
                 debug!("skipping empty file");
                 continue;
             }
-            let (hash, metadata) = match get_metadata_section(
-                self.target,
-                flavor,
-                &lib,
-                self.metadata_loader,
-            ) {
-                Ok(blob) => {
-                    if let Some(h) = self.crate_matches(crate_rejections, &blob, &lib) {
-                        (h, blob)
-                    } else {
-                        info!("metadata mismatch");
+            let (hash, metadata) =
+                match get_metadata_section(self.target, flavor, &lib, self.metadata_loader) {
+                    Ok(blob) => {
+                        if let Some(h) = self.crate_matches(crate_rejections, &blob, &lib) {
+                            (h, blob)
+                        } else {
+                            info!("metadata mismatch");
+                            continue;
+                        }
+                    }
+                    Err(MetadataError::LoadFailure(err)) => {
+                        info!("no metadata found: {}", err);
+                        // Metadata was loaded from interface file earlier.
+                        if let Some((.., CrateFlavor::SDylib)) = slot {
+                            ret = Some(lib);
+                            continue;
+                        }
+                        // Preserve why a present metadata file could not be read.
+                        crate_rejections.via_invalid.push(CrateMismatch { path: lib, got: err });
                         continue;
                     }
-                }
-                Err(MetadataError::LoadFailure(err)) => {
-                    info!("no metadata found: {}", err);
-                    // Metadata was loaded from interface file earlier.
-                    if let Some((.., CrateFlavor::SDylib)) = slot {
-                        ret = Some(lib);
+                    Err(err @ MetadataError::NotPresent(_)) => {
+                        info!("no metadata found: {}", err);
                         continue;
                     }
-                    // Preserve why a present metadata file could not be read.
-                    crate_rejections.via_invalid.push(CrateMismatch { path: lib, got: err });
-                    continue;
-                }
-                Err(err @ MetadataError::NotPresent(_)) => {
-                    info!("no metadata found: {}", err);
-                    continue;
-                }
-            };
+                };
             // If we see multiple hashes, emit an error about duplicate candidates.
             if slot.as_ref().is_some_and(|s| s.0 != hash) {
                 if let Some(candidates) = err_data {
@@ -766,14 +770,14 @@ impl<'a> CrateLocator<'a> {
         }
 
         let hash = header.hash;
-        if let Some(expected_hash) = self.hash {
-            if hash != expected_hash {
-                info!("Rejecting via hash: expected {} got {}", expected_hash, hash);
-                crate_rejections
-                    .via_hash
-                    .push(CrateMismatch { path: libpath.to_path_buf(), got: hash.to_string() });
-                return None;
-            }
+        if let Some(expected_hash) = self.hash
+            && hash != expected_hash
+        {
+            info!("Rejecting via hash: expected {} got {}", expected_hash, hash);
+            crate_rejections
+                .via_hash
+                .push(CrateMismatch { path: libpath.to_path_buf(), got: hash.to_string() });
+            return None;
         }
 
         Some(hash)
@@ -923,7 +927,7 @@ fn get_metadata_section<'p>(
     Ok(blob)
 }
 
-fn get_rmeta_metadata_section<'a, 'p>(filename: &'p Path) -> Result<OwnedSlice, MetadataError<'a>> {
+fn get_rmeta_metadata_section<'a>(filename: &Path) -> Result<OwnedSlice, MetadataError<'a>> {
     // mmap the file, because only a small fraction of it is read.
     let file = eko::file::File::open(filename).map_err(|_| {
         MetadataError::LoadFailure(format!(
@@ -1014,6 +1018,7 @@ pub(crate) enum CrateError {
     ExternLocationNotFile(Symbol, PathBuf),
     MultipleCandidates(Symbol, CrateFlavor, Vec<PathBuf>),
     FullMetadataNotFound(Symbol, CrateFlavor),
+    #[expect(dead_code, reason = "retains the proc-macro dynamic library load error case")]
     ProcMacroDylibLoad(Symbol, String),
     SymbolConflictsCurrent(Symbol),
     StableCrateIdCollision(Symbol, Symbol),
@@ -1117,11 +1122,7 @@ impl CrateError {
                 dcx.emit_err(diagnostics::FullMetadataNotFound { span, crate_name, flavor });
             }
             CrateError::ProcMacroDylibLoad(crate_name, reason) => {
-                dcx.emit_err(diagnostics::ProcMacroDylibLoad {
-                    span,
-                    crate_name,
-                    reason: &reason,
-                });
+                dcx.emit_err(diagnostics::ProcMacroDylibLoad { span, crate_name, reason: &reason });
             }
             CrateError::SymbolConflictsCurrent(root_name) => {
                 dcx.emit_err(diagnostics::SymbolConflictsCurrent { span, crate_name: root_name });

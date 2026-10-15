@@ -1,21 +1,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::{self as hir, AmbigArg};
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::print::{PrintTraitClauseExt as _, TraitClausePrintModifiersAndPath};
 use crate::rustc_middle::ty::{self, BottomUpFolder, Ty, TypeFoldable, Unnormalized};
 use crate::rustc_span::{Span, kw};
 use crate::rustc_trait_selection::traits::{self, ObligationCtxt};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_lint::{LateContext, LateLintPass, LintContext};
 

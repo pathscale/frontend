@@ -11,7 +11,6 @@ use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, kw, respan, sym};
 use alloc::boxed::Box;
 use ast::token::IdentIsRaw;
-use thin_vec::ThinVec;
 use tracing::debug;
 
 use super::diagnostics::dummy_arg;
@@ -114,6 +113,10 @@ pub(crate) enum FnContext {
 /// Parsing of functions and methods.
 impl<'a> Parser<'a> {
     /// Parse a function starting from the front matter (`const ...`) to the body `{ ... }` or `;`.
+    #[expect(
+        clippy::type_complexity,
+        reason = "returns the parsed signature and body as one parser result"
+    )]
     pub(super) fn parse_fn(
         &mut self,
         attrs: &mut AttrVec,
@@ -825,9 +828,9 @@ impl<'a> Parser<'a> {
                 debug!("parse_param_general ident_to_pat");
                 // Only diagnostic recovery restores this snapshot. The deferred syntax
                 // attempt propagates failures for replay by a fresh normal parser.
-                let parser_snapshot_before_ty =
-                    (recover_arg_parse && !this.expected_token_types.is_deferred())
-                        .then(|| this.create_snapshot_for_diagnostic());
+                let parser_snapshot_before_ty = (recover_arg_parse
+                    && !this.expected_token_types.is_deferred())
+                .then(|| this.create_snapshot_for_diagnostic());
                 this.eat_incorrect_doc_comment_for_param_type();
                 let mut ty = this.parse_ty_for_param();
 
@@ -1030,12 +1033,10 @@ impl<'a> Parser<'a> {
 
     fn is_named_param(&self) -> bool {
         let offset = match &self.token.kind {
-            token::OpenInvisible(origin) => match origin {
-                InvisibleOrigin::MetaVar(MetaVarKind::Pat(_)) => {
-                    return self.check_noexpect_past_close_delim(&token::Colon);
-                }
-                _ => 0,
-            },
+            token::OpenInvisible(InvisibleOrigin::MetaVar(MetaVarKind::Pat(_))) => {
+                return self.check_noexpect_past_close_delim(&token::Colon);
+            }
+            token::OpenInvisible(_) => 0,
             token::And | token::AndAnd => 1,
             _ if self.token.is_keyword(kw::Mut) => 1,
             _ => 0,

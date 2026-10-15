@@ -7,8 +7,6 @@
 //! When removing a lint, make sure to also add a call to `register_removed` in
 //! compiler/rustc_lint/src/lib.rs.
 
-use alloc::boxed::Box;
-use alloc::string::String;
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass, fcw};
 
 pub mod hardwired {
@@ -2695,6 +2693,7 @@ declare_lint! {
 }
 
 declare_lint! {
+    #[expect(clippy::needless_doctest_main, reason = "the example requires a test nested inside main")]
     /// The `unnameable_test_items` lint detects [`#[test]`][test] functions
     /// that are not able to be run by the test harness because they are in a
     /// position where they are not nameable.

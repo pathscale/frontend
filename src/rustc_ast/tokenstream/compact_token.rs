@@ -32,11 +32,8 @@ impl CompactToken {
         has_group: bool,
         has_aux_u32: bool,
     ) -> Self {
-        let mut len_and_flags = if len < COMPACT_LEN_OVERFLOW as u32 {
-            len as u16
-        } else {
-            COMPACT_LEN_OVERFLOW
-        };
+        let mut len_and_flags =
+            if len < COMPACT_LEN_OVERFLOW as u32 { len as u16 } else { COMPACT_LEN_OVERFLOW };
         len_and_flags |= match spacing {
             Spacing::Alone => 0,
             Spacing::Joint => COMPACT_FLAG_JOINT,
@@ -89,6 +86,13 @@ impl CompactToken {
     }
 
     #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retains compact token payload-flag decoding for indexed tape consumers"
+        )
+    )]
     pub(crate) const fn has_aux_u32(self) -> bool {
         self.len_and_flags & COMPACT_FLAG_HAS_AUX_U32 != 0
     }

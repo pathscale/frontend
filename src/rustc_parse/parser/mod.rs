@@ -286,12 +286,6 @@ impl ParserListScratchSlot {
     }
 }
 
-pub(super) fn take_thin_vec<T>(scratch: &mut Vec<T>, start: usize) -> ThinVec<T> {
-    let mut result = ThinVec::with_capacity(scratch.len() - start);
-    result.extend(scratch.drain(start..));
-    result
-}
-
 pub(super) fn take_arena_vec<T>(scratch: &mut Vec<T>, start: usize) -> ast::ArenaVec<T> {
     let mut result = ast::ArenaVec::with_capacity(scratch.len() - start);
     result.extend(scratch.drain(start..));
@@ -580,8 +574,7 @@ impl<'a> Parser<'a> {
         if self.token != token::Eof && self.last_unexpected_token_span == Some(self.token.span) {
             FatalError.raise();
         } else {
-            self.expected_one_of_not_found(edible, inedible)
-                .map(|error_guaranteed| Recovered::Yes(error_guaranteed))
+            self.expected_one_of_not_found(edible, inedible).map(Recovered::Yes)
         }
     }
 
@@ -882,10 +875,12 @@ impl<'a> Parser<'a> {
 
     fn check_inline_const(&self, dist: usize) -> bool {
         self.is_keyword_ahead(dist, &[kw::Const])
-            && self.look_ahead(dist + 1, |t| match &t.kind {
-                token::OpenBrace => true,
-                token::OpenInvisible(InvisibleOrigin::MetaVar(MetaVarKind::Block)) => true,
-                _ => false,
+            && self.look_ahead(dist + 1, |t| {
+                matches!(
+                    &t.kind,
+                    token::OpenBrace
+                        | token::OpenInvisible(InvisibleOrigin::MetaVar(MetaVarKind::Block))
+                )
             })
     }
 

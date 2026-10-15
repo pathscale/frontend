@@ -85,7 +85,6 @@ use alloc::vec::Vec;
 
 use core::mem;
 
-use interpret::ErrorHandled;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::HirId;
 use crate::rustc_index::{IndexSlice, IndexVec};
@@ -97,6 +96,7 @@ use crate::rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitableExt, ValTree};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_pattern_analysis::rustc::RustcPatCtxt;
 use crate::rustc_span::{DUMMY_SP, Span, Spanned};
+use interpret::ErrorHandled;
 use tracing::{debug, instrument};
 
 use super::matches::BuiltMatchTree;
@@ -275,8 +275,8 @@ impl Scope {
     ///  * polluting the cleanup MIR with StorageDead creates
     ///    landing pads even though there's no actual destructors
     ///  * freeing up stack space has no effect during unwinding
-    /// Note that for coroutines we do emit StorageDeads, for the
-    /// use of optimizations in the MIR coroutine transform.
+    ///    Note that for coroutines we do emit StorageDeads, for the
+    ///    use of optimizations in the MIR coroutine transform.
     fn needs_cleanup(&self) -> bool {
         self.drops.iter().any(|drop| match drop.kind {
             DropKind::Value | DropKind::ForLint => true,
@@ -352,8 +352,8 @@ impl DropTree {
     ) -> IndexVec<DropIdx, Option<BasicBlock>> {
         debug!("DropTree::build_mir(drops = {:#?})", self);
 
-        let mut blocks = self.assign_blocks::<T>(cfg, root_node);
-        self.link_blocks(cfg, &mut blocks);
+        let blocks = self.assign_blocks::<T>(cfg, root_node);
+        self.link_blocks(cfg, &blocks);
 
         blocks
     }
@@ -399,8 +399,10 @@ impl DropTree {
             if entry_points.last().is_some_and(|entry_point| entry_point.0 == drop_idx) {
                 let block = *blocks[drop_idx].get_or_insert_with(|| T::make_block(cfg));
                 needs_block[drop_idx] = Block::Own;
-                while entry_points.last().is_some_and(|entry_point| entry_point.0 == drop_idx) {
-                    let entry_block = entry_points.pop().unwrap().1;
+                while let Some(entry_block) = entry_points
+                    .pop_if(|entry_point| entry_point.0 == drop_idx)
+                    .map(|entry_point| entry_point.1)
+                {
                     T::link_entry_point(cfg, entry_block, block);
                 }
             }
@@ -688,7 +690,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         F: FnOnce(&mut Builder<'a, 'tcx>) -> BlockAnd<()>,
     {
         let scope = IfThenScope { region_scope, else_drops: self.scopes.new_drop_tree() };
-        let previous_scope = mem::replace(&mut self.scopes.if_then_scope, Some(scope));
+        let previous_scope = self.scopes.if_then_scope.replace(scope);
 
         let then_block = f(self).into_block();
 
@@ -1026,7 +1028,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         };
 
         let Some(real_target) =
-            self.static_pattern_match(&cx, valtree, &*scope.arms, &scope.built_match_tree)
+            self.static_pattern_match(&cx, valtree, &scope.arms, &scope.built_match_tree)
         else {
             self.tcx.dcx().emit_fatal(ConstContinueUnknownJumpTarget { span })
         };
@@ -1080,7 +1082,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
         self.build_exit_tree(drops, region_scope, span, Some(real_target));
 
-        return self.cfg.start_new_block().unit();
+        self.cfg.start_new_block().unit()
     }
 
     /// Sets up the drops for breaking from `block` due to an `if` condition
@@ -1827,9 +1829,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 ///   panic occurred (a subset of the drops in `scope`, since we sometimes elide StorageDead and other
 ///   instructions on unwinding)
 /// * `dropline_to`, describes the drops that would occur at this point in the code if a
-///    coroutine drop occurred.
+///   coroutine drop occurred.
 /// * `storage_dead_on_unwind`, if true, then we should emit `StorageDead` even when unwinding
 /// * `arg_count`, number of MIR local variables corresponding to fn arguments (used to assert that we don't drop those)
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keeps the distinct normal, unwind, and coroutine drop destinations explicit"
+)]
 fn build_scope_drops<'tcx, F>(
     cfg: &mut CFG<'tcx>,
     unwind_drops: &mut DropTree,

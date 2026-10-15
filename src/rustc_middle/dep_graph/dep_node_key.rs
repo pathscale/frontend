@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::Debug;
 
@@ -272,10 +266,8 @@ mod opaque_keys {
     impl<'tcx, 'k> DepNodeKey<'tcx> for (Ty<'k>, Ty<'k>) {}
     impl<'tcx, 'k> DepNodeKey<'tcx> for ty::Clauses<'k> {}
     impl<'tcx, 'k> DepNodeKey<'tcx> for ty::AliasTyKind<'k> {}
-    impl<'tcx, 'k, T> DepNodeKey<'tcx> for ty::PseudoCanonicalInput<'k, T> where
-        Self: StableHash + Debug
-    {
-    }
+    impl<'tcx, 'k, T> DepNodeKey<'tcx> for ty::PseudoCanonicalInput<'k, T> where Self: StableHash + Debug
+    {}
     impl<'tcx> DepNodeKey<'tcx> for Symbol {}
     impl<'tcx> DepNodeKey<'tcx> for Option<Symbol> {}
     impl<'tcx, 'k> DepNodeKey<'tcx> for &'k [u8] {}

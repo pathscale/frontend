@@ -4,7 +4,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -18,12 +17,11 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use core::cell::Cell;
 use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::Cell;
 
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_ast as ast;
@@ -124,7 +122,7 @@ impl<'a> State<'a> {
                     ast::AttrStyle::Inner => self.word("#!["),
                     ast::AttrStyle::Outer => self.word("#["),
                 }
-                self.print_attr_item(&unparsed, unparsed.span);
+                self.print_attr_item(unparsed, unparsed.span);
                 self.word("]");
                 self.hardbreak()
             }
@@ -170,7 +168,7 @@ impl<'a> State<'a> {
                     None,
                     *delim,
                     None,
-                    &tokens,
+                    tokens,
                     true,
                     span,
                 ),
@@ -463,7 +461,7 @@ impl<'a> State<'a> {
                     self.print_lifetime(lifetime.pointer());
                 }
             }
-            hir::TyKind::Array(ty, ref length) => {
+            hir::TyKind::Array(ty, length) => {
                 self.word("[");
                 self.print_type(ty);
                 self.word("; ");
@@ -904,6 +902,10 @@ impl<'a> State<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "struct printing keeps syntax, source span and layout markers distinct"
+    )]
     fn print_struct(
         &mut self,
         name: Symbol,
@@ -961,7 +963,7 @@ impl<'a> State<'a> {
         let (cb, ib) = self.head("");
         let generics = hir::Generics::empty();
         self.print_struct(v.ident.name, generics, &v.data, v.span, false, cb, ib);
-        if let Some(ref d) = v.disr_expr {
+        if let Some(d) = v.disr_expr {
             self.space();
             self.word_space("=");
             self.print_anon_const(d);
@@ -1534,7 +1536,7 @@ impl<'a> State<'a> {
                     // Not using `print_inline_const` to avoid additional `const { ... }`
                     s.ann.nested(s, Nested::Body(anon_const.body))
                 }
-                hir::InlineAsmOperand::SymFn { ref expr } => {
+                hir::InlineAsmOperand::SymFn { expr } => {
                     s.word("sym_fn");
                     s.space();
                     s.print_expr(expr);
@@ -1573,7 +1575,7 @@ impl<'a> State<'a> {
             hir::ExprKind::ConstBlock(ref anon_const) => {
                 self.print_inline_const(anon_const);
             }
-            hir::ExprKind::Repeat(element, ref count) => {
+            hir::ExprKind::Repeat(element, count) => {
                 self.print_expr_repeat(element, count);
             }
             hir::ExprKind::Struct(qpath, fields, wth) => {
@@ -2235,7 +2237,7 @@ impl<'a> State<'a> {
         self.print_attrs(self.attrs(arm.hir_id));
         self.print_pat(arm.pat);
         self.space();
-        if let Some(ref g) = arm.guard {
+        if let Some(g) = arm.guard {
             self.word_space("if");
             self.print_expr(g);
             self.space();

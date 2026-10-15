@@ -1,8 +1,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![cfg_attr(test, feature(test))]
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -16,9 +14,8 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::vec::Vec;
 pub(crate) use crate::rustc_data_structures::fx::{FxIndexMap as Map, FxIndexSet as Set};
+use alloc::vec::Vec;
 
 pub mod layout;
 mod maybe_transmutable;
@@ -123,8 +120,10 @@ mod rustc {
             dst: Ty<'tcx>,
             assume: crate::rustc_transmute::Assume,
         ) -> crate::rustc_transmute::Answer<Region<'tcx>, Ty<'tcx>> {
-            crate::rustc_transmute::maybe_transmutable::MaybeTransmutableQuery::new(src, dst, assume, self.tcx)
-                .answer()
+            crate::rustc_transmute::maybe_transmutable::MaybeTransmutableQuery::new(
+                src, dst, assume, self.tcx,
+            )
+            .answer()
         }
     }
 

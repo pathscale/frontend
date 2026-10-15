@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use frontend::frontend_facts::{CrateRead, Dependency, FactOrigin, Loaded, read_crate};
-use frontend::rustc_expand::proc_macro_schema::{ExactPart, ProcMacroSchema, SchemaHole, analyze_source};
+use frontend::rustc_expand::proc_macro_schema::{
+    ExactPart, ProcMacroSchema, SchemaHole, analyze_source,
+};
 use frontend::rustc_session::parse::ParseSess;
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
@@ -53,7 +55,8 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("frontend-proc-schema-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("frontend-proc-schema-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("a temporary directory");
         Scratch(root)
@@ -257,9 +260,10 @@ fn exact_and_opaque_derives_transcribe_from_loaded_metadata_without_an_interpret
 
 fn package_dirs(root: &Path, package: &str, found: &mut Vec<PathBuf>) {
     let package_name = |path: &Path| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == package || name.strip_prefix(package).is_some_and(|suffix| suffix.starts_with('-')))
+        path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+            name == package
+                || name.strip_prefix(package).is_some_and(|suffix| suffix.starts_with('-'))
+        })
     };
     if package_name(root) {
         found.push(root.to_path_buf());
@@ -317,7 +321,9 @@ fn schema_registry_projection_sources() {
     assert!(data.iter().any(|source| {
         source.contains("pub struct Field") && source.contains("pub ident: Option<Ident>")
     }));
-    assert!(format.iter().any(|source| {
-        source.contains("format_ident") && source.contains("Ident::new")
-    }));
+    assert!(
+        format
+            .iter()
+            .any(|source| { source.contains("format_ident") && source.contains("Ident::new") })
+    );
 }

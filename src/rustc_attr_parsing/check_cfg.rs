@@ -1,11 +1,11 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_session::Session;
 use crate::rustc_session::config::ExpectedValues;
 use crate::rustc_span::def_id::LOCAL_CRATE;
 use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::{ExpnKind, Ident, Span, Symbol, sym};
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use crate::rustc_attr_parsing::diagnostics;
 
@@ -114,7 +114,8 @@ pub(crate) fn unexpected_cfg_name(
     sess: &Session,
     (name, name_span): (Symbol, Span),
     value: Option<(Symbol, Span)>,
-) -> diagnostics::UnexpectedCfgName {    let possibilities: Vec<Symbol> = sess.check_config.expecteds.keys().copied().collect();
+) -> diagnostics::UnexpectedCfgName {
+    let possibilities: Vec<Symbol> = sess.check_config.expecteds.keys().copied().collect();
 
     let mut names_possibilities: Vec<_> = if value.is_none() {
         // We later sort and display all the possibilities, so the order here does not matter.
@@ -436,7 +437,8 @@ pub(crate) fn unexpected_cfg_value(
     }
 }
 
-fn possible_well_known_names_for_cfg_value(sess: &Session, value: Symbol) -> Vec<Symbol> {    let mut names = sess
+fn possible_well_known_names_for_cfg_value(sess: &Session, value: Symbol) -> Vec<Symbol> {
+    let mut names = sess
         .check_config
         .well_known_names
         .iter()

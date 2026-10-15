@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::rustc_errors::codes::*;
@@ -14,8 +11,8 @@ use crate::rustc_errors::{
     Applicability, Diag, DiagArgValue, DiagCtxtHandle, Diagnostic, ElidedLifetimeInPathSubdiag,
     EmissionGuarantee, IntoDiagArg, Level, MultiSpan, Subdiagnostic, msg,
 };
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Ident, Span, Spanned, Symbol};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_resolve::Res;
 use crate::rustc_resolve::late::PatternSource;
@@ -538,7 +535,11 @@ pub(crate) struct TraitImplDuplicate {
 pub(crate) struct Relative2018 {
     #[primary_span]
     pub(crate) span: Span,
-    #[suggestion("try", code = "crate::rustc_resolve::{path_str}", applicability = "maybe-incorrect")]
+    #[suggestion(
+        "try",
+        code = "crate::rustc_resolve::{path_str}",
+        applicability = "maybe-incorrect"
+    )]
     pub(crate) path_span: Span,
     pub(crate) path_str: String,
 }

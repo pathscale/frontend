@@ -1,20 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::{fmt, iter};
 
-use arrayvec::ArrayVec;
 use crate::rustc_abi::{
     AddressSpace, Align, BackendRepr, CanonAbi, ExternAbi, FieldsShape, HasDataLayout, Primitive,
     Reg, RegKind, Scalar, Size, TyAbiInterface, TyAndLayout, Variants,
 };
+use arrayvec::ArrayVec;
 use rustc_macros::StableHash;
 
 pub use crate::rustc_target::spec::AbiMap;
@@ -165,6 +160,12 @@ pub struct ArgAttributes {
     pub pointee_size: Size,
     /// The minimum alignment of the pointee, if any.
     pub pointee_align: Option<Align>,
+}
+
+impl Default for ArgAttributes {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ArgAttributes {
@@ -861,7 +862,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
                     }
                 }
 
-                BackendRepr::SimdVector { .. } => {
+                BackendRepr::SimdVector { .. }
                     // This is a fun case! The gist of what this is doing is
                     // that we want callers and callees to always agree on the
                     // ABI of how they pass SIMD arguments. If we were to *not*
@@ -881,10 +882,9 @@ impl<'a, Ty> FnAbi<'a, Ty> {
                     // We *could* do better in some cases, e.g. on x86_64 targets where SSE2 is
                     // required. However, it turns out that that makes LLVM worse at optimizing this
                     // code, so we pass things indirectly even there. See #139029 for more on that.
-                    if spec.simd_types_indirect {
+                    if spec.simd_types_indirect => {
                         arg.make_indirect();
                     }
-                }
 
                 _ => {}
             }

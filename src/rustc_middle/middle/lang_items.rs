@@ -10,12 +10,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::DefId;
@@ -29,8 +23,10 @@ impl<'tcx> TyCtxt<'tcx> {
     /// If not found, fatally aborts compilation.
     pub fn require_lang_item(self, lang_item: LangItem, span: Span) -> DefId {
         self.lang_items().get(lang_item).unwrap_or_else(|| {
-            self.dcx()
-                .emit_fatal(crate::rustc_middle::diagnostics::RequiresLangItem { span, name: lang_item.name() });
+            self.dcx().emit_fatal(crate::rustc_middle::diagnostics::RequiresLangItem {
+                span,
+                name: lang_item.name(),
+            });
         })
     }
 

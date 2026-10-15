@@ -38,7 +38,6 @@
 // ---------------------------------------------------------------------------------------------
 #[macro_use]
 // tidy-alphabetical-end
-
 #[cfg(test)]
 mod tests;
 
@@ -48,6 +47,7 @@ pub mod simd_ident_num;
 pub mod simd_scan;
 pub mod structural_tape;
 
+use alloc::vec::Vec;
 use core::str::Chars;
 
 use LiteralKind::*;
@@ -79,6 +79,30 @@ const _: () = {
 pub struct Token {
     pub kind: TokenKind,
     pub len: u32,
+}
+
+/// Facts collected while lexing. `tracked` means all LF offsets were appended;
+/// otherwise the newline output is unchanged and callers must scan the spelling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TokenScanMeta {
+    pub tracked: bool,
+    pub has_bidi: bool,
+    pub has_cr: bool,
+    pub clean_ascii_str: bool,
+}
+
+/// Borrowed only for one token, so a cursor never retains the caller's output.
+#[derive(Default)]
+struct TokenScan<'n> {
+    token_lo: u32,
+    newlines: Option<&'n mut Vec<u32>>,
+    meta: TokenScanMeta,
+}
+
+impl TokenScan<'_> {
+    fn offset(&self, pos: u32) -> u32 {
+        self.token_lo.checked_add(pos).expect("newline offset exceeds u32")
+    }
 }
 
 impl Token {
@@ -456,7 +480,7 @@ const ASCII_CLASSES: [u8; 256] = {
         if matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'_') {
             classes[byte] |= 1 | 4;
         }
-        if matches!(b, b'0'..=b'9') {
+        if b.is_ascii_digit() {
             classes[byte] |= 1;
         }
         if matches!(b, b'\t'..=b'\r' | b' ') {
@@ -607,14 +631,28 @@ impl<'a> Cursor<'a> {
     /// `eat_while(is_whitespace)`.
     #[inline]
     fn eat_whitespace(&mut self) {
+        self.eat_whitespace_with_scan(&mut TokenScan::default());
+    }
+
+    #[inline]
+    fn eat_whitespace_with_scan(&mut self, scan: &mut TokenScan<'_>) {
         loop {
-            let len = simd_scan::scan_ascii_whitespace(self.as_bytes());
+            let offset = scan.offset(self.pos_within_token());
+            let len = match scan.newlines.as_deref_mut() {
+                Some(newlines) => simd_scan::scan_ascii_whitespace_with_newlines(
+                    self.as_bytes(),
+                    offset,
+                    newlines,
+                ),
+                None => simd_scan::scan_ascii_whitespace(self.as_bytes()),
+            };
             self.advance_bytes(len);
             // The scanner stops before non-ASCII; consume Unicode whitespace as whole chars.
             let c = self.first();
             if c.is_ascii() || !is_whitespace(c) {
                 break;
             }
+            scan.meta.tracked = false;
             self.bump();
         }
     }
@@ -668,6 +706,58 @@ impl<'a> Cursor<'a> {
     /// Parses a token from the input string.
     #[inline]
     pub fn advance_token(&mut self) -> Token {
+        self.advance_token_inner(&mut TokenScan::default())
+    }
+
+    /// Lex a token and append LF offsets only when its metadata is complete.
+    pub fn advance_token_with_meta(
+        &mut self,
+        token_lo: u32,
+        newlines: &mut Vec<u32>,
+    ) -> (Token, TokenScanMeta) {
+        let spelling = self.as_str();
+        let nl_start = newlines.len();
+        let mut scan =
+            TokenScan { token_lo, newlines: Some(newlines), meta: TokenScanMeta::default() };
+        let token = self.advance_token_inner(&mut scan);
+        match token.kind {
+            Ident
+            | RawIdent
+            | Lifetime { .. }
+            | Literal { kind: Int { .. } | Float { .. }, .. } => {
+                scan.meta.tracked = spelling.as_bytes()[..token.len as usize].is_ascii();
+            }
+            Literal {
+                kind:
+                    Str { .. }
+                    | ByteStr { .. }
+                    | CStr { .. }
+                    | RawStr { .. }
+                    | RawByteStr { .. }
+                    | RawCStr { .. },
+                suffix_start,
+            } => {
+                let suffix = &spelling.as_bytes()[suffix_start as usize..token.len as usize];
+                scan.meta.tracked &= suffix.is_ascii();
+            }
+            Whitespace | LineComment { .. } | BlockComment { .. } => {}
+            Semi | Comma | Dot | OpenParen | CloseParen | OpenBrace | CloseBrace | OpenBracket
+            | CloseBracket | At | Pound | Tilde | Question | Colon | Dollar | Eq | Bang | Lt
+            | Gt | Minus | And | Or | Plus | Star | Slash | Caret | Percent | Eof => {
+                scan.meta.tracked = true
+            }
+            _ => scan.meta = TokenScanMeta::default(),
+        }
+        let meta = scan.meta;
+        if !meta.tracked {
+            // The caller will scan the complete spelling on a fallback path.
+            scan.newlines.as_deref_mut().expect("active newline tracking").truncate(nl_start);
+        }
+        (token, meta)
+    }
+
+    #[inline]
+    fn advance_token_inner(&mut self, scan: &mut TokenScan<'_>) -> Token {
         // Once a frontmatter can no longer start, a token with an ASCII first byte is
         // dispatched on that byte. The arms of `advance_token_general` that an ASCII char can
         // reach, less the two guarded by `FrontmatterAllowed::Yes`, are disjoint, so the byte
@@ -677,37 +767,38 @@ impl<'a> Cursor<'a> {
             && b < 0x80
         {
             self.bump_ascii(b);
-            let token_kind = self.ascii_token(b);
+            let token_kind = self.ascii_token(b, scan);
             let res = Token::new(token_kind, self.pos_within_token());
             self.reset_pos_within_token();
             return res;
         }
-        self.advance_token_general()
+        self.advance_token_general_with_scan(scan)
     }
 
     /// The token whose first char, the ASCII byte `b`, has just been bumped, with frontmatter
     /// no longer allowed. A dense match on a byte compiles to one jump table indexed by it.
     #[inline(always)]
-    fn ascii_token(&mut self, b: u8) -> TokenKind {
+    fn ascii_token(&mut self, b: u8, scan: &mut TokenScan<'_>) -> TokenKind {
         match b {
             // Slash, comment or block comment.
             b'/' => match self.as_str().as_bytes().first().copied() {
-                Some(b'/') => self.line_comment(),
-                Some(b'*') => self.block_comment(),
+                Some(b'/') => self.line_comment(scan),
+                Some(b'*') => self.block_comment(scan),
                 _ => Slash,
             },
 
             // Whitespace sequence: the ASCII part of `is_whitespace`.
-            b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ' => self.whitespace(),
+            b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ' => self.whitespace(b as char, scan),
 
             // Raw identifier, raw string literal or identifier.
-            b'r' => self.r_prefixed(),
+            b'r' => self.r_prefixed(scan),
 
             // Byte literal, byte string literal, raw byte string literal or identifier.
             b'b' => self.c_or_byte_string(
                 |terminated| ByteStr { terminated },
                 |n_hashes| RawByteStr { n_hashes },
                 Some(|terminated| Byte { terminated }),
+                scan,
             ),
 
             // c-string literal, raw c-string literal or identifier.
@@ -715,6 +806,7 @@ impl<'a> Cursor<'a> {
                 |terminated| CStr { terminated },
                 |n_hashes| RawCStr { n_hashes },
                 None,
+                scan,
             ),
 
             // Identifier: the ASCII part of `is_id_start`.
@@ -761,7 +853,7 @@ impl<'a> Cursor<'a> {
             b'\'' => self.lifetime_or_char(),
 
             // String literal.
-            b'"' => self.str_literal(),
+            b'"' => self.str_literal(scan),
 
             // No ASCII char is an emoji identifier start (that arm requires `!c.is_ascii()`).
             _ => Unknown,
@@ -770,11 +862,11 @@ impl<'a> Cursor<'a> {
 
     /// After `r`: a raw identifier, a raw string literal or an identifier.
     #[inline]
-    fn r_prefixed(&mut self) -> TokenKind {
+    fn r_prefixed(&mut self, scan: &mut TokenScan<'_>) -> TokenKind {
         match self.as_str().as_bytes().first().copied() {
             Some(b'#') if is_id_start(self.second()) => self.raw_ident(),
             Some(b'#' | b'"') => {
-                let res = self.raw_double_quoted_string(1);
+                let res = self.raw_double_quoted_string_with_scan(1, scan);
                 let suffix_start = self.pos_within_token();
                 if res.is_ok() {
                     self.eat_literal_suffix();
@@ -797,8 +889,8 @@ impl<'a> Cursor<'a> {
 
     /// After `"`: a string literal and, when terminated, its suffix.
     #[inline]
-    fn str_literal(&mut self) -> TokenKind {
-        let terminated = self.double_quoted_string();
+    fn str_literal(&mut self, scan: &mut TokenScan<'_>) -> TokenKind {
+        let terminated = self.double_quoted_string(scan);
         let suffix_start = self.pos_within_token();
         if terminated {
             self.eat_literal_suffix();
@@ -809,7 +901,12 @@ impl<'a> Cursor<'a> {
 
     /// `advance_token` for any first char: the one path while a frontmatter may still start,
     /// and for non-ASCII first chars.
+    #[cfg(test)]
     fn advance_token_general(&mut self) -> Token {
+        self.advance_token_general_with_scan(&mut TokenScan::default())
+    }
+
+    fn advance_token_general_with_scan(&mut self, scan: &mut TokenScan<'_>) -> Token {
         let Some(first_char) = self.bump() else {
             return Token::new(TokenKind::Eof, 0);
         };
@@ -818,13 +915,10 @@ impl<'a> Cursor<'a> {
             c if matches!(self.frontmatter_allowed, FrontmatterAllowed::Yes)
                 && is_whitespace(c) =>
             {
-                let mut last = first_char;
-                while is_whitespace(self.first()) {
-                    let Some(c) = self.bump() else {
-                        break;
-                    };
-                    last = c;
-                }
+                let rest = self.as_str();
+                self.whitespace(first_char, scan);
+                let consumed = rest.len() - self.as_str().len();
+                let last = rest[..consumed].chars().next_back().unwrap_or(first_char);
                 // invalid frontmatter opening as whitespace preceding it isn't newline.
                 // combine the whitespace and the frontmatter to a single token as we shall
                 // error later.
@@ -843,22 +937,23 @@ impl<'a> Cursor<'a> {
             }
             // Slash, comment or block comment.
             '/' => match self.first() {
-                '/' => self.line_comment(),
-                '*' => self.block_comment(),
+                '/' => self.line_comment(scan),
+                '*' => self.block_comment(scan),
                 _ => Slash,
             },
 
             // Whitespace sequence.
-            c if is_whitespace(c) => self.whitespace(),
+            c if is_whitespace(c) => self.whitespace(c, scan),
 
             // Raw identifier, raw string literal or identifier.
-            'r' => self.r_prefixed(),
+            'r' => self.r_prefixed(scan),
 
             // Byte literal, byte string literal, raw byte string literal or identifier.
             'b' => self.c_or_byte_string(
                 |terminated| ByteStr { terminated },
                 |n_hashes| RawByteStr { n_hashes },
                 Some(|terminated| Byte { terminated }),
+                scan,
             ),
 
             // c-string literal, raw c-string literal or identifier.
@@ -866,6 +961,7 @@ impl<'a> Cursor<'a> {
                 |terminated| CStr { terminated },
                 |n_hashes| RawCStr { n_hashes },
                 None,
+                scan,
             ),
 
             // Identifier (this should be checked after other variant that can
@@ -913,7 +1009,7 @@ impl<'a> Cursor<'a> {
             '\'' => self.lifetime_or_char(),
 
             // String literal.
-            '"' => self.str_literal(),
+            '"' => self.str_literal(scan),
             // Identifier starting with an emoji. Only lexed for graceful error recovery.
             c if !c.is_ascii() && c.is_emoji_char() => self.invalid_ident(),
             _ => Unknown,
@@ -1018,7 +1114,7 @@ impl<'a> Cursor<'a> {
         Frontmatter { has_invalid_preceding_whitespace, invalid_infostring }
     }
 
-    fn line_comment(&mut self) -> TokenKind {
+    fn line_comment(&mut self, scan: &mut TokenScan<'_>) -> TokenKind {
         debug_assert!(self.prev() == '/' && self.first() == '/');
         self.bump();
 
@@ -1030,12 +1126,18 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        let scan = simd_scan::scan_line_comment(self.as_bytes());
-        self.advance_bytes(scan.len);
+        let body = simd_scan::scan_line_comment(self.as_bytes());
+        self.advance_bytes(body.len);
+        scan.meta = TokenScanMeta {
+            tracked: true,
+            has_bidi: body.has_bidi,
+            has_cr: body.has_cr,
+            clean_ascii_str: false,
+        };
         LineComment { doc_style }
     }
 
-    fn block_comment(&mut self) -> TokenKind {
+    fn block_comment(&mut self, scan: &mut TokenScan<'_>) -> TokenKind {
         debug_assert!(self.prev() == '/' && self.first() == '*');
         self.bump();
 
@@ -1048,15 +1150,36 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        let scan = simd_scan::scan_block_comment(self.as_bytes());
-        self.advance_bytes(scan.len);
-        BlockComment { doc_style, terminated: scan.terminated }
+        let offset = scan.offset(self.pos_within_token());
+        let body = match scan.newlines.as_deref_mut() {
+            Some(newlines) => {
+                simd_scan::scan_block_comment_with_newlines(self.as_bytes(), offset, newlines)
+            }
+            None => simd_scan::scan_block_comment(self.as_bytes()),
+        };
+        self.advance_bytes(body.len);
+        scan.meta = TokenScanMeta {
+            tracked: true,
+            has_bidi: body.has_bidi,
+            has_cr: body.has_cr,
+            clean_ascii_str: false,
+        };
+        BlockComment { doc_style, terminated: body.terminated }
     }
 
     #[inline]
-    fn whitespace(&mut self) -> TokenKind {
+    fn whitespace(&mut self, first: char, scan: &mut TokenScan<'_>) -> TokenKind {
         debug_assert!(is_whitespace(self.prev()));
-        self.eat_whitespace();
+        // The dispatcher already consumed the first whitespace character.
+        let first_is_ascii = first.is_ascii();
+        scan.meta = TokenScanMeta { tracked: first_is_ascii, ..TokenScanMeta::default() };
+        if first == '\n' {
+            let offset = scan.offset(self.pos_within_token() - 1);
+            if let Some(newlines) = scan.newlines.as_deref_mut() {
+                newlines.push(offset);
+            }
+        }
+        self.eat_whitespace_with_scan(scan);
         Whitespace
     }
 
@@ -1102,6 +1225,7 @@ impl<'a> Cursor<'a> {
         mk_kind: fn(bool) -> LiteralKind,
         mk_kind_raw: fn(Option<u8>) -> LiteralKind,
         single_quoted: Option<fn(bool) -> LiteralKind>,
+        scan: &mut TokenScan<'_>,
     ) -> TokenKind {
         match self.as_str().as_bytes().first().copied() {
             Some(b'\'') if single_quoted.is_some() => {
@@ -1117,7 +1241,7 @@ impl<'a> Cursor<'a> {
             }
             Some(b'"') => {
                 self.bump_ascii(b'"');
-                let terminated = self.double_quoted_string();
+                let terminated = self.double_quoted_string(scan);
                 let suffix_start = self.pos_within_token();
                 if terminated {
                     self.eat_literal_suffix();
@@ -1125,11 +1249,9 @@ impl<'a> Cursor<'a> {
                 let kind = mk_kind(terminated);
                 Literal { kind, suffix_start }
             }
-            Some(b'r')
-                if matches!(self.as_str().as_bytes().get(1).copied(), Some(b'"' | b'#')) =>
-            {
+            Some(b'r') if matches!(self.as_str().as_bytes().get(1).copied(), Some(b'"' | b'#')) => {
                 self.bump_ascii(b'r');
-                let res = self.raw_double_quoted_string(2);
+                let res = self.raw_double_quoted_string_with_scan(2, scan);
                 let suffix_start = self.pos_within_token();
                 if res.is_ok() {
                     self.eat_literal_suffix();
@@ -1215,6 +1337,12 @@ impl<'a> Cursor<'a> {
     }
 
     fn lifetime_or_char(&mut self) -> TokenKind {
+        if let simd_ident_num::LifetimeScan::Lifetime { len, starts_with_number } =
+            simd_ident_num::scan_ascii_lifetime(self.as_bytes())
+        {
+            self.advance_bytes(len);
+            return Lifetime { starts_with_number };
+        }
         debug_assert!(self.prev() == '\'');
 
         let can_be_a_lifetime = if self.second() == '\'' {
@@ -1313,11 +1441,25 @@ impl<'a> Cursor<'a> {
 
     /// Eats double-quoted string and returns true
     /// if string is terminated.
-    fn double_quoted_string(&mut self) -> bool {
+    fn double_quoted_string(&mut self, scan: &mut TokenScan<'_>) -> bool {
         debug_assert!(self.prev() == '"');
-        let scan = simd_scan::scan_double_quoted_string(self.as_bytes());
-        self.advance_bytes(scan.len);
-        scan.terminated
+        let offset = scan.offset(self.pos_within_token());
+        let body = match scan.newlines.as_deref_mut() {
+            Some(newlines) => simd_scan::scan_double_quoted_string_with_newlines(
+                self.as_bytes(),
+                offset,
+                newlines,
+            ),
+            None => simd_scan::scan_double_quoted_string(self.as_bytes()),
+        };
+        self.advance_bytes(body.len);
+        scan.meta = TokenScanMeta {
+            tracked: true,
+            has_bidi: body.has_bidi,
+            has_cr: body.has_cr,
+            clean_ascii_str: body.clean_ascii_no_escape,
+        };
+        body.terminated
     }
 
     /// Attempt to lex for a guarded string literal.
@@ -1345,7 +1487,7 @@ impl<'a> Cursor<'a> {
 
         // Lex the string itself as a normal string literal
         // so we can recover that for older editions later.
-        let terminated = self.double_quoted_string();
+        let terminated = self.double_quoted_string(&mut TokenScan::default());
         if !terminated {
             let token_len = self.pos_within_token();
             self.reset_pos_within_token();
@@ -1376,9 +1518,17 @@ impl<'a> Cursor<'a> {
 
     /// Eats the double-quoted string and returns `n_hashes` and an error if encountered.
     fn raw_double_quoted_string(&mut self, prefix_len: u32) -> Result<u8, RawStrError> {
+        self.raw_double_quoted_string_with_scan(prefix_len, &mut TokenScan::default())
+    }
+
+    fn raw_double_quoted_string_with_scan(
+        &mut self,
+        prefix_len: u32,
+        scan: &mut TokenScan<'_>,
+    ) -> Result<u8, RawStrError> {
         // Wrap the actual function to handle the error with too many hashes.
         // This way, it eats the whole raw string.
-        let n_hashes = self.raw_string_unvalidated(prefix_len)?;
+        let n_hashes = self.raw_string_unvalidated(prefix_len, scan)?;
         // Only up to 255 `#`s are allowed in raw strings
         match u8::try_from(n_hashes) {
             Ok(num) => Ok(num),
@@ -1386,7 +1536,11 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn raw_string_unvalidated(&mut self, prefix_len: u32) -> Result<u32, RawStrError> {
+    fn raw_string_unvalidated(
+        &mut self,
+        prefix_len: u32,
+        scan: &mut TokenScan<'_>,
+    ) -> Result<u32, RawStrError> {
         debug_assert!(self.prev() == 'r');
         let start_pos = self.pos_within_token();
         let mut possible_terminator_offset = None;
@@ -1406,6 +1560,25 @@ impl<'a> Cursor<'a> {
             c => {
                 let c = c.unwrap_or(EOF_CHAR);
                 return Err(RawStrError::InvalidStarter { bad_char: c });
+            }
+        }
+
+        if n_start_hashes <= 255 {
+            let offset = scan.offset(self.pos_within_token());
+            let body = match scan.newlines.as_deref_mut() {
+                Some(newlines) => simd_scan::scan_raw_string_body_with_newlines(
+                    self.as_bytes(),
+                    n_start_hashes as usize,
+                    offset,
+                    newlines,
+                ),
+                None => simd_scan::scan_raw_string_body(self.as_bytes(), n_start_hashes as usize),
+            };
+            if let Some((consumed, has_bidi, has_cr)) = body {
+                self.advance_bytes(consumed);
+                scan.meta =
+                    TokenScanMeta { tracked: true, has_bidi, has_cr, clean_ascii_str: false };
+                return Ok(n_start_hashes);
             }
         }
 

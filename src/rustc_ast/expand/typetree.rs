@@ -42,6 +42,12 @@ pub enum Kind {
 #[derive(Clone, Eq, PartialEq, Encodable, Decodable, Debug, StableHash)]
 pub struct TypeTree(pub Vec<Type>);
 
+impl Default for TypeTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeTree {
     pub fn new() -> Self {
         Self(Vec::new())

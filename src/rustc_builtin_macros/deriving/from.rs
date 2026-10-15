@@ -2,12 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast as ast;
 use crate::rustc_ast::{ItemKind, Safety, VariantData};
@@ -18,7 +14,6 @@ use thin_vec::thin_vec;
 
 use crate::rustc_builtin_macros::deriving::generic::ty::{Bounds, Path, PathKind, Ty};
 use crate::rustc_builtin_macros::deriving::generic::*;
-use crate::rustc_builtin_macros::deriving::pathvec;
 use crate::rustc_builtin_macros::diagnostics;
 
 /// Generate an implementation of the `From` trait, provided that `item`
@@ -68,8 +63,7 @@ pub(crate) fn expand_deriving_from(
         Err(guar) => cx.ty(span, ast::TyKind::Err(guar)),
     });
 
-    let path =
-        Path::new_(pathvec!(convert::From), vec![P::new(from_type.clone())], PathKind::Std);
+    let path = Path::new_(pathvec!(convert::From), vec![P::new(from_type.clone())], PathKind::Std);
 
     // Generate code like this:
     //

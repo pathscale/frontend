@@ -1,6 +1,3 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use itertools::Itertools;
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, Size, VariantIdx};
 use crate::rustc_ast::UnsafeBinderCastKind;
 use crate::rustc_data_structures::thin_vec::ThinVec;
@@ -25,6 +22,9 @@ use crate::rustc_middle::ty::{
 };
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{DesugaringKind, Span};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use itertools::Itertools;
 use tracing::{debug, info, instrument, trace};
 
 use crate::rustc_mir_build::diagnostics::*;
@@ -62,7 +62,7 @@ impl<'tcx> SplattedFunc<'tcx> {
 
 fn parsed_attrs(id: HirId, tcx: TyCtxt<'_>) -> ThinVec<AttributeKind> {
     HasAttrs::get_attrs(id, &tcx)
-        .into_iter()
+        .iter()
         .filter_map(|attr| match attr {
             hir::Attribute::Parsed(attrkind) => Some(attrkind.clone()),
             hir::Attribute::Unparsed(_) => None,
@@ -289,10 +289,8 @@ impl<'tcx> ThirBuildCx<'tcx> {
             }
             Adjust::GenericReborrow(mutability) => {
                 let expr = self.thir.exprs.push(expr);
-                let kind =
-                    ExprKind::Reborrow { source: expr, mutability, target: adjustment.target };
 
-                kind
+                ExprKind::Reborrow { source: expr, mutability, target: adjustment.target }
             }
         };
 
@@ -424,7 +422,7 @@ impl<'tcx> ThirBuildCx<'tcx> {
                 }
             }
 
-            hir::ExprKind::Call(fun, ref args) => {
+            hir::ExprKind::Call(fun, args) => {
                 if self.typeck_results.is_method_call(expr) {
                     // The callee is something implementing Fn, FnMut, or FnOnce.
                     // Find the actual method implementation being called and
@@ -1408,7 +1406,7 @@ impl<'tcx> ThirBuildCx<'tcx> {
 
     fn convert_arm(&mut self, arm: &'tcx hir::Arm<'tcx>) -> ArmId {
         let arm = Arm {
-            pattern: self.pattern_from_hir(&arm.pat),
+            pattern: self.pattern_from_hir(arm.pat),
             guard: arm.guard.as_ref().map(|g| self.mirror_expr(g)),
             body: self.mirror_expr(arm.body),
             hir_id: arm.hir_id,

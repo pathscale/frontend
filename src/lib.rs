@@ -51,7 +51,6 @@
 // this crate too, so one generated path works for us and for a consumer alike.
 extern crate self as frontend;
 
-
 #[macro_use]
 extern crate alloc;
 // `pub`, because `rustc_log` re-exports it as part of its own interface: a consumer that

@@ -2,16 +2,16 @@
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
 use alloc::format;
 
-use intravisit::InferKind;
 use crate::rustc_data_structures::sorted_map::SortedMap;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::{LocalDefId, LocalDefIdMap};
 use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::*;
 use crate::rustc_index::IndexVec;
-use crate::span_bug;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::{DUMMY_SP, Span};
+use crate::span_bug;
+use intravisit::InferKind;
 use tracing::{debug, instrument};
 
 /// A visitor that walks over the HIR and collects `Node`s into a HIR map.

@@ -38,10 +38,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -59,7 +56,6 @@ use crate::rustc_infer::infer::{DefineOpaqueTypes, InferOk, InferResult, RegionV
 use crate::rustc_infer::traits::{
     MatchExpressionArmCause, Obligation, PredicateObligation, PredicateObligations, SelectionError,
 };
-use crate::span_bug;
 use crate::rustc_middle::ty::adjustment::{
     Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability, DerefAdjustKind,
     PointerCoercion,
@@ -74,6 +70,7 @@ use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtE
 use crate::rustc_trait_selection::traits::{
     self, ImplSource, NormalizeExt, ObligationCause, ObligationCauseCode, ObligationCtxt,
 };
+use crate::span_bug;
 use smallvec::{SmallVec, smallvec};
 use tracing::{debug, instrument};
 
@@ -417,8 +414,8 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
     /// - Introducing reborrows to give more flexible lifetimes
     /// - Deref coercions to allow `&T` to coerce to `&T::Target`
     /// - Coercing mutable references to immutable references
-    /// These coercions can be freely intermixed, for example we are able to
-    /// coerce `&mut T` to `&mut T::Target`.
+    ///   These coercions can be freely intermixed, for example we are able to
+    ///   coerce `&mut T` to `&mut T::Target`.
     fn coerce_to_ref(
         &self,
         a: Ty<'tcx>,
@@ -1492,7 +1489,8 @@ pub fn can_coerce<'tcx>(
     ty: Ty<'tcx>,
     output_ty: Ty<'tcx>,
 ) -> bool {
-    let root_ctxt = crate::rustc_hir_typeck::typeck_root_ctxt::TypeckRootCtxt::new(tcx, body_def_id);
+    let root_ctxt =
+        crate::rustc_hir_typeck::typeck_root_ctxt::TypeckRootCtxt::new(tcx, body_def_id);
     let fn_ctxt = FnCtxt::new(&root_ctxt, param_env, body_def_id);
     fn_ctxt.may_coerce(ty, output_ty)
 }
@@ -1544,11 +1542,11 @@ pub fn can_coerce<'tcx>(
 /// When coercing, each branch should use the following expectations for type inference:
 /// - The branch can be coerced to the expected type of the match/if/whatever.
 /// - The branch can be coercion lub'd with the types of the previous branches.
-/// Ideally we'd have some sort of `Expectation::ParticipatesInCoerceLub(ongoing_lub_ty, final_ty)`,
-/// but adding and using this feels very challenging.
-/// What we instead do is to use the expected type of the match/if/whatever as
-/// the initial coercion lub. This allows us to use the lub of "expected type of match" with
-/// "types from previous branches" as the coercion target, which can contains both expectations.
+///   Ideally we'd have some sort of `Expectation::ParticipatesInCoerceLub(ongoing_lub_ty, final_ty)`,
+///   but adding and using this feels very challenging.
+///   What we instead do is to use the expected type of the match/if/whatever as
+///   the initial coercion lub. This allows us to use the lub of "expected type of match" with
+///   "types from previous branches" as the coercion target, which can contains both expectations.
 ///
 /// Two concerns with this approach:
 /// - We may have incompatible `final_ty` if that lub is different from the expected
@@ -1559,8 +1557,8 @@ pub fn can_coerce<'tcx>(
 ///   `(a lub b) lub expected_ty`. They should be the same type. However,
 ///   `a lub expected_ty` may constrain inference variables in `expected_ty`.
 ///   In this case the difference does matter and we get actually incorrect results.
-/// FIXME: Ideally we'd compute the final type without unnecessarily constraining
-/// the expected type of the match when computing the types of its branches.
+///   FIXME: Ideally we'd compute the final type without unnecessarily constraining
+///   the expected type of the match when computing the types of its branches.
 pub(crate) struct CoerceMany<'tcx> {
     expected_ty: Ty<'tcx>,
     final_ty: Option<Ty<'tcx>>,
@@ -1830,7 +1828,7 @@ impl<'tcx> CoerceMany<'tcx> {
                             coercion_error,
                         );
                         // Check that we're actually in the second or later arm
-                        if prior_non_diverging_arms.len() > 0 {
+                        if !prior_non_diverging_arms.is_empty() {
                             self.suggest_boxing_tail_for_return_position_impl_trait(
                                 fcx,
                                 &mut err,
@@ -1994,6 +1992,10 @@ impl<'tcx> CoerceMany<'tcx> {
         err.subdiagnostic(SuggestBoxingForReturnImplTrait::BoxReturnExpr { starts, ends });
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_return_mismatched_types<'infcx>(
         &self,
         cause: &ObligationCause<'tcx>,

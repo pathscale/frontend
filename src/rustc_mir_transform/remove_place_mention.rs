@@ -3,12 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::TyCtxt;
@@ -26,10 +20,7 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for RemovePlaceMention {
     fn run_pass(&self, _: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         trace!("Running RemovePlaceMention on {:?}", body.source);
         for data in body.basic_blocks.as_mut_preserves_cfg() {
-            data.retain_statements(|statement| match statement.kind {
-                StatementKind::PlaceMention(..) | StatementKind::Nop => false,
-                _ => true,
-            })
+            data.retain_statements(|statement| !matches!(statement.kind, StatementKind::PlaceMention(..) | StatementKind::Nop))
         }
     }
 }

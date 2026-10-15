@@ -1,10 +1,10 @@
-use alloc::string::ToString;
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_index::IndexSlice;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::Span;
+use alloc::string::ToString;
 
 use super::{PResult, ParseCtxt, ParseError};
 

@@ -2,7 +2,6 @@
 //! Do not call this query directly. See
 //! [`crate::rustc_trait_selection::traits::implied_outlives_bounds`].
 
-use alloc::vec::Vec;
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::infer::canonical::{self, Canonical};
 use crate::rustc_infer::traits::query::OutlivesBound;
@@ -12,6 +11,7 @@ use crate::rustc_middle::ty::{ParamEnvAnd, TyCtxt};
 use crate::rustc_trait_selection::infer::InferCtxtBuilderExt;
 use crate::rustc_trait_selection::traits::implied_outlives_bounds::query_compute_implied_outlives_bounds;
 use crate::rustc_trait_selection::traits::query::{CanonicalImpliedOutlivesBoundsGoal, NoSolution};
+use alloc::vec::Vec;
 
 pub(crate) fn provide(p: &mut Providers) {
     *p = Providers { implied_outlives_bounds, ..*p };

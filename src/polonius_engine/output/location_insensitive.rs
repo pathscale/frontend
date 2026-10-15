@@ -13,14 +13,14 @@ use crate::datafrog::{Iteration, Relation, RelationLeaper};
 use crate::polonius_engine::facts::FactTypes;
 use crate::polonius_engine::output::{Context, Output};
 
+#[expect(
+    clippy::type_complexity,
+    reason = "the two output relations retain their fact-domain column types"
+)]
 pub(super) fn compute<T: FactTypes>(
     ctx: &Context<'_, T>,
     result: &mut Output<T>,
-) -> (
-    Relation<(T::Loan, T::Point)>,
-    Relation<(T::Origin, T::Origin)>,
-) {
-
+) -> (Relation<(T::Loan, T::Point)>, Relation<(T::Origin, T::Origin)>) {
     let (potential_errors, potential_subset_errors) = {
         // Static inputs
         let origin_live_on_entry = &ctx.origin_live_on_entry;
@@ -32,9 +32,7 @@ pub(super) fn compute<T: FactTypes>(
         // subset(Origin1, Origin2) :-
         //   subset_base(Origin1, Origin2, _).
         let subset = Relation::from_iter(
-            ctx.subset_base
-                .iter()
-                .map(|&(origin1, origin2, _point)| (origin1, origin2)),
+            ctx.subset_base.iter().map(|&(origin1, origin2, _point)| (origin1, origin2)),
         );
 
         // Create a new iteration context, ...
@@ -52,19 +50,13 @@ pub(super) fn compute<T: FactTypes>(
 
         // origin_contains_loan_on_entry(Origin, Loan) :-
         //   loan_issued_at(Origin, Loan, _).
-        origin_contains_loan_on_entry.extend(
-            ctx.loan_issued_at
-                .iter()
-                .map(|&(origin, loan, _point)| (origin, loan)),
-        );
+        origin_contains_loan_on_entry
+            .extend(ctx.loan_issued_at.iter().map(|&(origin, loan, _point)| (origin, loan)));
 
         // origin_contains_loan_on_entry(Origin, Loan) :-
         //   placeholder_loan(Origin, Loan).
-        origin_contains_loan_on_entry.extend(
-            placeholder_loan
-                .iter()
-                .map(|&(loan, origin)| (origin, loan)),
-        );
+        origin_contains_loan_on_entry
+            .extend(placeholder_loan.iter().map(|&(loan, origin)| (origin, loan)));
 
         // .. and then start iterating rules!
         while iteration.changed() {
@@ -112,7 +104,9 @@ pub(super) fn compute<T: FactTypes>(
                     placeholder_origin.filter_with(|&(origin2, _loan1)| (origin2, ())),
                     placeholder_loan.extend_with(|&(_origin2, loan1)| loan1),
                     // remove symmetries:
-                    crate::datafrog::ValueFilter::from(|&(origin2, _loan1), &origin1| origin2 != origin1),
+                    crate::datafrog::ValueFilter::from(|&(origin2, _loan1), &origin1| {
+                        origin2 != origin1
+                    }),
                 ),
                 |&(origin2, _loan1), &origin1| (origin1, origin2),
             );
@@ -120,27 +114,16 @@ pub(super) fn compute<T: FactTypes>(
 
         if result.dump_enabled {
             for &(origin1, origin2) in subset.iter() {
-                result
-                    .subset_anywhere
-                    .entry(origin1)
-                    .or_default()
-                    .insert(origin2);
+                result.subset_anywhere.entry(origin1).or_default().insert(origin2);
             }
 
             let origin_contains_loan_on_entry = origin_contains_loan_on_entry.complete();
             for &(origin, loan) in origin_contains_loan_on_entry.iter() {
-                result
-                    .origin_contains_loan_anywhere
-                    .entry(origin)
-                    .or_default()
-                    .insert(loan);
+                result.origin_contains_loan_anywhere.entry(origin).or_default().insert(loan);
             }
         }
 
-        (
-            potential_errors.complete(),
-            potential_subset_errors.complete(),
-        )
+        (potential_errors.complete(), potential_subset_errors.complete())
     };
 
     info!(

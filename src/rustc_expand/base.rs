@@ -30,7 +30,6 @@ use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw};
 use crate::rustc_structures::{CollapseMacroDebuginfo, Limit};
 use smallvec::{SmallVec, smallvec};
-use thin_vec::ThinVec;
 
 use crate::rustc_expand::diagnostics;
 use crate::rustc_expand::expand::{self, AstFragment, Invocation};
@@ -314,9 +313,9 @@ where
 }
 
 pub trait BangProcMacro {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        ecx: &'cx mut ExtCtxt<'_>,
+        ecx: &mut ExtCtxt<'_>,
         span: Span,
         ts: TokenStream,
     ) -> Result<TokenStream, ErrorGuaranteed>;
@@ -326,9 +325,9 @@ impl<F> BangProcMacro for F
 where
     F: Fn(&mut ExtCtxt<'_>, Span, TokenStream) -> Result<TokenStream, ErrorGuaranteed>,
 {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        ecx: &'cx mut ExtCtxt<'_>,
+        ecx: &mut ExtCtxt<'_>,
         span: Span,
         ts: TokenStream,
     ) -> Result<TokenStream, ErrorGuaranteed> {
@@ -338,18 +337,18 @@ where
 }
 
 pub trait AttrProcMacro {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        ecx: &'cx mut ExtCtxt<'_>,
+        ecx: &mut ExtCtxt<'_>,
         span: Span,
         annotation: TokenStream,
         annotated: TokenStream,
     ) -> Result<TokenStream, ErrorGuaranteed>;
 
     // Default implementation for safe attributes; override if the attribute can be unsafe.
-    fn expand_with_safety<'cx>(
+    fn expand_with_safety(
         &self,
-        ecx: &'cx mut ExtCtxt<'_>,
+        ecx: &mut ExtCtxt<'_>,
         safety: Safety,
         span: Span,
         annotation: TokenStream,
@@ -366,9 +365,9 @@ impl<F> AttrProcMacro for F
 where
     F: Fn(TokenStream, TokenStream) -> TokenStream,
 {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        _ecx: &'cx mut ExtCtxt<'_>,
+        _ecx: &mut ExtCtxt<'_>,
         _span: Span,
         annotation: TokenStream,
         annotated: TokenStream,
@@ -546,14 +545,14 @@ impl MacResult for MacEager {
     }
 
     fn make_pat(self: Box<Self>) -> Option<P<ast::Pat>> {
-        if let Some(e) = self.expr {
-            if matches!(e.kind, ast::ExprKind::Lit(_) | ast::ExprKind::IncludedBytes(_)) {
-                return Some(P::new(ast::Pat {
-                    id: ast::DUMMY_NODE_ID,
-                    span: e.span,
-                    kind: PatKind::Expr(e),
-                }));
-            }
+        if let Some(e) = self.expr
+            && matches!(e.kind, ast::ExprKind::Lit(_) | ast::ExprKind::IncludedBytes(_))
+        {
+            return Some(P::new(ast::Pat {
+                id: ast::DUMMY_NODE_ID,
+                span: e.span,
+                kind: PatKind::Expr(e),
+            }));
         }
         None
     }
@@ -761,7 +760,7 @@ impl SyntaxExtensionKind {
     /// Returns `Some(expander)` for a macro usable as a `LegacyBang`; otherwise returns `None`
     ///
     /// This includes a `MacroRules` with function-like rules.
-    pub fn as_legacy_bang(&self) -> Option<&(dyn TTMacroExpander)> {
+    pub fn as_legacy_bang(&self) -> Option<&dyn TTMacroExpander> {
         match self {
             SyntaxExtensionKind::LegacyBang(exp) => Some(exp.as_ref()),
             SyntaxExtensionKind::MacroRules(exp) if exp.kinds().contains(MacroKinds::BANG) => {
@@ -774,7 +773,7 @@ impl SyntaxExtensionKind {
     /// Returns `Some(expander)` for a macro usable as an `Attr`; otherwise returns `None`
     ///
     /// This includes a `MacroRules` with `attr` rules.
-    pub fn as_attr(&self) -> Option<&(dyn AttrProcMacro)> {
+    pub fn as_attr(&self) -> Option<&dyn AttrProcMacro> {
         match self {
             SyntaxExtensionKind::Attr(exp) => Some(exp.as_ref()),
             SyntaxExtensionKind::MacroRules(exp) if exp.kinds().contains(MacroKinds::ATTR) => {
@@ -879,6 +878,10 @@ impl SyntaxExtension {
 
     /// Constructs a syntax extension with the given properties
     /// and other properties converted from attributes.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn new(
         sess: &Session,
         kind: SyntaxExtensionKind,
@@ -1151,6 +1154,10 @@ pub trait ResolverExpand {
 }
 
 pub trait LintStoreExpand {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn pre_expansion_lint(
         &self,
         sess: &Session,

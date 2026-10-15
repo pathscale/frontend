@@ -130,8 +130,13 @@ impl FlatTokenBuffer {
     #[inline]
     pub(crate) fn push(&mut self, token: Token, spacing: Spacing) {
         self.only_source_tokens &= Self::valid_span(token.span)
-            && !matches!(token.kind, token::NtIdent(..) | token::NtLifetime(..)
-                | token::OpenInvisible(..) | token::CloseInvisible(..))
+            && !matches!(
+                token.kind,
+                token::NtIdent(..)
+                    | token::NtLifetime(..)
+                    | token::OpenInvisible(..)
+                    | token::CloseInvisible(..)
+            )
             && !token.kind.is_delim();
         let counts = self.counts_mut();
         counts.bumps = counts.bumps.checked_add(1).expect("source token count overflow");
@@ -152,8 +157,8 @@ impl FlatTokenBuffer {
         let index = u32::try_from(self.tokens.len()).expect("source token buffer too large");
         assert_ne!(index, OUTER);
         let delim = token.kind.open_delim().expect("opening delimiter required");
-        self.only_source_tokens &= Self::valid_span(token.span)
-            && !matches!(delim, token::Delimiter::Invisible(..));
+        self.only_source_tokens &=
+            Self::valid_span(token.span) && !matches!(delim, token::Delimiter::Invisible(..));
         let [prev, prev2, prev3] = self.counts_mut().previous;
         let attribute = delim == token::Delimiter::Bracket
             && (prev.is_some_and(|t| t == token::Pound)
@@ -164,20 +169,30 @@ impl FlatTokenBuffer {
             && prev3.is_some_and(|t| t.is_ident_named(kw::MacroRules));
         let decl_macro = prev2.is_some_and(|t| t.is_keyword(kw::Macro))
             || prev3.is_some_and(|t| t.is_keyword(kw::Macro));
-        let parent = if self.enclosing == OUTER { OUTER }
-            else { self.tokens[self.enclosing as usize].group };
+        let parent = if self.enclosing == OUTER {
+            OUTER
+        } else {
+            self.tokens[self.enclosing as usize].group
+        };
         let depth = if parent == OUTER { 1 } else { self.groups[parent as usize].depth + 1 };
         let group = u32::try_from(self.groups.len()).expect("source group buffer too large");
         assert_ne!(group, OUTER);
         self.groups.push(Group {
-            open_index: index, close_index: OUTER, parent, depth,
-            counts: Counts::default(), attribute,
+            open_index: index,
+            close_index: OUTER,
+            parent,
+            depth,
+            counts: Counts::default(),
+            attribute,
             suppress_attrs: attribute || invocation || macro_rules || decl_macro,
         });
         self.enclosing = index;
         self.tokens.push(SourceToken {
-            token, spacing: Spacing::Alone, matching: OUTER,
-            enclosing_after: index, group,
+            token,
+            spacing: Spacing::Alone,
+            matching: OUTER,
+            enclosing_after: index,
+            group,
         });
     }
 
@@ -189,13 +204,17 @@ impl FlatTokenBuffer {
         assert_ne!(close, OUTER);
         let parent = open.checked_sub(1).map_or(OUTER, |i| self.tokens[i].enclosing_after);
         let delim = self.tokens[open].token.kind.open_delim().unwrap();
-        self.only_source_tokens &= Self::valid_span(span.open) && Self::valid_span(span.close)
+        self.only_source_tokens &= Self::valid_span(span.open)
+            && Self::valid_span(span.close)
             && span.open == self.tokens[open].token.span
             && span.open.hi() <= span.close.lo();
         let group = self.tokens[open].group;
         let metadata = &mut self.groups[group as usize];
         metadata.close_index = close;
-        let bumps = metadata.counts.bumps.checked_add(if delim.skip() { 0 } else { 2 })
+        let bumps = metadata
+            .counts
+            .bumps
+            .checked_add(if delim.skip() { 0 } else { 2 })
             .expect("source token count overflow");
         let attrs = u32::from(metadata.attribute)
             .checked_add(if metadata.suppress_attrs { 0 } else { metadata.counts.attrs })
@@ -319,13 +338,14 @@ impl FlatTokenCursor {
     }
 
     fn end(&self) -> usize {
-        self.enclosing().map_or(self.end_idx, |i| {
-            self.end_idx.min(self.buffer.tokens[i].matching as usize)
-        })
+        self.enclosing()
+            .map_or(self.end_idx, |i| self.end_idx.min(self.buffer.tokens[i].matching as usize))
     }
 
     fn eof(&self) -> Token {
-        let span = if self.end_group == OUTER { DUMMY_SP } else {
+        let span = if self.end_group == OUTER {
+            DUMMY_SP
+        } else {
             let group = &self.buffer.groups[self.end_group as usize];
             self.buffer.tokens[group.close_index as usize].token.span
         };
@@ -358,18 +378,23 @@ impl FlatTokenCursor {
             return None;
         }
         let end_idx = group.close_index as usize + 1;
-        if self.next_idx <= group.open_index as usize || self.next_idx > end_idx
-            || end_idx > self.end_idx {
+        if self.next_idx <= group.open_index as usize
+            || self.next_idx > end_idx
+            || end_idx > self.end_idx
+        {
             return None;
         }
         // Containment in the existing bound also handles an already-current close.
         if self.end_group != OUTER
-            && group.open_index < self.buffer.groups[self.end_group as usize].open_index {
+            && group.open_index < self.buffer.groups[self.end_group as usize].open_index
+        {
             return None;
         }
         if self.next_idx == end_idx {
             let parent_open = self.buffer.tokens[self.next_idx - 1].enclosing_after;
-            let parent = if parent_open == OUTER { OUTER } else {
+            let parent = if parent_open == OUTER {
+                OUTER
+            } else {
                 self.buffer.tokens[parent_open as usize].group
             };
             if parent != group.parent {
@@ -377,8 +402,10 @@ impl FlatTokenCursor {
             }
         }
         Some(Self {
-            buffer: Arc::clone(&self.buffer), next_idx: self.next_idx,
-            end_idx, end_group: group_idx,
+            buffer: Arc::clone(&self.buffer),
+            next_idx: self.next_idx,
+            end_idx,
+            end_group: group_idx,
         })
     }
 
@@ -439,10 +466,13 @@ impl FlatTokenCursor {
     pub(super) fn clone_enclosing_delim(&self) -> TokenTree {
         // After a detached close, enclosing() hides the outer parent. Retain
         // access to this snapshot's own body without exposing that parent.
-        let open = self.enclosing().or_else(|| {
-            (self.end_group != OUTER)
-                .then(|| self.buffer.groups[self.end_group as usize].open_index as usize)
-        }).expect("cursor must be within a delimited sequence");
+        let open = self
+            .enclosing()
+            .or_else(|| {
+                (self.end_group != OUTER)
+                    .then(|| self.buffer.groups[self.end_group as usize].open_index as usize)
+            })
+            .expect("cursor must be within a delimited sequence");
         self.buffer.tree(open)
     }
 
@@ -451,9 +481,8 @@ impl FlatTokenCursor {
     }
 
     pub(super) fn depth(&self) -> usize {
-        self.enclosing().map_or(0, |open| {
-            self.buffer.groups[self.buffer.tokens[open].group as usize].depth
-        })
+        self.enclosing()
+            .map_or(0, |open| self.buffer.groups[self.buffer.tokens[open].group as usize].depth)
     }
 
     pub(super) fn parent_delim_and_span(&self) -> Option<(token::Delimiter, DelimSpan)> {

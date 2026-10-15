@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::convert::identity;
 
 use crate::rustc_ast::token::Delimiter;
@@ -29,7 +29,9 @@ use crate::rustc_attr_parsing::diagnostics::{
 use crate::rustc_attr_parsing::parser::{
     AllowExprMetavar, ArgParser, MetaItemListParser, MetaItemOrLitParser, NameValueParser,
 };
-use crate::rustc_attr_parsing::{AttributeParser, AttributeTemplate, check_cfg, diagnostics, parse_version, template};
+use crate::rustc_attr_parsing::{
+    AttributeParser, AttributeTemplate, check_cfg, diagnostics, parse_version, template,
+};
 
 pub const CFG_TEMPLATE: AttributeTemplate = template!(
     List: &["predicate"],
@@ -41,6 +43,10 @@ const CFG_ATTR_TEMPLATE: AttributeTemplate = template!(
     "https://doc.rust-lang.org/reference/conditional-compilation.html#the-cfg_attr-attribute"
 );
 
+#[expect(
+    clippy::result_large_err,
+    reason = "keeps source-map failures inline while formatting cfg suggestions"
+)]
 pub fn parse_cfg(cx: &mut AcceptContext<'_, '_>, args: &ArgParser) -> Option<CfgEntry> {
     let list = cx.expect_list(args, cx.attr_span)?;
 
@@ -296,6 +302,10 @@ impl EvalConfigResult {
     }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "returns the cfg predicate together with its source-anchored attribute arguments"
+)]
 pub fn parse_cfg_attr(
     cfg_attr: &Attribute,
     sess: &Session,
@@ -369,6 +379,10 @@ fn check_cfg_attr_bad_delim(psess: &ParseSess, span: DelimSpan, delim: Delimiter
 }
 
 /// Parses `cfg_attr(pred, attr_item_list)` where `attr_item_list` is comma-delimited.
+#[expect(
+    clippy::type_complexity,
+    reason = "keeps the parsed cfg predicate and attribute arguments paired"
+)]
 fn parse_cfg_attr_internal<'a>(
     parser: &mut Parser<'a>,
     sess: &'a Session,

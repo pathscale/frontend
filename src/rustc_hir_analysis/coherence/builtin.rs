@@ -4,10 +4,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -19,7 +17,9 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::ItemKind;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
-use crate::rustc_infer::infer::{self, InferCtxt, RegionResolutionError, SubregionOrigin, TyCtxtInferExt};
+use crate::rustc_infer::infer::{
+    self, InferCtxt, RegionResolutionError, SubregionOrigin, TyCtxtInferExt,
+};
 use crate::rustc_infer::traits::{Obligation, TraitErrors};
 use crate::rustc_middle::ty::adjustment::CoerceUnsizedInfo;
 use crate::rustc_middle::ty::print::PrintTraitRefExt as _;
@@ -156,11 +156,13 @@ fn visit_implementation_of_unpin(checker: &Checker<'_>) -> Result<(), ErrorGuara
             // `&mut T` that dereferenced by `Pin<&mut T>`, which breaks the safety contract of
             // `Pin<&mut U>` for `U: !Unpin`.
             ty::Adt(adt, _) if adt.is_pin_project() => {
-                return Err(tcx.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::ImplUnpinForPinProjectedType {
-                    span,
-                    adt_span: tcx.def_span(adt.did()),
-                    adt_name: tcx.item_name(adt.did()),
-                }));
+                return Err(tcx.dcx().emit_err(
+                    crate::rustc_hir_analysis::diagnostics::ImplUnpinForPinProjectedType {
+                        span,
+                        adt_span: tcx.def_span(adt.did()),
+                        adt_name: tcx.item_name(adt.did()),
+                    },
+                ));
             }
             ty::Adt(_, _) => {}
             // `extern type`s have no fields, so they can't be structurally pinned.
@@ -423,11 +425,7 @@ fn visit_implementation_of_dispatch_from_dyn(checker: &Checker<'_>) -> Result<()
             res?;
 
             if coerced_fields.is_empty() {
-                return Err(tcx.dcx().emit_err(diagnostics::CoerceNoField {
-                    span,
-                    trait_name,
-                    note: true,
-                }));
+                Err(tcx.dcx().emit_err(diagnostics::CoerceNoField { span, trait_name, note: true }))
             } else if let &[(_, ty_a, ty_b, field_span)] = &coerced_fields[..] {
                 let ocx = ObligationCtxt::new_with_diagnostics(&infcx);
                 ocx.register_obligation(Obligation::new(
@@ -456,12 +454,12 @@ fn visit_implementation_of_dispatch_from_dyn(checker: &Checker<'_>) -> Result<()
 
                 Ok(())
             } else {
-                return Err(tcx.dcx().emit_err(diagnostics::CoerceMulti {
+                Err(tcx.dcx().emit_err(diagnostics::CoerceMulti {
                     span,
                     trait_name,
                     number: coerced_fields.len(),
                     fields: coerced_fields.iter().map(|(_, _, _, s)| *s).collect::<Vec<_>>().into(),
-                }));
+                }))
             }
         }
         _ => Err(tcx.dcx().emit_err(diagnostics::CoerceUnsizedNonStruct { span, trait_name })),

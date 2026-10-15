@@ -1,8 +1,6 @@
 //! Code which is used by built-in goals that match "structurally", such a auto
 //! traits, `Copy`/`Clone`.
 
-use alloc::vec::Vec;
-use derive_where::derive_where;
 use crate::rustc_type_ir::data_structures::HashMap;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::lang_items::{SolverProjectionLangItem, SolverTraitLangItem};
@@ -12,6 +10,8 @@ use crate::rustc_type_ir::{
     self as ty, Binder, FallibleTypeFolder, Interner, Movability, Mutability, Region, TypeFoldable,
     TypeSuperFoldable, Unnormalized, Upcast as _, elaborate,
 };
+use alloc::vec::Vec;
+use derive_where::derive_where;
 use rustc_macros::{TypeFoldable_Generic, TypeVisitable_Generic};
 use tracing::instrument;
 
@@ -120,7 +120,10 @@ where
 }
 
 #[instrument(level = "trace", skip(ecx), ret)]
-pub(in crate::rustc_next_trait_solver::solve) fn instantiate_constituent_tys_for_sizedness_trait<D, I>(
+pub(in crate::rustc_next_trait_solver::solve) fn instantiate_constituent_tys_for_sizedness_trait<
+    D,
+    I,
+>(
     ecx: &EvalCtxt<'_, D>,
     sizedness: SizedTraitKind,
     ty: I::Ty,
@@ -199,7 +202,10 @@ where
 }
 
 #[instrument(level = "trace", skip(ecx), ret)]
-pub(in crate::rustc_next_trait_solver::solve) fn instantiate_constituent_tys_for_copy_clone_trait<D, I>(
+pub(in crate::rustc_next_trait_solver::solve) fn instantiate_constituent_tys_for_copy_clone_trait<
+    D,
+    I,
+>(
     ecx: &EvalCtxt<'_, D>,
     ty: I::Ty,
 ) -> Result<ty::Binder<I, Vec<I::Ty>>, NoSolution>
@@ -283,7 +289,13 @@ where
 }
 
 // Returns a binder of the tupled inputs types and output type from a builtin callable type.
-pub(in crate::rustc_next_trait_solver::solve) fn extract_tupled_inputs_and_output_from_callable<I: Interner>(
+#[expect(
+    clippy::type_complexity,
+    reason = "the result contains the callable input and output types"
+)]
+pub(in crate::rustc_next_trait_solver::solve) fn extract_tupled_inputs_and_output_from_callable<
+    I: Interner,
+>(
     cx: I,
     self_ty: I::Ty,
     goal_kind: ty::ClosureKind,
@@ -441,7 +453,13 @@ pub(in crate::rustc_next_trait_solver::solve) struct AsyncCallableRelevantTypes<
 // the coroutine-closure, emit an additional trait predicate for `AsyncFnKindHelper`
 // which enforces the closure is actually callable with the given trait. When we
 // know the kind already, we can short-circuit this check.
-pub(in crate::rustc_next_trait_solver::solve) fn extract_tupled_inputs_and_output_from_async_callable<I: Interner>(
+#[expect(
+    clippy::type_complexity,
+    reason = "the result contains callable types and generated predicates"
+)]
+pub(in crate::rustc_next_trait_solver::solve) fn extract_tupled_inputs_and_output_from_async_callable<
+    I: Interner,
+>(
     cx: I,
     self_ty: I::Ty,
     goal_kind: ty::ClosureKind,
@@ -598,6 +616,10 @@ pub(in crate::rustc_next_trait_solver::solve) fn extract_tupled_inputs_and_outpu
     }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "the result returns the callable types together with generated predicates"
+)]
 fn fn_item_to_async_callable<I: Interner>(
     cx: I,
     bound_sig: ty::Binder<I, ty::FnSig<I>>,
@@ -688,6 +710,10 @@ fn coroutine_closure_to_ambiguous_coroutine<I: Interner>(
 /// Doing so on all calls to `extract_tupled_inputs_and_output_from_callable`
 /// would be wasteful.
 #[instrument(level = "trace", skip(cx), ret)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the result includes the callable signature, definition, and arguments"
+)]
 pub(in crate::rustc_next_trait_solver::solve) fn extract_fn_def_from_const_callable<I: Interner>(
     cx: I,
     self_ty: I::Ty,

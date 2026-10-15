@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -16,7 +12,9 @@ use crate::rustc_infer::traits::query::OutlivesBound;
 use crate::rustc_infer::traits::query::type_op::ImpliedOutlivesBounds;
 use crate::rustc_middle::traits::ObligationCause;
 use crate::rustc_middle::ty::outlives::{Component, push_outlives_components};
-use crate::rustc_middle::ty::{self, ParamEnvAnd, Ty, TyCtxt, TypeVisitable, TypeVisitor, Unnormalized};
+use crate::rustc_middle::ty::{
+    self, ParamEnvAnd, Ty, TyCtxt, TypeVisitable, TypeVisitor, Unnormalized,
+};
 use crate::rustc_span::def_id::CRATE_DEF_ID;
 use crate::rustc_span::{DUMMY_SP, Span, sym};
 use smallvec::{SmallVec, smallvec};

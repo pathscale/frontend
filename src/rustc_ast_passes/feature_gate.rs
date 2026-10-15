@@ -1,15 +1,15 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_ast::visit::{self, AssocCtxt, FnKind, Visitor};
 use crate::rustc_ast::{self as ast, AttrVec, GenericBound, NodeId, PatKind, attr, token};
 use crate::rustc_attr_ir::{Attribute, AttributeKind};
 use crate::rustc_attr_parsing::AttributeParser;
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_errors::msg;
 use crate::rustc_feature::Features;
 use crate::rustc_session::Session;
 use crate::rustc_session::diagnostics::{feature_err, feature_warn};
 use crate::rustc_span::{Span, Spanned, sym};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::rustc_ast_passes::diagnostics;
 
@@ -110,7 +110,7 @@ impl<'a> PostExpansionVisitor<'a> {
         // Check only lifetime parameters are present and that the
         // generic parameters that are present have no bounds.
         let non_lt_param_spans = params.iter().filter_map(|param| match param.kind {
-            ast::GenericParamKind::Lifetime { .. } => None,
+            ast::GenericParamKind::Lifetime => None,
             _ => Some(param.ident.span),
         });
         gate_multi!(
@@ -181,7 +181,9 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 }
             }
 
-            ast::ItemKind::Trait(t) if matches!(**t, ast::Trait { is_auto: ast::IsAuto::Yes, .. }) => {
+            ast::ItemKind::Trait(t)
+                if matches!(**t, ast::Trait { is_auto: ast::IsAuto::Yes, .. }) =>
+            {
                 gate!(self, auto_traits, i.span, "auto traits are experimental and possibly buggy");
             }
 
@@ -303,24 +305,21 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
     }
 
     fn visit_pat(&mut self, pattern: &'a ast::Pat) {
-        match &pattern.kind {
-            PatKind::Slice(pats) => {
-                for pat in pats {
-                    let inner_pat = match &pat.kind {
-                        PatKind::Ident(.., Some(pat)) => pat,
-                        _ => pat,
-                    };
-                    if let PatKind::Range(Some(_), None, Spanned { .. }) = inner_pat.kind {
-                        gate!(
-                            self,
-                            half_open_range_patterns_in_slices,
-                            pat.span,
-                            "`X..` patterns in slices are experimental"
-                        );
-                    }
+        if let PatKind::Slice(pats) = &pattern.kind {
+            for pat in pats {
+                let inner_pat = match &pat.kind {
+                    PatKind::Ident(.., Some(pat)) => pat,
+                    _ => pat,
+                };
+                if let PatKind::Range(Some(_), None, Spanned { .. }) = inner_pat.kind {
+                    gate!(
+                        self,
+                        half_open_range_patterns_in_slices,
+                        pat.span,
+                        "`X..` patterns in slices are experimental"
+                    );
                 }
             }
-            _ => {}
         }
         visit::walk_pat(self, pattern)
     }
@@ -634,8 +633,7 @@ fn maybe_stage_features(sess: &Session, features: &Features, krate: &ast::Crate)
                 .enabled_lang_features()
                 .iter()
                 .find(|feat| feat.gate_name == name)
-                .map(|feat| feat.stable_since)
-                .flatten();
+                .and_then(|feat| feat.stable_since);
             if let Some(since) = stable_since {
                 err.stable_features.push(diagnostics::StableFeature { name, since });
             } else {
@@ -673,8 +671,9 @@ fn check_incompatible_features(sess: &Session, features: &Features) {
 }
 
 fn check_dependent_features(sess: &Session, features: &Features) {
-    for &(parent, children) in
-        crate::rustc_feature::DEPENDENT_FEATURES.iter().filter(|(parent, _)| features.enabled(*parent))
+    for &(parent, children) in crate::rustc_feature::DEPENDENT_FEATURES
+        .iter()
+        .filter(|(parent, _)| features.enabled(*parent))
     {
         if children.iter().any(|f| !features.enabled(*f)) {
             let parent_span = features
@@ -727,7 +726,8 @@ fn check_features_requiring_new_solver(sess: &Session, features: &Features) {
         .iter()
         .find(|feat| feat.gate_name == sym::generic_const_args)
         .map(|feat| feat.attr_sp)
-    {        sess.dcx().emit_err(diagnostics::MissingDependentFeatures {
+    {
+        sess.dcx().emit_err(diagnostics::MissingDependentFeatures {
             parent_span: gca_span,
             parent: sym::generic_const_args,
             missing: String::from("-Znext-solver=globally"),

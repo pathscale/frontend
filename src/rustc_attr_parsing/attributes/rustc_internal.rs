@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use eko::path::PathBuf;
 
 use crate::rustc_ast::{LitIntType, LitKind, MetaItemLit};

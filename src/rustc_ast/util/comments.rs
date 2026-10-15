@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use crate::rustc_span::{BytePos, Symbol};
 use alloc::string::String;
 use alloc::string::ToString;
-use crate::rustc_span::{BytePos, Symbol};
+use alloc::vec::Vec;
 
 use crate::rustc_ast::token::CommentKind;
 

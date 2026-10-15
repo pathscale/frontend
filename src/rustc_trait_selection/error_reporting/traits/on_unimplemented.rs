@@ -2,18 +2,15 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use eko::path::PathBuf;
-
+use crate::find_attr;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::diagnostic::{CustomDiagnostic, FilterOptions, FormatArgs};
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::find_attr;
 use crate::rustc_middle::ty::print::PrintTraitRefExt;
 use crate::rustc_middle::ty::{self, GenericParamDef, GenericParamDefKind};
 use crate::rustc_span::Symbol;
@@ -255,9 +252,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     GenericParamDefKind::Type { .. } | GenericParamDefKind::Const { .. } => {
                         if let Some(ty) = trait_pred.trait_ref.args[param.index as usize].as_type()
                         {
-                            if print_infer_ty_var == false
-                                && let ty::Infer(ty::TyVar(_)) = ty.kind()
-                            {
+                            if !print_infer_ty_var && let ty::Infer(ty::TyVar(_)) = ty.kind() {
                                 format!("{}", param.name)
                             } else {
                                 self.tcx.short_string(ty, long_ty_path)

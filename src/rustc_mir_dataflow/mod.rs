@@ -17,7 +17,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 use crate::rustc_middle::ty;
 
 // Please change the public `use` directives cautiously, as they might be used by external tools.
@@ -28,8 +27,7 @@ pub use self::drop_flag_effects::{
 };
 pub use self::framework::{
     Analysis, Backward, Direction, EntryStates, Forward, GenKill, JoinSemiLattice, MaybeReachable,
-    Results, ResultsCursor, ResultsVisitor, SwitchTargetIndex, fmt, lattice,
-    visit_results,
+    Results, ResultsCursor, ResultsVisitor, SwitchTargetIndex, fmt, lattice, visit_results,
 };
 use self::move_paths::MoveData;
 

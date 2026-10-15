@@ -5,12 +5,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 pub mod map;
 pub mod nested_filter;
@@ -25,8 +20,8 @@ use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId, LocalDefIdMap, LocalModId};
 use crate::rustc_hir::lints::DelayedLints;
 use crate::rustc_hir::*;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::{ExpnId, Span};
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::TyCtxt;

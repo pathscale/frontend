@@ -50,11 +50,7 @@ const fn packed_key(bytes: &[u8]) -> (usize, u128) {
 
 #[inline]
 fn pack_ident(bytes: &[u8]) -> Option<u128> {
-    if bytes.len() <= 8 {
-        pack_ascii_u64(bytes).map(u128::from)
-    } else {
-        pack_ascii_u128(bytes)
-    }
+    if bytes.len() <= 8 { pack_ascii_u64(bytes).map(u128::from) } else { pack_ascii_u128(bytes) }
 }
 
 // The full packed bytes and length form an injective key. Local constants let
@@ -150,11 +146,7 @@ packed_lookup!(lookup_keyword, kw, {
 pub fn classify_keyword_bytes(bytes: &[u8]) -> Option<Symbol> {
     // This weak keyword is seventeen bytes and cannot fit either packed word.
     if bytes.len() > 16 {
-        return if bytes == b"contract_requires" {
-            Some(kw::ContractRequires)
-        } else {
-            None
-        };
+        return if bytes == b"contract_requires" { Some(kw::ContractRequires) } else { None };
     }
     lookup_keyword(bytes.len(), pack_ident(bytes)?)
 }

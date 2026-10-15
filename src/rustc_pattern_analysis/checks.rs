@@ -40,9 +40,9 @@ fn detect_mixed_deref_pat_ctors_inner<'p, Cx: PatCx>(
     }
 
     // Specialize and recurse into the patterns' fields.
-    let set = column.analyze_ctors(cx, &ty)?;
+    let set = column.analyze_ctors(cx, ty)?;
     for ctor in set.present {
-        for specialized_column in column.specialize(cx, &ty, &ctor).iter() {
+        for specialized_column in column.specialize(cx, ty, &ctor).iter() {
             detect_mixed_deref_pat_ctors_inner(cx, specialized_column)?;
         }
     }

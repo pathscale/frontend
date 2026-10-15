@@ -1,19 +1,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
-use alloc::vec::Vec;
 
-use core::fmt;
 use alloc::sync::Arc;
+use core::fmt;
 
 use crate::rustc_errors::Diag;
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::rustc_infer::infer::region_constraints::{Constraint, ConstraintKind, RegionConstraintData};
+use crate::rustc_infer::infer::region_constraints::{
+    Constraint, ConstraintKind, RegionConstraintData,
+};
 use crate::rustc_infer::infer::{
     InferCtxt, RegionResolutionError, RegionVariableOrigin, SubregionOrigin, TyCtxtInferExt as _,
 };
@@ -122,7 +120,10 @@ impl<'tcx, T: Copy + fmt::Display + TypeFoldable<TyCtxt<'tcx>> + 'tcx> ToUnivers
 
 impl<'tcx> ToUniverseInfo<'tcx> for CanonicalTypeOpAscribeUserTypeGoal<'tcx> {
     fn to_universe_info(self, base_universe: ty::UniverseIndex) -> UniverseInfo<'tcx> {
-        UniverseInfo::TypeOp(Arc::new(AscribeUserTypeQuery { canonical_query: self, base_universe }))
+        UniverseInfo::TypeOp(Arc::new(AscribeUserTypeQuery {
+            canonical_query: self,
+            base_universe,
+        }))
     }
 }
 

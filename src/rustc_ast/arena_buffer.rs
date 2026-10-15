@@ -39,9 +39,8 @@ impl Drop for Storage {
 impl<T> ArenaBuffer<T> {
     fn layout(capacity: usize) -> (Layout, usize) {
         let elements = Layout::array::<MaybeUninit<T>>(capacity).expect("AST list too large");
-        let (layout, offset) = Layout::new::<BufferHeader<T>>()
-            .extend(elements)
-            .expect("AST list too large");
+        let (layout, offset) =
+            Layout::new::<BufferHeader<T>>().extend(elements).expect("AST list too large");
         (layout.pad_to_align(), offset)
     }
 
@@ -69,10 +68,15 @@ impl<T> ArenaBuffer<T> {
         values
     }
 
+    #[expect(
+        dead_code,
+        reason = "retains the spill-state query for arena-backed AST list consumers"
+    )]
     pub(crate) fn spilled(&self) -> bool {
         self.0.is_some()
     }
 
+    #[expect(dead_code, reason = "retains the empty-list query used by AST list integrations")]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -146,9 +150,7 @@ impl<T> ArenaBuffer<T> {
             // SAFETY: header uniquely owns a live slice-family allocation described
             // by old_layout. The new layout has the same alignment and no smaller
             // size, and there are no live header or element references during growth.
-            let grew = unsafe {
-                try_grow_in_chunk_in_place(header.cast(), old_layout, new_layout)
-            };
+            let grew = unsafe { try_grow_in_chunk_in_place(header.cast(), old_layout, new_layout) };
             if grew || old_layout == new_layout {
                 // Equal layouts also cover ZST growth away from the active chunk tip.
                 // SAFETY: growth preserved the aligned, initialized header and its
@@ -265,6 +267,10 @@ impl<T> ArenaBuffer<T> {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "retains the range replacement operation for arena-backed AST list consumers"
+    )]
     pub(crate) fn splice<R, I>(&mut self, range: R, replace_with: I) -> alloc::vec::IntoIter<T>
     where
         R: RangeBounds<usize>,
@@ -284,9 +290,8 @@ impl<T> ArenaBuffer<T> {
         assert!(start <= end && end <= len, "AST list range out of bounds");
         // Finish user iteration and all fallible allocation before moving any slots.
         let replacement: Vec<T> = replace_with.into_iter().collect();
-        let new_len = (len - (end - start))
-            .checked_add(replacement.len())
-            .expect("AST list too large");
+        let new_len =
+            (len - (end - start)).checked_add(replacement.len()).expect("AST list too large");
         let mut removed = Vec::with_capacity(end - start);
         self.reserve_exact(new_len);
         let tail_start = start + replacement.len();

@@ -868,11 +868,11 @@ impl<'s> Finder<'s> {
         self.push_frame();
         self.bind_pat(&arm.pat, None, BindingKind::Local);
         self.position = Position::Expr;
-        if let Some(guard) = &arm.guard {
-            if self.touches(guard.cond.span) {
-                self.visit_expr(&guard.cond);
-                return;
-            }
+        if let Some(guard) = &arm.guard
+            && self.touches(guard.cond.span)
+        {
+            self.visit_expr(&guard.cond);
+            return;
         }
         if let Some(body) = &arm.body {
             self.visit_expr(body);

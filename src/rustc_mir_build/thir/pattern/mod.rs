@@ -7,8 +7,8 @@ mod const_to_pat;
 mod migration;
 
 use crate::assert_matches;
-use core::cmp::Ordering;
 use alloc::sync::Arc;
+use core::cmp::Ordering;
 
 use crate::rustc_abi::{FieldIdx, Integer};
 use crate::rustc_ast::LitKind;
@@ -618,7 +618,11 @@ impl<'tcx, 'ptcx> PatCtxt<'tcx, 'ptcx> {
         &self,
         hir_id: hir::HirId,
     ) -> Option<ty::CanonicalUserType<'tcx>> {
-        crate::rustc_mir_build::thir::util::user_args_applied_to_ty_of_hir_id(self.tcx, self.typeck_results, hir_id)
+        crate::rustc_mir_build::thir::util::user_args_applied_to_ty_of_hir_id(
+            self.tcx,
+            self.typeck_results,
+            hir_id,
+        )
     }
 
     /// Takes a HIR Path. If the path is a constant, evaluates it and feeds

@@ -2,10 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::assert_matches;
@@ -17,9 +13,9 @@ use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_hir::intravisit::{self, Visitor, VisitorExt};
 use crate::rustc_hir::{self as hir, AmbigArg, GenericParamKind, HirId, Node};
 use crate::rustc_lint_defs::builtin::INVALID_TYPE_PARAM_DEFAULT;
-use crate::span_bug;
 use crate::rustc_middle::ty::{self, TyCtxt};
 use crate::rustc_span::{Span, kw, sym};
+use crate::span_bug;
 use tracing::{debug, instrument};
 
 use crate::rustc_hir_analysis::middle::resolve_bound_vars as rbv;
@@ -513,10 +509,10 @@ fn has_late_bound_regions<'tcx>(tcx: TyCtxt<'tcx>, node: Node<'tcx>) -> Option<S
     ) -> Option<Span> {
         let mut visitor = LateBoundRegionsDetector { tcx, outer_index: ty::INNERMOST };
         for param in generics.params {
-            if let GenericParamKind::Lifetime { .. } = param.kind {
-                if tcx.is_late_bound(param.hir_id) {
-                    return Some(param.span);
-                }
+            if let GenericParamKind::Lifetime { .. } = param.kind
+                && tcx.is_late_bound(param.hir_id)
+            {
+                return Some(param.span);
             }
         }
         visitor.visit_fn_decl(decl).break_value()

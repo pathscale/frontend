@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::num::IntErrorKind;
 
 use crate::rustc_attr_ir::{AttrPath, MirDialect, MirPhase};
@@ -9,9 +9,9 @@ use crate::rustc_errors::{
     Applicability, Diag, DiagArgValue, DiagCtxtHandle, Diagnostic, E0264, EmissionGuarantee, Level,
     MultiSpan,
 };
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Ident, Span, Symbol};
 use crate::rustc_target::spec::TargetTuple;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_attr_parsing::AttributeTemplate;
 use crate::rustc_attr_parsing::context::Suggestion;
@@ -86,7 +86,8 @@ pub(crate) struct UnsafeAttrOutsideUnsafeLint {
     #[label("usage of unsafe attribute")]
     pub span: Span,
     #[subdiagnostic]
-    pub suggestion: Option<crate::rustc_attr_parsing::diagnostics::UnsafeAttrOutsideUnsafeSuggestion>,
+    pub suggestion:
+        Option<crate::rustc_attr_parsing::diagnostics::UnsafeAttrOutsideUnsafeSuggestion>,
 }
 
 #[derive(Diagnostic)]
@@ -495,11 +496,11 @@ pub(crate) struct UnexpectedCfgName {
 }
 
 pub(crate) mod unexpected_cfg_name {
-    use alloc::vec::Vec;
-    use alloc::string::String;
     use crate::rustc_errors::DiagSymbolList;
-    use rustc_macros::Subdiagnostic;
     use crate::rustc_span::{Ident, Span, Symbol};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use rustc_macros::Subdiagnostic;
 
     #[derive(Subdiagnostic)]
     pub(crate) enum CodeSuggestion {
@@ -650,10 +651,10 @@ pub(crate) struct UnexpectedCfgValue {
 }
 
 pub(crate) mod unexpected_cfg_value {
-    use alloc::vec::Vec;
     use crate::rustc_errors::DiagSymbolList;
-    use rustc_macros::Subdiagnostic;
     use crate::rustc_span::{Span, Symbol};
+    use alloc::vec::Vec;
+    use rustc_macros::Subdiagnostic;
 
     #[derive(Subdiagnostic)]
     pub(crate) enum CodeSuggestion {
@@ -1332,6 +1333,10 @@ pub(crate) struct InvalidTarget {
 }
 
 #[derive(Subdiagnostic)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "each variant names the specific attribute help action"
+)]
 pub(crate) enum InvalidTargetHelp {
     #[multipart_suggestion(
         "did you mean to use `#[export_name]`?",

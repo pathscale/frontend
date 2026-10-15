@@ -1,9 +1,9 @@
+use crate::bug;
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_infer::infer::TyCtxtInferExt;
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::traits::{BuiltinImplSource, CodegenObligationError};
 use crate::rustc_middle::ty::{

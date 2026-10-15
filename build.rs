@@ -13,14 +13,19 @@ const DEFAULTS: &[(&str, &str)] = &[
 ];
 
 fn main() {
+    // These inherited compiler switches are caller-supplied rather than Cargo features.
+    println!("cargo::rustc-check-cfg=cfg(bootstrap)");
+    println!("cargo::rustc-check-cfg=cfg(bench_mimalloc)");
+    println!(
+        "cargo::rustc-check-cfg=cfg(feature, values(\"no_simd\", \"randomize\", \"rustc_randomized_layouts\"))"
+    );
     for (name, default) in DEFAULTS {
         println!("cargo::rerun-if-env-changed={name}");
         let value = env::var(name).unwrap_or_else(|_| (*default).to_string());
         println!("cargo::rustc-env={name}={value}");
     }
     println!("cargo::rerun-if-env-changed=CFG_COMPILER_HOST_TRIPLE");
-    let host_triple = env::var("CFG_COMPILER_HOST_TRIPLE")
-        .or_else(|_| env::var("TARGET"))
-        .unwrap_or_default();
+    let host_triple =
+        env::var("CFG_COMPILER_HOST_TRIPLE").or_else(|_| env::var("TARGET")).unwrap_or_default();
     println!("cargo::rustc-env=CFG_COMPILER_HOST_TRIPLE={host_triple}");
 }

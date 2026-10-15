@@ -297,7 +297,14 @@ fn addr<T>(node: &T) -> usize {
 impl<'c, 'x> Checker<'c, 'x> {
     // ---- plumbing -------------------------------------------------------------------------
 
-    fn push_range(&mut self, code: &str, severity: Severity, start: u32, end: u32, message: String) {
+    fn push_range(
+        &mut self,
+        code: &str,
+        severity: Severity,
+        start: u32,
+        end: u32,
+        message: String,
+    ) {
         self.out.push(Diagnostic { code: code.to_string(), severity, message, start, end });
     }
 
@@ -309,7 +316,8 @@ impl<'c, 'x> Checker<'c, 'x> {
     fn lint_level(&self, lint: &Lint) -> Option<Severity> {
         for frame in self.lints.iter().rev() {
             for (name, level) in frame.iter().rev() {
-                if lint.groups.contains(&name.as_str()) || (lint.in_warnings && name == "warnings") {
+                if lint.groups.contains(&name.as_str()) || (lint.in_warnings && name == "warnings")
+                {
                     return match level {
                         Level::Allow => None,
                         Level::Warn => Some(Severity::Warning),
@@ -680,7 +688,7 @@ impl<'c, 'x> Checker<'c, 'x> {
 
     // ---- items ---------------------------------------------------------------------------
 
-    fn item<'a>(&mut self, item: &'a Item) {
+    fn item(&mut self, item: &Item) {
         match &item.kind {
             ItemKind::Fn(f) => {
                 self.fn_name(f, &item.attrs);
@@ -733,7 +741,9 @@ impl<'c, 'x> Checker<'c, 'x> {
                     ModKind::Unloaded => visit::walk_item(this, item),
                 });
             }
-            ItemKind::Struct(ident, ..) | ItemKind::Union(ident, ..) | ItemKind::Enum(ident, ..) => {
+            ItemKind::Struct(ident, ..)
+            | ItemKind::Union(ident, ..)
+            | ItemKind::Enum(ident, ..) => {
                 // rustc excuses `#[repr(C)]` types, which mostly mirror C names.
                 if !repr_c(&item.attrs) {
                     let what = match &item.kind {
@@ -753,7 +763,7 @@ impl<'c, 'x> Checker<'c, 'x> {
         }
     }
 
-    fn assoc_item<'a>(&mut self, item: &'a AssocItem, ctxt: AssocCtxt) {
+    fn assoc_item(&mut self, item: &AssocItem, ctxt: AssocCtxt) {
         let in_impl = matches!(ctxt, AssocCtxt::Impl { .. });
         // A trait implementation's names are the trait's, so only its bodies are checked.
         let in_trait_impl = matches!(ctxt, AssocCtxt::Impl { of_trait: true });
@@ -800,7 +810,7 @@ impl<'c, 'x> Checker<'c, 'x> {
 
     // ---- expressions ---------------------------------------------------------------------
 
-    fn expr<'a>(&mut self, e: &'a Expr) {
+    fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Closure(closure) => {
                 let is_async = matches!(
@@ -846,8 +856,10 @@ impl<'c, 'x> Checker<'c, 'x> {
                 return;
             }
             ExprKind::Loop(_, label, _) => {
-                let frame =
-                    Frame { kind: FrameKind::Loop { value: true }, label: label.map(|l| l.ident.name) };
+                let frame = Frame {
+                    kind: FrameKind::Loop { value: true },
+                    label: label.map(|l| l.ident.name),
+                };
                 self.with_frame(frame, |this| visit::walk_expr(this, e));
                 return;
             }
@@ -912,7 +924,9 @@ impl<'c, 'x> Checker<'c, 'x> {
                         AWAIT,
                         Severity::Error,
                         *await_kw,
-                        format!("`await` is used inside {location}, which is not an `async` context"),
+                        format!(
+                            "`await` is used inside {location}, which is not an `async` context"
+                        ),
                     );
                 }
             }
@@ -957,7 +971,9 @@ impl<'a, 'c, 'x> Visitor<'a> for Checker<'c, 'x> {
             this.case(variant.ident, Case::Camel, "Variant", false);
             this.visit_variant_data(&variant.data);
             if let Some(disr) = &variant.disr_expr {
-                this.with_owner(Body::constant("enum variant"), |this| this.visit_expr(&disr.value));
+                this.with_owner(Body::constant("enum variant"), |this| {
+                    this.visit_expr(&disr.value)
+                });
             }
         });
     }
@@ -987,7 +1003,10 @@ impl<'a, 'c, 'x> Visitor<'a> for Checker<'c, 'x> {
     fn visit_block(&mut self, block: &'a Block) {
         // Only the union check keeps scopes, and only a block with items is a scope of its own.
         let has_items = self.want.union
-            && block.stmts.iter().any(|s| matches!(s.kind, StmtKind::Item(_) | StmtKind::MacCall(_)));
+            && block
+                .stmts
+                .iter()
+                .any(|s| matches!(s.kind, StmtKind::Item(_) | StmtKind::MacCall(_)));
         if !has_items {
             return visit::walk_block(self, block);
         }
@@ -1341,12 +1360,11 @@ fn to_camel_case(ident: &str) -> Option<String> {
             new_word = false;
         }
         // Separate two components with an underscore when case cannot mark the boundary.
-        let join = prev.as_ref().is_some_and(|prev| {
-            match (prev.chars().last(), cased.chars().next()) {
+        let join =
+            prev.as_ref().is_some_and(|prev| match (prev.chars().last(), cased.chars().next()) {
                 (Some(l), Some(f)) => !char_has_case(l) && !char_has_case(f),
                 _ => false,
-            }
-        });
+            });
         if join {
             out.push('_');
         }
@@ -1495,7 +1513,7 @@ mod tests {
 
     fn found(source: &str, disabled: &[&str]) -> Found {
         let opts = Options::default();
-        let out = run(source, &opts, |cx, krate, out| check(cx, krate, out))
+        let out = run(source, &opts, check)
             .unwrap_or_else(|errors| panic!("fixture does not parse: {errors:?}\n{source}"));
         out.into_iter()
             .filter(|d| !disabled.contains(&d.code.as_str()))
@@ -3714,8 +3732,7 @@ enum FFI_Enum {
     #[test]
     fn skipped_codes_do_not_run() {
         let opts = Options { codes: Some(vec![BREAK.to_string()]), ..Options::default() };
-        let out = run("fn FOO() { break; }", &opts, |cx, krate, out| check(cx, krate, out))
-            .expect("parses");
+        let out = run("fn FOO() { break; }", &opts, check).expect("parses");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].code, BREAK);
     }
@@ -3723,16 +3740,14 @@ enum FFI_Enum {
     #[test]
     fn min_severity_drops_weaker_findings() {
         let opts = Options { min_severity: Severity::Error, ..Options::default() };
-        let out = run("fn FOO() -> u8 { return 1; }", &opts, |cx, krate, out| check(cx, krate, out))
-            .expect("parses");
+        let out = run("fn FOO() -> u8 { return 1; }", &opts, check).expect("parses");
         assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]
     fn a_parse_error_is_err() {
         let source = "fn f() { let x = ; }";
-        let errors = run(source, &Options::default(), |cx, krate, out| check(cx, krate, out))
-            .expect_err("does not parse");
+        let errors = run(source, &Options::default(), check).expect_err("does not parse");
         assert!(!errors.is_empty());
     }
 }

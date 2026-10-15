@@ -25,11 +25,11 @@
 //! sometimes useful when the types of `c` and `d` are not traceable
 //! things. (That system should probably be refactored.)
 
-use alloc::vec::Vec;
-use relate::lattice::{LatticeOp, LatticeOpKind};
 use crate::bug;
 use crate::rustc_middle::ty::relate::solver_relating::RelateExt as NextSolverRelate;
 use crate::rustc_middle::ty::{Const, TypingMode};
+use alloc::vec::Vec;
+use relate::lattice::{LatticeOp, LatticeOpKind};
 
 use super::*;
 use crate::rustc_infer::infer::relate::type_relating::TypeRelating;

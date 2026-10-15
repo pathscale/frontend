@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use alloc::borrow::Cow;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::mem;
 
 use crate::rustc_ast::AsmMacro;
@@ -8,15 +8,17 @@ use crate::rustc_errors::DiagArgValue;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::{self as hir, BindingMode, ByRef, HirId, Mutability, find_attr};
-use crate::rustc_lint_defs::builtin::{DEPRECATED_SAFE_2024, UNSAFE_OP_IN_UNSAFE_FN, UNUSED_UNSAFE};
+use crate::rustc_lint_defs::builtin::{
+    DEPRECATED_SAFE_2024, UNSAFE_OP_IN_UNSAFE_FN, UNUSED_UNSAFE,
+};
 use crate::rustc_middle::middle::codegen_fn_attrs::{TargetFeature, TargetFeatureKind};
-use crate::span_bug;
 use crate::rustc_middle::thir::visit::Visitor;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty::print::with_no_trimmed_paths;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::def_id::{DefId, LocalDefId};
 use crate::rustc_span::{Span, Symbol};
+use crate::span_bug;
 
 use crate::rustc_mir_build::diagnostics::*;
 
@@ -76,14 +78,12 @@ impl<'tcx> UnsafetyVisitor<'_, 'tcx> {
                     );
                 }
 
-                match self.safety_context {
-                    SafetyContext::UnsafeBlock {
-                        nested_used_blocks: ref mut prev_nested_used_blocks,
-                        ..
-                    } => {
-                        prev_nested_used_blocks.push(NestedUsedBlock { hir_id, span });
-                    }
-                    _ => (),
+                if let SafetyContext::UnsafeBlock {
+                    nested_used_blocks: ref mut prev_nested_used_blocks,
+                    ..
+                } = self.safety_context
+                {
+                    prev_nested_used_blocks.push(NestedUsedBlock { hir_id, span });
                 }
             }
         }
@@ -324,7 +324,7 @@ impl<'a, 'tcx> Visitor<'a, 'tcx> for UnsafetyVisitor<'a, 'tcx> {
                                 self.requires_unsafe(pat.span, BorrowOfLayoutConstrainedField);
                             }
                         }
-                        Mutability::Mut { .. } => {
+                        Mutability::Mut => {
                             self.requires_unsafe(pat.span, MutationOfLayoutConstrainedField);
                         }
                     }

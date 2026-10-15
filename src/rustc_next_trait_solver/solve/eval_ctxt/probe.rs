@@ -65,6 +65,10 @@ where
         self.enter_inner(f, Default::default())
     }
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "the owned goal records retain source and stall information for each nested goal"
+    )]
     pub(in crate::rustc_next_trait_solver::solve) fn enter_inner(
         self,
         f: impl FnOnce(&mut EvalCtxt<'_, D>) -> Result<T, NoSolutionOrRerunNonErased>,
@@ -144,7 +148,10 @@ where
 {
     /// `probe_kind` is only called when proof tree building is enabled so it can be
     /// as expensive as necessary to output the desired information.
-    pub(in crate::rustc_next_trait_solver::solve) fn probe<F, T>(&mut self, probe_kind: F) -> ProbeCtxt<'_, 'a, D, I, F, T>
+    pub(in crate::rustc_next_trait_solver::solve) fn probe<F, T>(
+        &mut self,
+        probe_kind: F,
+    ) -> ProbeCtxt<'_, 'a, D, I, F, T>
     where
         F: FnOnce(&Result<T, NoSolution>) -> inspect::ProbeKind<I>,
     {

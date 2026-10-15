@@ -3,10 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -19,15 +16,15 @@ use core::hash::Hash;
 use core::ops::{Deref, DerefMut, Range};
 use core::{fmt, hash, ptr};
 
+use crate::rustc_abi::{Align, HasDataLayout, Size};
+use crate::rustc_ast::Mutability;
+use crate::rustc_data_structures::intern::Interned;
+use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use either::{Left, Right};
 use init_mask::*;
 pub use init_mask::{InitChunk, InitChunkIter};
 use provenance_map::*;
-use crate::rustc_abi::{Align, HasDataLayout, Size};
-use crate::rustc_ast::Mutability;
-use crate::rustc_data_structures::intern::Interned;
 use rustc_macros::StableHash;
-use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 
 use super::{
     AllocId, BadBytesAccess, CtfeProvenance, InterpErrorKind, InterpResult, Pointer, Provenance,
@@ -520,7 +517,7 @@ impl Allocation {
         mut adjust_ptr: impl FnMut(Pointer<CtfeProvenance>) -> InterpResult<'tcx, Pointer<Prov>>,
     ) -> InterpResult<'tcx, Allocation<Prov, (), Bytes>> {
         // Copy the data.
-        let mut bytes = alloc_bytes(&*self.bytes, self.align)?;
+        let mut bytes = alloc_bytes(&self.bytes, self.align)?;
         // Adjust provenance of pointers stored in this allocation.
         let mut new_provenance = Vec::with_capacity(self.provenance.ptrs().len());
         let ptr_size = cx.data_layout().pointer_size().bytes_usize();
@@ -550,6 +547,10 @@ impl Allocation {
 impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> {
     pub fn len(&self) -> usize {
         self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
     }
 
     pub fn size(&self) -> Size {
@@ -728,7 +729,7 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
                 return Ok(Scalar::from_uint(bits, range.size));
             }
             // There is some provenance and we don't have OFFSET_IS_ADDR. This doesn't work.
-            return Err(AllocError::ReadPointerAsInt(None));
+            Err(AllocError::ReadPointerAsInt(None))
         }
     }
 

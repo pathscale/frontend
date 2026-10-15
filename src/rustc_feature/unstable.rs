@@ -1,9 +1,9 @@
 //! List of the unstable feature gates.
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use eko::path::PathBuf;
 
 use crate::rustc_data_structures::AtomicRef;

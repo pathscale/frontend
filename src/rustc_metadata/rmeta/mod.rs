@@ -1,22 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use core::marker::PhantomData;
 use core::num::NonZero;
 
-use decoder::LazyDecoder;
-pub(crate) use decoder::{CrateMetadata, CrateNumMap, MetadataBlob, TargetModifiers};
-use def_path_hash_map::DefPathHashMapRef;
-use encoder::EncodeContext;
-pub use encoder::{EncodedMetadata, encode_metadata, rendered_const};
-pub(crate) use parameterized::ParameterizedOverTcx;
 use crate::rustc_abi::{FieldIdx, ReprOptions, VariantIdx};
 use crate::rustc_ast as ast;
 use crate::rustc_crate_store::{CrateDepKind, ForeignModule, LinkagePreference, NativeLib};
@@ -31,9 +22,6 @@ use crate::rustc_hir::definitions::DefKey;
 use crate::rustc_hir::{PreciseCapturingArgKind, attrs};
 use crate::rustc_index::IndexVec;
 use crate::rustc_index::bit_set::DenseBitSet;
-use rustc_macros::{
-    BlobDecodable, Decodable, Encodable, LazyDecodable, MetadataEncodable, TyDecodable, TyEncodable,
-};
 use crate::rustc_middle::metadata::{AmbigModChild, ModChild};
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
 use crate::rustc_middle::middle::debugger_visualizer::DebuggerVisualizerFile;
@@ -51,8 +39,17 @@ use crate::rustc_session::config::mitigation_coverage::DeniedPartialMitigation;
 use crate::rustc_session::config::{SymbolManglingVersion, TargetModifier};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::{ExpnIndex, MacroKind, SyntaxContextKey};
-use crate::rustc_span::{self, ExpnData, ExpnHash, ExpnId, Ident, Span, Symbol};
+use crate::rustc_span::{ExpnData, ExpnHash, ExpnId, Ident, Span, Symbol};
 use crate::rustc_target::spec::{PanicStrategy, TargetTuple};
+use decoder::LazyDecoder;
+pub(crate) use decoder::{CrateMetadata, CrateNumMap, MetadataBlob, TargetModifiers};
+use def_path_hash_map::DefPathHashMapRef;
+use encoder::EncodeContext;
+pub use encoder::{EncodedMetadata, encode_metadata, rendered_const};
+pub(crate) use parameterized::ParameterizedOverTcx;
+use rustc_macros::{
+    BlobDecodable, Decodable, Encodable, LazyDecodable, MetadataEncodable, TyDecodable, TyEncodable,
+};
 use table::TableBuilder;
 
 use crate::rustc_metadata::eii::EiiMapEncodedKeyValue;
@@ -215,8 +212,16 @@ pub enum ProcMacroKind {
         entry_body: Option<ProcMacroEntryBody>,
         schema: ProcMacroSchema,
     },
-    Attr { name: String, entry_body: Option<ProcMacroEntryBody>, schema: ProcMacroSchema },
-    Bang { name: String, entry_body: Option<ProcMacroEntryBody>, schema: ProcMacroSchema },
+    Attr {
+        name: String,
+        entry_body: Option<ProcMacroEntryBody>,
+        schema: ProcMacroSchema,
+    },
+    Bang {
+        name: String,
+        entry_body: Option<ProcMacroEntryBody>,
+        schema: ProcMacroSchema,
+    },
 }
 
 /// Serialized crate metadata.
@@ -250,17 +255,17 @@ pub(crate) struct CrateHeader {
 /// the `LazyArray<T>` fields as `Lazy::empty()`. This serves two purposes:
 ///
 /// 1. We avoid performing unnecessary work. Proc-macro crates can only
-/// export proc-macros functions, which are compiled into a shared library.
-/// As a result, a large amount of the information we normally store
-/// (e.g. optimized MIR) is unneeded by downstream crates.
+///    export proc-macros functions, which are compiled into a shared library.
+///    As a result, a large amount of the information we normally store
+///    (e.g. optimized MIR) is unneeded by downstream crates.
 /// 2. We avoid serializing invalid `CrateNum`s. When we deserialize
-/// a proc-macro crate, we don't load any of its dependencies (since we
-/// just need to invoke a native function from the shared library).
-/// This means that any foreign `CrateNum`s that we serialize cannot be
-/// deserialized, since we will not know how to map them into the current
-/// compilation session. If we were to serialize a proc-macro crate like
-/// a normal crate, much of what we serialized would be unusable in addition
-/// to being unused.
+///    a proc-macro crate, we don't load any of its dependencies (since we
+///    just need to invoke a native function from the shared library).
+///    This means that any foreign `CrateNum`s that we serialize cannot be
+///    deserialized, since we will not know how to map them into the current
+///    compilation session. If we were to serialize a proc-macro crate like
+///    a normal crate, much of what we serialized would be unusable in addition
+///    to being unused.
 #[derive(MetadataEncodable, LazyDecodable)]
 pub(crate) struct CrateRoot {
     /// A header used to detect if this is the right crate to load.

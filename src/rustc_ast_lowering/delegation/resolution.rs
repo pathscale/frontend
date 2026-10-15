@@ -4,8 +4,6 @@ use alloc::format;
 
 use core::ops::ControlFlow;
 
-use ast::visit::Visitor;
-use hir::def::DefKind;
 use crate::rustc_ast::{self as ast, Delegation, DelegationSource, NodeId};
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_hir as hir;
@@ -13,6 +11,8 @@ use crate::rustc_middle::ty::{Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, Typ
 use crate::rustc_middle::{span_bug, ty};
 use crate::rustc_span::def_id::{DefId, LocalDefId};
 use crate::rustc_span::{ErrorGuaranteed, Span};
+use ast::visit::Visitor;
+use hir::def::DefKind;
 
 use crate::rustc_ast_lowering::delegation::generics::GenericsGenerationResults;
 use crate::rustc_ast_lowering::delegation::resolution::resolver::DelegationResolver;
@@ -55,11 +55,11 @@ pub(super) struct DelegationResolution {
 pub(super) mod resolver {
     // A nested module inherits the parent's private `use` *items*, so types resolve - but macros
     // do not travel through that, which is why `format!` is named again here.
-    use alloc::format;
     use crate::rustc_ast::NodeId;
     use crate::rustc_hir::def_id::{DefId, LocalDefId};
     use crate::rustc_middle::ty::TyCtxt;
     use crate::rustc_span::ErrorGuaranteed;
+    use alloc::format;
 
     use crate::rustc_ast_lowering::LoweringContext;
 

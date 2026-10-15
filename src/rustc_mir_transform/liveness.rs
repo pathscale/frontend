@@ -1,22 +1,20 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
+use crate::find_attr;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, IndexEntry};
 use crate::rustc_hir::def::{CtorKind, DefKind};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
-use crate::find_attr;
 use crate::rustc_index::IndexVec;
 use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_lint_defs::builtin::{UNUSED_ASSIGNMENTS, UNUSED_VARIABLES};
-use crate::bug;
 use crate::rustc_middle::mir::visit::{
     MutatingUseContext, NonMutatingUseContext, NonUseContext, PlaceContext, Visitor,
 };
@@ -432,7 +430,7 @@ fn find_self_assignments<'tcx>(
                     // We ignore indirect self-assignment, because both occurrences of `dest` are uses.
                     let is_indirect = checked_places
                         .get(dest.as_ref())
-                        .map_or(false, |(_, projections)| is_indirect(projections));
+                        .is_some_and(|(_, projections)| is_indirect(projections));
                     if is_indirect {
                         continue;
                     }
@@ -463,7 +461,7 @@ fn find_self_assignments<'tcx>(
                     // We ignore indirect self-assignment, because both occurrences of `dest` are uses.
                     let is_indirect = checked_places
                         .get(first_place.as_ref())
-                        .map_or(false, |(_, projections)| is_indirect(projections));
+                        .is_some_and(|(_, projections)| is_indirect(projections));
                     if is_indirect {
                         continue;
                     }
@@ -512,7 +510,7 @@ struct PlaceSet<'tcx> {
 
 impl<'tcx> PlaceSet<'tcx> {
     fn insert_locals(&mut self, decls: &IndexVec<Local, LocalDecl<'tcx>>) {
-        self.locals = IndexVec::from_elem(None, &decls);
+        self.locals = IndexVec::from_elem(None, decls);
         // Size the place tables once for the user locals below (called on an empty set).
         debug_assert!(self.places.is_empty());
         let user_locals = decls
@@ -686,21 +684,21 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
                                source_info: SourceInfo,
                                location: Location,
                                live: &DenseBitSet<PlaceIndex>| {
-            if let Some((index, extra_projections)) = checked_places.get(place.as_ref()) {
-                if !is_indirect(extra_projections) {
-                    let is_direct = extra_projections.is_empty();
-                    match assignments[index].entry(source_info) {
-                        IndexEntry::Vacant(v) => {
-                            let access =
-                                Access { kind, location, live: live.contains(index), is_direct };
-                            v.insert(access);
-                        }
-                        IndexEntry::Occupied(mut o) => {
-                            // There were already a sighting. Mark this statement as live if it
-                            // was, to avoid false positives.
-                            o.get_mut().live |= live.contains(index);
-                            o.get_mut().is_direct &= is_direct;
-                        }
+            if let Some((index, extra_projections)) = checked_places.get(place.as_ref())
+                && !is_indirect(extra_projections)
+            {
+                let is_direct = extra_projections.is_empty();
+                match assignments[index].entry(source_info) {
+                    IndexEntry::Vacant(v) => {
+                        let access =
+                            Access { kind, location, live: live.contains(index), is_direct };
+                        v.insert(access);
+                    }
+                    IndexEntry::Occupied(mut o) => {
+                        // There were already a sighting. Mark this statement as live if it
+                        // was, to avoid false positives.
+                        o.get_mut().live |= live.contains(index);
+                        o.get_mut().is_direct &= is_direct;
                     }
                 }
             }
@@ -1133,7 +1131,7 @@ impl<'a, 'tcx> AssignmentResult<'a, 'tcx> {
                     let outer_initializer_span =
                         initializer_span.find_ancestor_in_same_ctxt(source_info.span);
                     within.is_none()
-                        && outer_initializer_span.map_or(true, |s| !s.contains(source_info.span))
+                        && outer_initializer_span.is_none_or(|s| !s.contains(source_info.span))
                 });
             }
 
@@ -1342,7 +1340,7 @@ impl<'tcx> MaybeLivePlaces<'_, 'tcx> {
     ) -> TransferFunction<'a, 'tcx> {
         TransferFunction {
             tcx: self.tcx,
-            checked_places: &self.checked_places,
+            checked_places: self.checked_places,
             capture_kind: self.capture_kind,
             trans,
             self_assignment: &self.self_assignment,
@@ -1411,10 +1409,7 @@ impl<'tcx> Visitor<'tcx> for TransferFunction<'_, 'tcx> {
                 if matches!(
                     **fake_read,
                     (FakeReadCause::ForLet(None) | FakeReadCause::ForGuardBinding, _)
-                ) =>
-            {
-                return;
-            }
+                ) => {}
             // Handle self-assignment by restricting the read/write they do.
             StatementKind::Assign(ref assign) if self.self_assignment.contains(&location) => {
                 let (ref dest, ref rvalue) = **assign;
@@ -1509,7 +1504,7 @@ impl<'tcx> Visitor<'tcx> for TransferFunction<'_, 'tcx> {
                     PlaceRef { local: place.local, projection: &place.projection[..i] };
                 let extra_projections = &place.projection[i..];
 
-                if let Some(&elem) = extra_projections.get(0) {
+                if let Some(&elem) = extra_projections.first() {
                     self.visit_projection_elem(place_part, elem, context, location);
                 }
             }

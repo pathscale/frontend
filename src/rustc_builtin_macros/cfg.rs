@@ -5,13 +5,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
+use crate::exp;
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::{AttrStyle, token};
 use crate::rustc_attr_ir::target::Target;
@@ -21,8 +17,9 @@ use crate::rustc_attr_parsing::{
     self as attr, AttributeParser, AttributeSafety, CFG_TEMPLATE, ParsedDescription, ShouldEmit,
     parse_cfg_entry,
 };
-use crate::rustc_expand::base::{DummyResult, ExpandResult, ExtCtxt, MacEager, MacroExpanderResult};
-use crate::exp;
+use crate::rustc_expand::base::{
+    DummyResult, ExpandResult, ExtCtxt, MacEager, MacroExpanderResult,
+};
 use crate::rustc_parse::parser::Recovery;
 use crate::rustc_span::{ErrorGuaranteed, Span, sym};
 

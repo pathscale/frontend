@@ -4,11 +4,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_data_structures::frozen::Frozen;
@@ -25,7 +20,9 @@ use crate::rustc_borrowck::constraints::{ConstraintSccIndex, OutlivesConstraintS
 use crate::rustc_borrowck::consumers::OutlivesConstraint;
 use crate::rustc_borrowck::diagnostics::UniverseInfo;
 use crate::rustc_borrowck::region_infer::values::{LivenessValues, PlaceholderIndices};
-use crate::rustc_borrowck::region_infer::{ConstraintSccs, RegionDefinition, Representative, TypeTest};
+use crate::rustc_borrowck::region_infer::{
+    ConstraintSccs, RegionDefinition, Representative, TypeTest,
+};
 use crate::rustc_borrowck::ty::VarianceDiagInfo;
 use crate::rustc_borrowck::type_check::free_region_relations::UniversalRegionRelations;
 use crate::rustc_borrowck::type_check::{Locations, MirTypeckRegionConstraints};
@@ -231,12 +228,12 @@ pub(super) fn region_definitions<'tcx>(
 /// for two reasons:
 ///
 /// 1. Implementing Polonius is difficult enough without also
-///     handling them.
+///    handling them.
 /// 2. The long-term goal is to handle higher-kinded concerns
-///     in the trait solver, where they belong. This avoids
-///     logic duplication and allows future trait solvers
-///     to compute better bounds than for example our
-///     "must outlive 'static" here.
+///    in the trait solver, where they belong. This avoids
+///    logic duplication and allows future trait solvers
+///    to compute better bounds than for example our
+///    "must outlive 'static" here.
 ///
 /// This code is a stop-gap measure in preparation for the future trait solver.
 ///

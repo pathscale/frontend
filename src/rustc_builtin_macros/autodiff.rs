@@ -6,14 +6,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a path
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use crate::rustc_ast::ptr::P;
-use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 mod llvm_enzyme {
     use crate::rustc_ast::ptr::P;
@@ -61,14 +53,11 @@ mod llvm_enzyme {
         }
     }
     fn first_ident(x: &MetaItemInner) -> crate::rustc_span::Ident {
-        if let Some(l) = x.lit() {
-            match l.kind {
-                ast::LitKind::Int(val, _) => {
-                    // get an Ident from a lit
-                    return crate::rustc_span::Ident::from_str(val.get().to_string().as_str());
-                }
-                _ => {}
-            }
+        if let Some(l) = x.lit()
+            && let ast::LitKind::Int(val, _) = l.kind
+        {
+            // get an Ident from a lit
+            return crate::rustc_span::Ident::from_str(val.get().to_string().as_str());
         }
 
         let segments = &x.meta_item().unwrap().path.segments;
@@ -111,7 +100,7 @@ mod llvm_enzyme {
         // If he doesn't specify an integer (=width), we default to scalar mode, thus width=1.
         let mut first_activity = 1;
 
-        let width = if let [_, x, ..] = &meta_item[..]
+        let width = if let [_, x, ..] = meta_item
             && let Some(x) = width(x)
         {
             first_activity = 2;
@@ -499,6 +488,10 @@ mod llvm_enzyme {
     // ```
     // core::intrinsics::autodiff(source as fn(..) -> .., diff, (args))
     // ```
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn call_autodiff(
         ecx: &ExtCtxt<'_>,
         primal: Ident,
@@ -878,7 +871,7 @@ mod llvm_enzyme {
         // If we have an active input scalar, add it's gradient to the
         // return type. This might require changing the return type to a
         // tuple.
-        if act_ret.len() > 0 {
+        if !act_ret.is_empty() {
             let ret_ty = match d_decl.output {
                 FnRetTy::Ty(ref ty) => {
                     if !active_only_ret {

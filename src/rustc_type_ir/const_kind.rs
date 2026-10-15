@@ -1,8 +1,8 @@
 use core::fmt;
 
-use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
+use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash, StableHash_NoContext};
 use rustc_macros::{

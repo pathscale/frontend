@@ -1,10 +1,10 @@
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::graph::scc::Sccs;
 use crate::rustc_data_structures::graph::vec_graph::VecGraph;
 use crate::rustc_index::Idx;
-use crate::span_bug;
 use crate::rustc_middle::ty::error::TypeError;
+use crate::span_bug;
+use alloc::vec::Vec;
 use tracing::{debug, instrument};
 
 use super::*;
@@ -156,17 +156,17 @@ impl<'a, 'tcx> LeakCheck<'a, 'tcx> {
             self.scc_universes[scc].take_min(universe, *region);
 
             // Detect those SCCs that directly contain a placeholder
-            if let ty::RePlaceholder(placeholder) = region.kind() {
-                if self.outer_universe.cannot_name(placeholder.universe) {
-                    // Update `scc_placeholders` to account for the fact that `P: S` must hold.
-                    match self.scc_placeholders[scc] {
-                        Some(p) => {
-                            assert_ne!(p, placeholder);
-                            return Err(self.placeholder_error(p, placeholder));
-                        }
-                        None => {
-                            self.scc_placeholders[scc] = Some(placeholder);
-                        }
+            if let ty::RePlaceholder(placeholder) = region.kind()
+                && self.outer_universe.cannot_name(placeholder.universe)
+            {
+                // Update `scc_placeholders` to account for the fact that `P: S` must hold.
+                match self.scc_placeholders[scc] {
+                    Some(p) => {
+                        assert_ne!(p, placeholder);
+                        return Err(self.placeholder_error(p, placeholder));
+                    }
+                    None => {
+                        self.scc_placeholders[scc] = Some(placeholder);
                     }
                 }
             }
@@ -178,10 +178,10 @@ impl<'a, 'tcx> LeakCheck<'a, 'tcx> {
     /// For each SCC S, iterate over each successor S1 where `S: S1`:
     ///
     /// * Compute
-    /// Iterate over each SCC `S` and ensure that, for each `S1` where `S1: S`,
-    /// `universe(S) <= universe(S1)`. This executes after
-    /// `assign_placeholder_values`, so `universe(S)` is already the minimum
-    /// universe of any of its direct constituents.
+    ///   Iterate over each SCC `S` and ensure that, for each `S1` where `S1: S`,
+    ///   `universe(S) <= universe(S1)`. This executes after
+    ///   `assign_placeholder_values`, so `universe(S)` is already the minimum
+    ///   universe of any of its direct constituents.
     fn propagate_scc_value(&mut self) -> RelateResult<'tcx, ()> {
         // Loop invariants:
         //

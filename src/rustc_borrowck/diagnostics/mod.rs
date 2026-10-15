@@ -4,7 +4,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -15,7 +14,9 @@ use alloc::collections::BTreeMap;
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_errors::formatting::DiagMessageAddArg;
-use crate::rustc_errors::{Applicability, Diag, DiagMessage, EmissionGuarantee, MultiSpan, listify, msg};
+use crate::rustc_errors::{
+    Applicability, Diag, DiagMessage, EmissionGuarantee, MultiSpan, listify, msg,
+};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, Namespace};
 use crate::rustc_hir::{
@@ -36,7 +37,9 @@ use crate::rustc_mir_dataflow::move_paths::{InitLocation, LookupResult, MoveOutI
 use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{DUMMY_SP, Span, Spanned, Symbol, sym};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
-use crate::rustc_trait_selection::error_reporting::traits::call_kind::{CallDesugaringKind, call_kind};
+use crate::rustc_trait_selection::error_reporting::traits::call_kind::{
+    CallDesugaringKind, call_kind,
+};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
 use crate::rustc_trait_selection::traits::{
     FulfillmentError, FulfillmentErrorCode, type_known_to_meet_bound_modulo_regions,
@@ -67,13 +70,13 @@ mod mutability_errors;
 mod opaque_types;
 mod region_errors;
 
+pub(crate) use crate::rustc_trait_selection::error_reporting::traits::call_kind::CallKind;
 pub(crate) use bound_region_errors::{ToUniverseInfo, UniverseInfo};
 pub(crate) use move_errors::{IllegalMoveOriginKind, MoveError};
 pub(crate) use mutability_errors::AccessKind;
 pub(crate) use outlives_suggestion::OutlivesSuggestionBuilder;
 pub(crate) use region_errors::{ErrorConstraintInfo, RegionErrorKind, RegionErrors};
 pub(crate) use region_name::{RegionName, RegionNameSource};
-pub(crate) use crate::rustc_trait_selection::error_reporting::traits::call_kind::CallKind;
 
 pub(super) struct DescribePlaceOpt {
     including_downcast: bool,
@@ -212,21 +215,21 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         self.local_names.get_or_init(|| {
             let mut local_names = IndexVec::from_elem(None, &self.body.local_decls);
             for var_debug_info in &self.body.var_debug_info {
-                if let VarDebugInfoContents::Place(place) = var_debug_info.value {
-                    if let Some(local) = place.as_local() {
-                        if let Some(prev_name) = local_names[local]
-                            && var_debug_info.name != prev_name
-                        {
-                            span_bug!(
-                                var_debug_info.source_info.span,
-                                "local {:?} has many names (`{}` vs `{}`)",
-                                local,
-                                prev_name,
-                                var_debug_info.name
-                            );
-                        }
-                        local_names[local] = Some(var_debug_info.name);
+                if let VarDebugInfoContents::Place(place) = var_debug_info.value
+                    && let Some(local) = place.as_local()
+                {
+                    if let Some(prev_name) = local_names[local]
+                        && var_debug_info.name != prev_name
+                    {
+                        span_bug!(
+                            var_debug_info.source_info.span,
+                            "local {:?} has many names (`{}` vs `{}`)",
+                            local,
+                            prev_name,
+                            var_debug_info.name
+                        );
                     }
+                    local_names[local] = Some(var_debug_info.name);
                 }
             }
             local_names
@@ -366,7 +369,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
         let mut buf = String::new();
         let mut ok = self.append_local_to_string(local, &mut buf);
 
-        for (index, elem) in place.projection.into_iter().enumerate() {
+        for (index, elem) in place.projection.iter().enumerate() {
             match elem {
                 ProjectionElem::Deref => {
                     if index == 0 {
@@ -452,12 +455,9 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
     }
 
     fn describe_name(&self, place: PlaceRef<'tcx>) -> Option<Symbol> {
-        for elem in place.projection.into_iter() {
-            match elem {
-                ProjectionElem::Downcast(Some(name), _) => {
-                    return Some(*name);
-                }
-                _ => {}
+        for elem in place.projection.iter() {
+            if let ProjectionElem::Downcast(Some(name), _) = elem {
+                return Some(*name);
             }
         }
         None
@@ -597,12 +597,10 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                             },
                         ..
                     }) = &bbd.terminator
-                    {
-                        if let Some(source) =
+                        && let Some(source) =
                             BorrowedContentSource::from_call(func.ty(self.body, tcx), tcx)
-                        {
-                            return source;
-                        }
+                    {
+                        return source;
                     }
                 }
             }
@@ -724,16 +722,15 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                 return;
             }
             for bound in bounds.iter() {
-                if let GenericBound::Trait(bound) = bound {
-                    if bound
+                if let GenericBound::Trait(bound) = bound
+                    && bound
                         .bound_generic_params
                         .iter()
                         .rfind(|bgp| tcx.local_def_id_to_hir_id(bgp.def_id) == gat_hir_id)
                         .is_some()
-                    {
-                        diag.span_note(bound.span, LIMITATION_NOTE);
-                        return;
-                    }
+                {
+                    diag.span_note(bound.span, LIMITATION_NOTE);
+                    return;
                 }
             }
         }
@@ -763,6 +760,10 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
 
 /// The span(s) associated to a use of a place.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Use` suffix identifies each source of a borrow-check access span."
+)]
 pub(super) enum UseSpans<'tcx> {
     /// The access is caused by capturing a variable for a closure.
     ClosureUse {
@@ -1408,16 +1409,17 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                         }
                     }
                     let parent_did = tcx.parent(method_did);
-                    let parent_self_ty =
-                        matches!(tcx.def_kind(parent_did), crate::rustc_hir::def::DefKind::Impl { .. })
-                            .then_some(parent_did)
-                            .and_then(|did| {
-                                match tcx.type_of(did).instantiate_identity().skip_norm_wip().kind()
-                                {
-                                    ty::Adt(def, ..) => Some(def.did()),
-                                    _ => None,
-                                }
-                            });
+                    let parent_self_ty = matches!(
+                        tcx.def_kind(parent_did),
+                        crate::rustc_hir::def::DefKind::Impl { .. }
+                    )
+                    .then_some(parent_did)
+                    .and_then(|did| {
+                        match tcx.type_of(did).instantiate_identity().skip_norm_wip().kind() {
+                            ty::Adt(def, ..) => Some(def.did()),
+                            _ => None,
+                        }
+                    });
                     let is_option_or_result = parent_self_ty.is_some_and(|def_id| {
                         matches!(tcx.get_diagnostic_name(def_id), Some(sym::Option | sym::Result))
                     });

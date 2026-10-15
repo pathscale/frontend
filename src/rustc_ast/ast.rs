@@ -42,7 +42,7 @@ use crate::rustc_span::{
 pub use GenericArgs::*;
 pub use UnsafeSource::*;
 use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::ThinVec;
 
 pub use crate::rustc_ast::arena_vec::ArenaVec;
 
@@ -398,7 +398,7 @@ impl PathSegments {
                 heap.insert(index, segment);
                 PathSegmentsInner::Heap(heap)
             }
-            PathSegmentsInner::Heap(mut segments) if segments.is_empty() => {
+            PathSegmentsInner::Heap(segments) if segments.is_empty() => {
                 PathSegmentsInner::Inline(segment)
             }
             PathSegmentsInner::Heap(mut segments) => {
@@ -2656,11 +2656,11 @@ impl YieldKind {
 
     /// Returns true if both yields are prefix or both are postfix.
     pub const fn same_kind(&self, other: &Self) -> bool {
-        match (self, other) {
-            (YieldKind::Prefix(_), YieldKind::Prefix(_)) => true,
-            (YieldKind::Postfix(_), YieldKind::Postfix(_)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (YieldKind::Prefix(_), YieldKind::Prefix(_))
+                | (YieldKind::Postfix(_), YieldKind::Postfix(_))
+        )
     }
 }
 
@@ -3445,24 +3445,22 @@ pub type ExplicitSelf = Spanned<SelfKind>;
 impl Param {
     /// Attempts to cast parameter to `ExplicitSelf`.
     pub fn to_self(&self) -> Option<ExplicitSelf> {
-        if let PatKind::Ident(BindingMode(ByRef::No, mutbl), ident, _) = self.pat.kind {
-            if ident.name == kw::SelfLower {
-                return match self.ty.kind {
-                    TyKind::ImplicitSelf => Some(respan(self.pat.span, SelfKind::Value(mutbl))),
-                    TyKind::Ref(lt, MutTy { ref ty, mutbl }) if ty.kind.is_implicit_self() => {
-                        Some(respan(self.pat.span, SelfKind::Region(lt, mutbl)))
-                    }
-                    TyKind::PinnedRef(lt, MutTy { ref ty, mutbl })
-                        if ty.kind.is_implicit_self() =>
-                    {
-                        Some(respan(self.pat.span, SelfKind::Pinned(lt, mutbl)))
-                    }
-                    _ => Some(respan(
-                        self.pat.span.to(self.ty.span),
-                        SelfKind::Explicit(self.ty.clone(), mutbl),
-                    )),
-                };
-            }
+        if let PatKind::Ident(BindingMode(ByRef::No, mutbl), ident, _) = self.pat.kind
+            && ident.name == kw::SelfLower
+        {
+            return match self.ty.kind {
+                TyKind::ImplicitSelf => Some(respan(self.pat.span, SelfKind::Value(mutbl))),
+                TyKind::Ref(lt, MutTy { ref ty, mutbl }) if ty.kind.is_implicit_self() => {
+                    Some(respan(self.pat.span, SelfKind::Region(lt, mutbl)))
+                }
+                TyKind::PinnedRef(lt, MutTy { ref ty, mutbl }) if ty.kind.is_implicit_self() => {
+                    Some(respan(self.pat.span, SelfKind::Pinned(lt, mutbl)))
+                }
+                _ => Some(respan(
+                    self.pat.span.to(self.ty.span),
+                    SelfKind::Explicit(self.ty.clone(), mutbl),
+                )),
+            };
         }
         None
     }
@@ -3530,7 +3528,7 @@ pub struct FnDecl {
 
 impl FnDecl {
     pub fn has_self(&self) -> bool {
-        self.inputs.get(0).is_some_and(Param::is_self)
+        self.inputs.first().is_some_and(Param::is_self)
     }
 
     pub fn c_variadic(&self) -> bool {

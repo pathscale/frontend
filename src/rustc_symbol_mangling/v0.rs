@@ -1,11 +1,12 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 use core::hash::Hasher;
 use core::iter;
 use core::ops::Range;
 
+use crate::bug;
 use crate::rustc_abi::{ExternAbi, Integer};
 use crate::rustc_data_structures::base_n::ToBaseN;
 use crate::rustc_data_structures::either::Either;
@@ -17,7 +18,6 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::def::CtorKind;
 use crate::rustc_hir::def_id::{CrateNum, DefId};
 use crate::rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
-use crate::bug;
 use crate::rustc_middle::ty::layout::IntegerExt;
 use crate::rustc_middle::ty::print::{Print, PrintError, Printer};
 use crate::rustc_middle::ty::{
@@ -309,7 +309,7 @@ impl<'tcx> V0SymbolMangler<'tcx> {
     }
 
     fn print_pat(&mut self, pat: ty::Pattern<'tcx>) -> Result<(), core::fmt::Error> {
-        Ok(match *pat {
+        let _: () = match *pat {
             ty::PatternKind::Range { start, end } => {
                 self.push("R");
                 self.print_const(start)?;
@@ -325,7 +325,8 @@ impl<'tcx> V0SymbolMangler<'tcx> {
                 }
                 self.push("E");
             }
-        })
+        };
+        Ok(())
     }
 }
 
@@ -784,8 +785,7 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
 
                 // Negative integer values are mangled using `n` as a "sign prefix".
                 if let ty::Int(ity) = ct_ty.kind() {
-                    let val =
-                        Integer::from_int_ty(&self.tcx, *ity).size().sign_extend(bits) as i128;
+                    let val = Integer::from_int_ty(&self.tcx, *ity).size().sign_extend(bits);
                     if val < 0 {
                         self.push("n");
                     }

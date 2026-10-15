@@ -1,20 +1,21 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::boxed::Box;
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use GenericArgsInfo::*;
 use crate::rustc_errors::codes::*;
-use crate::rustc_errors::{Applicability, Diag, Diagnostic, EmissionGuarantee, MultiSpan, pluralize};
+use crate::rustc_errors::{
+    Applicability, Diag, Diagnostic, EmissionGuarantee, MultiSpan, pluralize,
+};
 use crate::rustc_hir as hir;
 use crate::rustc_middle::ty::{self as ty, AssocItem, AssocItems, TyCtxt};
 use crate::rustc_span::def_id::DefId;
+use GenericArgsInfo::*;
 use tracing::debug;
 
 /// Handles the `wrong number of type / lifetime / ... arguments` family of error messages.
@@ -818,7 +819,7 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
                         num_assoc_fn_excess_args,
                         num_trait_generics_except_self,
                     ),
-                _ => return,
+                _ => (),
             }
         }
     }
@@ -832,7 +833,7 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
         num_trait_generics_except_self: usize,
     ) {
         if let hir::QPath::Resolved(_, path) = qpath
-            && let Some(trait_path_segment) = path.segments.get(0)
+            && let Some(trait_path_segment) = path.segments.first()
         {
             let num_generic_args_supplied_to_trait = trait_path_segment.args().num_generic_params();
 
@@ -894,7 +895,7 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
         }) else {
             return;
         };
-        let comma = if args.len() > 0 { ", " } else { "" };
+        let comma = if !args.is_empty() { ", " } else { "" };
         let trait_path = self.tcx.def_path_str(trait_def_id);
         let method_name = self.tcx.item_name(self.def_id);
         err.span_suggestion_verbose(
@@ -1122,10 +1123,9 @@ impl<'a, 'tcx> WrongNumberOfGenericArgs<'a, 'tcx> {
                     .iter()
                     .skip(self.params_offset)
                     .take(bound)
-                    .map(|param| {
+                    .inspect(|param| {
                         let span = self.tcx.def_span(param.def_id);
                         spans.push_span_label(span, "");
-                        param
                     })
                     .map(|param| format!("`{}`", param.name))
                     .collect::<Vec<_>>()

@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_ast::token::{self, Delimiter, IdentIsRaw, NonterminalKind, Token};
 use crate::rustc_ast::tokenstream::TokenStreamIter;
 use crate::rustc_ast::{NodeId, tokenstream};
@@ -9,10 +8,13 @@ use crate::rustc_session::Session;
 use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{Ident, Span, kw, sym};
+use alloc::vec::Vec;
 
 use crate::rustc_expand::diagnostics;
 use crate::rustc_expand::mbe::macro_parser::count_metavar_decls;
-use crate::rustc_expand::mbe::{Delimited, KleeneOp, KleeneToken, MetaVarExpr, SequenceRepetition, TokenTree};
+use crate::rustc_expand::mbe::{
+    Delimited, KleeneOp, KleeneToken, MetaVarExpr, SequenceRepetition, TokenTree,
+};
 
 pub(crate) const VALID_FRAGMENT_NAMES_MSG: &str = "valid fragment specifiers are \
     `ident`, `block`, `stmt`, `expr`, `pat`, `ty`, `lifetime`, `literal`, `path`, \

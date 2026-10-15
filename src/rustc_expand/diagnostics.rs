@@ -1,11 +1,11 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::borrow::Cow;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::rustc_errors::codes::*;
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Ident, MacroRulesNormalizedIdent, Span, Symbol};
 use crate::rustc_structures::Limit;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("`#[cfg_attr]` does not expand to any attributes")]
@@ -432,8 +432,8 @@ pub(crate) struct GlobDelegationTraitlessQpath {
 
 pub(crate) use metavar_exprs::*;
 mod metavar_exprs {
-    use alloc::string::String;
     use super::*;
+    use alloc::string::String;
 
     #[derive(Diagnostic, Default)]
     #[diag("unexpected trailing tokens")]

@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::debug_assert_matches;
+use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter};
 use core::ops::Range;
 
@@ -66,7 +66,8 @@ impl<V: Clone> Clone for StateData<V> {
 
 impl<V: JoinSemiLattice + Clone> JoinSemiLattice for StateData<V> {
     fn join(&mut self, other: &Self) -> bool {
-        let mut changed = false;        for (i, v) in other.map.iter() {
+        let mut changed = false;
+        for (i, v) in other.map.iter() {
             match self.map.entry(*i) {
                 StdEntry::Vacant(e) => {
                     e.insert(v.clone());
@@ -106,7 +107,7 @@ impl<V: Clone> Clone for State<V> {
     fn clone_from(&mut self, source: &Self) {
         match (&mut *self, source) {
             (Self::Reachable(x), Self::Reachable(y)) => {
-                x.clone_from(&y);
+                x.clone_from(y);
             }
             _ => *self = source.clone(),
         }
@@ -549,7 +550,8 @@ impl<'tcx> Map<'tcx> {
             {
                 *opt_place = None;
             }
-        }        self.projections.retain(|_, child| !self.inner_values[*child].is_empty());
+        }
+        self.projections.retain(|_, child| !self.inner_values[*child].is_empty());
     }
 
     #[tracing::instrument(level = "trace", skip(self), ret)]

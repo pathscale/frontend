@@ -1,13 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
+use crate::find_attr;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_attr_parsing::eval_config_entry;
 use crate::rustc_crate_store::{
@@ -16,8 +13,6 @@ use crate::rustc_crate_store::{
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_hir::attrs::PeImportNameType;
 use crate::rustc_hir::def::DefKind;
-use crate::find_attr;
-use crate::bug;
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::query::LocalCrate;
 use crate::rustc_middle::ty::{self, List, Ty, TyCtxt};
@@ -41,25 +36,25 @@ pub(crate) fn collect(tcx: TyCtxt<'_>, LocalCrate: LocalCrate) -> Vec<NativeLib>
         // FIXME(jchlanda) Pauthtest does not support static linking. It must be dynamically linked,
         // with a dynamic linker acting as the ELF interpreter that can resolve pauth relocations
         // and enforce pointer authentication constraints.
-        if tcx.sess.target.cfg_abi == CfgAbi::Pauthtest {
-            if let NativeLibKind::Static { .. } = lib.kind {
-                if !tcx.sess.opts.unstable_opts.ui_testing {
-                    let diag = if lib.foreign_module.is_none() {
-                        diagnostics::StaticLinkingNotSupported::UserRequested {
-                            lib_name: lib.name,
-                            target: tcx.sess.target.llvm_target.as_ref(),
-                        }
-                    } else {
-                        diagnostics::StaticLinkingNotSupported::FromDependency {
-                            lib_name: lib.name,
-                            target: tcx.sess.target.llvm_target.as_ref(),
-                        }
-                    };
-                    tcx.dcx().emit_warn(diag);
-                }
-
-                lib.kind = NativeLibKind::Dylib { as_needed: None };
+        if tcx.sess.target.cfg_abi == CfgAbi::Pauthtest
+            && let NativeLibKind::Static { .. } = lib.kind
+        {
+            if !tcx.sess.opts.unstable_opts.ui_testing {
+                let diag = if lib.foreign_module.is_none() {
+                    diagnostics::StaticLinkingNotSupported::UserRequested {
+                        lib_name: lib.name,
+                        target: tcx.sess.target.llvm_target.as_ref(),
+                    }
+                } else {
+                    diagnostics::StaticLinkingNotSupported::FromDependency {
+                        lib_name: lib.name,
+                        target: tcx.sess.target.llvm_target.as_ref(),
+                    }
+                };
+                tcx.dcx().emit_warn(diag);
             }
+
+            lib.kind = NativeLibKind::Dylib { as_needed: None };
         }
     }
     collector.libs

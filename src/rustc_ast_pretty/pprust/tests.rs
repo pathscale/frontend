@@ -2,8 +2,8 @@ use crate::rustc_ast as ast;
 #[allow(unused_imports)]
 use crate::rustc_ast::ptr::P;
 use crate::rustc_span::{DUMMY_SP, Ident, create_default_session_globals_then};
-use thin_vec::{ThinVec, thin_vec};
-use {alloc::boxed::Box, alloc::string::String};
+use alloc::string::String;
+use thin_vec::thin_vec;
 
 use super::*;
 

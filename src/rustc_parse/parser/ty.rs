@@ -15,7 +15,6 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use thin_vec::{ThinVec, thin_vec};
 
 use super::{Parser, PathStyle, SeqSep, TokenType, Trailing};
 use crate::rustc_parse::diagnostics::{
@@ -701,7 +700,7 @@ impl<'a> Parser<'a> {
     /// This method attempts to recover from cases like:
     /// - `[u8, 5]` → suggests using `;`, return a Array type
     /// - `[u8 5]` → suggests using `;`, return a Array type
-    /// Consider to add more cases in the future.
+    ///   Consider to add more cases in the future.
     fn maybe_recover_array_ty_without_semi(&mut self, elt_ty: P<Ty>) -> PResult<'a, TyKind> {
         let span = self.token.span;
         let token_descr = super::token_descr(&self.token);
@@ -908,13 +907,7 @@ impl<'a> Parser<'a> {
         let decl = self.parse_fn_decl(&mode, AllowPlus::No, recover_return_sign)?;
 
         let decl_span = span_start.to(self.prev_token.span);
-        Ok(TyKind::FnPtr(P::new(FnPtrTy {
-            ext,
-            safety,
-            generic_params: params,
-            decl,
-            decl_span,
-        })))
+        Ok(TyKind::FnPtr(P::new(FnPtrTy { ext, safety, generic_params: params, decl, decl_span })))
     }
 
     /// Recover from function pointer types with a generic parameter list (e.g. `fn<'a>(&'a str)`).
@@ -1475,7 +1468,7 @@ impl<'a> Parser<'a> {
                             args: Some(P::new(ast::GenericArgs::Parenthesized(
                                 ast::ParenthesizedArgs {
                                     span: args_lo.to(self.prev_token.span),
-                                    inputs: decl.inputs.iter().map(|a| a.clone()).collect(),
+                                    inputs: decl.inputs.iter().cloned().collect(),
                                     inputs_span: args_lo.until(decl.output.span()),
                                     output: decl.output.clone(),
                                 },

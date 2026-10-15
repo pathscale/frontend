@@ -1,17 +1,16 @@
 //! Code related to parsing literals.
 
-use alloc::vec::Vec;
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
-use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt::Write as _;
 use core::{ascii, fmt, str};
 
+use crate::rustc_span::{ByteSymbol, Span, Symbol, kw, sym};
 use rustc_literal_escaper::{
     MixedUnit, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char, unescape_str,
 };
-use crate::rustc_span::{ByteSymbol, Span, Symbol, kw, sym};
 use tracing::debug;
 
 use crate::rustc_ast::ast::{self, LitKind, MetaItemLit, StrStyle};
@@ -61,7 +60,7 @@ pub fn escape_string_symbol(symbol: Symbol) -> Symbol {
 
 // Escapes a char.
 pub fn escape_char_symbol(ch: char) -> Symbol {
-    let s: String = ch.escape_default().map(Into::<char>::into).collect();
+    let s: String = ch.escape_default().collect();
     Symbol::intern(&s)
 }
 

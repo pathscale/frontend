@@ -2,9 +2,7 @@
 
 use core::convert::TryInto;
 
-use super::simd_classify::{
-    BLOCK_LEN, mask_digits_and_underscore_64, mask_ident_cont_64,
-};
+use super::simd_classify::{BLOCK_LEN, mask_digits_and_underscore_64, mask_ident_cont_64};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentScan {
@@ -147,8 +145,7 @@ fn scan_digits(bytes: &[u8], last_digit: u8, hex: bool) -> (usize, bool) {
         let word = u64::from_le_bytes(bytes[len..len + 8].try_into().unwrap());
         let mut digits = ascii_range_mask(word, b'0', last_digit);
         if hex {
-            digits |= ascii_range_mask(word, b'a', b'f')
-                | ascii_range_mask(word, b'A', b'F');
+            digits |= ascii_range_mask(word, b'a', b'f') | ascii_range_mask(word, b'A', b'F');
         }
         let accepted = digits | ascii_range_mask(word, b'_', b'_');
         let rejected = !accepted & BYTE_HIGH_BITS;
@@ -166,9 +163,7 @@ fn scan_digits(bytes: &[u8], last_digit: u8, hex: bool) -> (usize, bool) {
     while let Some(&byte) = bytes.get(len) {
         if byte == b'_' {
             len += 1;
-        } else if (b'0'..=last_digit).contains(&byte)
-            || (hex && byte.is_ascii_hexdigit())
-        {
+        } else if (b'0'..=last_digit).contains(&byte) || (hex && byte.is_ascii_hexdigit()) {
             has_digit = true;
             len += 1;
         } else {

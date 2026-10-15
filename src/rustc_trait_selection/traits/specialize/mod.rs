@@ -12,22 +12,19 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod specialization_graph;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Diag, EmissionGuarantee};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_infer::traits::Obligation;
 use crate::rustc_lint_defs::builtin::COHERENCE_LEAK_CHECK;
-use crate::bug;
 use crate::rustc_middle::query::LocalCrate;
 use crate::rustc_middle::traits::query::NoSolution;
 use crate::rustc_middle::ty::fast_reject::{self, TreatParams};
@@ -603,9 +600,7 @@ fn report_conflicting_impls<'tcx>(
     };
 
     // Don't report overlap errors if the header references error
-    if let Err(err) = (overlap.trait_ref, overlap.self_ty).error_reported() {
-        return Err(err);
-    }
+    (overlap.trait_ref, overlap.self_ty).error_reported()?;
 
     match used_to_be_allowed {
         None => {

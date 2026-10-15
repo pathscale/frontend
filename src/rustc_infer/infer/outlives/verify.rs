@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::assert_matches;
+use alloc::vec::Vec;
 
 use crate::rustc_middle::ty::outlives::{Component, compute_alias_components_recursive};
 use crate::rustc_middle::ty::{self, OutlivesClause, Ty, TyCtxt};
@@ -126,7 +126,7 @@ impl<'cx, 'tcx> VerifyBoundCx<'cx, 'tcx> {
         // Extend with bounds that we can find from the definition.
         let definition_bounds =
             crate::rustc_type_ir::outlives::declared_bounds_from_definition(self.tcx, alias_ty)
-                .map(|r| VerifyBound::OutlivedBy(r));
+                .map(VerifyBound::OutlivedBy);
 
         // see the extensive comment in projection_must_outlive
         let recursive_bound = {

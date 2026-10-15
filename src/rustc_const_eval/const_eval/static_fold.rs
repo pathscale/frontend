@@ -337,7 +337,6 @@ impl<'tcx> Folder<'tcx> {
                     mir::StatementKind::PlaceMention(..) => {
                         return Err("place mention is unsupported");
                     }
-                    _ => return Err("unsupported MIR statement"),
                 }
             }
 
@@ -399,16 +398,14 @@ impl<'tcx> Folder<'tcx> {
     }
 
     fn spend_step(&mut self) -> Result<(), &'static str> {
-        self.remaining_steps = self
-            .remaining_steps
-            .checked_sub(1)
-            .ok_or("constant MIR exceeded its step bound")?;
+        self.remaining_steps =
+            self.remaining_steps.checked_sub(1).ok_or("constant MIR exceeded its step bound")?;
         Ok(())
     }
 
     fn eval_operand(
         &mut self,
-        body: &mir::Body<'tcx>,
+        _body: &mir::Body<'tcx>,
         locals: &FxHashMap<Local, FoldValue<'tcx>>,
         operand: &Operand<'tcx>,
         depth: usize,
@@ -484,7 +481,6 @@ impl<'tcx> Folder<'tcx> {
             Rvalue::CopyForDeref(..) => Err("deref copy is unsupported"),
             Rvalue::WrapUnsafeBinder(..) => Err("unsafe binder wrapping is unsupported"),
             Rvalue::Reborrow(..) => Err("reborrow is unsupported"),
-            _ => Err("unsupported MIR rvalue"),
         }
     }
 

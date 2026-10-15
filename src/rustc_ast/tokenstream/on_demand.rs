@@ -40,9 +40,7 @@ impl OnDemandCursor {
         frontmatter: FrontmatterAllowed,
         edition: Edition,
     ) -> Option<Self> {
-        Some(Self::from_tape(IndexedSourceTape::build(
-            text, start, begin, frontmatter, edition,
-        )?))
+        Some(Self::from_tape(IndexedSourceTape::build(text, start, begin, frontmatter, edition)?))
     }
 
     pub(crate) fn from_tape(tape: Arc<IndexedSourceTape>) -> Self {
@@ -64,17 +62,15 @@ impl OnDemandCursor {
     }
 
     fn eof(&self) -> (Token, Spacing) {
-        let span = self.tape.group(self.end_group)
+        let span = self
+            .tape
+            .group(self.end_group)
             .map_or_else(|| self.tape.eof_span(), |group| group.close);
         (Token::new(token::Eof, span), Spacing::Alone)
     }
 
     fn read(&self, idx: u32) -> (Token, Spacing) {
-        if idx >= self.end_idx {
-            self.eof()
-        } else {
-            self.tape.materialize_token(idx as usize)
-        }
+        if idx >= self.end_idx { self.eof() } else { self.tape.materialize_token(idx as usize) }
     }
 
     fn kind(&self) -> SourceKind {
@@ -106,11 +102,11 @@ impl OnDemandCursor {
         if self.idx < self.end_idx {
             let kind = self.tape.tokens[self.idx as usize].kind();
             if kind.open_delim().is_some() {
-                self.enclosing = self.tape.token_groups[self.idx as usize];
+                self.enclosing = self.tape.token_group(self.idx as usize);
             } else if kind.close_delim().is_some() {
-                let group_idx = self.tape.token_groups[self.idx as usize];
-                self.enclosing = self.tape.group(group_idx)
-                    .expect("indexed closing delimiter").parent;
+                let group_idx = self.tape.token_group(self.idx as usize);
+                self.enclosing =
+                    self.tape.group(group_idx).expect("indexed closing delimiter").parent;
             }
             self.idx += 1;
         }
@@ -121,7 +117,8 @@ impl OnDemandCursor {
         if dist == 0 {
             return Token::dummy();
         }
-        let idx = u32::try_from(dist - 1).ok()
+        let idx = u32::try_from(dist - 1)
+            .ok()
             .and_then(|offset| self.idx.checked_add(offset))
             .unwrap_or(self.end_idx)
             .min(self.end_idx);
@@ -130,7 +127,7 @@ impl OnDemandCursor {
 
     fn skip_tree(&mut self) {
         if self.kind().open_delim().is_some() {
-            let group_idx = self.tape.token_groups[self.idx as usize];
+            let group_idx = self.tape.token_group(self.idx as usize);
             let group = self.tape.group(group_idx).expect("indexed opening delimiter");
             self.idx = (group.close_idx + 1).min(self.end_idx);
         } else {
@@ -197,7 +194,8 @@ impl OnDemandCursor {
     pub(crate) fn clone_enclosing_delim(&self) -> TokenTree {
         // An exhausted detached snapshot may reconstruct its own body, but
         // cannot reconstruct the outer parent now stored in `enclosing`.
-        let group = *self.active_group()
+        let group = *self
+            .active_group()
             .or_else(|| self.tape.group(self.end_group))
             .expect("cursor has an enclosing delimiter");
         let mut cursor = self.clone();

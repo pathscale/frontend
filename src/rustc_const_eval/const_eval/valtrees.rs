@@ -1,7 +1,7 @@
+use crate::rustc_middle::mir;
 use crate::rustc_middle::mir::interpret::{
     ErrorHandled, EvalToConstValueResult, EvalToValTreeResult, GlobalId, Scalar,
 };
-use crate::rustc_middle::mir;
 use crate::rustc_middle::ty::layout::LayoutCx;
 use crate::rustc_middle::ty::{self, TyCtxt};
 use crate::rustc_span::DUMMY_SP;
@@ -47,10 +47,8 @@ pub fn valtree_to_const_value<'tcx>(
                 for (i, &inner_valtree) in cv.to_branch().iter().enumerate() {
                     let field = layout.field(&LayoutCx::new(tcx, typing_env), i);
                     if !field.is_zst() {
-                        let inner = ty::Value {
-                            valtree: inner_valtree.to_value().valtree,
-                            ty: field.ty,
-                        };
+                        let inner =
+                            ty::Value { valtree: inner_valtree.to_value().valtree, ty: field.ty };
                         return valtree_to_const_value(tcx, typing_env, inner);
                     }
                 }
