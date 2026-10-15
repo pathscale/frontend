@@ -138,7 +138,7 @@ pub(crate) fn find_cycle_in_stack<'tcx>(
 ) -> QueryCycle<'tcx> {
     // Find the waitee amongst `current_job` parents.
     let mut frames = Vec::new();
-    let mut current_job = Option::clone(current_job);
+    let mut current_job = *current_job;
 
     while let Some(job) = current_job {
         let info = &job_map.map[&job];

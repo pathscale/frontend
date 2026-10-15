@@ -2552,7 +2552,7 @@ impl<'a> Parser<'a> {
     /// like the user has forgotten them.
     pub(super) fn handle_ambiguous_unbraced_const_arg(
         &mut self,
-        args: &mut ast::ArenaVec<AngleBracketedArg>,
+        args: &mut smallvec::SmallVec<[AngleBracketedArg; 8]>,
     ) -> PResult<'a, bool> {
         // If we haven't encountered a closing `>`, then the argument is malformed.
         // It's likely that the user has written a const expression without enclosing it

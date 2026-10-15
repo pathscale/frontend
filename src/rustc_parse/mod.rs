@@ -98,21 +98,25 @@ pub(crate) fn record_tape_fallback() {
     TAPE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "parallel")]
 #[inline]
 pub(crate) fn record_parallel_attempt() {
     PARALLEL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "parallel")]
 #[inline]
 pub(crate) fn record_parallel_commit() {
     PARALLEL_COMMITS.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "parallel")]
 #[inline]
 pub(crate) fn record_parallel_retry() {
     PARALLEL_RETRIES.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(feature = "parallel")]
 #[inline]
 pub(crate) fn record_parallel_body_jobs(count: usize) {
     PARALLEL_BODY_JOBS.fetch_add(count as u64, Ordering::Relaxed);
@@ -304,8 +308,6 @@ fn new_parser_from_source_file(
         lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
     {
         record_tape_admission();
-        // Compatibility hook: an already frozen SourceFile keeps its existing line table.
-        source_file.supply_precomputed_newlines(cursor.indexed_tape().unwrap().newlines());
         Parser::new_with_cursor(psess, cursor, None)
     } else {
         record_tape_fallback();

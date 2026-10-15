@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
         &mut self,
         ty_generics: Option<&Generics>,
     ) -> PResult<'a, ast::ArenaVec<AngleBracketedArg>> {
-        let mut args = ast::ArenaVec::new();
+        let mut args = smallvec::SmallVec::<[_; 8]>::new();
         while let Some(arg) = self.parse_angle_arg(ty_generics)? {
             args.push(arg);
             if !self.eat(exp!(Comma)) {
@@ -762,7 +762,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(args)
+        Ok(args.into())
     }
 
     /// Parses a single argument in the angle arguments `<...>` of a path segment.

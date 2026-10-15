@@ -298,12 +298,12 @@ impl PathSegments {
 
     /// Moves the scratch suffix into a path, leaving its prefix unchanged.
     pub fn from_scratch(scratch: &mut Vec<PathSegment>, start: usize) -> Self {
-        let mut segments = scratch.drain(start..);
-        match segments.len() {
+        assert!(start <= scratch.len());
+        match scratch.len() - start {
             0 => Self::new(),
-            1 => Self::from_single(segments.next().unwrap()),
-            2..=4 => Self(PathSegmentsInner::Short(P::new(segments.collect()))),
-            _ => Self(PathSegmentsInner::Heap(segments.collect())),
+            1 => Self::from_single(scratch.pop().unwrap()),
+            2..=4 => Self(PathSegmentsInner::Short(P::new(scratch.drain(start..).collect()))),
+            _ => Self(PathSegmentsInner::Heap(ArenaVec::from_scratch(scratch, start))),
         }
     }
 

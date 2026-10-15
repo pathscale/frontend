@@ -101,6 +101,9 @@ impl<'a> Parser<'a> {
         {
             return None;
         }
+        if let Some(tape) = self.token_cursor.indexed_tape() {
+            tape.prepare_parallel_symbols();
+        }
         let attr_start = self.psess.attr_id_generator.position();
         let edition = self.psess.edition;
         let original = with_session_globals(|globals| {

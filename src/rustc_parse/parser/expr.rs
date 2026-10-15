@@ -1330,7 +1330,7 @@ impl<'a> Parser<'a> {
 
     fn recover_raw_ref_call_args(&mut self, guar: ErrorGuaranteed) -> ast::ArenaVec<P<Expr>> {
         let err_span = self.prev_token.span.to(self.token.span);
-        let mut args = ast::ArenaVec::new();
+        let mut args = smallvec::SmallVec::<[_; 8]>::new();
         args.push(self.mk_expr_err(err_span, guar));
         while !self.token.kind.is_close_delim_or_eof() {
             if self.eat(exp!(Comma)) {
@@ -1342,7 +1342,7 @@ impl<'a> Parser<'a> {
             }
         }
         let _ = self.eat(exp!(CloseParen));
-        args
+        args.into()
     }
 
     /// If we encounter a parser state that looks like the user has written a `struct` literal with
@@ -3926,7 +3926,7 @@ impl<'a> Parser<'a> {
             Option<ErrorGuaranteed>, /* async blocks are forbidden in Rust 2015 */
         ),
     > {
-        let mut fields = ast::ArenaVec::new();
+        let mut fields = smallvec::SmallVec::<[_; 8]>::new();
         let mut base = ast::StructRest::None;
         let mut recovered_async = None;
         let in_if_guard = self.restrictions.contains(Restrictions::IN_IF_GUARD);
@@ -4092,7 +4092,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Ok((fields, base, recovered_async))
+        Ok((fields.into(), base, recovered_async))
     }
 
     /// Precondition: already parsed the '{'.

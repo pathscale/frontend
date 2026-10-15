@@ -48,6 +48,65 @@ impl<T> ArenaBuffer<T> {
         Self(None)
     }
 
+    /// Move a fully initialized slice into one exact-sized allocation.
+    ///
+    /// SAFETY: the caller must relinquish ownership of all source elements
+    /// immediately after this returns, without running their destructors.
+    unsafe fn from_raw_parts_move(source: *const T, len: usize) -> Self {
+        if len == 0 {
+            return Self::new();
+        }
+        let (layout, offset) = Self::layout(len);
+        let storage = alloc_slice_bytes(layout);
+        let header = storage.cast::<BufferHeader<T>>();
+        // SAFETY: layout reserves aligned, disjoint storage for the header and
+        // len elements. The caller owns the initialized source slice and transfers
+        // it exactly once; the allocation cannot overlap that live source.
+        unsafe {
+            header.as_ptr().write(BufferHeader { len, cap: len, _marker: PhantomData });
+            ptr::copy_nonoverlapping(source, storage.as_ptr().add(offset).cast::<T>(), len);
+        }
+        Self(Some(header))
+    }
+
+    pub(crate) fn from_vec(mut values: Vec<T>) -> Self {
+        // SAFETY: values uniquely owns its initialized prefix. No fallible work
+        // occurs between transferring ownership and clearing the source length.
+        let result = unsafe { Self::from_raw_parts_move(values.as_ptr(), values.len()) };
+        // SAFETY: every element now belongs to result; only Vec storage is freed.
+        unsafe { values.set_len(0) };
+        result
+    }
+
+    pub(crate) fn from_smallvec<A: smallvec::Array<Item = T>>(
+        mut values: smallvec::SmallVec<A>,
+    ) -> Self {
+        // SAFETY: values uniquely owns the initialized prefix being transferred.
+        let result = unsafe { Self::from_raw_parts_move(values.as_ptr(), values.len()) };
+        // SAFETY: result now owns all elements, including inline and ZST elements.
+        unsafe { values.set_len(0) };
+        result
+    }
+
+    pub(crate) fn from_thin_vec(mut values: thin_vec::ThinVec<T>) -> Self {
+        // SAFETY: values uniquely owns the initialized prefix being transferred.
+        let result = unsafe { Self::from_raw_parts_move(values.as_ptr(), values.len()) };
+        // SAFETY: result now owns every element; release source storage only.
+        unsafe { values.set_len(0) };
+        result
+    }
+
+    pub(crate) fn from_scratch(values: &mut Vec<T>, start: usize) -> Self {
+        assert!(start <= values.len());
+        // SAFETY: start..len is initialized and exclusively borrowed. The copy
+        // transfers that tail while keeping the reusable source allocation live.
+        let result =
+            unsafe { Self::from_raw_parts_move(values.as_ptr().add(start), values.len() - start) };
+        // SAFETY: only the untouched prefix remains owned by values.
+        unsafe { values.set_len(start) };
+        result
+    }
+
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         let mut values = Self::new();
         values.reserve_exact(capacity);
@@ -183,7 +242,7 @@ impl<T> ArenaBuffer<T> {
         let len = self.len();
         if len == self.capacity() {
             let needed = len.checked_add(1).expect("AST list too large");
-            self.reserve_exact(needed.max(len.saturating_mul(2)));
+            self.reserve_exact(needed.max(len.saturating_mul(2)).max(4));
         }
     }
 

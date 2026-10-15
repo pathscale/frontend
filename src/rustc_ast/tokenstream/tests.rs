@@ -14,6 +14,9 @@ fn test_token_stream_iter() {
 
 #[test]
 fn r24_compact_token_layout_and_packing() {
+    compact_delimiter_groups_pack_twenty_bits();
+    short_symbol_cache_keys_preserve_exact_source_bytes();
+    arena_bulk_moves::bulk_moves_preserve_ownership_and_scratch_prefix();
     use super::Spacing;
     use super::compact_token::*;
     use super::source_token::{SourceKind, SourceToken};
@@ -143,11 +146,13 @@ fn r24_indexed_tape_side_arrays_and_cursor_boundaries() {
         let source = "{ r#name::call(1, [2]); } tail";
         let tape = r24_tape(source);
         assert_eq!(tape.token_count(), tape.tokens.len());
-        assert_eq!(tape.token_aux.len(), tape.token_count());
+        assert_eq!(core::mem::size_of_val(&tape.tokens[0]), 8);
         assert!(tape.overflow_lengths.is_empty());
         for (i, compact) in tape.tokens.iter().copied().enumerate() {
             assert_eq!(compact.has_group(), tape.token_group(i) != super::indexed_tape::NO_GROUP);
-            if let Some(len) = compact.inline_len() {
+            if !compact.has_group()
+                && let Some(len) = compact.inline_len()
+            {
                 assert_eq!(len, tape.token_len(i));
             }
             if compact.kind() != SourceKind::Eof {
@@ -406,7 +411,11 @@ fn r24_tape_attribute_counts_preserve_independent_macro_groups() {
             assert_eq!(tape.groups[0].attr_count, expected, "{source}");
             if let Some((prefix, expected)) = nested {
                 let offset = source.find(prefix).unwrap() as u32 + 100;
-                let group = tape.groups.iter().find(|g| g.open.lo().0 == offset).unwrap();
+                let group = tape
+                    .groups
+                    .iter()
+                    .find(|g| tape.token_span(g.open_idx as usize).lo().0 == offset)
+                    .unwrap();
                 assert_eq!(group.attr_count, expected, "independent body: {source}");
             }
         }
@@ -496,6 +505,78 @@ fn w4_tape_deduplicates_repeated_unknown_symbols_and_glues_punct() {
             })
             .collect();
         assert_eq!(alpha_symbols, [alpha, alpha, beta, alpha]);
-        assert_eq!(tape.token_aux.len(), tape.token_count());
+        assert_eq!(core::mem::size_of_val(&tape.tokens[0]), 8);
     });
+}
+
+fn compact_delimiter_groups_pack_twenty_bits() {
+    use super::compact_token::CompactToken;
+    use super::source_token::SourceKind;
+    for group in [0, 4094, 4095, 65535, (1 << 20) - 2, (1 << 20) - 1, u32::MAX] {
+        for spacing in [super::Spacing::Alone, super::Spacing::Joint, super::Spacing::JointHidden] {
+            let token = CompactToken::with_group(7, SourceKind::OpenBrace, spacing, group);
+            assert!(token.has_group());
+            assert_eq!(
+                token.inline_group(),
+                (group < CompactToken::GROUP_OVERFLOW).then_some(group)
+            );
+            assert_eq!(token.spacing(), spacing);
+        }
+    }
+}
+
+fn short_symbol_cache_keys_preserve_exact_source_bytes() {
+    use super::source_token::short_key;
+    for text in
+        ["a", "ab", "abc", "abcd", "abcde", "abcdef", "abcdefg", "abcdefgh", "é", "éé", "abcé"]
+    {
+        let bytes = short_key(text).unwrap().to_le_bytes();
+        assert_eq!(&bytes[..text.len()], text.as_bytes());
+        assert!(bytes[text.len()..].iter().all(|&byte| byte == 0));
+    }
+    for text in ["", "abcdefghi", "\0", "a\0", "\0a", "a\0b"] {
+        assert_eq!(short_key(text), None, "{text:?}");
+    }
+}
+
+mod arena_bulk_moves {
+    use crate::rustc_ast::arena_vec::ArenaVec;
+    use alloc::rc::Rc;
+    use alloc::vec::Vec;
+    use core::cell::Cell;
+
+    struct Dropped(Rc<Cell<usize>>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    pub(super) fn bulk_moves_preserve_ownership_and_scratch_prefix() {
+        let drops = Rc::new(Cell::new(0));
+        let make = || Dropped(drops.clone());
+        let mut scratch = alloc::vec![make(), make(), make()];
+        let tail = ArenaVec::from_scratch(&mut scratch, 1);
+        assert_eq!(scratch.len(), 1);
+        assert_eq!(tail.len(), 2);
+        assert_eq!(drops.get(), 0);
+        drop(tail);
+        assert_eq!(drops.get(), 2);
+        scratch.push(make());
+        drop(ArenaVec::from(scratch));
+        assert_eq!(drops.get(), 4);
+        drop(ArenaVec::from([make(), make()]));
+        let mut inline = smallvec::SmallVec::<[_; 4]>::new();
+        inline.push(make());
+        drop(ArenaVec::from(inline));
+        let mut spilled = smallvec::SmallVec::<[_; 1]>::new();
+        spilled.extend([make(), make()]);
+        drop(ArenaVec::from(spilled));
+        let mut thin = thin_vec::ThinVec::new();
+        thin.push(make());
+        drop(ArenaVec::from(thin));
+        assert_eq!(drops.get(), 10);
+        assert!(ArenaVec::<Dropped>::from(Vec::new()).is_empty());
+        assert!(ArenaVec::from([(); 17]).len() == 17);
+    }
 }

@@ -287,9 +287,23 @@ impl ParserListScratchSlot {
 }
 
 pub(super) fn take_arena_vec<T>(scratch: &mut Vec<T>, start: usize) -> ast::ArenaVec<T> {
-    let mut result = ast::ArenaVec::with_capacity(scratch.len() - start);
-    result.extend(scratch.drain(start..));
-    result
+    ast::ArenaVec::from_scratch(scratch, start)
+}
+
+trait SequenceList<T> {
+    fn from_staged(values: smallvec::SmallVec<[T; 8]>) -> Self;
+}
+
+impl<T> SequenceList<T> for ast::ArenaVec<T> {
+    fn from_staged(values: smallvec::SmallVec<[T; 8]>) -> Self {
+        values.into()
+    }
+}
+
+impl<T> SequenceList<T> for ThinVec<T> {
+    fn from_staged(values: smallvec::SmallVec<[T; 8]>) -> Self {
+        values.into_iter().collect()
+    }
 }
 
 // This type is used a lot, e.g. it's cloned when matching many declarative macro rules with
@@ -996,7 +1010,7 @@ impl<'a> Parser<'a> {
         self.parse_seq_to_before_tokens_with(closes_expected, closes_not_expected, sep, f)
     }
 
-    fn parse_seq_to_before_tokens_with<T, L: Default + Extend<T>>(
+    fn parse_seq_to_before_tokens_with<T, L: SequenceList<T>>(
         &mut self,
         closes_expected: &[ExpTokenPair],
         closes_not_expected: &[&TokenKind],
@@ -1006,7 +1020,9 @@ impl<'a> Parser<'a> {
         let mut first = true;
         let mut recovered = Recovered::No;
         let mut trailing = Trailing::No;
-        let mut v = L::default();
+        // Child parsing allocates AST nodes. Stage elements outside the chunks
+        // until the list can be committed in one contiguous allocation.
+        let mut v = smallvec::SmallVec::<[T; 8]>::new();
 
         while !self.expect_any_with_type(closes_expected, closes_not_expected) {
             if self.token.kind.is_close_delim_or_eof() {
@@ -1135,10 +1151,10 @@ impl<'a> Parser<'a> {
             }
 
             let t = f(self)?;
-            v.extend(core::iter::once(t));
+            v.push(t);
         }
 
-        Ok((v, trailing, recovered))
+        Ok((L::from_staged(v), trailing, recovered))
     }
 
     fn recover_missing_braces_around_closure_body(
@@ -1222,7 +1238,7 @@ impl<'a> Parser<'a> {
         self.parse_seq_to_end_with(close, sep, f)
     }
 
-    fn parse_seq_to_end_with<T, L: Default + Extend<T>>(
+    fn parse_seq_to_end_with<T, L: SequenceList<T>>(
         &mut self,
         close: ExpTokenPair,
         sep: SeqSep,
@@ -1265,7 +1281,7 @@ impl<'a> Parser<'a> {
         self.parse_unspanned_seq(open, close, SeqSep::trailing_allowed(exp!(Comma)), f)
     }
 
-    fn parse_delim_comma_seq_with<T, L: Default + Extend<T>>(
+    fn parse_delim_comma_seq_with<T, L: SequenceList<T>>(
         &mut self,
         open: ExpTokenPair,
         close: ExpTokenPair,

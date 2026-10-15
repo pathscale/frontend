@@ -35,6 +35,10 @@ impl<T> ArenaVec<T> {
         Self(ArenaBuffer::from_elem(element, count))
     }
 
+    pub(crate) fn from_scratch(values: &mut Vec<T>, start: usize) -> Self {
+        Self(ArenaBuffer::from_scratch(values, start))
+    }
+
     pub fn as_slice(&self) -> &[T] {
         self.0.as_slice()
     }
@@ -154,19 +158,25 @@ impl<T> FromIterator<T> for ArenaVec<T> {
 
 impl<T> From<ThinVec<T>> for ArenaVec<T> {
     fn from(values: ThinVec<T>) -> Self {
-        values.into_iter().collect()
+        Self(ArenaBuffer::from_thin_vec(values))
     }
 }
 
 impl<T> From<Vec<T>> for ArenaVec<T> {
     fn from(values: Vec<T>) -> Self {
-        values.into_iter().collect()
+        Self(ArenaBuffer::from_vec(values))
     }
 }
 
 impl<T, const N: usize> From<[T; N]> for ArenaVec<T> {
     fn from(values: [T; N]) -> Self {
-        values.into_iter().collect()
+        Self::from(smallvec::SmallVec::from_buf(values))
+    }
+}
+
+impl<T, A: smallvec::Array<Item = T>> From<smallvec::SmallVec<A>> for ArenaVec<T> {
+    fn from(values: smallvec::SmallVec<A>) -> Self {
+        Self(ArenaBuffer::from_smallvec(values))
     }
 }
 

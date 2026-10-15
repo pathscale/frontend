@@ -2949,11 +2949,7 @@ fn non_pattern_whitespace() {
 #[test]
 fn wave3_indexed_raw_identifiers_are_published_once() {
     create_default_session_globals_then(|| {
-        // Indexed parsing is selected only when symbol-gallery collection is disabled.
-        let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
-        let emitter = PlainEmitter::new().sm(Some(Arc::clone(&sm)));
-        let psess =
-            ParseSess::with_dcx_without_symbol_gallery(DiagCtxt::new(Box::new(emitter)), sm);
+        let psess = ParseSess::new();
         let parser = string_to_parser(&psess, "fn r#first() {} fn r#second() {}".to_string());
         assert!(parser.token_cursor.indexed_tape().is_some());
         let expected = parser.token_cursor.raw_identifier_spans();
@@ -3030,14 +3026,11 @@ fn r24_on_demand_parallel_bodies_match_serial_ast() {
 
 #[test]
 fn w4_fast_path_metrics_and_deferred_newlines() {
+    indexed_admission_preserves_gallery_and_deferred_lines();
     create_default_session_globals_then(|| {
         crate::rustc_parse::reset_fast_path_metrics();
         let source = "fn alpha() {}\nfn beta() {}";
-        // Indexed parsing is selected only when symbol-gallery collection is disabled.
-        let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
-        let emitter = PlainEmitter::new().sm(Some(Arc::clone(&sm)));
-        let psess =
-            ParseSess::with_dcx_without_symbol_gallery(DiagCtxt::new(Box::new(emitter)), sm);
+        let psess = ParseSess::new();
         let mut parser = string_to_parser(&psess, source.to_string());
         parser.parse_mod(crate::exp!(Eof)).unwrap();
         let file = psess.source_map().files().last().unwrap().clone();
@@ -3049,5 +3042,36 @@ fn w4_fast_path_metrics_and_deferred_newlines() {
         multi_line.supply_precomputed_newlines(&[1, 3, 7]);
         assert_eq!(multi_line.lines().iter().map(|pos| pos.0).collect::<Vec<_>>(), [0, 2, 4, 6, 8]);
         psess.dcx().abort_if_errors();
+    });
+}
+
+fn indexed_admission_preserves_gallery_and_deferred_lines() {
+    create_default_session_globals_then(|| {
+        let source = "fn r#alpha() { ignored!(inside_macro inside_macro); }\nfn beta() {}";
+        let psess = ParseSess::new();
+        let parser = string_to_parser(&psess, source.to_string());
+        assert!(parser.token_cursor.indexed_tape().is_some());
+        let file = psess.source_map().files().last().unwrap().clone();
+        assert!(!file.lines.is_frozen());
+        let source_map = psess.clone_source_map();
+        let emitter = PlainEmitter::new().sm(Some(Arc::clone(&source_map)));
+        let eager = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), source_map);
+        crate::rustc_parse::lexer::lex_token_trees(
+            &eager,
+            source,
+            file.src.as_ref(),
+            file.start_pos,
+            None,
+            StripTokens::Nothing,
+        )
+        .unwrap();
+        let actual: Vec<_> =
+            psess.symbol_gallery.symbols.lock().iter().map(|(&s, &p)| (s, p)).collect();
+        let expected: Vec<_> =
+            eager.symbol_gallery.symbols.lock().iter().map(|(&s, &p)| (s, p)).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(file.lines().len(), 2);
+        psess.dcx().abort_if_errors();
+        eager.dcx().abort_if_errors();
     });
 }

@@ -795,7 +795,7 @@ impl<'tcx> TyCtxt<'tcx> {
             Node::LetStmt(_) => node_str("local"),
             Node::Ctor(ctor) => format!(
                 "{id} (ctor {})",
-                ctor.ctor_def_id().map_or("<missing path>".into(), &path_str),
+                ctor.ctor_def_id().map_or("<missing path>".into(), path_str),
             ),
             Node::Lifetime(_) => node_str("lifetime"),
             Node::GenericParam(param) => {

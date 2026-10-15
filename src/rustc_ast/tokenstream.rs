@@ -4,7 +4,9 @@
 //! A `TokenStream` is, roughly speaking, a sequence of [`TokenTree`]s,
 //! which are themselves a single [`Token`] or a `Delimited` subsequence of tokens.
 
-use crate::rustc_data_structures::iter_ext::{IterExt as _, SliceExt as _};
+use crate::rustc_data_structures::iter_ext::IterExt as _;
+#[cfg(debug_assertions)]
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

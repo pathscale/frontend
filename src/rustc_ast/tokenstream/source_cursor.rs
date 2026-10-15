@@ -4,7 +4,9 @@ use alloc::sync::Arc;
 
 use super::flat::{FlatTokenBuffer, FlatTokenCursor};
 use super::indexed_tape::IndexedSourceTape;
-use super::on_demand::{EnclosingGroupInfo, OnDemandCursor};
+#[cfg(any(feature = "parallel", test))]
+use super::on_demand::EnclosingGroupInfo;
+use super::on_demand::OnDemandCursor;
 use super::{DelimSpan, FrameSpare, Spacing, TokenStream, TokenTree, TreeTokenCursor};
 use crate::rustc_ast::token::{Delimiter, Token};
 use crate::rustc_lexer::FrontmatterAllowed;
@@ -54,6 +56,7 @@ impl TokenCursor {
         Self { inner: Cursor::Source(OnDemandCursor::from_tape(tape)) }
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(crate) fn can_parallel_parse(&self) -> bool {
         match &self.inner {
             Cursor::Source(_) => true,
@@ -62,6 +65,7 @@ impl TokenCursor {
         }
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(crate) fn enclosing_group_info(&self) -> Option<EnclosingGroupInfo> {
         match &self.inner {
             Cursor::Source(cursor) => cursor.enclosing_group_info(),
@@ -70,6 +74,7 @@ impl TokenCursor {
         }
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(crate) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
         match &self.inner {
             Cursor::Source(cursor) => cursor

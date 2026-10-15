@@ -81,8 +81,8 @@ pub struct Token {
     pub len: u32,
 }
 
-/// Facts collected while lexing. `tracked` means all LF offsets were appended;
-/// otherwise the newline output is unchanged and callers must scan the spelling.
+/// Facts collected while lexing. `tracked` means metadata is complete, and
+/// LF offsets were appended if requested. Otherwise callers scan the spelling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TokenScanMeta {
     pub tracked: bool,
@@ -707,6 +707,57 @@ impl<'a> Cursor<'a> {
     #[inline]
     pub fn advance_token(&mut self) -> Token {
         self.advance_token_inner(&mut TokenScan::default())
+    }
+
+    /// Keep fused string/comment validation facts without allocating line offsets.
+    #[inline]
+    pub(crate) fn advance_token_for_tape(&mut self) -> (Token, TokenScanMeta) {
+        // The ASCII identifier scanner already proves this spelling contains no
+        // Unicode or newlines. Keep literal/raw prefixes on the normal lexer.
+        if matches!(self.frontmatter_allowed, FrontmatterAllowed::No)
+            && self.as_bytes().first().is_some_and(|&b| ASCII_CLASSES[b as usize] & 4 != 0)
+            && let simd_ident_num::IdentScan::AsciiOnly(len) =
+                simd_ident_num::scan_ascii_ident_tail(self.as_bytes())
+            && !matches!(self.as_bytes().get(len), Some(b'#' | b'"' | b'\''))
+        {
+            self.advance_bytes(len);
+            self.reset_pos_within_token();
+            return (
+                Token::new(Ident, len as u32),
+                TokenScanMeta { tracked: true, ..TokenScanMeta::default() },
+            );
+        }
+        let spelling = self.as_str();
+        let mut scan = TokenScan::default();
+        let token = self.advance_token_inner(&mut scan);
+        match token.kind {
+            Ident
+            | RawIdent
+            | Lifetime { .. }
+            | Literal { kind: Int { .. } | Float { .. }, .. } => {
+                scan.meta.tracked = spelling.as_bytes()[..token.len as usize].is_ascii();
+            }
+            Literal {
+                kind:
+                    Str { .. }
+                    | ByteStr { .. }
+                    | CStr { .. }
+                    | RawStr { .. }
+                    | RawByteStr { .. }
+                    | RawCStr { .. },
+                suffix_start,
+            } => {
+                scan.meta.tracked &=
+                    spelling.as_bytes()[suffix_start as usize..token.len as usize].is_ascii();
+            }
+            Semi | Comma | Dot | OpenParen | CloseParen | OpenBrace | CloseBrace | OpenBracket
+            | CloseBracket | At | Pound | Tilde | Question | Colon | Dollar | Eq | Bang | Lt
+            | Gt | Minus | And | Or | Plus | Star | Slash | Caret | Percent | Eof => {
+                scan.meta.tracked = true
+            }
+            _ => {}
+        }
+        (token, scan.meta)
     }
 
     /// Lex a token and append LF offsets only when its metadata is complete.

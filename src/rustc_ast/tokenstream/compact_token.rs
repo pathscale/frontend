@@ -8,7 +8,7 @@ pub(crate) const COMPACT_FLAG_JOINT_HIDDEN: u16 = 1 << 13;
 pub(crate) const COMPACT_FLAG_HAS_GROUP: u16 = 1 << 14;
 pub(crate) const COMPACT_FLAG_HAS_AUX_U32: u16 = 1 << 15;
 
-/// Length overflow, group IDs and u32 payloads live in independent tape arrays.
+/// Delimiters reuse their implicit one-byte length for a 20-bit group index.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CompactToken {
@@ -22,6 +22,21 @@ const _: () = assert!(core::mem::size_of::<CompactToken>() == 8);
 const _: () = assert!(core::mem::align_of::<CompactToken>() == 8);
 
 impl CompactToken {
+    pub(crate) const GROUP_OVERFLOW: u32 = (1 << 20) - 1;
+
+    pub(crate) fn with_group(lo: u32, kind: SourceKind, spacing: Spacing, group: u32) -> Self {
+        let payload = group.min(Self::GROUP_OVERFLOW);
+        let mut token = Self::new(lo, 1, kind, spacing, (payload >> 12) as u8, true, false);
+        token.len_and_flags =
+            (token.len_and_flags & !COMPACT_LEN_MASK) | (payload as u16 & COMPACT_LEN_MASK);
+        token
+    }
+
+    pub(crate) fn inline_group(self) -> Option<u32> {
+        let group = u32::from(self.len_and_flags & COMPACT_LEN_MASK) | (u32::from(self.aux) << 12);
+        (group != Self::GROUP_OVERFLOW).then_some(group)
+    }
+
     #[inline]
     pub(crate) const fn new(
         lo: u32,
@@ -86,13 +101,6 @@ impl CompactToken {
     }
 
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "retains compact token payload-flag decoding for indexed tape consumers"
-        )
-    )]
     pub(crate) const fn has_aux_u32(self) -> bool {
         self.len_and_flags & COMPACT_FLAG_HAS_AUX_U32 != 0
     }

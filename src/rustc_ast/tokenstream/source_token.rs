@@ -1,6 +1,4 @@
-use crate::rustc_ast::ast::AttrStyle;
-use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
-use crate::rustc_span::{Span, Symbol};
+use crate::rustc_ast::token::{self, Delimiter, TokenKind};
 
 use super::Spacing;
 
@@ -79,10 +77,7 @@ pub(crate) enum SourceKind {
 impl SourceKind {
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "retains compact source-kind decoding for serialized token tape paths"
-        )
+        expect(dead_code, reason = "retains source-kind decoding for serialized tapes")
     )]
     pub(crate) const fn from_raw(raw: u8) -> Self {
         match raw {
@@ -169,6 +164,24 @@ impl SourceKind {
         self.close_delim()
     }
 
+    #[inline]
+    pub(crate) const fn is_literal(self) -> bool {
+        matches!(
+            self,
+            Self::Integer
+                | Self::Float
+                | Self::Char
+                | Self::Byte
+                | Self::Str
+                | Self::ByteStr
+                | Self::CStr
+                | Self::StrRaw
+                | Self::ByteStrRaw
+                | Self::CStrRaw
+        )
+    }
+
+    #[cfg(feature = "parallel")]
     pub(crate) const fn needs_symbol_lookup(self) -> bool {
         matches!(self, Self::Ident | Self::Lifetime | Self::LineDoc | Self::BlockDoc)
     }
@@ -191,6 +204,7 @@ impl SourceKind {
         }
     }
 
+    #[inline]
     pub(super) fn simple_kind(self) -> Option<TokenKind> {
         Some(match self {
             Self::Eq => token::Eq,
@@ -300,72 +314,29 @@ pub(crate) struct SourceToken {
 
 const _: () = assert!(core::mem::size_of::<SourceToken>() == 16);
 
-pub(crate) fn token_from_compact_parts(
-    kind: SourceKind,
-    spacing: Spacing,
-    aux: u8,
-    span: Span,
-    symbol: Option<Symbol>,
-    lit_meta: Option<(token::LitKind, Symbol, Option<Symbol>)>,
-) -> (Token, Spacing) {
-    let token_kind = if let Some(simple) = kind.simple_kind() {
-        simple
-    } else {
-        match kind {
-            SourceKind::Ident => token::Ident(
-                symbol.expect("identifier token requires a pre-interned symbol"),
-                if aux == 1 { IdentIsRaw::Yes } else { IdentIsRaw::No },
-            ),
-            SourceKind::Lifetime => token::Lifetime(
-                symbol.expect("lifetime token requires a pre-interned symbol"),
-                IdentIsRaw::No,
-            ),
-            SourceKind::LineDoc | SourceKind::BlockDoc => token::DocComment(
-                if kind == SourceKind::LineDoc { CommentKind::Line } else { CommentKind::Block },
-                if aux == 0 { AttrStyle::Outer } else { AttrStyle::Inner },
-                symbol.expect("doc comment token requires a pre-interned symbol"),
-            ),
-            SourceKind::Integer
-            | SourceKind::Float
-            | SourceKind::Char
-            | SourceKind::Byte
-            | SourceKind::Str
-            | SourceKind::ByteStr
-            | SourceKind::CStr
-            | SourceKind::StrRaw
-            | SourceKind::ByteStrRaw
-            | SourceKind::CStrRaw => {
-                let (lit_kind, lit_symbol, suffix) =
-                    lit_meta.expect("literal token requires pre-interned literal metadata");
-                token::Literal(token::Lit::new(lit_kind, lit_symbol, suffix))
-            }
-            _ => unreachable!("simple source token kind must have a simple token kind"),
-        }
-    };
-    (Token::new(token_kind, span), spacing)
-}
-
 /// An exact key, including length, because source identifiers contain no NUL.
-#[expect(
-    dead_code,
-    reason = "retains short identifier hashing for the R-series source token index"
-)]
+#[inline]
 pub(crate) fn short_key(text: &str) -> Option<u64> {
     let bytes = text.as_bytes();
     if bytes.is_empty() || bytes.len() > 8 || bytes.contains(&0) {
         return None;
     }
-    let mut key = 0u64;
-    for (idx, &byte) in bytes.iter().enumerate() {
-        key |= u64::from(byte) << (idx * 8);
-    }
-    Some(key)
+    Some(match bytes.len() {
+        1 => u64::from(bytes[0]),
+        2..=3 => {
+            let first = u16::from_le_bytes(bytes[..2].try_into().unwrap());
+            u64::from(first) | (u64::from(bytes[bytes.len() - 1]) << ((bytes.len() - 1) * 8))
+        }
+        4..=8 => {
+            let first = u32::from_le_bytes(bytes[..4].try_into().unwrap());
+            let last = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
+            u64::from(first) | (u64::from(last) << ((bytes.len() - 4) * 8))
+        }
+        _ => unreachable!("short key length checked"),
+    })
 }
 
-#[expect(
-    dead_code,
-    reason = "retains short identifier slot selection for the R-series source token index"
-)]
+#[inline]
 pub(crate) fn short_slot(key: u64) -> usize {
     (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 55) as usize
 }

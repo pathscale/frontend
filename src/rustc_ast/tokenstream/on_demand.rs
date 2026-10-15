@@ -11,6 +11,7 @@ use super::indexed_tape::{Group, IndexedSourceTape, NO_GROUP};
 use super::source_token::SourceKind;
 use super::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 
+#[cfg(any(feature = "parallel", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EnclosingGroupInfo {
     pub(crate) group_idx: u32,
@@ -62,10 +63,10 @@ impl OnDemandCursor {
     }
 
     fn eof(&self) -> (Token, Spacing) {
-        let span = self
-            .tape
-            .group(self.end_group)
-            .map_or_else(|| self.tape.eof_span(), |group| group.close);
+        let span = self.tape.group(self.end_group).map_or_else(
+            || self.tape.eof_span(),
+            |group| self.tape.token_span(group.close_idx as usize),
+        );
         (Token::new(token::Eof, span), Spacing::Alone)
     }
 
@@ -214,21 +215,29 @@ impl OnDemandCursor {
 
     pub(crate) fn parent_delim_and_span(&self) -> Option<(Delimiter, DelimSpan)> {
         let group = self.active_group()?;
-        Some((group.delim, DelimSpan::from_pair(group.open, group.close)))
+        Some((
+            group.delim,
+            DelimSpan::from_pair(
+                self.tape.token_span(group.open_idx as usize),
+                self.tape.token_span(group.close_idx as usize),
+            ),
+        ))
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(crate) fn enclosing_group_info(&self) -> Option<EnclosingGroupInfo> {
         let group = self.active_group()?;
         Some(EnclosingGroupInfo {
             group_idx: self.enclosing,
             delim: group.delim,
-            open: group.open,
-            close: group.close,
-            inside_bumps: group.inside_bumps,
+            open: self.tape.token_span(group.open_idx as usize),
+            close: self.tape.token_span(group.close_idx as usize),
+            inside_bumps: group.close_idx - group.open_idx - 1,
             attr_count: group.attr_count,
         })
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(crate) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
         let group = self.tape.group(group_idx)?;
         let end_idx = group.close_idx.checked_add(1)?;

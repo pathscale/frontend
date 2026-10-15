@@ -2217,7 +2217,7 @@ impl<'a> Parser<'a> {
         ident_span: Span,
         parsed_where: bool,
     ) -> PResult<'a, (crate::rustc_ast::ArenaVec<FieldDef>, Recovered)> {
-        let mut fields = ast::ArenaVec::new();
+        let mut fields = smallvec::SmallVec::<[_; 8]>::new();
         let mut recovered = Recovered::No;
         if self.eat(exp!(OpenBrace)) {
             while self.token != token::CloseBrace {
@@ -2248,7 +2248,7 @@ impl<'a> Parser<'a> {
             return Err(err);
         }
 
-        Ok((fields, recovered))
+        Ok((fields.into(), recovered))
     }
 
     fn parse_unsafe_field(&mut self) -> Safety {

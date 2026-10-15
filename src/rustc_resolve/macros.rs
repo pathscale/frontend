@@ -1349,7 +1349,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
             let is_allowed =
                 |feature| self.features.enabled(feature) || span.allows_unstable(feature);
-            let allowed_by_implication = implied_by.is_some_and(&is_allowed);
+            let allowed_by_implication = implied_by.is_some_and(is_allowed);
             if !is_allowed(feature) && !allowed_by_implication {
                 stability::report_unstable(
                     self.tcx.sess,

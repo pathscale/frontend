@@ -37,6 +37,10 @@ impl Counts {
 struct Group {
     open_index: u32,
     close_index: u32,
+    #[cfg_attr(
+        not(any(feature = "parallel", test)),
+        expect(dead_code, reason = "parent links support owned body detachment")
+    )]
     parent: u32,
     depth: usize,
     counts: Counts,
@@ -70,6 +74,7 @@ impl FlatTokenBuffer {
         }
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(crate) fn has_only_source_tokens(&self) -> bool {
         self.only_source_tokens && self.enclosing == OUTER
     }
@@ -352,10 +357,12 @@ impl FlatTokenCursor {
         Token::new(token::Eof, span)
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(super) fn can_parallel_parse(&self) -> bool {
         self.buffer.has_only_source_tokens()
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(super) fn enclosing_group_info(&self) -> Option<super::on_demand::EnclosingGroupInfo> {
         let first = self.buffer.tokens[self.enclosing()?];
         let group = &self.buffer.groups[first.group as usize];
@@ -372,6 +379,7 @@ impl FlatTokenCursor {
         })
     }
 
+    #[cfg(any(feature = "parallel", test))]
     pub(super) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
         let group = self.buffer.groups.get(group_idx as usize)?;
         if group.close_index == OUTER {
