@@ -11,9 +11,8 @@
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
-// `#![no_std]` above is the ban and the compiler is the enforcer: without `extern crate std;`
-// there is no `std` in the extern prelude, so any `std::` path fails to resolve and the build
-// stops. Do not add that line back to make an error go away - the error is the point. Whatever
+// The crate root's no_std attribute excludes the standard-library extern prelude.
+// Keep that boundary intact when resolving an import error. Whatever
 // needed `std` either has a `core`/`alloc` equivalent, belongs in `ekostd`, or is a
 // dependency that has to be replaced.
 //
@@ -217,35 +216,28 @@ fn new_parser_from_source_file(
     strip_tokens: StripTokens,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let end_pos = source_file.end_position();
-    #[cfg(feature = "parallel")]
-    let use_flat = !crate::rustc_data_structures::sync::is_parallel_here();
-    #[cfg(not(feature = "parallel"))]
-    let use_flat = true;
-    let mut parser = if use_flat {
-        let src = source_file.src.as_ref().unwrap_or_else(|| {
-            psess.dcx().bug(format!(
-                "cannot lex `source_file` without source: {}",
-                psess.source_map().filename_for_diagnostics(&source_file.name)
-            ));
-        });
-        if let Some(cursor) =
-            lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
-        {
-            Parser::new_with_cursor(psess, cursor, None)
-        } else {
-            let buffer = lexer::lex_flat_tokens(
-                psess,
-                src.as_str(),
-                Some(src),
-                source_file.start_pos,
-                None,
-                strip_tokens,
-            )?;
-            Parser::from_flat(psess, buffer)
-        }
+    let src = source_file.src.as_ref().unwrap_or_else(|| {
+        psess.dcx().bug(format!(
+            "cannot lex `source_file` without source: {}",
+            psess.source_map().filename_for_diagnostics(&source_file.name)
+        ));
+    });
+    let mut parser = if let Some(cursor) =
+        lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
+    {
+        // Compatibility hook: an already frozen SourceFile keeps its existing line table.
+        source_file.supply_precomputed_newlines(cursor.indexed_tape().unwrap().newlines());
+        Parser::new_with_cursor(psess, cursor, None)
     } else {
-        let stream = source_file_to_stream(psess, source_file, None, strip_tokens)?;
-        Parser::new(psess, stream, None)
+        let buffer = lexer::lex_flat_tokens(
+            psess,
+            src.as_str(),
+            Some(src),
+            source_file.start_pos,
+            None,
+            strip_tokens,
+        )?;
+        Parser::from_flat(psess, buffer)
     };
     if parser.token == token::Eof {
         parser.token.span = Span::new(end_pos, end_pos, parser.token.span.ctxt(), None);

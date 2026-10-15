@@ -2,357 +2,139 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::rustc_ast::ast::AttrStyle;
-use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token};
-use crate::rustc_ast::util::unicode::contains_text_flow_control_chars;
-use crate::rustc_lexer::{Base, Cursor, DocStyle, FrontmatterAllowed, LiteralKind, TokenKind};
+use crate::rustc_ast::token::{self, Delimiter, Token};
+use crate::rustc_lexer::FrontmatterAllowed;
 use crate::rustc_span::edition::Edition;
-use crate::rustc_span::{BytePos, DUMMY_SP, Span, Symbol, sym};
-use rustc_literal_escaper::{Mode, check_for_errors};
+use crate::rustc_span::{BytePos, Span};
 
-use super::source_token::{SourceKind, SourceToken, short_key, short_slot};
+use super::indexed_tape::{Group, IndexedSourceTape, NO_GROUP};
+use super::source_token::SourceKind;
 use super::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 
-const OUTER: u32 = u32::MAX;
-
-#[derive(Clone, Copy, Debug)]
-struct Group {
-    open: u32,
-    close: u32,
-    parent: u32,
-    depth: u32,
-    delim: Delimiter,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EnclosingGroupInfo {
+    pub(crate) group_idx: u32,
+    pub(crate) delim: Delimiter,
+    pub(crate) open: Span,
+    pub(crate) close: Span,
+    pub(crate) inside_bumps: u32,
+    pub(crate) attr_count: u32,
 }
 
-#[derive(Debug)]
-struct Source {
-    text: Arc<String>,
-    start: BytePos,
-    groups: Vec<Group>,
-    short_symbols: Vec<(u64, Symbol)>,
-    raw_identifier_spans: Vec<Span>,
-}
-
-/// Only source with no eager lexer side effects is admitted here. Failure has
-/// emitted nothing; the caller can run the original lexer from the beginning.
-impl Source {
-    fn checked(
-        text: Arc<String>,
-        start: BytePos,
-        begin: u32,
-        frontmatter: FrontmatterAllowed,
-        edition: Edition,
-    ) -> Option<Arc<Self>> {
-        u32::try_from(text.len()).ok()?;
-        let mut cursor = Cursor::new(text.get(begin as usize..)?, frontmatter);
-        let mut pos = begin;
-        let mut groups: Vec<Group> = Vec::new();
-        let mut enclosing = OUTER;
-        let mut short_candidates = alloc::vec![(0u64, 0u32); 512];
-        let mut raw_identifier_spans = Vec::new();
-        loop {
-            pos += cursor.skip_whitespace();
-            let raw = cursor.advance_token();
-            let lo = pos;
-            pos += raw.len;
-            let spelling = &text[lo as usize..pos as usize];
-            match raw.kind {
-                TokenKind::Whitespace => continue,
-                TokenKind::LineComment { doc_style: None }
-                | TokenKind::BlockComment { doc_style: None, terminated: true } => {
-                    if contains_text_flow_control_chars(spelling) {
-                        return None;
-                    }
-                    continue;
-                }
-                TokenKind::Eof => break,
-                _ => {}
-            }
-            let (kind, suffix, aux) = classify(raw.kind)?;
-            if matches!(kind, SourceKind::Ident | SourceKind::Lifetime) {
-                if !spelling.is_ascii() {
-                    return None;
-                }
-                // Ident aux=1 denotes an ASCII raw identifier. NFC and all
-                // invalid raw names stay on the original diagnostic path.
-                let prefix = if kind == SourceKind::Ident && aux == 1 { 2 } else { 0 };
-                let name = &spelling[prefix..];
-                if prefix != 0 {
-                    if matches!(name, "" | "_" | "super" | "self" | "Self" | "crate") {
-                        return None;
-                    }
-                    raw_identifier_spans.push(Span::with_root_ctxt(
-                        start + BytePos(lo), start + BytePos(pos),
-                    ));
-                }
-                if kind == SourceKind::Ident && let Some(key) = short_key(name) {
-                    short_candidates[short_slot(key)] = (key, lo + prefix as u32);
-                }
-            }
-            if matches!(kind, SourceKind::LineDoc | SourceKind::BlockDoc)
-                && (spelling.contains('\r') || contains_text_flow_control_chars(spelling))
-            {
-                return None;
-            }
-            if let TokenKind::Literal { kind: literal, .. } = raw.kind {
-                if matches!(kind, SourceKind::CStr | SourceKind::CStrRaw)
-                    && !edition.at_least_rust_2021()
-                {
-                    return None;
-                }
-                if suffix < raw.len && &spelling[suffix as usize..] == "_" {
-                    return None;
-                }
-                if let LiteralKind::Int { base: base @ (Base::Binary | Base::Octal), .. } = literal {
-                    if spelling[2..suffix as usize]
-                        .chars()
-                        .any(|c| c != '_' && c.to_digit(base as u32).is_none())
-                    {
-                        return None;
-                    }
-                }
-                let (_, mode, prefix, postfix) = literal_layout(kind, aux)?;
-                let content = spelling.get(prefix as usize..suffix.checked_sub(postfix)? as usize)?;
-                if contains_text_flow_control_chars(content) {
-                    return None;
-                }
-                if let Some(mode) = mode {
-                    let needs_check = match mode {
-                        Mode::Str => memchr::memchr3(b'\\', b'"', b'\r', content.as_bytes()).is_some(),
-                        Mode::RawStr => memchr::memchr(b'\r', content.as_bytes()).is_some(),
-                        _ => true,
-                    };
-                    if needs_check {
-                        let mut clean = true;
-                        check_for_errors(content, mode, |_, _| clean = false);
-                        if !clean {
-                            return None;
-                        }
-                    }
-                }
-            }
-            if let Some(delim) = kind.open_delim() {
-                let index = u32::try_from(groups.len()).ok()?;
-                if index == OUTER {
-                    return None;
-                }
-                let depth = if enclosing == OUTER {
-                    1
-                } else {
-                    groups[enclosing as usize].depth.checked_add(1)?
-                };
-                groups.push(Group { open: lo, close: 0, parent: enclosing, depth, delim });
-                enclosing = index;
-            } else if let Some(delim) = kind.close_delim() {
-                let group = groups.get_mut(enclosing as usize)?;
-                if group.delim != delim {
-                    return None;
-                }
-                group.close = lo;
-                enclosing = group.parent;
-            }
-        }
-        if enclosing != OUTER {
-            return None;
-        }
-        // Intern only after eligibility is established. The immutable cache is
-        // shared by every snapshot; misses still intern from the source owner.
-        let short_symbols = short_candidates.into_iter().map(|(key, lo)| {
-            let symbol = if key == 0 {
-                sym::empty
-            } else {
-                let len = (64 - key.leading_zeros()).div_ceil(8) as usize;
-                Symbol::intern_from_source(&text[lo as usize..lo as usize + len], &text)
-            };
-            (key, symbol)
-        }).collect();
-        Some(Arc::new(Self { text, start, groups, short_symbols, raw_identifier_spans }))
-    }
-
-    /// No references into the source escape a scan. Resuming from a byte
-    /// offset keeps the owning cursor free of self references and lifetimes.
-    fn scan(&self, offset: u32) -> SourceToken {
-        let mut cursor = Cursor::new(&self.text[offset as usize..], FrontmatterAllowed::No);
-        let mut pos = offset;
-        let mut whitespace = false;
-        loop {
-            let skipped = cursor.skip_whitespace();
-            pos += skipped;
-            whitespace |= skipped != 0;
-            let raw = cursor.advance_token();
-            let lo = pos;
-            pos += raw.len;
-            match raw.kind {
-                TokenKind::Whitespace
-                | TokenKind::LineComment { doc_style: None }
-                | TokenKind::BlockComment { doc_style: None, .. } => {
-                    whitespace = true;
-                }
-                _ => {
-                    let (kind, suffix, aux) = classify(raw.kind).expect("preflight admitted lexeme");
-                    return SourceToken {
-                        lo, hi: pos, suffix, kind, aux,
-                        // Before preparation this records preceding whitespace.
-                        spacing: if whitespace { Spacing::Alone } else { Spacing::Joint },
-                    };
-                }
-            }
-        }
-    }
-
-    fn prepare(&self, mut token: SourceToken) -> (SourceToken, SourceToken) {
-        let mut next = self.scan(token.hi);
-        // Delimiters use the existing lexer's minimal, non-gluing bump.
-        if token.kind.open_delim().is_none() && token.kind.close_delim().is_none() {
-            while next.spacing != Spacing::Alone {
-                let Some(kind) = token.kind.glue(next.kind) else { break };
-                token.kind = kind;
-                token.hi = next.hi;
-                next = self.scan(next.hi);
-            }
-        }
-        token.spacing = if next.spacing == Spacing::Alone || next.kind == SourceKind::Eof {
-            Spacing::Alone
-        } else if next.kind.is_punct() {
-            Spacing::Joint
-        } else {
-            Spacing::JointHidden
-        };
-        (token, next)
-    }
-
-    fn span(&self, lo: u32, hi: u32) -> Span {
-        Span::with_root_ctxt(self.start + BytePos(lo), self.start + BytePos(hi))
-    }
-
-    fn intern(&self, lo: u32, hi: u32) -> Symbol {
-        Symbol::intern_from_source(&self.text[lo as usize..hi as usize], &self.text)
-    }
-
-    fn expand(&self, token: SourceToken) -> Token {
-        if token.kind == SourceKind::Eof {
-            return Token::new(token::Eof, DUMMY_SP);
-        }
-        let kind = if let Some(kind) = token.kind.simple_kind() {
-            kind
-        } else {
-            match token.kind {
-                SourceKind::Ident => {
-                    let lo = token.lo + if token.aux == 1 { 2 } else { 0 };
-                    let text = &self.text[lo as usize..token.hi as usize];
-                    let symbol = short_key(text).and_then(|key| {
-                        let (cached, symbol) = self.short_symbols[short_slot(key)];
-                        (cached == key).then_some(symbol)
-                    }).unwrap_or_else(|| self.intern(lo, token.hi));
-                    let raw = if token.aux == 1 { IdentIsRaw::Yes } else { IdentIsRaw::No };
-                    token::Ident(symbol, raw)
-                }
-                SourceKind::Lifetime => token::Lifetime(self.intern(token.lo, token.hi), IdentIsRaw::No),
-                SourceKind::LineDoc | SourceKind::BlockDoc => {
-                    let block = token.kind == SourceKind::BlockDoc;
-                    token::DocComment(
-                        if block { CommentKind::Block } else { CommentKind::Line },
-                        if token.aux == 0 { AttrStyle::Outer } else { AttrStyle::Inner },
-                        self.intern(token.lo + 3, token.hi - if block { 2 } else { 0 }),
-                    )
-                }
-                _ => {
-                    let (kind, _, prefix, postfix) = literal_layout(token.kind, token.aux)
-                        .expect("preflight admitted literal");
-                    let end = token.lo + token.suffix;
-                    let symbol = self.intern(token.lo + prefix, end - postfix);
-                    let suffix = (end < token.hi).then(|| self.intern(end, token.hi));
-                    token::Literal(token::Lit { kind, symbol, suffix })
-                }
-            }
-        };
-        Token::new(kind, self.span(token.lo, token.hi))
-    }
-
-    fn group_at(&self, lo: u32) -> u32 {
-        self.groups.binary_search_by_key(&lo, |group| group.open)
-            .expect("preflight indexed opening delimiter") as u32
-    }
-
-    fn delim_span(&self, group: Group) -> DelimSpan {
-        DelimSpan::from_pair(self.span(group.open, group.open + 1), self.span(group.close, group.close + 1))
-    }
-}
-
-/// No token tape or mutable session reference is retained by a snapshot.
+/// Snapshots share an immutable tape. `idx` is Parser's next token, not its
+/// current token. `end_group` retains the detached EOF span after its close.
 #[derive(Clone, Debug)]
-pub(super) struct OnDemandCursor {
-    source: Arc<Source>,
-    current: SourceToken,
-    pending: SourceToken,
+pub(crate) struct OnDemandCursor {
+    tape: Arc<IndexedSourceTape>,
+    idx: u32,
+    end_idx: u32,
     enclosing: u32,
+    end_group: u32,
 }
 
 impl OnDemandCursor {
-    pub(super) fn new(
+    pub(crate) fn new(
         text: Arc<String>,
         start: BytePos,
         begin: u32,
         frontmatter: FrontmatterAllowed,
         edition: Edition,
     ) -> Option<Self> {
-        let source = Source::checked(text, start, begin, frontmatter, edition)?;
-        Some(Self::at(source, begin, OUTER))
+        Some(Self::from_tape(IndexedSourceTape::build(
+            text, start, begin, frontmatter, edition,
+        )?))
     }
 
-    pub(super) fn raw_identifier_spans(&self) -> &[Span] {
-        &self.source.raw_identifier_spans
+    pub(crate) fn from_tape(tape: Arc<IndexedSourceTape>) -> Self {
+        let end_idx = u32::try_from(tape.token_count().checked_sub(1).expect("tape has EOF"))
+            .expect("tape index fits u32");
+        Self { tape, idx: 0, end_idx, enclosing: NO_GROUP, end_group: NO_GROUP }
     }
 
-    fn at(source: Arc<Source>, offset: u32, enclosing: u32) -> Self {
-        let (current, pending) = source.prepare(source.scan(offset));
-        Self { source, current, pending, enclosing }
+    pub(crate) fn tape(&self) -> &Arc<IndexedSourceTape> {
+        &self.tape
     }
 
-    fn advance(&mut self) {
-        if self.current.kind.open_delim().is_some() {
-            self.enclosing = self.source.group_at(self.current.lo);
-        } else if self.current.kind.close_delim().is_some() {
-            let group = self.source.groups[self.enclosing as usize];
-            debug_assert_eq!(group.close, self.current.lo);
-            self.enclosing = group.parent;
+    pub(crate) fn raw_identifier_spans(&self) -> &[Span] {
+        &self.tape.raw_identifier_spans
+    }
+
+    pub(crate) fn depth_zero_cuts(&self) -> &[u32] {
+        self.tape.depth_zero_cuts()
+    }
+
+    fn eof(&self) -> (Token, Spacing) {
+        let span = self.tape.group(self.end_group)
+            .map_or_else(|| self.tape.eof_span(), |group| group.close);
+        (Token::new(token::Eof, span), Spacing::Alone)
+    }
+
+    fn read(&self, idx: u32) -> (Token, Spacing) {
+        if idx >= self.end_idx {
+            self.eof()
+        } else {
+            self.tape.materialize_token(idx as usize)
         }
-        (self.current, self.pending) = self.source.prepare(self.pending);
+    }
+
+    fn kind(&self) -> SourceKind {
+        if self.idx >= self.end_idx {
+            SourceKind::Eof
+        } else {
+            self.tape.tokens[self.idx as usize].kind()
+        }
+    }
+
+    /// Never expose the detached body's parent after returning its close.
+    fn active_group(&self) -> Option<&Group> {
+        let group = self.tape.group(self.enclosing)?;
+        if self.end_group != NO_GROUP {
+            let bound = self.tape.group(self.end_group)?;
+            if self.idx >= self.end_idx
+                || group.open_idx < bound.open_idx
+                || group.close_idx > bound.close_idx
+            {
+                return None;
+            }
+        }
+        Some(group)
     }
 
     #[inline]
-    pub(super) fn next_and_bump(&mut self) -> (Token, Spacing) {
-        let token = self.source.expand(self.current);
-        let spacing = self.current.spacing;
-        self.advance();
-        (token, spacing)
+    pub(crate) fn next_and_bump(&mut self) -> (Token, Spacing) {
+        let result = self.read(self.idx);
+        if self.idx < self.end_idx {
+            let kind = self.tape.tokens[self.idx as usize].kind();
+            if kind.open_delim().is_some() {
+                self.enclosing = self.tape.token_groups[self.idx as usize];
+            } else if kind.close_delim().is_some() {
+                let group_idx = self.tape.token_groups[self.idx as usize];
+                self.enclosing = self.tape.group(group_idx)
+                    .expect("indexed closing delimiter").parent;
+            }
+            self.idx += 1;
+        }
+        result
     }
 
-    pub(super) fn look_ahead_token(&self, dist: usize) -> Token {
+    pub(crate) fn look_ahead_token(&self, dist: usize) -> Token {
         if dist == 0 {
             return Token::dummy();
         }
-        if dist == 1 {
-            return self.source.expand(self.current);
-        }
-        // Token lookahead does not observe enclosing groups. Borrow the source
-        // and perform only the lexeme transition from advance().
-        let (mut current, mut pending) = (self.current, self.pending);
-        for _ in 1..dist {
-            if current.kind == SourceKind::Eof {
-                break;
-            }
-            (current, pending) = self.source.prepare(pending);
-        }
-        self.source.expand(current)
+        let idx = u32::try_from(dist - 1).ok()
+            .and_then(|offset| self.idx.checked_add(offset))
+            .unwrap_or(self.end_idx)
+            .min(self.end_idx);
+        self.read(idx).0
     }
 
     fn skip_tree(&mut self) {
-        if self.current.kind.open_delim().is_some() {
-            let group = self.source.groups[self.source.group_at(self.current.lo) as usize];
-            *self = Self::at(self.source.clone(), group.close + 1, self.enclosing);
+        if self.kind().open_delim().is_some() {
+            let group_idx = self.tape.token_groups[self.idx as usize];
+            let group = self.tape.group(group_idx).expect("indexed opening delimiter");
+            self.idx = (group.close_idx + 1).min(self.end_idx);
         } else {
-            self.advance();
+            self.next_and_bump();
         }
     }
 
@@ -360,35 +142,28 @@ impl OnDemandCursor {
         assert_ne!(n, 0);
         let mut cursor = self.clone();
         for _ in 1..n {
-            if cursor.current.kind.close_delim().is_some() || cursor.current.kind == SourceKind::Eof {
+            if cursor.kind().close_delim().is_some() || cursor.kind() == SourceKind::Eof {
                 return None;
             }
             cursor.skip_tree();
         }
-        (cursor.current.kind.close_delim().is_none() && cursor.current.kind != SourceKind::Eof)
+        (cursor.kind().close_delim().is_none() && cursor.kind() != SourceKind::Eof)
             .then_some(cursor)
     }
 
-    /// Structural predicates need only a token or a group's opening delimiter.
-    pub(super) fn look_ahead_tree_token(&self, n: usize) -> Option<Token> {
-        if n == 1 {
-            if self.current.kind.close_delim().is_some() || self.current.kind == SourceKind::Eof {
-                return None;
-            }
-            return Some(self.source.expand(self.current));
-        }
+    pub(crate) fn look_ahead_tree_token(&self, n: usize) -> Option<Token> {
         let cursor = self.tree_cursor(n)?;
-        Some(cursor.source.expand(cursor.current))
+        Some(cursor.read(cursor.idx).0)
     }
 
     fn take_tree(&mut self) -> TokenTree {
-        if let Some(delim) = self.current.kind.open_delim() {
+        if let Some(delim) = self.kind().open_delim() {
             let (open, open_spacing) = self.next_and_bump();
             let mut children = Vec::new();
-            while self.current.kind.close_delim().is_none() && self.current.kind != SourceKind::Eof {
+            while self.kind().close_delim().is_none() && self.kind() != SourceKind::Eof {
                 children.push(self.take_tree());
             }
-            debug_assert_eq!(self.current.kind.close_delim(), Some(delim));
+            assert_eq!(self.kind().close_delim(), Some(delim));
             let (close, close_spacing) = self.next_and_bump();
             TokenTree::Delimited(
                 DelimSpan::from_pair(open.span, close.span),
@@ -397,124 +172,88 @@ impl OnDemandCursor {
                 TokenStream::new(children),
             )
         } else {
-            assert!(self.current.kind.close_delim().is_none() && self.current.kind != SourceKind::Eof);
+            assert!(self.kind().close_delim().is_none() && self.kind() != SourceKind::Eof);
             let (token, spacing) = self.next_and_bump();
             TokenTree::Token(token, spacing)
         }
     }
 
-    pub(super) fn look_ahead(&self, n: usize) -> Option<TokenTree> {
+    pub(crate) fn look_ahead(&self, n: usize) -> Option<TokenTree> {
         Some(self.tree_cursor(n)?.take_tree())
     }
 
-    pub(super) fn look_ahead_past_close_delim(&self) -> Option<TokenTree> {
-        let group = self.source.groups[self.enclosing as usize];
-        let mut cursor = Self::at(self.source.clone(), group.close + 1, group.parent);
-        if cursor.current.kind.close_delim().is_some() || cursor.current.kind == SourceKind::Eof {
+    pub(crate) fn look_ahead_past_close_delim(&self) -> Option<TokenTree> {
+        let group = *self.active_group()?;
+        let mut cursor = self.clone();
+        cursor.idx = (group.close_idx + 1).min(self.end_idx);
+        cursor.enclosing = group.parent;
+        if cursor.kind().close_delim().is_some() || cursor.kind() == SourceKind::Eof {
             None
         } else {
             Some(cursor.take_tree())
         }
     }
 
-    pub(super) fn clone_enclosing_delim(&self) -> TokenTree {
-        let group = self.source.groups[self.enclosing as usize];
-        Self::at(self.source.clone(), group.open, group.parent).take_tree()
+    pub(crate) fn clone_enclosing_delim(&self) -> TokenTree {
+        // An exhausted detached snapshot may reconstruct its own body, but
+        // cannot reconstruct the outer parent now stored in `enclosing`.
+        let group = *self.active_group()
+            .or_else(|| self.tape.group(self.end_group))
+            .expect("cursor has an enclosing delimiter");
+        let mut cursor = self.clone();
+        cursor.idx = group.open_idx;
+        cursor.enclosing = group.parent;
+        cursor.take_tree()
     }
 
-    pub(super) fn bump_to_end(&mut self) {
-        let group = self.source.groups[self.enclosing as usize];
-        *self = Self::at(self.source.clone(), group.close, self.enclosing);
+    pub(crate) fn bump_to_end(&mut self) {
+        self.idx = self.active_group().map_or(self.end_idx, |group| group.close_idx);
     }
 
-    pub(super) fn depth(&self) -> usize {
-        if self.enclosing == OUTER { 0 } else { self.source.groups[self.enclosing as usize].depth as usize }
+    pub(crate) fn depth(&self) -> usize {
+        self.active_group().map_or(0, |group| group.depth as usize)
     }
 
-    pub(super) fn parent_delim_and_span(&self) -> Option<(Delimiter, DelimSpan)> {
-        let group = *self.source.groups.get(self.enclosing as usize)?;
-        Some((group.delim, self.source.delim_span(group)))
+    pub(crate) fn parent_delim_and_span(&self) -> Option<(Delimiter, DelimSpan)> {
+        let group = self.active_group()?;
+        Some((group.delim, DelimSpan::from_pair(group.open, group.close)))
     }
-}
 
-fn classify(kind: TokenKind) -> Option<(SourceKind, u32, u8)> {
-    use SourceKind as S;
-    let mut suffix = 0;
-    let mut aux = 0;
-    let kind = match kind {
-        TokenKind::Ident => S::Ident,
-        TokenKind::RawIdent => { aux = 1; S::Ident }
-        TokenKind::Lifetime { starts_with_number: false } => S::Lifetime,
-        TokenKind::Semi => S::Semi,
-        TokenKind::Comma => S::Comma,
-        TokenKind::Dot => S::Dot,
-        TokenKind::OpenParen => S::OpenParen,
-        TokenKind::CloseParen => S::CloseParen,
-        TokenKind::OpenBrace => S::OpenBrace,
-        TokenKind::CloseBrace => S::CloseBrace,
-        TokenKind::OpenBracket => S::OpenBracket,
-        TokenKind::CloseBracket => S::CloseBracket,
-        TokenKind::At => S::At,
-        TokenKind::Pound => S::Pound,
-        TokenKind::Tilde => S::Tilde,
-        TokenKind::Question => S::Question,
-        TokenKind::Colon => S::Colon,
-        TokenKind::Dollar => S::Dollar,
-        TokenKind::Eq => S::Eq,
-        TokenKind::Bang => S::Bang,
-        TokenKind::Lt => S::Lt,
-        TokenKind::Gt => S::Gt,
-        TokenKind::Minus => S::Minus,
-        TokenKind::And => S::And,
-        TokenKind::Or => S::Or,
-        TokenKind::Plus => S::Plus,
-        TokenKind::Star => S::Star,
-        TokenKind::Slash => S::Slash,
-        TokenKind::Caret => S::Caret,
-        TokenKind::Percent => S::Percent,
-        TokenKind::Eof => S::Eof,
-        TokenKind::LineComment { doc_style: Some(style) }
-        | TokenKind::BlockComment { doc_style: Some(style), terminated: true } => {
-            aux = u8::from(matches!(style, DocStyle::Inner));
-            if matches!(kind, TokenKind::LineComment { .. }) { S::LineDoc } else { S::BlockDoc }
+    pub(crate) fn enclosing_group_info(&self) -> Option<EnclosingGroupInfo> {
+        let group = self.active_group()?;
+        Some(EnclosingGroupInfo {
+            group_idx: self.enclosing,
+            delim: group.delim,
+            open: group.open,
+            close: group.close,
+            inside_bumps: group.inside_bumps,
+            attr_count: group.attr_count,
+        })
+    }
+
+    pub(crate) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
+        let group = self.tape.group(group_idx)?;
+        let end_idx = group.close_idx.checked_add(1)?;
+        if self.idx <= group.open_idx || self.idx > end_idx || end_idx > self.end_idx {
+            return None;
         }
-        TokenKind::Literal { kind, suffix_start } => {
-            suffix = suffix_start;
-            match kind {
-                LiteralKind::Int { empty_int: false, .. } => S::Integer,
-                LiteralKind::Float { base: Base::Decimal, empty_exponent: false } => S::Float,
-                LiteralKind::Char { terminated: true } => S::Char,
-                LiteralKind::Byte { terminated: true } => S::Byte,
-                LiteralKind::Str { terminated: true } => S::Str,
-                LiteralKind::ByteStr { terminated: true } => S::ByteStr,
-                LiteralKind::CStr { terminated: true } => S::CStr,
-                LiteralKind::RawStr { n_hashes: Some(hashes) } => { aux = hashes; S::StrRaw }
-                LiteralKind::RawByteStr { n_hashes: Some(hashes) } => { aux = hashes; S::ByteStrRaw }
-                LiteralKind::RawCStr { n_hashes: Some(hashes) } => { aux = hashes; S::CStrRaw }
-                _ => return None,
+        if self.end_group != NO_GROUP {
+            let bound = self.tape.group(self.end_group)?;
+            if group.open_idx < bound.open_idx || group.close_idx > bound.close_idx {
+                return None;
             }
         }
-        // This includes raw lifetimes, unknown prefixes, guarded
-        // strings, frontmatter, invalid Unicode and malformed literals.
-        _ => return None,
-    };
-    Some((kind, suffix, aux))
-}
-
-fn literal_layout(kind: SourceKind, aux: u8) -> Option<(token::LitKind, Option<Mode>, u32, u32)> {
-    use SourceKind as S;
-    let hashes = u32::from(aux);
-    Some(match kind {
-        S::Integer => (token::Integer, None, 0, 0),
-        S::Float => (token::Float, None, 0, 0),
-        S::Char => (token::Char, Some(Mode::Char), 1, 1),
-        S::Byte => (token::Byte, Some(Mode::Byte), 2, 1),
-        S::Str => (token::Str, Some(Mode::Str), 1, 1),
-        S::ByteStr => (token::ByteStr, Some(Mode::ByteStr), 2, 1),
-        S::CStr => (token::CStr, Some(Mode::CStr), 2, 1),
-        S::StrRaw => (token::StrRaw(aux), Some(Mode::RawStr), 2 + hashes, 1 + hashes),
-        S::ByteStrRaw => (token::ByteStrRaw(aux), Some(Mode::RawByteStr), 3 + hashes, 1 + hashes),
-        S::CStrRaw => (token::CStrRaw(aux), Some(Mode::RawCStr), 3 + hashes, 1 + hashes),
-        _ => return None,
-    })
+        // Balanced tape intervals prove membership while inside the group.
+        // At one-past-close, Parser must already own this group's close.
+        if self.idx == end_idx && self.enclosing != group.parent {
+            return None;
+        }
+        Some(Self {
+            tape: self.tape.clone(),
+            idx: self.idx,
+            end_idx,
+            enclosing: self.enclosing,
+            end_group: group_idx,
+        })
+    }
 }

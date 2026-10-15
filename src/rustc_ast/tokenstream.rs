@@ -26,10 +26,14 @@ use crate::rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 
 mod flat;
+pub(crate) mod compact_token;
+pub(crate) mod indexed_tape;
 mod on_demand;
 mod source_cursor;
 mod source_token;
 pub(crate) use flat::FlatTokenBuffer;
+pub(crate) use indexed_tape::IndexedSourceTape;
+pub(crate) use on_demand::EnclosingGroupInfo;
 pub use source_cursor::TokenCursor;
 
 #[cfg(test)]
@@ -1361,7 +1365,7 @@ mod size_asserts {
     static_assert_size!(AttrTokenStream, 8);
     static_assert_size!(AttrTokenTree, 32);
     static_assert_size!(LazyAttrTokenStream, 8);
-    // Pending source captures now retain two compact on-demand cursor lexemes.
+    // Pending source captures retain a cursor into shared immutable source storage.
     const _: () = assert!(mem::size_of::<LazyAttrTokenStreamInner>() <= 112);
     static_assert_size!(Option<LazyAttrTokenStream>, 8); // must be small, used in many AST nodes
     static_assert_size!(TokenStream, 8);

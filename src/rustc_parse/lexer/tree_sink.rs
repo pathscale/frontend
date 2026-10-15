@@ -12,6 +12,8 @@ pub(super) trait TokenTreeSink {
 
     fn len(&self) -> usize;
     fn truncate(&mut self, start: usize);
+    /// Recovery must permanently disable source-only metadata on flat buffers.
+    fn invalidate_source_tokens(&mut self) {}
     fn push(&mut self, token: Token, spacing: Spacing);
     fn open(&mut self, token: Token);
     fn finish(&mut self, start: usize) -> Self::Stream;
@@ -77,6 +79,10 @@ impl TokenTreeSink for FlatTokenBuffer {
 
     fn truncate(&mut self, start: usize) {
         FlatTokenBuffer::truncate(self, start);
+    }
+
+    fn invalidate_source_tokens(&mut self) {
+        FlatTokenBuffer::invalidate_source_tokens(self);
     }
 
     #[inline]

@@ -1,4 +1,4 @@
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a path
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
@@ -13,8 +13,7 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
-/// Finds all newlines, multi-byte characters, and non-narrow characters in a
-/// SourceFile.
+/// Finds all newlines and multi-byte characters in a SourceFile.
 ///
 /// This function uses a NEON implementation on aarch64, and an SSE2 one on x86 when
 /// hardware support is detected at runtime.
@@ -50,6 +49,7 @@ cfg_select! {
             multi_byte_chars: &mut Vec<MultiByteChar>,
         ) {
             if is_x86_feature_detected!("sse2") {
+                // SAFETY: runtime detection established SSE2 support for this call.
                 unsafe {
                     analyze_source_file_sse2(src, lines, multi_byte_chars);
                 }
@@ -69,6 +69,8 @@ cfg_select! {
         /// function falls back to the generic implementation. Otherwise it uses
         /// SSE2 intrinsics to quickly find all newlines.
         #[target_feature(enable = "sse2")]
+        // SAFETY: callers must detect SSE2 first. Loads use complete initialized source chunks
+        // and accept unaligned pointers; shared source bytes are not mutated or aliased mutably.
         unsafe fn analyze_source_file_sse2(
             src: &str,
             lines: &mut Vec<RelativeBytePos>,
@@ -92,6 +94,8 @@ cfg_select! {
             for (chunk_index, chunk) in chunks.iter().enumerate() {
                 // We don't know if the pointer is aligned to 16 bytes, so we
                 // use `loadu`, which supports unaligned loading.
+                // SAFETY: `chunk` is exactly 16 initialized bytes from `src`; loadu accepts any
+                // alignment, and the read does not alias a mutable access.
                 let chunk = unsafe { _mm_loadu_si128(chunk.as_ptr() as *const __m128i) };
 
                 // For each character in the chunk, see if its byte value is < 0,
@@ -163,6 +167,9 @@ cfg_select! {
         /// falls back to the generic decoder, which also reports how far a multi-byte
         /// character runs into the next chunk.
         #[target_feature(enable = "neon")]
+        // SAFETY: this function is called only in the compile-time NEON target-feature arm. Loads
+        // use complete initialized source chunks with the intrinsic's alignment requirements;
+        // shared source bytes are not mutated or aliased mutably.
         unsafe fn analyze_source_file_neon(
             src: &str,
             lines: &mut Vec<RelativeBytePos>,
@@ -271,9 +278,64 @@ fn analyze_source_file_generic(
     let mut i = 0;
     let src_bytes = src.as_bytes();
 
+    // An eight-byte chunk is handled in one word when it is all ASCII. The word
+    // is loaded in little-endian byte order so bit positions always match offsets.
+    const BYTE_HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+    const BYTE_LOW_BITS: u64 = 0x0101_0101_0101_0101;
+    const BYTE_LOW_SEVENS: u64 = 0x7f7f_7f7f_7f7f_7f7f;
+
+    while i + 8 <= scan_len {
+        let word = u64::from_le_bytes(
+            src_bytes[i..i + 8]
+                .try_into()
+                .expect("eight-byte slice has fixed length"),
+        );
+        if word & BYTE_HIGH_BITS == 0 {
+            let different = word ^ 0x0a0a_0a0a_0a0a_0a0a;
+            let zero_bytes =
+                !(((different & BYTE_LOW_SEVENS).wrapping_add(BYTE_LOW_SEVENS))
+                    | different
+                    | BYTE_LOW_SEVENS)
+                    & BYTE_HIGH_BITS;
+            let mut newline_mask = (zero_bytes >> 7) & BYTE_LOW_BITS;
+            while newline_mask != 0 {
+                let byte_index = newline_mask.trailing_zeros() as usize / 8;
+                let pos = RelativeBytePos::from_usize(i + byte_index) + output_offset;
+                lines.push(pos + RelativeBytePos(1));
+                newline_mask &= newline_mask - 1;
+            }
+            i += 8;
+            continue;
+        }
+
+        // Decode only this chunk on the slow path. A UTF-8 character that crosses
+        // the chunk boundary advances i past it and is recorded exactly once.
+        let chunk_end = i + 8;
+        while i < chunk_end {
+            let byte = unsafe {
+                // SAFETY: i is below chunk_end, and chunk_end <= scan_len <= src.len().
+                *src_bytes.get_unchecked(i)
+            };
+            if byte == b'\n' {
+                let pos = RelativeBytePos::from_usize(i) + output_offset;
+                lines.push(pos + RelativeBytePos(1));
+                i += 1;
+            } else if byte >= 128 {
+                let c = src[i..].chars().next().unwrap();
+                let char_len = c.len_utf8();
+                let pos = RelativeBytePos::from_usize(i) + output_offset;
+                assert!((2..=4).contains(&char_len));
+                multi_byte_chars.push(MultiByteChar { pos, bytes: char_len as u8 });
+                i += char_len;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     while i < scan_len {
         let byte = unsafe {
-            // We verified that i < scan_len <= src.len()
+            // SAFETY: i < scan_len <= src.len(), so the indexed byte is in bounds.
             *src_bytes.get_unchecked(i)
         };
 

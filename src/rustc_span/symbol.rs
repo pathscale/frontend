@@ -2,9 +2,7 @@
 //! allows bidirectional lookup; i.e., given a value, one can easily find the
 //! type, and vice versa.
 
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
-// search cannot see them - and a `#[derive]` can use them without the name appearing
-// in this file at all, which is why they are not trimmed by inspection.
+// Explicit allocation imports keep this module compatible with the crate's no_std prelude.
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
@@ -189,6 +187,7 @@ symbols! {
         Bool,
         Borrow,
         BorrowMut,
+        Box,
         Break,
         BuildHasher,
         CStr,
@@ -217,6 +216,7 @@ symbols! {
         Deref,
         DispatchFromDyn,
         Display,
+        Drop,
         Dual,
         DualOnly,
         Dualv,
@@ -2718,6 +2718,18 @@ impl Symbol {
         })
     }
 
+    /// Interns a batch in input order with one session lookup and at most one writer lock.
+    /// Unlike `intern_from_source`, this takes no source owner, so novel bytes are copied.
+    pub fn intern_batch_from_source(names: &[&str], out: &mut [Symbol]) {
+        assert_eq!(names.len(), out.len());
+        if names.is_empty() {
+            return;
+        }
+        with_session_globals(|session_globals| {
+            session_globals.symbol_interner.intern_batch_ref(names, out);
+        })
+    }
+
     /// When `str` is ASCII, `intern_from_source(str, owner)` (or `intern(str)` with no owner);
     /// otherwise `None`, having interned nothing. The ASCII test is made in the same pass over
     /// the bytes as the interner's hash, for a caller (the lexer's NFC normalization) that
@@ -2739,6 +2751,10 @@ impl Symbol {
     /// it works out ok.
     #[inline]
     pub fn as_str(&self) -> &str {
+        // SAFETY: get_str returns an initialized, shared UTF-8 slice backed by the
+        // interner. Extending its lifetime changes neither its bounds nor alignment
+        // and creates no mutable alias. As documented above, callers must keep the
+        // session interner alive while using the returned slice.
         with_session_globals(|session_globals| unsafe {
             core::mem::transmute::<&str, &str>(session_globals.symbol_interner.get_str(*self))
         })
@@ -2831,6 +2847,10 @@ impl ByteSymbol {
 
     /// Like `Symbol::as_str`.
     pub fn as_byte_str(&self) -> &[u8] {
+        // SAFETY: get_byte_str returns an initialized, shared slice backed by the
+        // interner. Extending its lifetime preserves bounds, alignment and shared
+        // aliasing. The session interner must outlive use of the returned slice,
+        // as with Symbol::as_str.
         with_session_globals(|session_globals| unsafe {
             core::mem::transmute::<&[u8], &[u8]>(
                 session_globals.symbol_interner.get_byte_str(*self),
@@ -3256,6 +3276,13 @@ impl SymbolIndices {
     ///
     /// The caller is the only writer of `self` and `strs` for the duration of the call: it
     /// holds the interner's lock, or owns the interner outright.
+    /// `hash` must equal `symbol_hash(bytes)`, and `miss` must come from a lookup of
+    /// those bytes and hash in this interner. `store` must return the same bytes in
+    /// immutable storage that remains alive for every subsequent interner access.
+    // SAFETY: the caller's exclusive writer access prevents competing slot writes.
+    // A valid miss identifies an in-bounds probe start in its original table; a
+    // changed table restarts the probe. Published tables stay aligned, initialized
+    // and alive until drop, and store supplies shared immutable backing bytes.
     unsafe fn find_or_insert(
         &self,
         bytes: &[u8],
@@ -3531,6 +3558,52 @@ impl Interner {
 
     fn intern_str(&self, str: &str) -> Symbol {
         Symbol::new(self.intern_inner(str.as_bytes(), None))
+    }
+
+    /// Resolves hits without locking, then rechecks and inserts misses under one lock.
+    pub(crate) fn intern_batch_ref(&self, names: &[&str], out: &mut [Symbol]) {
+        assert_eq!(names.len(), out.len());
+        if names.is_empty() {
+            return;
+        }
+
+        let base = predefined_base(self.predefined);
+        let mut misses = Vec::new();
+        for (position, name) in names.iter().enumerate() {
+            let bytes = name.as_bytes();
+            let hash = symbol_hash(bytes);
+            if let Some(index) = self.predefined.find(bytes, hash) {
+                out[position] = Symbol::new(index);
+            } else {
+                match self.indices.find(bytes, hash, &self.strs) {
+                    Ok(local) => out[position] = Symbol::new(global_index(base, local)),
+                    Err(miss) => misses.push((position, hash, miss)),
+                }
+            }
+        }
+        if misses.is_empty() {
+            return;
+        }
+
+        // All hashes and lock-free probes are complete before taking the writer lock.
+        self.inner.with_lock(|inner| {
+            for (position, hash, miss) in misses {
+                let bytes = names[position].as_bytes();
+                // SAFETY: `inner` is held throughout, making this the only writer of
+                // `indices` and `strs`. The lookup supplied `miss` for these bytes and hash;
+                // find_or_insert rechecks its slot or the current table after growth.
+                // Published tables and entries remain aligned, initialized and in bounds
+                // under that helper's invariants. No mutable reference aliases their slots.
+                // store copies the initialized byte slice into the interner's arena, so
+                // no reference into `names` escapes. Duplicate misses reuse the prior entry.
+                let local = unsafe {
+                    self.indices.find_or_insert(bytes, hash, &self.strs, miss, || {
+                        inner.store(bytes, None)
+                    })
+                };
+                out[position] = Symbol::new(global_index(base, local));
+            }
+        });
     }
 
     fn intern_byte_str(&self, byte_str: &[u8]) -> ByteSymbol {

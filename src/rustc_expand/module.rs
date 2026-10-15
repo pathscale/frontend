@@ -16,7 +16,6 @@ use crate::rustc_session::Session;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::fatal_error::FatalError;
 use crate::rustc_span::{Ident, Span, sym};
-use thin_vec::ThinVec;
 
 use crate::rustc_expand::base::ModuleData;
 use crate::rustc_expand::diagnostics::{
@@ -39,7 +38,7 @@ pub struct ModulePathSuccess {
 }
 
 pub(crate) struct ParsedExternalMod {
-    pub items: ThinVec<P<Item>>,
+    pub items: crate::rustc_ast::ArenaVec<P<Item>>,
     pub spans: ModSpans,
     pub file_path: PathBuf,
     pub dir_path: PathBuf,

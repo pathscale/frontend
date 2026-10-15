@@ -606,7 +606,7 @@ impl MetaItemKind {
             Some(TokenTree::Delimited(.., Delimiter::Parenthesis, inner_tokens)) => {
                 let inner_tokens = inner_tokens.clone();
                 iter.next();
-                MetaItemKind::list_from_tokens(inner_tokens).map(MetaItemKind::List)
+                MetaItemKind::list_from_tokens(inner_tokens).map(|l| MetaItemKind::List(l.into()))
             }
             Some(TokenTree::Delimited(..)) => None,
             Some(TokenTree::Token(Token { kind: token::Eq, .. }, _)) => {
@@ -621,7 +621,7 @@ impl MetaItemKind {
         match args {
             AttrArgs::Empty => Some(MetaItemKind::Word),
             AttrArgs::Delimited(DelimArgs { dspan: _, delim: Delimiter::Parenthesis, tokens }) => {
-                MetaItemKind::list_from_tokens(tokens.clone()).map(MetaItemKind::List)
+                MetaItemKind::list_from_tokens(tokens.clone()).map(|l| MetaItemKind::List(l.into()))
             }
             AttrArgs::Delimited(..) => None,
             AttrArgs::Eq { expr, .. } => match expr.kind {

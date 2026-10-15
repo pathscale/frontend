@@ -27,9 +27,8 @@
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
-// `#![no_std]` above is the ban and the compiler is the enforcer: without `extern crate std;`
-// there is no `std` in the extern prelude, so any `std::` path fails to resolve and the build
-// stops. Do not add that line back to make an error go away - the error is the point. Whatever
+// The crate root's no_std attribute excludes the standard-library extern prelude.
+// Keep that boundary intact when resolving an import error. Whatever
 // needed `std` either has a `core`/`alloc` equivalent, belongs in `ekostd`, or is a
 // dependency that has to be replaced.
 //
@@ -42,6 +41,12 @@
 
 #[cfg(test)]
 mod tests;
+
+pub mod keyword_phf;
+pub mod simd_classify;
+pub mod simd_ident_num;
+pub mod simd_scan;
+pub mod structural_tape;
 
 use core::str::Chars;
 
@@ -441,11 +446,6 @@ pub struct Cursor<'a> {
 
 const EOF_CHAR: char = '\0';
 
-/// Every byte of a `u64` holding `0x01`.
-const SWAR_ONES: u64 = 0x0101_0101_0101_0101;
-/// Every byte of a `u64` holding `0x80`.
-const SWAR_HIGH: u64 = 0x8080_8080_8080_8080;
-
 // Bit 0: ASCII XID_Continue. Bit 1: ASCII Pattern_White_Space. Bit 2: ASCII XID_Start
 // or underscore. High bytes have no class and must take the Unicode path.
 const ASCII_CLASSES: [u8; 256] = {
@@ -467,39 +467,6 @@ const ASCII_CLASSES: [u8; 256] = {
     classes
 };
 
-/// For each byte of `x`, the high bit of that byte of the result is set when the byte's low
-/// seven bits are `>= lo`; every other bit is clear. `lo <= 0x80`, so `x | SWAR_HIGH` is at
-/// least `lo` in every byte and no borrow crosses a byte.
-#[inline(always)]
-const fn swar_ge(x: u64, lo: u8) -> u64 {
-    ((x | SWAR_HIGH) - SWAR_ONES * lo as u64) & SWAR_HIGH
-}
-
-/// The high bit of each byte is set when the byte's low seven bits are in `lo..=hi`
-/// (`hi < 0x7F`).
-#[inline(always)]
-const fn swar_in(x: u64, lo: u8, hi: u8) -> u64 {
-    swar_ge(x, lo) & !swar_ge(x, hi + 1)
-}
-
-/// The high bit of each byte is set exactly when that byte is an ASCII `[0-9A-Za-z_]`, the
-/// ASCII part of XID_Continue.
-#[inline(always)]
-const fn swar_id_continue(x: u64) -> u64 {
-    // Setting bit 5 folds `A-Z` onto `a-z` and moves no other ASCII byte into `a-z`.
-    let folded = x | (SWAR_ONES * 0x20);
-    let ok = swar_in(x, b'0', b'9') | swar_in(folded, b'a', b'z') | swar_in(x, b'_', b'_');
-    // A byte with its high bit set is not ASCII; its low bits said nothing.
-    ok & !x
-}
-
-/// The high bit of each byte is set exactly when that byte is ASCII Pattern_White_Space:
-/// `\t`, `\n`, `\x0B`, `\x0C`, `\r` or ` `.
-#[inline(always)]
-const fn swar_whitespace(x: u64) -> u64 {
-    (swar_in(x, b'\t', b'\r') | swar_in(x, b' ', b' ')) & !x
-}
-
 impl<'a> Cursor<'a> {
     pub fn new(input: &'a str, frontmatter_allowed: FrontmatterAllowed) -> Cursor<'a> {
         Cursor {
@@ -514,6 +481,11 @@ impl<'a> Cursor<'a> {
     #[inline]
     pub fn as_str(&self) -> &'a str {
         self.chars.as_str()
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.as_str().as_bytes()
     }
 
     /// Returns the last eaten symbol (or `'\0'` in release builds).
@@ -600,8 +572,9 @@ impl<'a> Cursor<'a> {
         {
             self.prev = byte as char;
         }
-        // SAFETY: the caller supplied the first byte of a nonempty string and proved it
-        // ASCII. Removing that byte ends on a UTF-8 boundary.
+        // SAFETY: the caller supplied the first byte of a nonempty initialized string and
+        // proved it ASCII, so 1 is in bounds and on a UTF-8 boundary. The shared byte slice
+        // needs only alignment 1 and creates no mutable alias; `rest` remains valid for 'a.
         self.chars = unsafe { rest.get_unchecked(1..) }.chars();
     }
 
@@ -631,84 +604,40 @@ impl<'a> Cursor<'a> {
         self.chars = rest[n..].chars();
     }
 
-    /// `eat_while(predicate)` for a predicate whose answer on an ASCII char is `ascii` of its
-    /// byte, and where `block(x)` sets the high bit of exactly those bytes of `x` that are
-    /// ASCII and pass `ascii`. Eight bytes are tested at a time while all of them pass; at the
-    /// first byte that does not, an ASCII byte is tested alone and any other char is decoded
-    /// and handed to `predicate`, so the stopping point is the one `eat_while` reaches.
-    #[inline(always)]
-    fn eat_while_ascii(
-        &mut self,
-        block: impl Fn(u64) -> u64,
-        ascii: impl Fn(u8) -> bool,
-        predicate: impl Fn(char) -> bool,
-    ) {
-        let rest = self.as_str();
-        let bytes = rest.as_bytes();
-        let mut i = 0;
-        'scan: loop {
-            // Short runs end before paying for a full SWAR classification.
-            for _ in 0..4 {
-                let Some(&b) = bytes.get(i) else { break 'scan };
-                if b >= 0x80 {
-                    break;
-                }
-                if !ascii(b) {
-                    break 'scan;
-                }
-                i += 1;
-            }
-            while let Some(chunk) = bytes.get(i..i + 8) {
-                let x = u64::from_le_bytes(<[u8; 8]>::try_from(chunk).unwrap());
-                let stop = !block(x) & SWAR_HIGH;
-                if stop != 0 {
-                    // Little endian: byte `k` of the chunk is bits `8k..8k + 8`.
-                    i += (stop.trailing_zeros() / 8) as usize;
-                    // The exact mask already rejected this byte. Only a non-ASCII byte
-                    // can still pass the Unicode predicate; do not classify ASCII again.
-                    if bytes[i] < 0x80 {
-                        break 'scan;
-                    }
-                    break;
-                }
-                i += 8;
-            }
-            let Some(&b) = bytes.get(i) else { break };
-            if b < 0x80 {
-                if !ascii(b) {
-                    break;
-                }
-                i += 1;
-            } else {
-                // `i` is on a char boundary: only whole chars are stepped over.
-                let c = rest[i..].chars().next().unwrap();
-                if !predicate(c) {
-                    break;
-                }
-                i += c.len_utf8();
-            }
-        }
-        self.advance_bytes(i);
-    }
-
     /// `eat_while(is_whitespace)`.
     #[inline]
     fn eat_whitespace(&mut self) {
-        self.eat_while_ascii(
-            swar_whitespace,
-            |b| ASCII_CLASSES[b as usize] & 2 != 0,
-            is_whitespace,
-        );
+        loop {
+            let len = simd_scan::scan_ascii_whitespace(self.as_bytes());
+            self.advance_bytes(len);
+            // The scanner stops before non-ASCII; consume Unicode whitespace as whole chars.
+            let c = self.first();
+            if c.is_ascii() || !is_whitespace(c) {
+                break;
+            }
+            self.bump();
+        }
     }
 
     /// `eat_while(is_id_continue)`. The ASCII XID_Continue set is `[0-9A-Za-z_]`.
     #[inline]
     fn eat_id_continue(&mut self) {
-        self.eat_while_ascii(
-            swar_id_continue,
-            |b| ASCII_CLASSES[b as usize] & 1 != 0,
-            is_id_continue,
-        );
+        loop {
+            match simd_ident_num::scan_ascii_ident_tail(self.as_bytes()) {
+                simd_ident_num::IdentScan::AsciiOnly(len) => {
+                    self.advance_bytes(len);
+                    break;
+                }
+                simd_ident_num::IdentScan::NeedsUnicodeAt(len) => {
+                    self.advance_bytes(len);
+                    // Resume ASCII scanning only after a complete XID_Continue character.
+                    if !is_id_continue(self.first()) {
+                        break;
+                    }
+                    self.bump();
+                }
+            }
+        }
     }
 
     pub(crate) fn eat_until(&mut self, byte: u8) {
@@ -1101,7 +1030,8 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        self.eat_until(b'\n');
+        let scan = simd_scan::scan_line_comment(self.as_bytes());
+        self.advance_bytes(scan.len);
         LineComment { doc_style }
     }
 
@@ -1118,36 +1048,9 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        // Only `/` and `*` can change the depth, and both are ASCII, so no multi-byte char
-        // holds either byte: jump from one to the next and treat it as the bumped char.
-        let mut depth = 1usize;
-        loop {
-            let rest = self.as_str().as_bytes();
-            let Some(i) = memchr::memchr2(b'/', b'*', rest) else {
-                self.advance_bytes(rest.len());
-                break;
-            };
-            self.advance_bytes(i + 1);
-            match rest[i] {
-                b'/' if self.first() == '*' => {
-                    self.bump();
-                    depth += 1;
-                }
-                b'*' if self.first() == '/' => {
-                    self.bump();
-                    depth -= 1;
-                    if depth == 0 {
-                        // This block comment is closed, so for a construction like "/* */ */"
-                        // there will be a successfully parsed block comment "/* */"
-                        // and " */" will be processed separately.
-                        break;
-                    }
-                }
-                _ => (),
-            }
-        }
-
-        BlockComment { doc_style, terminated: depth == 0 }
+        let scan = simd_scan::scan_block_comment(self.as_bytes());
+        self.advance_bytes(scan.len);
+        BlockComment { doc_style, terminated: scan.terminated }
     }
 
     #[inline]
@@ -1412,24 +1315,9 @@ impl<'a> Cursor<'a> {
     /// if string is terminated.
     fn double_quoted_string(&mut self) -> bool {
         debug_assert!(self.prev() == '"');
-        // Only `"` and `\` change the outcome, and both are ASCII, so no multi-byte char
-        // holds either byte: jump from one to the next and treat it as the bumped char.
-        loop {
-            let rest = self.as_str().as_bytes();
-            let Some(i) = memchr::memchr2(b'"', b'\\', rest) else {
-                // End of file reached.
-                self.advance_bytes(rest.len());
-                return false;
-            };
-            self.advance_bytes(i + 1);
-            if rest[i] == b'"' {
-                return true;
-            }
-            if self.first() == '\\' || self.first() == '"' {
-                // Bump again to skip escaped character.
-                self.bump();
-            }
-        }
+        let scan = simd_scan::scan_double_quoted_string(self.as_bytes());
+        self.advance_bytes(scan.len);
+        scan.terminated
     }
 
     /// Attempt to lex for a guarded string literal.
@@ -1563,34 +1451,14 @@ impl<'a> Cursor<'a> {
     // Digits and `_` are ASCII, and `first()` is one of them exactly when the next byte is,
     // so the digit scans test bytes and step over the run at once.
     fn eat_decimal_digits(&mut self) -> bool {
-        let bytes = self.as_str().as_bytes();
-        let mut has_digits = false;
-        let mut i = 0;
-        while let Some(&b) = bytes.get(i) {
-            match b {
-                b'_' => {}
-                b'0'..=b'9' => has_digits = true,
-                _ => break,
-            }
-            i += 1;
-        }
-        self.advance_bytes(i);
+        let (len, has_digits) = simd_ident_num::scan_decimal_digits(self.as_bytes());
+        self.advance_bytes(len);
         has_digits
     }
 
     fn eat_hexadecimal_digits(&mut self) -> bool {
-        let bytes = self.as_str().as_bytes();
-        let mut has_digits = false;
-        let mut i = 0;
-        while let Some(&b) = bytes.get(i) {
-            match b {
-                b'_' => {}
-                b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' => has_digits = true,
-                _ => break,
-            }
-            i += 1;
-        }
-        self.advance_bytes(i);
+        let (len, has_digits) = simd_ident_num::scan_hex_digits(self.as_bytes());
+        self.advance_bytes(len);
         has_digits
     }
 

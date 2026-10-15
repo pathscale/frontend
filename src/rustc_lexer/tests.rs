@@ -412,19 +412,19 @@ fn byte_skipping_scans() {
 #[test]
 fn swar_masks_match_byte_predicates() {
     // Every byte value at every lane, among neighbours that pass and neighbours that do not:
-    // the lane's high bit is the scalar answer and no other bit is set.
+    // each mask bit is the scalar answer for the corresponding byte.
     for filler in [b'a', b' ', b'!', 0xC3, 0x00, 0x7F] {
         for lane in 0..8 {
             for b in 0..=255u8 {
                 let mut bytes = [filler; 8];
                 bytes[lane] = b;
-                let x = u64::from_le_bytes(bytes);
-                let id = swar_id_continue(x);
-                let ws = swar_whitespace(x);
-                assert_eq!(id & !SWAR_HIGH, 0);
-                assert_eq!(ws & !SWAR_HIGH, 0);
+                let masks = simd_classify::classify_partial(&bytes);
+                let id = masks.ident_cont;
+                let ws = masks.whitespace;
+                assert_eq!(id >> bytes.len(), 0);
+                assert_eq!(ws >> bytes.len(), 0);
                 for (k, &byte) in bytes.iter().enumerate() {
-                    let bit = 1u64 << (8 * k + 7);
+                    let bit = 1u64 << k;
                     let want_id = byte.is_ascii_alphanumeric() || byte == b'_';
                     let want_ws = byte < 0x80 && is_whitespace(byte as char);
                     assert_eq!(id & bit != 0, want_id, "id byte {byte:#x} lane {k}");

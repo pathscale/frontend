@@ -11,7 +11,6 @@ use crate::rustc_ast::{
 use crate::rustc_errors::{Applicability, Diag, PResult};
 use crate::rustc_span::{BytePos, Ident, Span, kw, sym};
 use ast::token::IdentIsRaw;
-use thin_vec::ThinVec;
 use tracing::debug;
 
 use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
@@ -229,8 +228,19 @@ impl<'a> Parser<'a> {
         style: PathStyle,
         ty_generics: Option<&Generics>,
     ) -> PResult<'a, ()> {
+        // Defer scratch access until a path needs more than one segment. This also
+        // avoids allocating the boxed scratch slot for a simple identifier path.
+        let mut scratch_start = None;
         loop {
-            let segment = self.parse_path_segment(style, ty_generics)?;
+            let segment = match self.parse_path_segment(style, ty_generics) {
+                Ok(segment) => segment,
+                Err(err) => {
+                    if let Some(start) = scratch_start {
+                        self.list_scratch.get_mut().path_segments.truncate(start);
+                    }
+                    return Err(err);
+                }
+            };
             if style.has_generic_ambiguity() {
                 // In order to check for trailing angle brackets, we must have finished
                 // recursing (`parse_path_segment` can indirectly call this function),
@@ -250,9 +260,7 @@ impl<'a> Parser<'a> {
                 // this invariant.
                 self.check_trailing_angle_brackets(&segment, &[exp!(PathSep)]);
             }
-            segments.push(segment);
-
-            if !self.check(exp!(PathSep)) || self.is_import_coupler() {
+            let continues = if !self.check(exp!(PathSep)) || self.is_import_coupler() {
                 // IMPORTANT: We can *only ever* treat single colons as typo'ed double colons in
                 // expression contexts (!) since only there paths cannot possibly be followed by
                 // a colon and still form a syntactically valid construct. In pattern contexts,
@@ -274,12 +282,36 @@ impl<'a> Parser<'a> {
                             suggestion: self.prev_token.span.shrink_to_hi(),
                         });
                     }
-                    continue;
+                    true
+                } else {
+                    false
                 }
+            } else {
+                let _ = self.eat_path_sep();
+                true
+            };
 
+            if scratch_start.is_none() && segments.is_empty() && !continues {
+                *segments = PathSegments::from_single(segment);
                 return Ok(());
             }
-            let _ = self.eat_path_sep();
+
+            let start = *scratch_start.get_or_insert_with(|| {
+                let scratch = &mut self.list_scratch.get_mut().path_segments;
+                let start = scratch.len();
+                // Qualified paths can supply an existing prefix. Keep it intact
+                // until parsing succeeds, including when a later segment fails.
+                scratch.extend(segments.iter().cloned());
+                start
+            });
+            self.list_scratch.get_mut().path_segments.push(segment);
+            if !continues {
+                *segments = PathSegments::from_scratch(
+                    &mut self.list_scratch.get_mut().path_segments,
+                    start,
+                );
+                return Ok(());
+            }
         }
     }
 
@@ -409,26 +441,27 @@ impl<'a> Parser<'a> {
                         exp!(OpenParen),
                         exp!(CloseParen),
                         |p| {
-                        // Inside parenthesized type arguments, we want types only, not names.
-                        let mode = FnParseMode {
-                            context: FnContext::Free,
-                            req_name: |_, _| false,
-                            req_body: false,
-                        };
-                        let param = p.parse_param_general(&mode, false, false)?;
-                        if !matches!(param.pat.kind, PatKind::Missing) {
-                            self.psess
-                                .gated_spans
-                                .gate(sym::named_fn_trait_parameters, param.pat.span);
-                        }
-                        if matches!(param.ty.kind, TyKind::CVarArgs) {
-                            dcx.emit_err(PathFoundCVariadicParams { span: param.pat.span });
-                        }
-                        if !param.attrs.is_empty() {
-                            dcx.emit_err(PathFoundAttributeInParams { span: param.attrs[0].span });
-                        }
-                        Ok(param)
-                    });
+                            // Inside parenthesized type arguments, we want types only, not names.
+                            let mode = FnParseMode {
+                                context: FnContext::Free,
+                                req_name: |_, _| false,
+                                req_body: false,
+                            };
+                            let param = p.parse_param_general(&mode, false, false)?;
+                            if !matches!(param.pat.kind, PatKind::Missing) {
+                                p.psess
+                                    .gated_spans
+                                    .gate(sym::named_fn_trait_parameters, param.pat.span);
+                            }
+                            if matches!(param.ty.kind, TyKind::CVarArgs) {
+                                dcx.emit_err(PathFoundCVariadicParams { span: param.pat.span });
+                            }
+                            if !param.attrs.is_empty() {
+                                dcx.emit_err(PathFoundAttributeInParams { span: param.attrs[0].span });
+                            }
+                            Ok(param)
+                        },
+                    );
 
                     let (inputs, _) = match parse_params_result {
                         Ok(output) => output,

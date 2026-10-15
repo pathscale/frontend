@@ -3,7 +3,7 @@
 //! configs (autodiff enabled or disabled), so we have to add cfg's to each import.
 //! FIXME(ZuseZ4): Remove this once we have a smarter linter.
 
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a path
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
@@ -101,7 +101,7 @@ mod llvm_enzyme {
 
     pub(crate) fn from_ast(
         ecx: &mut ExtCtxt<'_>,
-        meta_item: &ThinVec<MetaItemInner>,
+        meta_item: &[MetaItemInner],
         has_ret: bool,
         mode: DiffMode,
     ) -> RustcAutodiff {
@@ -240,8 +240,8 @@ mod llvm_enzyme {
             return vec![item];
         };
 
-        let meta_item_vec: ThinVec<MetaItemInner> = match meta_item.kind {
-            ast::MetaItemKind::List(ref vec) => vec.clone(),
+        let meta_item_vec: &[MetaItemInner] = match meta_item.kind {
+            ast::MetaItemKind::List(ref vec) => vec.as_slice(),
             _ => {
                 dcx.emit_err(diagnostics::AutoDiffMissingConfig { span: item.span() });
                 return vec![item];
@@ -294,7 +294,7 @@ mod llvm_enzyme {
         ts.push(TokenTree::Token(t, Spacing::Joint));
         ts.push(TokenTree::Token(comma, Spacing::Alone));
 
-        for t in meta_item_vec.clone()[start_position..].iter() {
+        for t in meta_item_vec[start_position..].iter() {
             meta_item_inner_to_ts(t, &mut ts);
         }
 
@@ -309,7 +309,7 @@ mod llvm_enzyme {
         ts.pop();
         let ts: TokenStream = TokenStream::from_iter(ts);
 
-        let x: RustcAutodiff = from_ast(ecx, &meta_item_vec, has_ret, mode);
+        let x: RustcAutodiff = from_ast(ecx, meta_item_vec, has_ret, mode);
         if !x.is_active() {
             // We encountered an error, so we return the original item.
             // This allows us to potentially parse other attributes.

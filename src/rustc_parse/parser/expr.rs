@@ -4239,10 +4239,12 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[inline]
     fn mk_unary(&self, unop: UnOp, expr: P<Expr>) -> ExprKind {
         ExprKind::Unary(unop, expr)
     }
 
+    #[inline]
     fn mk_binary(&self, binop: BinOp, lhs: P<Expr>, rhs: P<Expr>) -> ExprKind {
         ExprKind::Binary(binop, lhs, rhs)
     }
@@ -4251,6 +4253,7 @@ impl<'a> Parser<'a> {
         ExprKind::Index(expr, idx, brackets_span)
     }
 
+    #[inline]
     fn mk_call(&self, f: P<Expr>, args: ast::ArenaVec<P<Expr>>) -> ExprKind {
         ExprKind::Call(f, args)
     }
@@ -4269,14 +4272,17 @@ impl<'a> Parser<'a> {
         use_expr
     }
 
+    #[inline]
     pub(crate) fn mk_expr_with_attrs(&self, span: Span, kind: ExprKind, attrs: AttrVec) -> P<Expr> {
         P::new(Expr { kind, span, attrs, id: DUMMY_NODE_ID, tokens: None })
     }
 
+    #[inline]
     pub(crate) fn mk_expr(&self, span: Span, kind: ExprKind) -> P<Expr> {
         self.mk_expr_with_attrs(span, kind, AttrVec::new())
     }
 
+    #[inline]
     pub(super) fn mk_expr_err(&self, span: Span, guar: ErrorGuaranteed) -> P<Expr> {
         self.mk_expr(span, ExprKind::Err(guar))
     }

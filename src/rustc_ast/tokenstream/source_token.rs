@@ -1,10 +1,12 @@
-use crate::rustc_ast::token::{self, Delimiter, TokenKind};
+use crate::rustc_ast::ast::AttrStyle;
+use crate::rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Token, TokenKind};
+use crate::rustc_span::{Span, Symbol};
 
 use super::Spacing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-pub(super) enum SourceKind {
+pub(crate) enum SourceKind {
     Eq,
     Lt,
     Le,
@@ -75,11 +77,96 @@ pub(super) enum SourceKind {
 }
 
 impl SourceKind {
+    pub(crate) const fn from_raw(raw: u8) -> Self {
+        match raw {
+            0 => Self::Eq,
+            1 => Self::Lt,
+            2 => Self::Le,
+            3 => Self::EqEq,
+            4 => Self::Ne,
+            5 => Self::Ge,
+            6 => Self::Gt,
+            7 => Self::AndAnd,
+            8 => Self::OrOr,
+            9 => Self::Bang,
+            10 => Self::Tilde,
+            11 => Self::Plus,
+            12 => Self::Minus,
+            13 => Self::Star,
+            14 => Self::Slash,
+            15 => Self::Percent,
+            16 => Self::Caret,
+            17 => Self::And,
+            18 => Self::Or,
+            19 => Self::Shl,
+            20 => Self::Shr,
+            21 => Self::PlusEq,
+            22 => Self::MinusEq,
+            23 => Self::StarEq,
+            24 => Self::SlashEq,
+            25 => Self::PercentEq,
+            26 => Self::CaretEq,
+            27 => Self::AndEq,
+            28 => Self::OrEq,
+            29 => Self::ShlEq,
+            30 => Self::ShrEq,
+            31 => Self::At,
+            32 => Self::Dot,
+            33 => Self::DotDot,
+            34 => Self::DotDotDot,
+            35 => Self::DotDotEq,
+            36 => Self::Comma,
+            37 => Self::Semi,
+            38 => Self::Colon,
+            39 => Self::PathSep,
+            40 => Self::RArrow,
+            41 => Self::LArrow,
+            42 => Self::FatArrow,
+            43 => Self::Pound,
+            44 => Self::Dollar,
+            45 => Self::Question,
+            46 => Self::OpenParen,
+            47 => Self::CloseParen,
+            48 => Self::OpenBrace,
+            49 => Self::CloseBrace,
+            50 => Self::OpenBracket,
+            51 => Self::CloseBracket,
+            52 => Self::Ident,
+            53 => Self::Lifetime,
+            54 => Self::Integer,
+            55 => Self::Float,
+            56 => Self::Char,
+            57 => Self::Byte,
+            58 => Self::Str,
+            59 => Self::ByteStr,
+            60 => Self::CStr,
+            61 => Self::StrRaw,
+            62 => Self::ByteStrRaw,
+            63 => Self::CStrRaw,
+            64 => Self::LineDoc,
+            65 => Self::BlockDoc,
+            66 => Self::Eof,
+            _ => Self::Eof,
+        }
+    }
+
     pub(super) fn is_punct(self) -> bool {
         self <= Self::Question
     }
 
-    pub(super) fn open_delim(self) -> Option<Delimiter> {
+    pub(crate) const fn is_open_delim(self) -> Option<Delimiter> {
+        self.open_delim()
+    }
+
+    pub(crate) const fn is_close_delim(self) -> Option<Delimiter> {
+        self.close_delim()
+    }
+
+    pub(crate) const fn needs_symbol_lookup(self) -> bool {
+        matches!(self, Self::Ident | Self::Lifetime | Self::LineDoc | Self::BlockDoc)
+    }
+
+    pub(super) const fn open_delim(self) -> Option<Delimiter> {
         match self {
             Self::OpenParen => Some(Delimiter::Parenthesis),
             Self::OpenBrace => Some(Delimiter::Brace),
@@ -88,7 +175,7 @@ impl SourceKind {
         }
     }
 
-    pub(super) fn close_delim(self) -> Option<Delimiter> {
+    pub(super) const fn close_delim(self) -> Option<Delimiter> {
         match self {
             Self::CloseParen => Some(Delimiter::Parenthesis),
             Self::CloseBrace => Some(Delimiter::Brace),
@@ -193,37 +280,77 @@ impl SourceKind {
 }
 
 /// A source lexeme has no symbols, interned span, or macro-only payload.
-/// `suffix` is relative to `lo`; `aux` is a raw-string hash count or doc style.
+/// `suffix` is relative to `lo`; `aux` stores raw-string hashes, doc style, or raw-ident state.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct SourceToken {
-    pub(super) lo: u32,
-    pub(super) hi: u32,
-    pub(super) suffix: u32,
-    pub(super) kind: SourceKind,
-    pub(super) aux: u8,
-    pub(super) spacing: Spacing,
+pub(crate) struct SourceToken {
+    pub(crate) lo: u32,
+    pub(crate) hi: u32,
+    pub(crate) suffix: u32,
+    pub(crate) kind: SourceKind,
+    pub(crate) aux: u8,
+    pub(crate) spacing: Spacing,
 }
 
 const _: () = assert!(core::mem::size_of::<SourceToken>() == 16);
 
-/// An exact key, including length, because source identifiers contain no NUL.
-pub(super) fn short_key(text: &str) -> Option<u64> {
-    let bytes = text.as_bytes();
-    Some(match bytes.len() {
-        1 => u64::from(bytes[0]),
-        2..=3 => {
-            let first = u16::from_le_bytes(bytes[..2].try_into().unwrap());
-            u64::from(first) | (u64::from(bytes[bytes.len() - 1]) << ((bytes.len() - 1) * 8))
+pub(crate) fn token_from_compact_parts(
+    kind: SourceKind,
+    spacing: Spacing,
+    aux: u8,
+    span: Span,
+    symbol: Option<Symbol>,
+    lit_meta: Option<(token::LitKind, Symbol, Option<Symbol>)>,
+) -> (Token, Spacing) {
+    let token_kind = if let Some(simple) = kind.simple_kind() {
+        simple
+    } else {
+        match kind {
+            SourceKind::Ident => token::Ident(
+                symbol.expect("identifier token requires a pre-interned symbol"),
+                if aux == 1 { IdentIsRaw::Yes } else { IdentIsRaw::No },
+            ),
+            SourceKind::Lifetime => token::Lifetime(
+                symbol.expect("lifetime token requires a pre-interned symbol"),
+                IdentIsRaw::No,
+            ),
+            SourceKind::LineDoc | SourceKind::BlockDoc => token::DocComment(
+                if kind == SourceKind::LineDoc { CommentKind::Line } else { CommentKind::Block },
+                if aux == 0 { AttrStyle::Outer } else { AttrStyle::Inner },
+                symbol.expect("doc comment token requires a pre-interned symbol"),
+            ),
+            SourceKind::Integer
+            | SourceKind::Float
+            | SourceKind::Char
+            | SourceKind::Byte
+            | SourceKind::Str
+            | SourceKind::ByteStr
+            | SourceKind::CStr
+            | SourceKind::StrRaw
+            | SourceKind::ByteStrRaw
+            | SourceKind::CStrRaw => {
+                let (lit_kind, lit_symbol, suffix) =
+                    lit_meta.expect("literal token requires pre-interned literal metadata");
+                token::Literal(token::Lit::new(lit_kind, lit_symbol, suffix))
+            }
+            _ => unreachable!("simple source token kind must have a simple token kind"),
         }
-        4..=8 => {
-            let first = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-            let last = u32::from_le_bytes(bytes[bytes.len() - 4..].try_into().unwrap());
-            u64::from(first) | (u64::from(last) << ((bytes.len() - 4) * 8))
-        }
-        _ => return None,
-    })
+    };
+    (Token::new(token_kind, span), spacing)
 }
 
-pub(super) fn short_slot(key: u64) -> usize {
+/// An exact key, including length, because source identifiers contain no NUL.
+pub(crate) fn short_key(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || bytes.len() > 8 || bytes.contains(&0) {
+        return None;
+    }
+    let mut key = 0u64;
+    for (idx, &byte) in bytes.iter().enumerate() {
+        key |= u64::from(byte) << (idx * 8);
+    }
+    Some(key)
+}
+
+pub(crate) fn short_slot(key: u64) -> usize {
     (key.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 55) as usize
 }

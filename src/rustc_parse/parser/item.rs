@@ -66,26 +66,36 @@ impl<'a> Parser<'a> {
     pub fn parse_mod(
         &mut self,
         term: ExpTokenPair,
-    ) -> PResult<'a, (AttrVec, ThinVec<P<Item>>, ModSpans)> {
+    ) -> PResult<'a, (AttrVec, ast::ArenaVec<P<Item>>, ModSpans)> {
         let lo = self.token.span;
         let attrs = self.parse_inner_attributes()?;
 
         let post_attr_lo = self.token.span;
-        let mut items: ThinVec<P<_>> = ThinVec::new();
+        let start = self.list_scratch.get_mut().items.len();
+        // Keep the final item owned locally so diagnostics never borrow scratch
+        // while calling back into the parser.
+        let mut last_item: Option<P<Item>> = None;
 
         // There shouldn't be any stray semicolons before or after items.
         // `parse_item` consumes the appropriate semicolons so any leftover is an error.
         loop {
-            while self.maybe_consume_incorrect_semicolon(items.last().map(|x| &**x)) {} // Eat all bad semicolons
-            let Some(item) = self.parse_item(ForceCollect::No, AllowConstBlockItems::Yes)? else {
-                break;
+            while self.maybe_consume_incorrect_semicolon(last_item.as_deref()) {} // Eat all bad semicolons
+            let item = match self.parse_item(ForceCollect::No, AllowConstBlockItems::Yes) {
+                Ok(Some(item)) => item,
+                Ok(None) => break,
+                Err(err) => {
+                    self.list_scratch.get_mut().items.truncate(start);
+                    return Err(err);
+                }
             };
-            items.push(item);
+            if let Some(previous) = last_item.replace(item) {
+                self.list_scratch.get_mut().items.push(previous);
+            }
         }
 
         if !self.eat(term) {
             let token_str = super::token_descr(&self.token);
-            if !self.maybe_consume_incorrect_semicolon(items.last().map(|x| &**x)) {
+            if !self.maybe_consume_incorrect_semicolon(last_item.as_deref()) {
                 let is_let = self.token.is_keyword(kw::Let);
                 let is_let_mut = is_let && self.look_ahead(1, |t| t.is_keyword(kw::Mut));
                 let let_has_ident = is_let && !is_let_mut && self.is_kw_followed_by_ident(kw::Let);
@@ -115,12 +125,17 @@ impl<'a> Parser<'a> {
                     }
                 }
                 err.note("for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>");
+                self.list_scratch.get_mut().items.truncate(start);
                 return Err(err);
             }
         }
 
         let inject_use_span = post_attr_lo.data().with_hi(post_attr_lo.lo());
         let mod_spans = ModSpans { inner_span: lo.to(self.prev_token.span), inject_use_span };
+        if let Some(item) = last_item {
+            self.list_scratch.get_mut().items.push(item);
+        }
+        let items = super::take_arena_vec(&mut self.list_scratch.get_mut().items, start);
         Ok((attrs, items, mod_spans))
     }
 }
@@ -974,14 +989,14 @@ impl<'a> Parser<'a> {
         attrs: &mut AttrVec,
         mut parse_item: impl FnMut(&mut Parser<'a>) -> PResult<'a, Option<Option<T>>>,
         scratch: for<'p> fn(&'p mut Parser<'a>) -> &'p mut Vec<T>,
-    ) -> PResult<'a, ThinVec<T>> {
+    ) -> PResult<'a, ast::ArenaVec<T>> {
         let open_brace_span = self.token.span;
 
         // Recover `impl Ty;` instead of `impl Ty {}`
         if self.token == TokenKind::Semi {
             self.dcx().emit_err(diagnostics::UseEmptyBlockNotSemi { span: self.token.span });
             self.bump();
-            return Ok(ThinVec::new());
+            return Ok(ast::ArenaVec::new());
         }
 
         self.expect(exp!(OpenBrace))?;
@@ -1075,7 +1090,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Ok(super::take_thin_vec(scratch(self), start))
+        Ok(super::take_arena_vec(scratch(self), start))
     }
 
     /// Recover on a doc comment before `}`.

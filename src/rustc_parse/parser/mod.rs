@@ -262,10 +262,13 @@ pub struct Parser<'a> {
 
 #[derive(Default)]
 struct ParserListScratch {
-    stmts: Vec<ast::Stmt>,
-    assoc_items: Vec<P<ast::AssocItem>>,
-    foreign_items: Vec<P<ast::ForeignItem>>,
-    match_arms: Vec<ast::Arm>,
+    pub(super) stmts: Vec<ast::Stmt>,
+    pub(super) assoc_items: Vec<P<ast::AssocItem>>,
+    pub(super) foreign_items: Vec<P<ast::ForeignItem>>,
+    pub(super) match_arms: Vec<ast::Arm>,
+    pub(super) items: Vec<P<ast::Item>>,
+    pub(super) path_segments: Vec<ast::PathSegment>,
+    pub(super) meta_items: Vec<ast::MetaItemInner>,
 }
 
 #[derive(Default)]
@@ -470,12 +473,6 @@ impl<'a> Parser<'a> {
             psess.raw_identifier_spans.push(*span);
         }
 
-        // The eager lexer records every raw identifier before parsing starts,
-        // including identifiers beyond an early parse failure.
-        for span in parser.token_cursor.raw_identifier_spans() {
-            psess.raw_identifier_spans.push(*span);
-        }
-
         // Make parser point to the first token.
         parser.bump();
 
@@ -619,11 +616,14 @@ impl<'a> Parser<'a> {
     ///
     /// This method will automatically add `tok` to `expected_token_types` if `tok` is not
     /// encountered.
-    #[inline(always)]
+    #[inline]
     pub fn check(&mut self, exp: ExpTokenPair) -> bool {
-        let is_present = self.token == exp.tok;
-        self.expected_token_types.insert_unless(is_present, exp.token_type);
-        is_present
+        if self.token == exp.tok {
+            true
+        } else {
+            self.expected_token_types.insert_unless(false, exp.token_type);
+            false
+        }
     }
 
     #[inline]
@@ -660,24 +660,29 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes a token 'tok' if it exists. Returns whether the given token was present.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn eat(&mut self, exp: ExpTokenPair) -> bool {
-        let is_present = self.check(exp);
-        if is_present {
-            self.bump()
+        if self.token == exp.tok {
+            self.bump();
+            true
+        } else {
+            self.expected_token_types.insert_unless(false, exp.token_type);
+            false
         }
-        is_present
     }
 
     /// If the next token is the given keyword, returns `true` without eating it.
     /// An expectation is also added for diagnostics purposes.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     fn check_keyword(&mut self, exp: ExpKeywordPair) -> bool {
-        let is_keyword = self.token.is_keyword(exp.kw);
-        self.expected_token_types.insert_unless(is_keyword, exp.token_type);
-        is_keyword
+        if self.token.is_keyword(exp.kw) {
+            true
+        } else {
+            self.expected_token_types.insert_unless(false, exp.token_type);
+            false
+        }
     }
 
     #[inline]
@@ -699,14 +704,16 @@ impl<'a> Parser<'a> {
     /// If the next token is the given keyword, eats it and returns `true`.
     /// Otherwise, returns `false`. An expectation is also added for diagnostics purposes.
     // Public for rustc_builtin_macros and rustfmt usage.
-    #[inline(always)]
+    #[inline]
     #[must_use]
     pub fn eat_keyword(&mut self, exp: ExpKeywordPair) -> bool {
-        let is_keyword = self.check_keyword(exp);
-        if is_keyword {
+        if self.token.is_keyword(exp.kw) {
             self.bump();
+            true
+        } else {
+            self.expected_token_types.insert_unless(false, exp.token_type);
+            false
         }
-        is_keyword
     }
 
     /// Eats a keyword, optionally ignoring the case.
@@ -1304,7 +1311,7 @@ impl<'a> Parser<'a> {
     /// Inlined: the common step is a plain token in the current stream (see
     /// `TokenCursor::inlined_next_and_bump`), and the rare work (delimiters,
     /// dummy spans) is out of line.
-    #[inline(always)]
+    #[inline]
     pub fn bump(&mut self) {
         // Note: destructuring here would give nicer code, but it was found in #96210 to be slower
         // than `.0`/`.1` access.
@@ -1334,6 +1341,7 @@ impl<'a> Parser<'a> {
     /// Look-ahead `dist` tokens of `self.token` and get access to that token there.
     /// When `dist == 0` then the current token is looked at. `Eof` will be
     /// returned if the look-ahead is any distance past the end of the tokens.
+    #[inline]
     pub fn look_ahead<R>(&self, dist: usize, looker: impl FnOnce(&Token) -> R) -> R {
         if dist == 0 {
             return looker(&self.token);

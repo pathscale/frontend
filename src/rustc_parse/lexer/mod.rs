@@ -119,7 +119,7 @@ pub(crate) fn lex_flat_tokens<'psess, 'src>(
     override_span: Option<Span>,
     strip_tokens: StripTokens,
 ) -> Result<FlatTokenBuffer, Vec<Diag<'psess>>> {
-    let mut sink = FlatTokenBuffer::default();
+    let mut sink = FlatTokenBuffer::with_capacity(src.len() / 5, src.len() / 32);
     lex_with_sink(psess, src, owner, start_pos, override_span, strip_tokens, &mut sink)?;
     Ok(sink)
 }

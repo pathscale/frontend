@@ -9,7 +9,7 @@
 //! within the `SourceMap`, which upon request can be converted to line and column
 //! information, source code snippets, etc.
 
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a path
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
@@ -382,6 +382,43 @@ impl SourceMap {
             );
             crate::rustc_span::fatal_error::FatalError.raise()
         })
+    }
+
+    /// Creates a source file using precomputed LF byte offsets when they are valid.
+    /// Stable-ID deduplication still returns an already registered file unchanged.
+    pub fn new_source_file_with_newlines(
+        &self,
+        filename: FileName,
+        src: impl Into<Arc<String>>,
+        newlines: &[u32],
+    ) -> Arc<SourceFile> {
+        let src = src.into();
+        let stable_id = StableSourceFileId::from_filename_in_current_crate(&filename);
+        if let Some(source_file) = self.source_file_by_stable_id(stable_id) {
+            return source_file;
+        }
+
+        let source_file = SourceFile::new_with_newlines(
+            filename,
+            src,
+            self.hash_kind,
+            self.checksum_hash_kind,
+            newlines,
+        )
+        .unwrap_or_else(|OffsetOverflowError| {
+            eko::eprintln!(
+                "fatal error: rustc does not support text files larger than {} bytes",
+                SourceFile::MAX_FILE_SIZE
+            );
+            crate::rustc_span::fatal_error::FatalError.raise()
+        });
+
+        debug_assert_eq!(source_file.stable_id, stable_id);
+        self.register_source_file(stable_id, source_file)
+            .unwrap_or_else(|OffsetOverflowError| {
+                eko::eprintln!("fatal error: source map position overflow");
+                crate::rustc_span::fatal_error::FatalError.raise()
+            })
     }
 
     fn try_new_source_file(

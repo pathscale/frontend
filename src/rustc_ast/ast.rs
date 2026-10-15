@@ -144,7 +144,7 @@ impl Path {
     /// one-segment path.
     pub fn from_ident(ident: Ident) -> Path {
         Path {
-            segments: PathSegments::from_elem(PathSegment::from_ident(ident), 1),
+            segments: PathSegments::from_single(PathSegment::from_ident(ident)),
             span: ident.span,
         }
     }
@@ -284,6 +284,27 @@ impl PathSegments {
     /// Creates an empty path segment list without allocating.
     pub fn new() -> Self {
         Self(PathSegmentsInner::Heap(ArenaVec::new()))
+    }
+
+    /// Stores a single segment inline without allocating.
+    pub fn from_single(segment: PathSegment) -> Self {
+        Self(PathSegmentsInner::Inline(segment))
+    }
+
+    /// Creates an empty list with capacity for heap-backed segments.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(PathSegmentsInner::Heap(ArenaVec::with_capacity(capacity)))
+    }
+
+    /// Moves the scratch suffix into a path, leaving its prefix unchanged.
+    pub fn from_scratch(scratch: &mut Vec<PathSegment>, start: usize) -> Self {
+        let mut segments = scratch.drain(start..);
+        match segments.len() {
+            0 => Self::new(),
+            1 => Self::from_single(segments.next().unwrap()),
+            2..=4 => Self(PathSegmentsInner::Short(P::new(segments.collect()))),
+            _ => Self(PathSegmentsInner::Heap(segments.collect())),
+        }
     }
 
     /// Creates a list by cloning `element` `count` times.
@@ -1005,7 +1026,7 @@ pub struct Crate {
     /// expansion placeholders or an unassigned value (`DUMMY_NODE_ID`) before that.
     pub id: NodeId,
     pub attrs: AttrVec,
-    pub items: ThinVec<P<Item>>,
+    pub items: ArenaVec<P<Item>>,
     pub spans: ModSpans,
     pub is_placeholder: bool,
 }
@@ -1036,7 +1057,7 @@ pub enum MetaItemKind {
     /// List meta item.
     ///
     /// E.g., `#[derive(..)]`, where the field represents the `..`.
-    List(ThinVec<MetaItemInner>),
+    List(ArenaVec<MetaItemInner>),
 
     /// Name value meta item.
     ///
@@ -3123,9 +3144,8 @@ pub enum TraitObjectSyntax {
     None = 1,
 }
 
-/// SAFETY: `TraitObjectSyntax` only has 3 data-less variants which means
-/// it can be represented with a `u2`. We use `repr(u8)` to guarantee the
-/// discriminants of the variants are no greater than `3`.
+// SAFETY: `TraitObjectSyntax` has two data-less variants with discriminants 0 and 1.
+// `repr(u8)` fixes their representation, and both discriminants fit in BITS = 2.
 unsafe impl Tag for TraitObjectSyntax {
     const BITS: u32 = 2;
 
@@ -3133,6 +3153,8 @@ unsafe impl Tag for TraitObjectSyntax {
         self as u8 as usize
     }
 
+    // SAFETY: The match constructs initialized variants by value. It performs no pointer
+    // accesses, so alignment, bounds and aliasing invariants are vacuous; invalid tags panic.
     unsafe fn from_usize(tag: usize) -> Self {
         match tag {
             0 => TraitObjectSyntax::Dyn,
@@ -3717,7 +3739,7 @@ pub enum ModKind {
     /// or with definition outlined to a separate file `mod foo;` and already loaded from it.
     /// The inner span is from the first token past `{` to the last token until `}`,
     /// or from the first to the last token in the loaded file.
-    Loaded(ThinVec<P<Item>>, Inline, ModSpans),
+    Loaded(ArenaVec<P<Item>>, Inline, ModSpans),
     /// Module with definition outlined to a separate file `mod foo;` but not yet loaded from it.
     Unloaded,
 }
@@ -3741,7 +3763,7 @@ pub struct ForeignMod {
     /// semantically by Rust.
     pub safety: Safety,
     pub abi: Option<StrLit>,
-    pub items: ThinVec<P<ForeignItem>>,
+    pub items: ArenaVec<P<ForeignItem>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
@@ -4322,7 +4344,7 @@ pub struct Trait {
     #[visitable(extra = BoundKind::SuperTraits)]
     pub bounds: GenericBounds,
     #[visitable(extra = AssocCtxt::Trait)]
-    pub items: ThinVec<P<AssocItem>>,
+    pub items: ArenaVec<P<AssocItem>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug, Walkable)]
@@ -4356,7 +4378,7 @@ pub struct Impl {
     pub constness: Const,
     pub of_trait: Option<P<TraitImplHeader>>,
     pub self_ty: P<Ty>,
-    pub items: ThinVec<P<AssocItem>>,
+    pub items: ArenaVec<P<AssocItem>>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]

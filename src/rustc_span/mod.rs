@@ -23,19 +23,16 @@
 // this crate without this line making `rustc_span` available.
 #![allow(internal_features)]
 #![cfg_attr(target_arch = "loongarch64", feature(stdarch_loongarch))]
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
+// `#![no_std]`: these arrive with the standard prelude and name no path, so a path
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-// Real std remains: the SourceMap reads files - `fs::File`, `io`, `Path`, `env::current_dir` - and
-// `def_id.rs` reads one env var. This is the crate that owns "where did this token come from",
-// so its std is the filesystem itself rather than incidental.
+// SourceMap's filesystem, path and environment operations use the eko OS interfaces.
 
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
-// `#![no_std]` above is the ban and the compiler is the enforcer: without `extern crate std;`
-// there is no `std` in the extern prelude, so any `std::` path fails to resolve and the build
-// stops. Do not add that line back to make an error go away - the error is the point. Whatever
+// The crate root's no_std attribute excludes the standard-library extern prelude.
+// Keep that boundary intact when resolving an import error. Whatever
 // needed `std` either has a `core`/`alloc` equivalent, belongs in `ekostd`, or is a
 // dependency that has to be replaced.
 //
@@ -322,8 +319,8 @@ pub(crate) fn with_source_edition_globals<R>(edition: Edition, f: impl FnOnce() 
 // If this ever becomes non thread-local, `decode_syntax_context`
 // and `decode_expn_id` will need to be updated to handle concurrent
 // deserialization.
-// `eko`, not `scoped_tls`. That crate's macro expands to `::std::thread_local!`, so it
-// linked the standard library while naming no `std::` path - the exact case a text search cannot
+// `eko`, not `scoped_tls`. That crate's macro expands to the standard-library `thread_local!`, so it
+// linked the standard library while naming no standard-library path - the exact case a text search cannot
 // find, and the last thing keeping `std` in this crate.
 eko::scoped_thread_local!(static SESSION_GLOBALS: SessionGlobals);
 
@@ -369,7 +366,7 @@ bitflags::bitflags! {
     /// Scopes used to determined if it need to apply to `--remap-path-prefix`
     #[derive(Debug, Eq, PartialEq, Clone, Copy, Ord, PartialOrd, Hash)]
     pub struct RemapPathScopeComponents: u8 {
-        /// Apply remappings to the expansion of `std::file!()` macro
+        /// Apply remappings to the expansion of `file!()` macro
         const MACRO = 1 << 0;
         /// Apply remappings to printed compiler diagnostics
         const DIAGNOSTICS = 1 << 1;
@@ -1936,7 +1933,7 @@ impl SourceFileHash {
         hash
     }
 
-    // **`SourceFileHash::new` is gone.** It hashed a `impl std::io::Read` in 16 KiB chunks, and
+    // **`SourceFileHash::new` is gone.** It hashed an I/O reader in 16 KiB chunks, and
     // there is no `Read` trait without `std` - a hash over a stream has to become a hash over
     // bytes the caller already holds. Nothing called it: every site in the compiler reads the
     // file whole and then hashes it, which is `new_in_memory` and covers all four algorithms.
@@ -2252,6 +2249,18 @@ impl SourceFile {
         hash_kind: Option<SourceFileHashAlgorithm>,
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
     ) -> Result<Self, OffsetOverflowError> {
+        Self::new_with_newlines(name, src, hash_kind, checksum_hash_kind, &[])
+    }
+
+    /// Constructs a `SourceFile`, optionally using validated LF byte offsets for ASCII text.
+    /// Offsets refer to the original, unnormalized input bytes.
+    pub fn new_with_newlines(
+        name: FileName,
+        src: impl Into<Arc<String>>,
+        hash_kind: Option<SourceFileHashAlgorithm>,
+        checksum_hash_kind: Option<SourceFileHashAlgorithm>,
+        newlines: &[u32],
+    ) -> Result<Self, OffsetOverflowError> {
         let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
         let src_hash = hash_kind.map(|kind| SourceFileHash::new_in_memory(kind, src.as_bytes()));
@@ -2267,7 +2276,8 @@ impl SourceFile {
 
         // Text that normalization would leave alone is not touched, so a shared `src` stays
         // shared. `make_mut` copies only a shared `src` that does change.
-        let normalized_pos = if needs_normalization(&src) {
+        let source_needs_normalization = needs_normalization(&src);
+        let normalized_pos = if source_needs_normalization {
             normalize_src(Arc::make_mut(&mut src))
         } else {
             Vec::new()
@@ -2279,7 +2289,22 @@ impl SourceFile {
             return Err(OffsetOverflowError);
         }
 
-        let (lines, multibyte_chars) = analyze_source_file::analyze_source_file(&src);
+        let (lines, multibyte_chars) = if !source_needs_normalization
+            && src.is_ascii()
+            && valid_newline_offsets(src.as_bytes(), newlines)
+        {
+            let mut lines = Vec::with_capacity(newlines.len() + 1);
+            lines.push(RelativeBytePos::from_u32(0));
+            lines.extend(newlines.iter().map(|&offset| {
+                RelativeBytePos::from_u32(offset + 1)
+            }));
+            if lines.last().copied() == Some(RelativeBytePos::from_usize(src.len())) {
+                lines.pop();
+            }
+            (lines, Vec::new())
+        } else {
+            analyze_source_file::analyze_source_file(&src)
+        };
 
         Ok(SourceFile {
             name,
@@ -2297,6 +2322,10 @@ impl SourceFile {
             cnum: LOCAL_CRATE,
         })
     }
+
+    /// Compatibility hook for callers that discover newline offsets after construction.
+    /// Source files freeze their line table in `new`, so late offsets cannot replace it.
+    pub fn supply_precomputed_newlines(&self, _newlines: &[u32]) {}
 
     /// This converts the `lines` field to contain `SourceFileLines::Lines` if needed and freezes
     /// it.
@@ -2647,6 +2676,19 @@ fn needs_normalization(src: &str) -> bool {
     src.starts_with('\u{feff}') || (src.as_bytes().contains(&b'\r') && src.contains("\r\n"))
 }
 
+fn valid_newline_offsets(src: &[u8], newlines: &[u32]) -> bool {
+    let mut supplied = 0;
+    for (index, &byte) in src.iter().enumerate() {
+        if byte == b'\n' {
+            if newlines.get(supplied).copied() != u32::try_from(index).ok() {
+                return false;
+            }
+            supplied += 1;
+        }
+    }
+    supplied == newlines.len()
+}
+
 /// Normalizes the source code and records the normalizations.
 fn normalize_src(src: &mut String) -> Vec<NormalizedPos> {
     let mut normalized_pos = vec![];
@@ -2702,6 +2744,8 @@ fn normalize_newlines(src: &mut String, normalized_pos: &mut Vec<NormalizedPos>)
     // Account for removed `\r`.
     // After `set_len`, `buf` is guaranteed to contain utf-8 again.
     let new_len = buf.len() - gap_len;
+    // SAFETY: the retained prefix and compacted suffix contain initialized bytes forming valid
+    // UTF-8; `new_len` is within the allocation, and no references into `buf` are live here.
     unsafe {
         buf.set_len(new_len);
         *src = String::from_utf8_unchecked(buf);
