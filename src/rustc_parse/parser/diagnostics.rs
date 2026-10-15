@@ -25,7 +25,7 @@ use crate::rustc_span::{
     BytePos, DUMMY_SP, Ident, Span, SpanSnippetError, Spanned, Symbol, kw, sym,
 };
 use ast::token::IdentIsRaw;
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::thin_vec;
 use tracing::{debug, trace};
 
 use super::pat::Expected;
@@ -285,10 +285,18 @@ impl<'a> Parser<'a> {
         SnapshotParser { parser: snapshot }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the source-map span error without boxing"
+    )]
     pub(super) fn span_to_snippet(&self, span: Span) -> Result<String, SpanSnippetError> {
         self.psess.source_map().span_to_snippet(span)
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "preserves the source-map span error without boxing"
+    )]
     pub(super) fn with_snippet<T>(
         &self,
         span: Span,
@@ -631,15 +639,15 @@ impl<'a> Parser<'a> {
             );
         }
 
-        if let TokenKind::Ident(symbol, _) = &self.prev_token.kind {
-            if ["def", "fun", "func", "function"].contains(&symbol.as_str()) {
-                err.span_suggestion_short(
-                    self.prev_token.span,
-                    format!("write `fn` instead of `{symbol}` to declare a function"),
-                    "fn",
-                    Applicability::MachineApplicable,
-                );
-            }
+        if let TokenKind::Ident(symbol, _) = &self.prev_token.kind
+            && ["def", "fun", "func", "function"].contains(&symbol.as_str())
+        {
+            err.span_suggestion_short(
+                self.prev_token.span,
+                format!("write `fn` instead of `{symbol}` to declare a function"),
+                "fn",
+                Applicability::MachineApplicable,
+            );
         }
 
         if let TokenKind::Ident(prev, _) = &self.prev_token.kind
@@ -800,7 +808,7 @@ impl<'a> Parser<'a> {
             return;
         };
         let expected_token_types: &[TokenType] =
-            expected.len().checked_sub(10).map_or(&expected, |index| &expected[index..]);
+            expected.len().checked_sub(10).map_or(expected, |index| &expected[index..]);
         let expected_keywords: Vec<Symbol> =
             expected_token_types.iter().filter_map(|token| token.is_keyword()).collect();
 
@@ -1649,28 +1657,27 @@ impl<'a> Parser<'a> {
                 // ascription. Catch when this happens and continue.
                 self.token == token::Colon
             }
-        } {
-            if self.eat_noexpect(&token::Colon) {
-                let colon = self.prev_token.span;
-                match self.parse_expr() {
-                    Ok(expr) => {
-                        let sugg = cond.map(|cond| TernaryOperatorSuggestion {
-                            before_cond: cond.shrink_to_lo(),
-                            question,
-                            colon,
-                            end: expr.span.shrink_to_hi(),
-                        });
-                        return Err(self.dcx().create_err(TernaryOperator {
-                            span: self.prev_token.span.with_lo(lo),
-                            sugg,
-                            no_sugg: sugg.is_none(),
-                        }));
-                    }
-                    Err(err) => {
-                        err.cancel();
-                    }
-                };
-            }
+        } && self.eat_noexpect(&token::Colon)
+        {
+            let colon = self.prev_token.span;
+            match self.parse_expr() {
+                Ok(expr) => {
+                    let sugg = cond.map(|cond| TernaryOperatorSuggestion {
+                        before_cond: cond.shrink_to_lo(),
+                        question,
+                        colon,
+                        end: expr.span.shrink_to_hi(),
+                    });
+                    return Err(self.dcx().create_err(TernaryOperator {
+                        span: self.prev_token.span.with_lo(lo),
+                        sugg,
+                        no_sugg: sugg.is_none(),
+                    }));
+                }
+                Err(err) => {
+                    err.cancel();
+                }
+            };
         }
         self.restore_snapshot(snapshot);
         Ok(())
@@ -1964,7 +1971,7 @@ impl<'a> Parser<'a> {
                 .source_map()
                 .span_to_lines(span)
                 .ok()
-                .and_then(|lines| Some(lines.lines.get(0)?.line_index))
+                .and_then(|lines| Some(lines.lines.first()?.line_index))
         };
 
         if self.may_recover()
@@ -2015,7 +2022,7 @@ impl<'a> Parser<'a> {
             self.parse_expr()
         }
         .map_err(|mut err| {
-            err.span_label(await_sp, format!("while parsing this incorrect await expression"));
+            err.span_label(await_sp, "while parsing this incorrect await expression".to_string());
             err
         })?;
         Ok((expr.span, expr, is_question))
@@ -2361,7 +2368,7 @@ impl<'a> Parser<'a> {
                     }
                     _ => {
                         // Otherwise, try to get a type and emit a suggestion.
-                        if let Some(_) = pat.to_ty() {
+                        if pat.to_ty().is_some() {
                             err.span_suggestion_verbose(
                                 pat.span.shrink_to_lo(),
                                 "explicitly ignore the parameter name",
@@ -2545,7 +2552,7 @@ impl<'a> Parser<'a> {
     /// like the user has forgotten them.
     pub(super) fn handle_ambiguous_unbraced_const_arg(
         &mut self,
-        args: &mut ast::ArenaVec<AngleBracketedArg>,
+        args: &mut smallvec::SmallVec<[AngleBracketedArg; 8]>,
     ) -> PResult<'a, bool> {
         // If we haven't encountered a closing `>`, then the argument is malformed.
         // It's likely that the user has written a const expression without enclosing it
@@ -2650,9 +2657,10 @@ impl<'a> Parser<'a> {
         start: Span,
         mut err: Diag<'a>,
     ) -> PResult<'a, GenericArg> {
-        let is_op_or_dot = AssocOp::from_token(&self.token)
-            .and_then(|op| {
-                if let AssocOp::Binary(
+        let is_op_or_dot = AssocOp::from_token(&self.token).is_some_and(|op| {
+            !matches!(
+                op,
+                AssocOp::Binary(
                     BinOpKind::Gt
                     | BinOpKind::Lt
                     | BinOpKind::Shr
@@ -2661,15 +2669,9 @@ impl<'a> Parser<'a> {
                 // Don't recover from `foo::<bar = baz>`, because this could be an attempt to
                 // assign a value to a defaulted generic parameter.
                 | AssocOp::Assign
-                | AssocOp::AssignOp(_) = op
-                {
-                    None
-                } else {
-                    Some(op)
-                }
-            })
-            .is_some()
-            || self.token == TokenKind::Dot;
+                | AssocOp::AssignOp(_)
+            )
+        }) || self.token == TokenKind::Dot;
         // This will be true when a trait object type `Foo +` or a path which was a `const fn` with
         // type params has been parsed.
         let was_op = matches!(self.prev_token.kind, token::Plus | token::Shr | token::Gt);
@@ -2681,7 +2683,7 @@ impl<'a> Parser<'a> {
         if is_op_or_dot {
             self.bump();
         }
-        match (|| self.parse_expr_res(Restrictions::CONST_EXPR))() {
+        match self.parse_expr_res(Restrictions::CONST_EXPR) {
             Ok(expr) => {
                 // Find a mistake like `MyTrait<Assoc == S::Assoc>`.
                 if snapshot.token == token::EqEq {
@@ -2734,7 +2736,7 @@ impl<'a> Parser<'a> {
         &mut self,
         mut snapshot: SnapshotParser<'a>,
     ) -> Option<P<ast::Expr>> {
-        match (|| snapshot.parse_expr_res(Restrictions::CONST_EXPR))() {
+        match snapshot.parse_expr_res(Restrictions::CONST_EXPR) {
             // Since we don't know the exact reason why we failed to parse the type or the
             // expression, employ a simple heuristic to weed out some pathological cases.
             Ok(expr) if let token::Comma | token::Gt = snapshot.token.kind => {

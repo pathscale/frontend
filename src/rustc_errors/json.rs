@@ -12,7 +12,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -24,28 +23,28 @@ use alloc::vec::Vec;
 // `String` and handed over in one call instead of streamed through `serde_json::to_writer`.
 use core::fmt::Write;
 
+use alloc::sync::Arc;
 use eko::file::{Error, Result};
 use eko::path::{Path, PathBuf};
-use alloc::sync::Arc;
 
-use derive_setters::Setters;
 use crate::rustc_data_structures::sync::IntoDynSyncSend;
 use crate::rustc_error_messages::DiagArgMap;
 use crate::rustc_lint_defs::Applicability;
 use crate::rustc_span::hygiene::ExpnData;
 use crate::rustc_span::source_map::{FilePathMapping, SourceMap};
 use crate::rustc_span::{FileName, RealFileName, Span};
+use derive_setters::Setters;
 use serde::Serialize;
 
-use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::diagnostic::IsLint;
 use crate::rustc_errors::emitter::{
-    ColorConfig, Emitter, HumanReadableErrorType, OutputTheme, TimingEvent,
-    should_show_source_code,
+    ColorConfig, Emitter, HumanReadableErrorType, TimingEvent, should_show_source_code,
 };
 use crate::rustc_errors::formatting::{format_diag_message, format_diag_messages};
 use crate::rustc_errors::timings::{TimingRecord, TimingSection};
-use crate::rustc_errors::{CodeSuggestion, MultiSpan, SpanLabel, Subdiag, Suggestions, TerminalUrl};
+use crate::rustc_errors::{
+    CodeSuggestion, MultiSpan, SpanLabel, Subdiag, Suggestions, TerminalUrl,
+};
 
 #[cfg(test)]
 mod tests;
@@ -160,7 +159,10 @@ impl Emitter for JsonEmitter {
                 //
                 // So to avoid ICEs and confused users we "upgrade" the lint level for
                 // those `FutureBreakageItem` to warn.
-                if matches!(diag.level, crate::rustc_errors::Level::Allow | crate::rustc_errors::Level::Expect) {
+                if matches!(
+                    diag.level,
+                    crate::rustc_errors::Level::Allow | crate::rustc_errors::Level::Expect
+                ) {
                     diag.level = crate::rustc_errors::Level::Warning;
                 }
                 FutureBreakageItem {
@@ -177,7 +179,11 @@ impl Emitter for JsonEmitter {
         }
     }
 
-    fn emit_unused_externs(&mut self, lint_level: crate::rustc_lint_defs::Level, unused_externs: &[&str]) {
+    fn emit_unused_externs(
+        &mut self,
+        lint_level: crate::rustc_lint_defs::Level,
+        unused_externs: &[&str],
+    ) {
         let lint_level = lint_level.as_str();
         let data = UnusedExterns { lint_level, unused_extern_names: unused_externs };
         let result = self.emit(EmitTyped::UnusedExtern(data));
@@ -315,7 +321,10 @@ struct UnusedExterns<'a> {
 
 impl Diagnostic {
     /// Converts from `crate::rustc_errors::DiagInner` to `Diagnostic`.
-    fn from_errors_diagnostic(diag: crate::rustc_errors::DiagInner, je: &JsonEmitter) -> Diagnostic {
+    fn from_errors_diagnostic(
+        diag: crate::rustc_errors::DiagInner,
+        je: &JsonEmitter,
+    ) -> Diagnostic {
         let sugg_to_diag = |sugg: &CodeSuggestion| {
             let formatted_message = format_diag_message(&sugg.msg, &diag.args);
             Diagnostic {
@@ -554,7 +563,7 @@ impl DiagnosticSpanLine {
                 // We can't get any lines if the source is unavailable.
                 if !should_show_source_code(
                     &je.ignored_directories_in_source_blocks,
-                    &sm,
+                    sm,
                     &lines.file,
                 ) {
                     return None;

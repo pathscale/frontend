@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use core::fmt;
 
@@ -20,7 +15,9 @@ use crate::rustc_middle::dep_graph::{
     DepKind, DepKindVTable, DepNodeIndex, QuerySideEffect, SerializedDepNodeIndex,
 };
 use crate::rustc_middle::ich::StableHashState;
-use crate::rustc_middle::queries::{ExternProviders, Providers, QueryArenas, QueryVTables, TaggedQueryKey};
+use crate::rustc_middle::queries::{
+    ExternProviders, Providers, QueryArenas, QueryVTables, TaggedQueryKey,
+};
 use crate::rustc_middle::query::on_disk_cache::OnDiskCache;
 use crate::rustc_middle::query::{
     NodeDiagnostics, QueryCache, QueryCycle, QueryKey, QueryState, QueryWaitGraph,

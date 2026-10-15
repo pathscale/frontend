@@ -1,8 +1,8 @@
-use alloc::vec::Vec;
 use crate::rustc_attr_ir::target::{AssocCtxt, MethodKind, Target};
 use crate::rustc_attr_ir::{AttributeKind, RustcDumpLayoutKind};
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_span::{Span, Symbol, sym};
+use alloc::vec::Vec;
 
 use super::prelude::*;
 use crate::rustc_attr_parsing::target_checking::AllowedTargets;

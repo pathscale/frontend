@@ -120,7 +120,7 @@ fn assumed_wf_types<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> &'tcx [(Ty<'
                         ty::EarlyBinder::bind_iter(tcx.assumed_wf_types_for_rpitit(rpitit_def_id))
                             .iter_instantiated_copied(tcx, args)
                             .map(Unnormalized::skip_norm_wip)
-                            .chain(tcx.assumed_wf_types(impl_def_id).into_iter().copied()),
+                            .chain(tcx.assumed_wf_types(impl_def_id).iter().copied()),
                     )
                 }
             }

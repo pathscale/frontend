@@ -41,16 +41,12 @@ pub const fn const_fn() -> u8 { 7 }
 pub static STATIC: u8 = 7;
 "#;
 
-const DEFINITIONS: [&str; 8] = [
-    "N", "M", "M_SAME", "LITERAL", "UsesConst", "S", "const_fn", "STATIC",
-];
+const DEFINITIONS: [&str; 8] =
+    ["N", "M", "M_SAME", "LITERAL", "UsesConst", "S", "const_fn", "STATIC"];
 
 fn assert_definitions(facts: &CrateFacts) {
-    let names: Vec<&str> = facts
-        .definitions
-        .iter()
-        .map(|definition| definition.name.as_str())
-        .collect();
+    let names: Vec<&str> =
+        facts.definitions.iter().map(|definition| definition.name.as_str()).collect();
     for name in DEFINITIONS {
         assert!(names.contains(&name), "{name} missing from {names:?}");
     }

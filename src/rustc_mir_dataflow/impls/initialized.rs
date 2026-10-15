@@ -1,9 +1,9 @@
 use crate::assert_matches;
 
+use crate::bug;
 use crate::rustc_abi::VariantIdx;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_index::bit_set::{DenseBitSet, MixedBitSet};
-use crate::bug;
 use crate::rustc_middle::mir::{
     self, BasicBlock, Body, CallReturnPlaces, Local, Location, StatementKind, TerminatorEdges,
 };
@@ -42,7 +42,7 @@ impl<'tcx> MaybePlacesSwitchIntData<'tcx> {
         targets: &mir::SwitchTargets,
         discr: &mir::Operand<'tcx>,
     ) -> Option<Self> {
-        let Some(discr) = discr.place() else { return None };
+        let discr = discr.place()?;
 
         // Inspect a `SwitchInt`-terminated basic block to see if the condition of that `SwitchInt`
         // is an enum discriminant.

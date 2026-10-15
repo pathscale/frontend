@@ -22,12 +22,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::assert_matches;
 
@@ -37,7 +31,9 @@ use crate::rustc_type_ir::TyKind::*;
 use tracing::instrument;
 
 use crate::rustc_middle::query::Providers;
-use crate::rustc_middle::ty::{self, DefId, Ty, TyCtxt, TypeVisitableExt, TypingEnv, VariantDef, Visibility};
+use crate::rustc_middle::ty::{
+    self, DefId, Ty, TyCtxt, TypeVisitableExt, TypingEnv, VariantDef, Visibility,
+};
 
 pub mod inhabited_predicate;
 
@@ -267,7 +263,7 @@ impl<'tcx> OpsemInhabitedCtx<'tcx> {
                 args.upvar_tys().iter().all(|ty| self.is_inhabited_ty(ty))
             }
             ty::UnsafeBinder(base) => {
-                let base = tcx.instantiate_bound_regions_with_erased((*base).into());
+                let base = tcx.instantiate_bound_regions_with_erased(*base);
                 self.is_inhabited_ty(base)
             }
             ty::Adt(..) => self.is_inhabited_adt_ty(ty),

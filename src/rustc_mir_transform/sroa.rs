@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -145,7 +142,7 @@ fn escaping_locals<'tcx>(
         fn visit_statement(&mut self, statement: &Statement<'tcx>, location: Location) {
             match statement.kind {
                 // Storage statements are expanded in run_pass.
-                StatementKind::StorageLive(..) | StatementKind::StorageDead(..) => return,
+                StatementKind::StorageLive(..) | StatementKind::StorageDead(..) => (),
                 _ => self.super_statement(statement, location),
             }
         }
@@ -160,6 +157,7 @@ fn escaping_locals<'tcx>(
 struct ReplacementMap<'tcx> {
     /// Pre-computed list of all "new" locals for each "old" local. This is used to expand storage
     /// and deinit statement and debuginfo.
+    #[expect(clippy::type_complexity, reason = "the nested indices map each original local field to its replacement type and local")]
     fragments: IndexVec<Local, Option<IndexVec<FieldIdx, Option<(Ty<'tcx>, Local)>>>>,
 }
 

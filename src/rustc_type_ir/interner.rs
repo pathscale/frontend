@@ -1,10 +1,10 @@
-#[allow(unused_imports)]
-use {alloc::string::ToString, alloc::vec::Vec};
 use alloc::borrow::Borrow;
 use alloc::boxed::Box;
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::ops::Deref;
+#[allow(unused_imports)]
+use {alloc::string::ToString, alloc::vec::Vec};
 
 use crate::rustc_ast_ir::Movability;
 use crate::rustc_ast_ir::visit::VisitorResult;
@@ -16,7 +16,9 @@ use crate::rustc_type_ir::fold::TypeFoldable;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::intern::Interned;
 use crate::rustc_type_ir::ir_print::IrPrint;
-use crate::rustc_type_ir::lang_items::{SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem};
+use crate::rustc_type_ir::lang_items::{
+    SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem,
+};
 use crate::rustc_type_ir::relate::Relate;
 use crate::rustc_type_ir::search_graph::RequiredDepth;
 use crate::rustc_type_ir::solve::{

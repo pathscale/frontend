@@ -4,7 +4,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -97,10 +96,9 @@ impl<'tcx> BorrowExplanation<'tcx> {
                         && let [hir::PathSegment { ident, args: None, .. }] = p.segments
                         && let hir::def::Res::Local(hir_id) = p.res
                         && let hir::Node::Pat(pat) = tcx.hir_node(hir_id)
+                        && !ident.span.in_external_macro(tcx.sess.source_map())
                     {
-                        if !ident.span.in_external_macro(tcx.sess.source_map()) {
-                            err.span_label(pat.span, format!("binding `{ident}` declared here"));
-                        }
+                        err.span_label(pat.span, format!("binding `{ident}` declared here"));
                     }
                 }
             }
@@ -200,13 +198,12 @@ impl<'tcx> BorrowExplanation<'tcx> {
             } => {
                 let local_decl = &body.local_decls[dropped_local];
                 let mut ty = local_decl.ty;
-                if local_decl.source_info.span.desugaring_kind() == Some(DesugaringKind::ForLoop) {
-                    if let ty::Adt(adt, args) = local_decl.ty.kind() {
-                        if tcx.is_diagnostic_item(sym::Option, adt.did()) {
-                            // in for loop desugaring, only look at the `Some(..)` inner type
-                            ty = args.type_at(0);
-                        }
-                    }
+                if local_decl.source_info.span.desugaring_kind() == Some(DesugaringKind::ForLoop)
+                    && let ty::Adt(adt, args) = local_decl.ty.kind()
+                    && tcx.is_diagnostic_item(sym::Option, adt.did())
+                {
+                    // in for loop desugaring, only look at the `Some(..)` inner type
+                    ty = args.type_at(0);
                 }
                 let (dtor_desc, type_desc) = match ty.kind() {
                     // If type is an ADT that implements Drop, then
@@ -596,7 +593,7 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
     ///
     /// [d]: https://rust-lang.github.io/rfcs/2094-nll.html#leveraging-intuition-framing-errors-in-terms-of-points
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn explain_why_borrow_contains_point(
+    pub(in crate::rustc_borrowck) fn explain_why_borrow_contains_point(
         &self,
         location: Location,
         borrow: &BorrowData<'tcx>,
@@ -777,48 +774,50 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
             | UseSpans::FnSelfUse { var_span: span, .. } => {
                 let block = &self.body.basic_blocks[location.block];
 
-                let kind = if let Some(Statement { kind: StatementKind::FakeRead(fake_read), .. }) =
-                    block.statements.get(location.statement_index)
-                    && let (FakeReadCause::ForLet(_), place) = &**fake_read
-                {
-                    if let Some(l) = place.as_local()
-                        && let local_decl = &self.body.local_decls[l]
-                        && local_decl.ty.is_closure()
+                let kind =
+                    if let Some(Statement { kind: StatementKind::FakeRead(fake_read), .. }) =
+                        block.statements.get(location.statement_index)
+                        && let (FakeReadCause::ForLet(_), place) = &**fake_read
                     {
-                        LaterUseKind::ClosureCapture
-                    } else {
-                        LaterUseKind::FakeLetRead
-                    }
-                } else if self.was_captured_by_trait_object(borrow) {
-                    LaterUseKind::TraitCapture
-                } else if location.statement_index == block.statements.len() {
-                    if let TerminatorKind::Call { func, call_source: CallSource::Normal, .. } =
-                        &block.terminator().kind
-                    {
-                        // Just point to the function, to reduce the chance of overlapping spans.
-                        let function_span = match func {
-                            Operand::RuntimeChecks(_) => span,
-                            Operand::Constant(c) => c.span,
-                            Operand::Copy(place) | Operand::Move(place) => {
-                                if let Some(l) = place.as_local() {
-                                    let local_decl = &self.body.local_decls[l];
-                                    if self.local_name(l).is_none() {
-                                        local_decl.source_info.span
+                        if let Some(l) = place.as_local()
+                            && let local_decl = &self.body.local_decls[l]
+                            && local_decl.ty.is_closure()
+                        {
+                            LaterUseKind::ClosureCapture
+                        } else {
+                            LaterUseKind::FakeLetRead
+                        }
+                    } else if self.was_captured_by_trait_object(borrow) {
+                        LaterUseKind::TraitCapture
+                    } else if location.statement_index == block.statements.len() {
+                        if let TerminatorKind::Call {
+                            func, call_source: CallSource::Normal, ..
+                        } = &block.terminator().kind
+                        {
+                            // Just point to the function, to reduce the chance of overlapping spans.
+                            let function_span = match func {
+                                Operand::RuntimeChecks(_) => span,
+                                Operand::Constant(c) => c.span,
+                                Operand::Copy(place) | Operand::Move(place) => {
+                                    if let Some(l) = place.as_local() {
+                                        let local_decl = &self.body.local_decls[l];
+                                        if self.local_name(l).is_none() {
+                                            local_decl.source_info.span
+                                        } else {
+                                            span
+                                        }
                                     } else {
                                         span
                                     }
-                                } else {
-                                    span
                                 }
-                            }
-                        };
-                        return (LaterUseKind::Call, function_span, None);
+                            };
+                            return (LaterUseKind::Call, function_span, None);
+                        } else {
+                            LaterUseKind::Other
+                        }
                     } else {
                         LaterUseKind::Other
-                    }
-                } else {
-                    LaterUseKind::Other
-                };
+                    };
 
                 (kind, span, None)
             }
@@ -866,16 +865,11 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                     match rvalue {
                         // If we see a use, we should check whether it is our data, and if so
                         // update the place that we're looking for to that new place.
-                        Rvalue::Use(operand, _) => match operand {
-                            Operand::Copy(place) | Operand::Move(place) => {
-                                if let Some(from) = place.as_local() {
-                                    if from == target {
-                                        target = into;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        },
+                        Rvalue::Use(Operand::Copy(place) | Operand::Move(place), _)
+                            if place.as_local() == Some(target) =>
+                        {
+                            target = into;
+                        }
                         // If we see an unsized cast, then if it is our data we should check
                         // whether it is being cast to a trait object.
                         Rvalue::Cast(
@@ -885,24 +879,22 @@ impl<'tcx> MirBorrowckCtxt<'_, '_, 'tcx> {
                         ) => {
                             match operand {
                                 Operand::Copy(place) | Operand::Move(place) => {
-                                    if let Some(from) = place.as_local() {
-                                        if from == target {
-                                            debug!("was_captured_by_trait_object: ty={:?}", ty);
-                                            // Check the type for a trait object.
-                                            return match ty.kind() {
-                                                // `&dyn Trait`
-                                                ty::Ref(_, ty, _) if ty.is_trait() => true,
-                                                // `Box<dyn Trait>`
-                                                _ if ty.boxed_ty().is_some_and(Ty::is_trait) => {
-                                                    true
-                                                }
+                                    if let Some(from) = place.as_local()
+                                        && from == target
+                                    {
+                                        debug!("was_captured_by_trait_object: ty={:?}", ty);
+                                        // Check the type for a trait object.
+                                        return match ty.kind() {
+                                            // `&dyn Trait`
+                                            ty::Ref(_, ty, _) if ty.is_trait() => true,
+                                            // `Box<dyn Trait>`
+                                            _ if ty.boxed_ty().is_some_and(Ty::is_trait) => true,
 
-                                                // `dyn Trait`
-                                                _ if ty.is_trait() => true,
-                                                // Anything else.
-                                                _ => false,
-                                            };
-                                        }
+                                            // `dyn Trait`
+                                            _ if ty.is_trait() => true,
+                                            // Anything else.
+                                            _ => false,
+                                        };
                                     }
                                     return false;
                                 }

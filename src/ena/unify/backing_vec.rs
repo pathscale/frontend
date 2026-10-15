@@ -21,6 +21,10 @@ pub trait UnificationStoreBase: ops::Index<usize, Output = VarValue<Key<Self>>> 
 
     fn len(&self) -> usize;
 
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn tag() -> &'static str {
         Self::Key::tag()
     }
@@ -64,9 +68,7 @@ pub struct InPlace<
 // HACK(eddyb) manual impl avoids `Default` bound on `K`.
 impl<K: UnifyKey, V: sv::VecLike<Delegate<K>> + Default, L: Default> Default for InPlace<K, V, L> {
     fn default() -> Self {
-        InPlace {
-            values: sv::SnapshotVec::new(),
-        }
+        InPlace { values: sv::SnapshotVec::new() }
     }
 }
 

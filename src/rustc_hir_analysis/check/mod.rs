@@ -65,14 +65,16 @@ a type parameter).
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 pub mod always_applicable;
+#[expect(
+    clippy::module_inception,
+    reason = "The module name matches the existing check/check phase directory layout."
+)]
 mod check;
 mod compare_eii;
 mod compare_impl_item;
@@ -84,7 +86,6 @@ pub mod wfcheck;
 use alloc::borrow::Cow;
 use core::num::NonZero;
 
-pub use check::check_abi;
 use crate::rustc_abi::VariantIdx;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use crate::rustc_errors::{ErrorGuaranteed, pluralize, struct_span_code_err};
@@ -109,6 +110,7 @@ use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::error_reporting::infer::ObligationCauseExt as _;
 use crate::rustc_trait_selection::error_reporting::traits::suggestions::ReturnsVisitor;
 use crate::rustc_trait_selection::traits::ObligationCtxt;
+pub use check::check_abi;
 use tracing::debug;
 
 use self::compare_impl_item::collect_return_position_impl_trait_in_trait_tys;
@@ -137,12 +139,13 @@ pub(super) fn provide(providers: &mut Providers) {
 
 fn adt_destructor(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<ty::Destructor> {
     let dtor = tcx.calculate_dtor(def_id, always_applicable::check_drop_impl);
-    if dtor.is_none() && tcx.features().async_drop() {
-        if let Some(async_dtor) = adt_async_destructor(tcx, def_id) {
-            // When type has AsyncDrop impl, but doesn't have Drop impl, generate error
-            let span = tcx.def_span(async_dtor.impl_did);
-            tcx.dcx().emit_err(diagnostics::AsyncDropWithoutSyncDrop { span });
-        }
+    if dtor.is_none()
+        && tcx.features().async_drop()
+        && let Some(async_dtor) = adt_async_destructor(tcx, def_id)
+    {
+        // When type has AsyncDrop impl, but doesn't have Drop impl, generate error
+        let span = tcx.def_span(async_dtor.impl_did);
+        tcx.dcx().emit_err(diagnostics::AsyncDropWithoutSyncDrop { span });
     }
     dtor
 }
@@ -210,7 +213,7 @@ fn missing_items_suggestions(
     let sugg_sp = impl_suggestion_span(tcx, impl_def_id);
 
     // Obtain the level of indentation ending in `sugg_sp`.
-    let padding = tcx.sess.source_map().indentation_before(sugg_sp).unwrap_or_else(String::new);
+    let padding = tcx.sess.source_map().indentation_before(sugg_sp).unwrap_or_default();
     let (
         mut missing_trait_item,
         mut missing_trait_item_none,
@@ -344,7 +347,7 @@ fn default_body_is_unstable(
     let inject_span = item_did.is_local().then(|| tcx.crate_level_attribute_injection_span());
     crate::rustc_session::diagnostics::add_feature_diagnostics_for_issue(
         &mut err,
-        &tcx.sess,
+        tcx.sess,
         feature,
         crate::rustc_feature::GateIssue::Library(issue),
         false,
@@ -437,7 +440,7 @@ fn bounds_from_generic_clauses<'tcx>(
                 {
                     format!(
                         "{region}: {}",
-                        v.into_iter().map(Region::to_string).collect::<Vec<_>>().join(" + ")
+                        v.iter().map(Region::to_string).collect::<Vec<_>>().join(" + ")
                     )
                 } else {
                     region.to_string()
@@ -686,9 +689,7 @@ pub fn check_function_signature<'tcx>(
         }
     }
 
-    if let Err(e) = ocx.resolve_regions_and_report_errors(local_id, param_env, []) {
-        return Err(e);
-    }
+    ocx.resolve_regions_and_report_errors(local_id, param_env, [])?;
 
     Ok(())
 }

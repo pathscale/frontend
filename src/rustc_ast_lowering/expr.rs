@@ -1,7 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec;
@@ -24,7 +23,7 @@ use crate::rustc_span::{
     ByteSymbol, DUMMY_SP, DesugaringKind, Ident, Span, Spanned, Symbol, respan, sym,
 };
 use crate::span_bug;
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::ThinVec;
 use visit::{Visitor, walk_expr};
 
 mod closure;
@@ -54,15 +53,10 @@ struct MoveExprInitializer<'a> {
 }
 
 /// State for `move(...)` expressions found while lowering one plain closure body.
+#[derive(Default)]
 pub(super) struct MoveExprState<'hir> {
     pub(super) bindings: NodeMap<(Ident, HirId)>,
     pub(super) occurrences: Vec<MoveExprOccurrence<'hir>>,
-}
-
-impl<'hir> Default for MoveExprState<'hir> {
-    fn default() -> Self {
-        Self { bindings: NodeMap::default(), occurrences: Vec::new() }
-    }
 }
 
 pub(super) struct MoveExprOccurrence<'hir> {
@@ -806,6 +800,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
     ///     <body>
     /// }
     /// ```
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub(super) fn make_desugared_coroutine_expr(
         &mut self,
         capture_clause: CaptureBy,
@@ -1221,12 +1219,11 @@ impl<'hir> LoweringContext<'_, 'hir> {
     ) -> Option<(&'a Option<P<QSelf>>, &'a Path)> {
         if let ExprKind::Path(qself, path) = &expr.kind {
             // Does the path resolve to something disallowed in a tuple struct/variant pattern?
-            if let Some(partial_res) = self.get_partial_res(expr.id) {
-                if let Some(res) = partial_res.full_res()
-                    && !res.expected_in_tuple_struct_pat()
-                {
-                    return None;
-                }
+            if let Some(partial_res) = self.get_partial_res(expr.id)
+                && let Some(res) = partial_res.full_res()
+                && !res.expected_in_tuple_struct_pat()
+            {
+                return None;
             }
             return Some((qself, path));
         }
@@ -1243,12 +1240,11 @@ impl<'hir> LoweringContext<'_, 'hir> {
     ) -> Option<(&'a Option<P<QSelf>>, &'a Path)> {
         if let ExprKind::Path(qself, path) = &expr.kind {
             // Does the path resolve to something disallowed in a unit struct/variant pattern?
-            if let Some(partial_res) = self.get_partial_res(expr.id) {
-                if let Some(res) = partial_res.full_res()
-                    && !res.expected_in_unit_struct_pat()
-                {
-                    return None;
-                }
+            if let Some(partial_res) = self.get_partial_res(expr.id)
+                && let Some(res) = partial_res.full_res()
+                && !res.expected_in_unit_struct_pat()
+            {
+                return None;
             }
             return Some((qself, path));
         }
@@ -1554,9 +1550,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     Err(hir::LoopIdError::UnresolvedLabel)
                 }
             }
-            None => {
-                self.loop_scope.map(|id| Ok(id)).unwrap_or(Err(hir::LoopIdError::OutsideLoopScope))
-            }
+            None => self.loop_scope.map(Ok).unwrap_or(Err(hir::LoopIdError::OutsideLoopScope)),
         };
         let label = destination
             .map(|(_, label)| label)
@@ -1632,7 +1626,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             && !self.tcx.features().gen_blocks()
         {
             crate::rustc_session::diagnostics::feature_err(
-                &self.tcx.sess,
+                self.tcx.sess,
                 sym::yield_expr,
                 span,
                 msg!("yield syntax is experimental"),
@@ -2119,15 +2113,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         path: &'hir hir::QPath<'hir>,
         fields: &'hir [hir::Expr<'hir>],
     ) -> hir::Expr<'hir> {
-        let fields = self.arena.alloc_from_iter(fields.into_iter().enumerate().map(|(i, f)| {
-            hir::ExprField {
+        let fields =
+            self.arena.alloc_from_iter(fields.iter().enumerate().map(|(i, f)| hir::ExprField {
                 hir_id: self.next_id(),
                 ident: Ident::from_str(&i.to_string()),
                 expr: f,
                 span: f.span,
                 is_shorthand: false,
-            }
-        }));
+            }));
         self.expr_struct(span, path, fields)
     }
 
@@ -2314,14 +2307,13 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     /// `#[allow(unreachable_code)]`
     pub(super) fn unreachable_code_attr(&mut self, span: Span) -> Attribute {
-        let attr = attr::mk_attr_nested_word(
+        attr::mk_attr_nested_word(
             &self.tcx.sess.psess.attr_id_generator,
             AttrStyle::Outer,
             sym::allow,
             sym::unreachable_code,
             span,
-        );
-        attr
+        )
     }
 }
 

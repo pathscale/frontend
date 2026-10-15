@@ -1,6 +1,6 @@
+use Piece::*;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use Piece::*;
 
 use super::*;
 
@@ -11,7 +11,7 @@ fn same(fmt: &'static str, p: &[Piece<'static>]) {
 }
 
 fn fmtdflt() -> FormatSpec<'static> {
-    return FormatSpec {
+    FormatSpec {
         fill: None,
         fill_span: None,
         align: AlignUnknown,
@@ -25,7 +25,7 @@ fn fmtdflt() -> FormatSpec<'static> {
         width_span: None,
         ty: "",
         ty_span: None,
-    };
+    }
 }
 
 fn musterr(s: &str) {

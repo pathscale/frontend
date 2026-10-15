@@ -18,13 +18,15 @@ use core::num::NonZero;
 // why a `std::` search never saw it.
 use eko::thread_local;
 
-use crate::rustc_proc_macro::bridge::{Buffer, Decode, Encode, Mark, arena, client, fxhash, server};
+use crate::rustc_proc_macro::bridge::{
+    Buffer, Decode, Encode, Mark, arena, client, fxhash, server,
+};
 
 /// Handle for a symbol string stored within the Interner.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 // The second field replaces upstream's `impl !Send` / `impl !Sync` (unstable negative
 // impls): a raw-pointer marker makes the handle neither `Send` nor `Sync` on stable.
-pub struct Symbol(NonZero<u32>, core::marker::PhantomData<*const ()>);
+pub(crate) struct Symbol(NonZero<u32>, core::marker::PhantomData<*const ()>);
 
 impl Symbol {
     /// Intern a new `Symbol`

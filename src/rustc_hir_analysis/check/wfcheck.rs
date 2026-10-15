@@ -1,17 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::LazyCell;
 use core::ops::{ControlFlow, Deref};
 
-use hir::intravisit::{self, Visitor};
 use crate::rustc_abi::{ExternAbi, ScalableElt};
 use crate::rustc_ast as ast;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet};
@@ -26,10 +24,11 @@ use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::{AmbigArg, ItemKind, find_attr};
 use crate::rustc_infer::infer::outlives::env::OutlivesEnvironment;
-use crate::rustc_infer::infer::{BoundRegionConversionTime, SolverRegionConstraint, TyCtxtInferExt};
+use crate::rustc_infer::infer::{
+    BoundRegionConversionTime, SolverRegionConstraint, TyCtxtInferExt,
+};
 use crate::rustc_infer::traits::{PredicateObligations, TraitErrors};
 use crate::rustc_lint_defs::builtin::{REDUNDANT_LIFETIMES, SHADOWING_SUPERTRAIT_ITEMS};
-use rustc_macros::{Diagnostic, TypeFoldable, TypeVisitable};
 use crate::rustc_middle::traits::solve::NoSolution;
 use crate::rustc_middle::ty::trait_def::TraitSpecializationKind;
 use crate::rustc_middle::ty::{
@@ -52,11 +51,15 @@ use crate::rustc_trait_selection::traits::{
     self, FulfillmentError, Obligation, ObligationCause, ObligationCauseCode, ObligationCtxt,
     WellFormedLoc,
 };
+use hir::intravisit::{self, Visitor};
+use rustc_macros::{Diagnostic, TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument};
 
 use super::compare_eii::{compare_eii_function_types, compare_eii_statics};
 use crate::rustc_hir_analysis::autoderef::Autoderef;
-use crate::rustc_hir_analysis::constrained_generic_params::{Parameter, identify_constrained_generic_params};
+use crate::rustc_hir_analysis::constrained_generic_params::{
+    Parameter, identify_constrained_generic_params,
+};
 use crate::rustc_hir_analysis::diagnostics;
 use crate::rustc_hir_analysis::diagnostics::InvalidReceiverTyHint;
 
@@ -222,7 +225,7 @@ where
     // We specifically want to *disable* the implied bounds hack, first,
     // so we can detect when failures are due to bevy's implied bounds.
     let outlives_env = OutlivesEnvironment::new_with_implied_bounds_compat(
-        &infcx,
+        infcx,
         body_def_id,
         param_env,
         assumed_wf_types.iter().copied(),
@@ -739,6 +742,10 @@ struct GATArgsCollector<'tcx> {
 }
 
 impl<'tcx> GATArgsCollector<'tcx> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+    )]
     fn visit<T: TypeFoldable<TyCtxt<'tcx>>>(
         gat: DefId,
         t: T,
@@ -974,11 +981,7 @@ pub(crate) fn check_associated_item(
                 }
 
                 if has_value {
-                    wfcx.register_sized_bound(
-                        span,
-                        ty,
-                        ObligationCauseCode::SizedConstOrStatic,
-                    );
+                    wfcx.register_sized_bound(span, ty, ObligationCauseCode::SizedConstOrStatic);
                 }
 
                 Ok(())
@@ -1067,14 +1070,9 @@ pub(crate) fn check_type_defn<'tcx>(
                 wfcx.register_sized_bound(
                     span,
                     ty,
-                    ObligationCauseCode::FieldSized {
-                        adt_kind: adt_def.adt_kind(),
-                        span,
-                        last,
-                    },
+                    ObligationCauseCode::FieldSized { adt_kind: adt_def.adt_kind(), span, last },
                 );
             }
-
         }
 
         check_where_clauses(wfcx, item);
@@ -1093,7 +1091,7 @@ pub(crate) fn check_trait(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(), Err
     if trait_def.is_marker
         || matches!(trait_def.specialization_kind, TraitSpecializationKind::Marker)
     {
-        for associated_def_id in &*tcx.associated_item_def_ids(def_id) {
+        for associated_def_id in tcx.associated_item_def_ids(def_id) {
             struct_span_code_err!(
                 tcx.dcx(),
                 tcx.def_span(*associated_def_id),
@@ -1104,12 +1102,10 @@ pub(crate) fn check_trait(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(), Err
         }
     }
 
-    let res = enter_wf_checking_ctxt(tcx, def_id, |wfcx| {
+    enter_wf_checking_ctxt(tcx, def_id, |wfcx| {
         check_where_clauses(wfcx, def_id);
         Ok(())
-    });
-
-    res
+    })
 }
 
 /// Checks all associated type defaults of trait `trait_def_id`.
@@ -1737,7 +1733,7 @@ fn check_method_receiver<'tcx>(
             {
                 // Report error; would have worked with `arbitrary_self_types`.
                 feature_err(
-                    &tcx.sess,
+                    tcx.sess,
                     sym::arbitrary_self_types,
                     span,
                     format!(
@@ -1761,7 +1757,7 @@ fn check_method_receiver<'tcx>(
             {
                 // Report error; would have worked with `arbitrary_self_types_pointers`.
                 feature_err(
-                    &tcx.sess,
+                    tcx.sess,
                     sym::arbitrary_self_types_pointers,
                     span,
                     format!(
@@ -1835,10 +1831,10 @@ fn confirm_type_is_not_a_method_generic_param(
     ty: Ty<'_>,
     method_generics: &ty::Generics,
 ) -> Result<(), ReceiverValidityError> {
-    if let ty::Param(param) = ty.kind() {
-        if (param.index as usize) >= method_generics.parent_count {
-            return Err(ReceiverValidityError::MethodGenericParamUsed);
-        }
+    if let ty::Param(param) = ty.kind()
+        && (param.index as usize) >= method_generics.parent_count
+    {
+        return Err(ReceiverValidityError::MethodGenericParamUsed);
     }
     Ok(())
 }
@@ -2419,8 +2415,7 @@ impl<'tcx> WfCheckingCtxt<'_, 'tcx> {
                 SolverRegionConstraint::And(constraints)
                 | SolverRegionConstraint::Or(constraints) => constraints
                     .iter()
-                    .map(span_of)
-                    .flatten()
+                    .filter_map(span_of)
                     .fold(None, |l, r| Some(l.map_or(r, |l| l.to(r)))),
             }
         }
@@ -2515,12 +2510,18 @@ pub(super) fn check_type_wf(tcx: TyCtxt<'_>, (): ()) -> Result<(), ErrorGuarante
                 |ids, i| weight(ids[i].owner_id.def_id),
                 |ids, i| check(ids[i].owner_id.def_id),
             ),
-            scope.stage_weighted(nested, nested.len(), |ids, i| weight(ids[i]), |ids, i| {
-                check(ids[i])
-            }),
-            scope.stage_weighted(opaques, opaques.len(), |ids, i| weight(ids[i]), |ids, i| {
-                check(ids[i])
-            }),
+            scope.stage_weighted(
+                nested,
+                nested.len(),
+                |ids, i| weight(ids[i]),
+                |ids, i| check(ids[i]),
+            ),
+            scope.stage_weighted(
+                opaques,
+                opaques.len(),
+                |ids, i| weight(ids[i]),
+                |ids, i| check(ids[i]),
+            ),
         ]
     });
     let res = checked

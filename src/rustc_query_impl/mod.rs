@@ -18,12 +18,11 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 use crate::rustc_data_structures::sync::AtomicU64;
 use crate::rustc_middle::arena::Arena;
 use crate::rustc_middle::queries::{ExternProviders, Providers};
-use crate::rustc_middle::query::{QuerySystem, QueryWaitGraph};
 use crate::rustc_middle::query::on_disk_cache::OnDiskCache;
+use crate::rustc_middle::query::{QuerySystem, QueryWaitGraph};
 
 pub use crate::rustc_query_impl::job::{
     CollectActiveJobsKind, QueryJobMap, break_query_cycle, collect_active_query_jobs,

@@ -27,15 +27,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::hash::Hash;
 use alloc::sync::Arc;
+use core::hash::Hash;
 use core::{fmt, iter, mem};
 
 use crate::rustc_data_structures::fingerprint::Fingerprint;
@@ -47,8 +45,8 @@ use crate::rustc_data_structures::sync::Lock;
 use crate::rustc_data_structures::unhash::UnhashMap;
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::IndexVec;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_macros::{Decodable, Encodable, StableHash};
 use tracing::{debug, trace};
 
 use crate::rustc_span::def_id::{CRATE_DEF_ID, CrateNum, DefId, LOCAL_CRATE, ModId, StableCrateId};
@@ -1019,8 +1017,8 @@ pub struct ExpnData {
     /// Due to macro expansion, it's possible to end up with two `ExpnId`s
     /// that have identical `ExpnData`s. This violates the contract of `StableHash`
     /// - the two `ExpnId`s are not equal, but their `Fingerprint`s are equal
-    /// (since the numerical `ExpnId` value is not considered by the `StableHash`
-    /// implementation).
+    ///   (since the numerical `ExpnId` value is not considered by the `StableHash`
+    ///   implementation).
     ///
     /// The `disambiguator` field is set by `update_disambiguator` when two distinct
     /// `ExpnId`s would end up with the same `Fingerprint`. Since `ExpnData` includes
@@ -1061,6 +1059,10 @@ pub struct ExpnData {
 // so nobody compares or hashes the whole struct. On stable, kept by not writing either.
 
 impl ExpnData {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn new(
         kind: ExpnKind,
         parent: ExpnId,

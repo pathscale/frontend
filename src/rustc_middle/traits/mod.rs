@@ -5,11 +5,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod cache;
@@ -20,19 +18,19 @@ pub mod specialization_graph;
 mod structural_impls;
 
 use alloc::borrow::Cow;
-use core::hash::{Hash, Hasher};
 use alloc::sync::Arc;
+use core::hash::{Hash, Hasher};
 
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_errors::{Applicability, Diag, EmissionGuarantee, ErrorGuaranteed};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::HirId;
 use crate::rustc_hir::def_id::DefId;
+use crate::rustc_span::def_id::{CRATE_DEF_ID, LocalDefId};
+use crate::rustc_span::{DUMMY_SP, Span, Symbol};
 use rustc_macros::{
     Decodable, Encodable, StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable,
 };
-use crate::rustc_span::def_id::{CRATE_DEF_ID, LocalDefId};
-use crate::rustc_span::{DUMMY_SP, Span, Symbol};
 use smallvec::{SmallVec, smallvec};
 use thin_vec::ThinVec;
 
@@ -133,7 +131,7 @@ impl<'tcx> ObligationCause<'tcx> {
     #[inline]
     pub fn code(&self) -> &ObligationCauseCode<'tcx> {
         match &self.code {
-            Some(code) => &**code,
+            Some(code) => code,
             None => self.inline.code(),
         }
     }
@@ -267,7 +265,7 @@ impl<'tcx> core::ops::Deref for ObligationCauseCodeHandle<'tcx> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         match &self.code {
-            Some(code) => &**code,
+            Some(code) => code,
             None => self.inline.code(),
         }
     }

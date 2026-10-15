@@ -2,12 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast::token::Delimiter;
 use crate::rustc_ast::tokenstream::{DelimSpan, TokenStream};
@@ -19,7 +13,7 @@ use crate::rustc_span::{Span, sym};
 /// This expands to either
 /// - `$crate::rustc_builtin_macros::panic::panic_2015!(...)` or
 /// - `$crate::rustc_builtin_macros::panic::panic_2021!(...)`
-/// depending on the edition.
+///   depending on the edition.
 ///
 /// This is used for both core::panic!() and core::panic!().
 ///
@@ -37,7 +31,7 @@ pub(crate) fn expand_panic<'cx>(
 /// This expands to either
 /// - `$crate::rustc_builtin_macros::panic::unreachable_2015!(...)` or
 /// - `$crate::rustc_builtin_macros::panic::unreachable_2021!(...)`
-/// depending on the edition.
+///   depending on the edition.
 pub(crate) fn expand_unreachable<'cx>(
     cx: &'cx mut ExtCtxt<'_>,
     sp: Span,

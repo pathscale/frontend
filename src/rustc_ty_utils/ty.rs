@@ -1,10 +1,9 @@
-use alloc::vec::Vec;
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_infer::infer::TyCtxtInferExt;
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{
     self, RegionExt, SizedTraitKind, Ty, TyCtxt, TypeSuperVisitable, TypeVisitable, TypeVisitor,
@@ -13,6 +12,7 @@ use crate::rustc_middle::ty::{
 use crate::rustc_span::DUMMY_SP;
 use crate::rustc_span::def_id::{CRATE_DEF_ID, DefId, LocalDefId};
 use crate::rustc_trait_selection::traits;
+use alloc::vec::Vec;
 use tracing::instrument;
 
 /// If `ty` implements the given `sizedness` trait, returns `None`. Otherwise, returns the type

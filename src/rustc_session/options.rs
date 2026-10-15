@@ -1,17 +1,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::collections::BTreeMap;
 use core::num::NonZero;
-use eko::path::PathBuf;
 use core::str;
+use eko::path::PathBuf;
 
 use crate::rustc_abi::Align;
 use crate::rustc_ast::attr::version::RustcVersion;
@@ -21,7 +18,6 @@ use crate::rustc_data_structures::stable_hash::StableHasher;
 use crate::rustc_errors::{ColorConfig, TerminalUrl};
 use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_hashes::Hash64;
-use rustc_macros::{BlobDecodable, Encodable};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{RealFileName, RemapPathScopeComponents, SourceFileHashAlgorithm};
 use crate::rustc_structures::{CollapseMacroDebuginfo, CrateType};
@@ -30,6 +26,7 @@ use crate::rustc_target::spec::{
     RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, SymbolVisibility,
     TargetTuple, TlsModel,
 };
+use rustc_macros::{BlobDecodable, Encodable};
 
 use crate::rustc_session::config::*;
 use crate::rustc_session::search_paths::SearchPath;
@@ -364,6 +361,7 @@ top_level_options!(
 
         /// Effective logical environment used by `env!`/`option_env!` macros
         logical_env: FxIndexMap<String, String> [TRACKED],
+        isolated_env: bool [TRACKED],
 
         test: bool [TRACKED],
         error_format: ErrorOutputType [UNTRACKED],
@@ -376,10 +374,8 @@ top_level_options!(
         unstable_opts: UnstableOptions [SUBSTRUCT] { TARGET_MODIFIER: UnstableOptions(UnstableOptionsTargetModifiers) },
         cg: CodegenOptions [SUBSTRUCT] { TARGET_MODIFIER: CodegenOptions(CodegenOptionsTargetModifiers) },
         externs: Externs [UNTRACKED],
-        /// Per loaded proc-macro crate that was read from source, the host dylib a compiler built
-        /// from that source: `(metadata file the crate is loaded from, dylib)`. Such a crate's
-        /// macros run through that dylib; a proc-macro crate with none declares its macros and
-        /// refuses every expansion. frontend's own, with no rustc flag behind it.
+        /// Retained for source compatibility. Native proc-macro execution is disabled;
+        /// this field does not enable loading or executing a dynamic library.
         proc_macro_dylibs: Vec<(PathBuf, PathBuf)> [UNTRACKED],
         crate_name: Option<String> [TRACKED],
         /// Indicates how the compiler should treat unstable features.
@@ -613,8 +609,8 @@ impl CodegenOptions {
 
 pub mod parse {
     use alloc::string::String;
-    use alloc::vec::Vec;
     use alloc::string::ToString;
+    use alloc::vec::Vec;
     use core::str::FromStr;
 
     pub(crate) use super::*;
@@ -739,11 +735,7 @@ pub mod parse {
             match option {
                 "bti" => parsed.bti = true,
                 "pac-ret" if parsed.pac_ret.is_none() => {
-                    parsed.pac_ret = Some(PacRet {
-                        leaf: false,
-                        pc: false,
-                        key: PAuthKey::A,
-                    });
+                    parsed.pac_ret = Some(PacRet { leaf: false, pc: false, key: PAuthKey::A });
                 }
                 "leaf" => match parsed.pac_ret.as_mut() {
                     Some(pac) => pac.leaf = true,

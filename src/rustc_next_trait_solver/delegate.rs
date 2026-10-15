@@ -67,6 +67,10 @@ pub trait SolverDelegate: Deref<Target = Self::Infcx> + Sized {
     ) -> Result<Option<<Self::Interner as Interner>::Const>, E>;
 
     // FIXME: This only is here because `wf::obligations` is in `rustc_trait_selection`!
+    #[expect(
+        clippy::type_complexity,
+        reason = "the returned goals are parameterized by the delegate's interner"
+    )]
     fn well_formed_goals(
         &self,
         param_env: <Self::Interner as Interner>::ParamEnv,

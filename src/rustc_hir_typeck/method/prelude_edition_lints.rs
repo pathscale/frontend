@@ -1,27 +1,24 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::Write;
 
-use hir::def_id::DefId;
-use hir::{HirId, ItemKind};
 use crate::rustc_ast::join_path_idents;
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, Level};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_lint::{ARRAY_INTO_ITER, BOXED_SLICE_INTO_ITER};
 use crate::rustc_lint_defs::builtin::{RUST_2021_PRELUDE_COLLISIONS, RUST_2024_PRELUDE_COLLISIONS};
-use crate::span_bug;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::{Ident, STDLIB_STABLE_CRATES, Span, Symbol, kw, sym};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
+use crate::span_bug;
+use hir::def_id::DefId;
+use hir::{HirId, ItemKind};
 use tracing::debug;
 
 use crate::rustc_hir_typeck::FnCtxt;
@@ -164,6 +161,10 @@ impl<'a, 'c, 'tcx, 'fnctx> Diagnostic<'a, ()> for AmbiguousTraitMethod<'c, 'tcx,
 }
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(super) fn lint_edition_dependent_dot_call(
         &self,
         self_ty: Ty<'tcx>,
@@ -326,9 +327,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         format!(
                             "{}<{}>",
                             trait_path,
-                            core::iter::repeat("'_")
-                                .take(counts.lifetimes)
-                                .chain(core::iter::repeat("_").take(
+                            core::iter::repeat_n("'_", counts.lifetimes)
+                                .chain(core::iter::repeat_n(
+                                    "_",
                                     counts.types + counts.consts - trait_generics.has_self as usize
                                 ))
                                 .collect::<Vec<_>>()
@@ -344,22 +345,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // Get the number of generics the self type has (if an Adt) unless we can determine that
                 // the user has written the self type with generics already which we (naively) do by looking
                 // for a "<" in `self_ty_name`.
-                if !self_ty_name.contains('<') {
-                    if let ty::Adt(def, _) = self_ty.kind() {
-                        let generics = this.tcx.generics_of(def.did());
-                        if !generics.is_own_empty() {
-                            let counts = generics.own_counts();
-                            self_ty_name += &format!(
-                                "<{}>",
-                                core::iter::repeat("'_")
-                                    .take(counts.lifetimes)
-                                    .chain(
-                                        core::iter::repeat("_").take(counts.types + counts.consts)
-                                    )
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
+                if !self_ty_name.contains('<')
+                    && let ty::Adt(def, _) = self_ty.kind()
+                {
+                    let generics = this.tcx.generics_of(def.did());
+                    if !generics.is_own_empty() {
+                        let counts = generics.own_counts();
+                        self_ty_name += &format!(
+                            "<{}>",
+                            core::iter::repeat_n("'_", counts.lifetimes)
+                                .chain(core::iter::repeat_n("_", counts.types + counts.consts))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
                     }
                 }
                 lint.span_suggestion(
@@ -389,16 +387,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // For from_iter, check if the type actually implements FromIterator.
         // If we know it does not, we don't need to warn.
-        if method_name.name == sym::from_iter {
-            if let Some(trait_def_id) = self.tcx.get_diagnostic_item(sym::FromIterator) {
-                let any_type = self.infcx.next_ty_var(span);
-                if !self
-                    .infcx
-                    .type_implements_trait(trait_def_id, [self_ty, any_type], self.param_env)
-                    .may_apply()
-                {
-                    return;
-                }
+        if method_name.name == sym::from_iter
+            && let Some(trait_def_id) = self.tcx.get_diagnostic_item(sym::FromIterator)
+        {
+            let any_type = self.infcx.next_ty_var(span);
+            if !self
+                .infcx
+                .type_implements_trait(trait_def_id, [self_ty, any_type], self.param_env)
+                .may_apply()
+            {
+                return;
             }
         }
 

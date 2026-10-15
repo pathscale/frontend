@@ -2,9 +2,9 @@
 
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use crate::rustc_hir as hir;
+use crate::rustc_hir::HirId;
 use crate::rustc_hir::def::Res;
 use crate::rustc_hir::intravisit::{self, Visitor};
-use crate::rustc_hir::{self, HirId};
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::Span;
@@ -19,14 +19,14 @@ pub(crate) fn provide(providers: &mut Providers) {
         let body = tcx.hir_maybe_body_owned_by(local_def_id)?;
 
         let mut local_collector = LocalCollector::default();
-        local_collector.visit_body(&body);
+        local_collector.visit_body(body);
 
         let mut capture_collector = CaptureCollector {
             tcx,
             locals: &local_collector.locals,
             upvars: FxIndexMap::default(),
         };
-        capture_collector.visit_body(&body);
+        capture_collector.visit_body(body);
 
         if !capture_collector.upvars.is_empty() {
             Some(tcx.arena.alloc(capture_collector.upvars))

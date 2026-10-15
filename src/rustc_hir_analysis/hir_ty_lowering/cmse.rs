@@ -1,17 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_errors::{DiagCtxtHandle, E0781, struct_span_code_err};
 use crate::rustc_hir::{self as hir, HirId};
-use crate::bug;
 use crate::rustc_middle::ty::layout::{LayoutCx, LayoutError, TyAndLayout};
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use crate::rustc_span::Span;
@@ -67,16 +63,16 @@ pub(crate) fn validate_cmse_abi<'tcx>(
         _ => return,
     };
 
-    if let Err((span, layout_err)) = is_valid_cmse_inputs(tcx, dcx, fn_sig, fn_decl, abi) {
-        if should_emit_layout_error(abi, layout_err) {
-            dcx.emit_err(diagnostics::CmseGeneric { span, abi });
-        }
+    if let Err((span, layout_err)) = is_valid_cmse_inputs(tcx, dcx, fn_sig, fn_decl, abi)
+        && should_emit_layout_error(abi, layout_err)
+    {
+        dcx.emit_err(diagnostics::CmseGeneric { span, abi });
     }
 
-    if let Err(layout_err) = is_valid_cmse_output(tcx, dcx, fn_sig, fn_decl, abi) {
-        if should_emit_layout_error(abi, layout_err) {
-            dcx.emit_err(diagnostics::CmseGeneric { span: fn_decl.output.span(), abi });
-        }
+    if let Err(layout_err) = is_valid_cmse_output(tcx, dcx, fn_sig, fn_decl, abi)
+        && should_emit_layout_error(abi, layout_err)
+    {
+        dcx.emit_err(diagnostics::CmseGeneric { span: fn_decl.output.span(), abi });
     }
 }
 

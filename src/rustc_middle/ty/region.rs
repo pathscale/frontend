@@ -1,21 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_errors::MultiSpan;
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, extension};
 use crate::rustc_span::{DUMMY_SP, ErrorGuaranteed, Symbol, kw, sym};
 pub use crate::rustc_type_ir::RegionVid;
 use crate::rustc_type_ir::{
     LateParamRegion as IrLateParamRegion, Region as IrRegion, RegionKind as IrRegionKind,
 };
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, extension};
 
 use crate::rustc_middle::ty::{self, BoundVar, TyCtxt};
 
@@ -24,6 +18,10 @@ pub type RegionKind<'tcx> = IrRegionKind<TyCtxt<'tcx>>;
 pub type LateParamRegion<'tcx> = IrLateParamRegion<TyCtxt<'tcx>>;
 
 #[extension(pub trait RegionExt<'tcx>)]
+#[allow(
+    clippy::wrong_self_convention,
+    reason = "RegionExt preserves the compiler's by-value API for this small Copy region handle"
+)]
 impl<'tcx> Region<'tcx> {
     #[inline]
     fn new_early_param(

@@ -91,7 +91,7 @@ pub(crate) enum DiagnosticDeriveError {
 }
 
 impl DiagnosticDeriveError {
-    pub(crate) fn to_compile_error(self) -> TokenStream {
+    pub(crate) fn into_compile_error(self) -> TokenStream {
         match self {
             DiagnosticDeriveError::SynError(e) => e.to_compile_error(),
             DiagnosticDeriveError::ErrorHandled => {
@@ -134,7 +134,6 @@ fn path_to_string(path: &syn::Path) -> String {
 }
 
 /// Returns an error diagnostic on span `span` with msg `msg`.
-#[must_use]
 pub(crate) fn span_err<T: Into<String>>(span: impl Into<Span>, msg: T) -> Diagnostic {
     Diagnostic::spanned(span, format!("derive(Diagnostic): {}", msg.into()))
 }

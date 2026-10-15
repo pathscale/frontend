@@ -1,11 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::any::Any;
@@ -23,7 +19,11 @@ pub struct DecorateDiagCompat(
     /// The third argument of the closure is a `Session`. However, due to the dependency tree,
     /// we don't have access to `rustc_session` here, so we downcast it when needed.
     // Deferred parser lints are owned output, including their decorator captures.
-    pub Box<
+    #[expect(
+        clippy::type_complexity,
+        reason = "stores a one-shot diagnostic callback with its diagnostic lifetime and thread-safety bounds"
+    )]
+    pub  Box<
         dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()>
             + Send
             + Sync
@@ -110,10 +110,7 @@ impl LintBuffer {
     }
 
     pub fn dyn_buffer_lint_any<
-        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn Any) -> Diag<'a, ()> + Send + Sync + 'static,
     >(
         &mut self,
         lint: &'static Lint,

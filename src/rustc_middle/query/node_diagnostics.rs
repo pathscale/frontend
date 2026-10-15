@@ -113,7 +113,9 @@ impl NodeDiagnostics {
                 Err(winner) => {
                     // SAFETY: `fresh` came from `Box::into_raw` of a `PAGE_WORDS` slice just
                     // above and was never shared: the exchange failed.
-                    drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(fresh, PAGE_WORDS)) });
+                    drop(unsafe {
+                        Box::from_raw(ptr::slice_from_raw_parts_mut(fresh, PAGE_WORDS))
+                    });
                     current = winner;
                 }
             }

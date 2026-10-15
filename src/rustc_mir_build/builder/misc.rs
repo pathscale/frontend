@@ -1,11 +1,11 @@
 //! Miscellaneous builder routines that are not specific to building any particular
 //! kind of thing.
 
-use alloc::boxed::Box;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::Span;
 use crate::rustc_trait_selection::infer::InferCtxtExt;
+use alloc::boxed::Box;
 use tracing::debug;
 
 use crate::rustc_mir_build::builder::Builder;

@@ -1,28 +1,28 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::iter::repeat_n;
 use core::ops::ControlFlow;
 
-use hir::intravisit::{self, Visitor};
 use crate::rustc_ast::Recovered;
-use crate::rustc_errors::{Applicability, Diag, EmissionGuarantee, Subdiagnostic, SuggestionStyle, msg};
+use crate::rustc_errors::{
+    Applicability, Diag, EmissionGuarantee, Subdiagnostic, SuggestionStyle, msg,
+};
 use crate::rustc_hir::{self as hir, HirIdSet};
 use crate::rustc_lint_defs::{LintId, declare_lint, fcw, impl_lint_pass};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::adjustment::Adjust;
 use crate::rustc_middle::ty::significant_drop_order::{
     extract_component_with_significant_dtor, ty_dtor_span,
 };
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::{DUMMY_SP, Span};
+use hir::intravisit::{self, Visitor};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 use smallvec::SmallVec;
 
 use crate::rustc_lint::{LateContext, LateLintPass};
@@ -188,7 +188,7 @@ impl IfLetRescope {
                             None
                         }
                     }));
-                    first_if_to_lint = first_if_to_lint.or_else(|| Some((span, expr.hir_id)));
+                    first_if_to_lint = first_if_to_lint.or(Some((span, expr.hir_id)));
                     significant_droppers.push(drop_span);
                     lifetime_ends.push(lifetime_end);
                     if ty_ascription.is_some()
@@ -358,7 +358,8 @@ impl Subdiagnostic for IfLetRescopeRewrite {
             closing_brackets
                 .empty_alt
                 .then_some(" _ => {}".chars())
-                .into_iter().flatten()
+                .into_iter()
+                .flatten()
                 .chain(repeat_n('}', closing_brackets.count))
                 .collect(),
         ));

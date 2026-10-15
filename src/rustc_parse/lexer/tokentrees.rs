@@ -114,6 +114,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
                 self.bump_minimal()
             } else {
                 // Incorrect delimiter.
+                sink.invalidate_source_tokens();
                 let mut unclosed_delimiter = None;
                 let mut candidate = None;
 
@@ -161,6 +162,7 @@ impl<'psess, 'src> Lexer<'psess, 'src> {
             }
         } else {
             assert_eq!(self.token.kind, token::Eof);
+            sink.invalidate_source_tokens();
             // Silently recover, the EOF token will be seen again
             // and an error emitted then. Thus we don't pop from
             // self.open_delimiters here. The choice of spacing value here

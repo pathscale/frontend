@@ -1,7 +1,7 @@
 use derive_where::derive_where;
+use rustc_macros::GenericTypeVisitable;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash_NoContext};
-use rustc_macros::GenericTypeVisitable;
 
 use crate::rustc_type_ir::{Interner, Region};
 

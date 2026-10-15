@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 use frontend::frontend_facts::{
-    CrateFacts, Checked, analyze_shared_source_with_width, check_shared_source_with_width,
+    Checked, CrateFacts, analyze_shared_source_with_width, check_shared_source_with_width,
 };
 
 /// Counts every allocation (and reallocation) this program makes, the compiler's included:
@@ -63,11 +63,30 @@ fn size_class(size: usize) -> usize {
 fn print_sites(traces: &[std::backtrace::Backtrace], every: u64, allocs: u64) {
     let skip = |name: &str| {
         [
-            "alloc::", "core::", "std::", "hashbrown", "indexmap", "smallvec", "thin_vec",
-            "rustc_arena", "frontend_arena", "Counting", "record_site", "track_live",
-            "parallel_timing", "__rust", "RawVec",
-            "rustc_data_structures::sharded", "rustc_data_structures::fx", "ToOwned",
-            "Clone", "clone", "FromIterator", "Extend", "collect", "backtrace",
+            "alloc::",
+            "core::",
+            "std::",
+            "hashbrown",
+            "indexmap",
+            "smallvec",
+            "thin_vec",
+            "rustc_arena",
+            "frontend_arena",
+            "Counting",
+            "record_site",
+            "track_live",
+            "parallel_timing",
+            "__rust",
+            "RawVec",
+            "rustc_data_structures::sharded",
+            "rustc_data_structures::fx",
+            "ToOwned",
+            "Clone",
+            "clone",
+            "FromIterator",
+            "Extend",
+            "collect",
+            "backtrace",
         ]
         .iter()
         .any(|pat| name.contains(pat))
@@ -82,10 +101,10 @@ fn print_sites(traces: &[std::backtrace::Backtrace], every: u64, allocs: u64) {
         for line in text.lines() {
             let line = line.trim();
             if let Some(at) = line.strip_prefix("at ") {
-                if let Some(last) = frames.last_mut() {
-                    if last.1.is_empty() {
-                        last.1 = at;
-                    }
+                if let Some(last) = frames.last_mut()
+                    && last.1.is_empty()
+                {
+                    last.1 = at;
                 }
             } else if let Some((_, name)) = line.split_once(": ") {
                 frames.push((name, ""));
@@ -103,13 +122,22 @@ fn print_sites(traces: &[std::backtrace::Backtrace], every: u64, allocs: u64) {
             // std's frames sit under `/rustc/<commit>/library`, dependencies' under `.cargo`;
             // this crate's are relative (`./src/..`) or under its own directory.
             ![
-                "/rustc/", ".cargo/", "/library/", "rustc_index/", "/ena/", "rustc_arena",
-                "frontend_arena", "sharded.rs", "thin_vec", "smallvec", "examples/",
+                "/rustc/",
+                ".cargo/",
+                "/library/",
+                "rustc_index/",
+                "/ena/",
+                "rustc_arena",
+                "frontend_arena",
+                "sharded.rs",
+                "thin_vec",
+                "smallvec",
+                "examples/",
             ]
             .iter()
             .any(|pat| at.contains(pat))
         };
-        let first_own = frames.iter().position(|frame| own(frame));
+        let first_own = frames.iter().position(&own);
         let site = first_own.map_or("?", |i| frames[i].0);
         let site_at = first_own.map_or("", |i| frames[i].1);
         let caller = first_own
@@ -128,7 +156,7 @@ fn print_sites(traces: &[std::backtrace::Backtrace], every: u64, allocs: u64) {
     {
         println!("\n{title}:");
         let mut rows: Vec<_> = map.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows.sort_by_key(|a| core::cmp::Reverse(a.1));
         for (name, n) in rows.into_iter().take(80) {
             println!("{:>6.2}%  ~{:>9}  {name}", n as f64 * 100.0 / total as f64, n * every);
         }
@@ -164,7 +192,7 @@ fn track_live(delta: i64) {
     let over_base = live - BASE.load(Relaxed);
     if over_base >= NEXT_LEVEL.load(Relaxed) && !IN_SITE.with(|flag| flag.replace(true)) {
         // Re-check under the lock: another thread may have crossed and advanced it first.
-        let mut levels = LEVELS.lock().unwrap();
+        let levels = LEVELS.lock().unwrap();
         let armed = NEXT_LEVEL.load(Relaxed);
         if over_base >= armed {
             let index = levels.iter().position(|&l| l == armed).unwrap_or(0);
@@ -177,7 +205,7 @@ fn track_live(delta: i64) {
     }
     if over_base > CAP.load(Relaxed) {
         let n = OVER.fetch_add(1, Relaxed);
-        if n % OVER_EVERY == 0 && !IN_SITE.with(|flag| flag.replace(true)) {
+        if n.is_multiple_of(OVER_EVERY) && !IN_SITE.with(|flag| flag.replace(true)) {
             let trace = std::backtrace::Backtrace::force_capture();
             SITE_TRACES.lock().unwrap().push(trace);
             IN_SITE.with(|flag| flag.set(false));
@@ -188,13 +216,17 @@ fn track_live(delta: i64) {
 /// `alloc-sites`: every `SITE_EVERY`th counted allocation records its backtrace. Off unless set.
 static SITES: AtomicBool = AtomicBool::new(false);
 const SITE_EVERY: u64 = 1024;
-static SITE_TRACES: std::sync::Mutex<Vec<std::backtrace::Backtrace>> = std::sync::Mutex::new(Vec::new());
+static SITE_TRACES: std::sync::Mutex<Vec<std::backtrace::Backtrace>> =
+    std::sync::Mutex::new(Vec::new());
 thread_local! {
     /// Set while this thread records a backtrace, whose own allocations must not record.
     static IN_SITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn record_site(n: u64) {
-    if !SITES.load(Relaxed) || n % SITE_EVERY != 0 || IN_SITE.with(|flag| flag.replace(true)) {
+    if !SITES.load(Relaxed)
+        || !n.is_multiple_of(SITE_EVERY)
+        || IN_SITE.with(|flag| flag.replace(true))
+    {
         return;
     }
     let trace = std::backtrace::Backtrace::force_capture();
@@ -209,8 +241,9 @@ static HELD: AtomicBool = AtomicBool::new(false);
 const HELD_EVERY: u64 = 128;
 const HELD_BIG: usize = 4096;
 static HELD_COUNT: AtomicU64 = AtomicU64::new(0);
-static HELD_LIVE: std::sync::Mutex<Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>> =
-    std::sync::Mutex::new(None);
+static HELD_LIVE: std::sync::Mutex<
+    Option<std::collections::HashMap<usize, (usize, std::backtrace::Backtrace)>>,
+> = std::sync::Mutex::new(None);
 /// Live bytes (over `BASE`) at which to take the `mem-held` snapshot; `i64::MAX` when none.
 static HELD_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MAX);
 static HELD_SNAPSHOT: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
@@ -222,7 +255,7 @@ fn held_alloc(ptr: *mut u8, size: usize) {
     // Every allocation of `HELD_BIG` bytes or more is remembered at its own size, so the few
     // large tables and arenas are counted exactly; a smaller one stands for the `HELD_EVERY`
     // allocations it was sampled from.
-    let sampled = HELD_COUNT.fetch_add(1, Relaxed) % HELD_EVERY == 0;
+    let sampled = HELD_COUNT.fetch_add(1, Relaxed).is_multiple_of(HELD_EVERY);
     if size >= HELD_BIG || sampled {
         let weight = if size >= HELD_BIG { size } else { size * HELD_EVERY as usize };
         let trace = std::backtrace::Backtrace::force_capture();
@@ -395,7 +428,13 @@ impl Lcg {
 
 /// `count` files of `min_lines..=max_lines` lines each. `name` goes into every tag, so the
 /// clean and large corpora do not share a file either.
-fn generated(name: char, count: usize, min_lines: usize, max_lines: usize, seed: u64) -> Vec<String> {
+fn generated(
+    name: char,
+    count: usize,
+    min_lines: usize,
+    max_lines: usize,
+    seed: u64,
+) -> Vec<String> {
     let mut rng = Lcg(seed);
     (0..count)
         .map(|file| {
@@ -430,7 +469,10 @@ fn pass_counting(width: usize, files: &[String], count: bool) -> (Answers, f64, 
     // Shared once, outside the timing: each call below hands its session the same text.
     let files: Vec<Arc<String>> = files.iter().cloned().map(Arc::new).collect();
     let check_all = || -> Vec<Checked> {
-        files.iter().map(|s| check_shared_source_with_width("corpus", Arc::clone(s), width)).collect()
+        files
+            .iter()
+            .map(|s| check_shared_source_with_width("corpus", Arc::clone(s), width))
+            .collect()
     };
     let start = Instant::now();
     let checked = check_all();
@@ -467,7 +509,11 @@ fn allocation_classes() {
     for (class, count) in BY_SIZE.iter().enumerate() {
         let count = count.load(Relaxed);
         if count * 200 >= total {
-            line.push_str(&format!(" <{}B {:.0}%", 1u64 << (class + 1), count as f64 * 100.0 / total as f64));
+            line.push_str(&format!(
+                " <{}B {:.0}%",
+                1u64 << (class + 1),
+                count as f64 * 100.0 / total as f64
+            ));
         }
     }
     println!("{line}");
@@ -479,7 +525,10 @@ fn parse_only(label: &str, files: &[String]) {
     frontend::unwind_janky::install_catcher(catcher);
     let bytes: usize = files.iter().map(String::len).sum();
     for f in files {
-        assert!(frontend::frontend_facts::syntax::parses(f).is_ok(), "{label}: a file does not parse");
+        assert!(
+            frontend::frontend_facts::syntax::parses(f).is_ok(),
+            "{label}: a file does not parse"
+        );
     }
     let parse_all = || {
         for f in files {
@@ -531,13 +580,17 @@ fn run(label: &str, files: &[String]) {
         if answers != want {
             for (i, (a, b)) in want.0.iter().zip(&answers.0).enumerate() {
                 if a != b {
-                    eprintln!("{label}: check differs at file {i}:\n  one: {a:?}\n  {width}: {b:?}");
+                    eprintln!(
+                        "{label}: check differs at file {i}:\n  one: {a:?}\n  {width}: {b:?}"
+                    );
                     break;
                 }
             }
             for (i, (a, b)) in want.1.iter().zip(&answers.1).enumerate() {
                 if a != b {
-                    eprintln!("{label}: analyze differs at file {i}:\n  one: {a:?}\n  {width}: {b:?}");
+                    eprintln!(
+                        "{label}: analyze differs at file {i}:\n  one: {a:?}\n  {width}: {b:?}"
+                    );
                     break;
                 }
             }
@@ -617,8 +670,10 @@ fn main() {
         let files: Arc<Vec<Arc<String>>> = Arc::new(texts.into_iter().map(Arc::new).collect());
         // The reference, serial, one file after another.
         let start = Instant::now();
-        let serial: Vec<Checked> =
-            files.iter().map(|f| check_shared_source_with_width("corpus", Arc::clone(f), 1)).collect();
+        let serial: Vec<Checked> = files
+            .iter()
+            .map(|f| check_shared_source_with_width("corpus", Arc::clone(f), 1))
+            .collect();
         let serial_ms = start.elapsed().as_secs_f64() * 1e3;
         let runtime = nagoya::runtime::Runtime::builder()
             .workers(workers)
@@ -635,11 +690,13 @@ fn main() {
             let (in_files, in_slots) = (Arc::clone(&files), Arc::clone(&slots));
             let start = Instant::now();
             nagoya::block_on(nagoya::par_for(Arc::clone(&pool), 0..files.len(), move |i| {
-                let checked = check_shared_source_with_width("corpus", Arc::clone(&in_files[i]), inner);
+                let checked =
+                    check_shared_source_with_width("corpus", Arc::clone(&in_files[i]), inner);
                 let _ = in_slots[i].set(checked);
             }));
             let ms = start.elapsed().as_secs_f64() * 1e3;
-            let out = slots.iter().map(|slot| slot.get().expect("every file checked").clone()).collect();
+            let out =
+                slots.iter().map(|slot| slot.get().expect("every file checked").clone()).collect();
             (out, ms)
         };
         let _ = run();
@@ -677,8 +734,7 @@ fn main() {
     // `alloc-sites parse` samples the parse alone (`syntax::parses`), the parse-only line's pass.
     if only.as_deref() == Some("alloc-sites") {
         frontend::unwind_janky::install_catcher(catcher);
-        let files: Vec<Arc<String>> =
-            corpus("clean").into_iter().map(Arc::new).collect();
+        let files: Vec<Arc<String>> = corpus("clean").into_iter().map(Arc::new).collect();
         let parse = std::env::args().nth(2).as_deref() == Some("parse");
         SITES.store(true, Relaxed);
         let ((), allocs, _) = counted(|| {
@@ -768,17 +824,42 @@ fn main() {
         let total: usize = rows.iter().map(|r| r.0).sum();
         let site_of = |text: &str| -> String {
             let skip = [
-                "alloc::", "core::", "std::", "hashbrown", "indexmap", "smallvec", "thin_vec",
-                "rustc_arena", "frontend_arena", "parallel_timing", "__rust", "RawVec",
-                "backtrace", "held_alloc", "Counting", "rustc_index::", "sharded", "fx::",
-                "Clone", "clone", "FromIterator", "Extend", "collect", "arena::Arena",
-                "rustc_middle::arena", "ToOwned", "_malloc", "<unknown>",
+                "alloc::",
+                "core::",
+                "std::",
+                "hashbrown",
+                "indexmap",
+                "smallvec",
+                "thin_vec",
+                "rustc_arena",
+                "frontend_arena",
+                "parallel_timing",
+                "__rust",
+                "RawVec",
+                "backtrace",
+                "held_alloc",
+                "Counting",
+                "rustc_index::",
+                "sharded",
+                "fx::",
+                "Clone",
+                "clone",
+                "FromIterator",
+                "Extend",
+                "collect",
+                "arena::Arena",
+                "rustc_middle::arena",
+                "ToOwned",
+                "_malloc",
+                "<unknown>",
             ];
             text.lines()
                 .map(str::trim)
                 .filter(|line| !line.starts_with("at "))
                 .filter_map(|line| line.split_once(": ").map(|(_, name)| name))
-                .find(|name| name.contains("frontend") && !skip.iter().any(|pat| name.contains(pat)))
+                .find(|name| {
+                    name.contains("frontend") && !skip.iter().any(|pat| name.contains(pat))
+                })
                 .map(|name| name.rsplit_once("::h").map_or(name, |(a, _)| a).to_string())
                 .unwrap_or_else(|| "?".to_string())
         };
@@ -802,7 +883,7 @@ fn main() {
             ("by site", by_site.into_iter().collect()),
         ] {
             let mut map = map;
-            map.sort_by(|a, b| b.1.cmp(&a.1));
+            map.sort_by_key(|a| core::cmp::Reverse(a.1));
             println!("\n{title}:");
             for (name, bytes) in map.into_iter().take(30) {
                 println!("{:>6.2}%  {name}", bytes as f64 * 100.0 / total.max(1) as f64);
@@ -825,13 +906,19 @@ fn main() {
                     .take(6)
                     .map(|name| {
                         let name = name.rsplit_once("::h").map_or(name, |(a, _)| a);
-                        name.rsplit("::").take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("::")
+                        name.rsplit("::")
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>()
+                            .join("::")
                     })
                     .collect();
                 *chains.entry(chain.join(" <- ")).or_default() += size;
             }
             let mut chains: Vec<_> = chains.into_iter().collect();
-            chains.sort_by(|a, b| b.1.cmp(&a.1));
+            chains.sort_by_key(|a| core::cmp::Reverse(a.1));
             println!("\ncallers of {filter}:");
             for (chain, bytes) in chains.into_iter().take(15) {
                 println!("{:>6.2}%  {chain}", bytes as f64 * 100.0 / total.max(1) as f64);
@@ -898,7 +985,9 @@ fn main() {
                 .lines()
                 .map(str::trim)
                 .filter(|line| !line.starts_with("at "))
-                .find(|line| line.contains("rustc_interface::") || line.contains("frontend_facts::"))
+                .find(|line| {
+                    line.contains("rustc_interface::") || line.contains("frontend_facts::")
+                })
                 .map(|line| line.split_once(": ").map_or(line, |(_, name)| name))
                 .map(|name| name.rsplit_once("::h").map_or(name, |(a, _)| a).to_string())
                 .unwrap_or_else(|| "?".to_string());
@@ -913,19 +1002,23 @@ fn main() {
         );
         for (i, fraction) in FRACTIONS.iter().enumerate() {
             let mut rows: Vec<_> = table[i].iter().collect();
-            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            rows.sort_by_key(|a| core::cmp::Reverse(a.1.0));
             let n: u64 = rows.iter().map(|r| r.1.0).sum();
             let parts: Vec<String> = rows
                 .iter()
                 .take(5)
                 .map(|(pass, (count, at))| {
-                    format!("{pass} {:.0}% (at {:.0}%)", *count as f64 * 100.0 / n.max(1) as f64, at * 100.0 / *count as f64)
+                    format!(
+                        "{pass} {:.0}% (at {:.0}%)",
+                        *count as f64 * 100.0 / n.max(1) as f64,
+                        at * 100.0 / *count as f64
+                    )
                 })
                 .collect();
             println!("  {:>3.0}% of peak: {}", fraction * 100.0, parts.join(", "));
         }
         let mut unnamed: Vec<_> = unnamed.into_iter().collect();
-        unnamed.sort_by(|a, b| b.1.cmp(&a.1));
+        unnamed.sort_by_key(|a| core::cmp::Reverse(a.1));
         for (step, n) in unnamed.into_iter().take(6) {
             println!("    unnamed at 25%: {n} under {step}");
         }
@@ -949,7 +1042,11 @@ fn main() {
             let _ = check_shared_source_with_width("probe", Arc::clone(&file), width);
             let start = Instant::now();
             for _ in 0..RUNS {
-                std::hint::black_box(check_shared_source_with_width("probe", Arc::clone(&file), width));
+                std::hint::black_box(check_shared_source_with_width(
+                    "probe",
+                    Arc::clone(&file),
+                    width,
+                ));
             }
             let check_us = start.elapsed().as_secs_f64() * 1e6 / RUNS as f64;
             let ((), allocs, bytes) = counted(|| {
@@ -971,9 +1068,7 @@ fn main() {
     match (only.as_deref(), width) {
         (Some(name), Some(width)) => {
             let (_, check_ms, analyze_ms) = pass_counting(width, &corpus(name), false);
-            println!(
-                "{name} at {width}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms"
-            );
+            println!("{name} at {width}: check {check_ms:.1} ms, analyze {analyze_ms:.1} ms");
         }
         (Some(name), None) => run(name, &corpus(name)),
         (None, _) => {

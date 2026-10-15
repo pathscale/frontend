@@ -3,11 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::Write;
@@ -29,7 +26,10 @@ use crate::rustc_middle::ty::{
 };
 
 impl IntoDiagArg for Ty<'_> {
-    fn into_diag_arg(self, path: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        path: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         ty::tls::with(|tcx| {
             let ty = tcx.short_string(tcx.lift(self), path);
             DiagArgValue::Str(alloc::borrow::Cow::Owned(ty))
@@ -38,7 +38,10 @@ impl IntoDiagArg for Ty<'_> {
 }
 
 impl IntoDiagArg for Instance<'_> {
-    fn into_diag_arg(self, path: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        path: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         ty::tls::with(|tcx| {
             let instance = tcx.short_string_namespace(tcx.lift(self), path, Namespace::ValueNS);
             DiagArgValue::Str(alloc::borrow::Cow::Owned(instance))
@@ -110,6 +113,10 @@ pub trait IsSuggestable<'tcx>: Sized {
     ///
     /// Only if `infer_suggestable` is true, we consider type and const
     /// inference variables to be suggestable.
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "the predicate consumes this small type-level value"
+    )]
     fn is_suggestable(self, tcx: TyCtxt<'tcx>, infer_suggestable: bool) -> bool;
 
     fn make_suggestable(
@@ -404,9 +411,7 @@ pub fn suggest_constraining_type_params<'a>(
         };
         let constraint = constraint.join(" + ");
         let mut suggest_restrict = |span, bound_list_non_empty, open_paren_sp| {
-            let suggestion = if span_to_replace.is_some() {
-                constraint.clone()
-            } else if constraint.starts_with('<') {
+            let suggestion = if span_to_replace.is_some() || constraint.starts_with('<') {
                 constraint.clone()
             } else if bound_list_non_empty {
                 format!(" + {constraint}")
@@ -552,7 +557,7 @@ pub fn suggest_constraining_type_params<'a>(
         let (span, post, suggestion, msg) = suggestions.pop().unwrap();
         let msg = match msg {
             SuggestChangingConstraintsMessage::RestrictBoundFurther => {
-                format!("consider further restricting this bound")
+                "consider further restricting this bound".to_string()
             }
             SuggestChangingConstraintsMessage::RestrictTypeFurther { ty }
             | SuggestChangingConstraintsMessage::RestrictType { ty }
@@ -567,10 +572,11 @@ pub fn suggest_constraining_type_params<'a>(
                 format!("consider further restricting type parameter `{ty}` with {post}")
             }
             SuggestChangingConstraintsMessage::RemoveMaybeUnsized => {
-                format!("consider removing the `?Sized` bound to make the type parameter `Sized`")
+                "consider removing the `?Sized` bound to make the type parameter `Sized`"
+                    .to_string()
             }
             SuggestChangingConstraintsMessage::ReplaceMaybeUnsizedWithSized => {
-                format!("consider replacing `?Sized` with `Sized`")
+                "consider replacing `?Sized` with `Sized`".to_string()
             }
         };
 

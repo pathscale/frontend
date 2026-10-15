@@ -18,7 +18,7 @@
 //! [canonicalized]: https://rustc-dev-guide.rust-lang.org/solve/canonicalization.html
 
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use derive_where::derive_where;
 use rustc_macros::{GenericTypeVisitable, TypeFoldable_Generic, TypeVisitable_Generic};
 use thin_vec::ThinVec;

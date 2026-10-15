@@ -1,6 +1,4 @@
 // tidy-alphabetical-start
-#![cfg_attr(all(feature = "nightly", test), feature(test))]
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -17,7 +15,6 @@
 #[allow(unused_imports)]
 #[macro_use]
 // tidy-alphabetical-end
-
 pub mod bit_set;
 #[cfg(feature = "nightly")]
 pub mod interval;

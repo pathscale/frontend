@@ -10,14 +10,14 @@ pub mod util;
 use core::cmp;
 use core::hash::{Hash, Hasher};
 
-use hir::def_id::LocalDefId;
 use crate::rustc_hir as hir;
-use rustc_macros::{TypeFoldable, TypeVisitable};
 use crate::rustc_middle::traits::query::NoSolution;
 use crate::rustc_middle::traits::solve::Certainty;
 pub use crate::rustc_middle::traits::*;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt, Upcast};
 use crate::rustc_span::Span;
+use hir::def_id::LocalDefId;
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use thin_vec::ThinVec;
 
 pub use self::engine::{FromSolverError, ScrubbedTraitError, TraitEngine, TraitErrors};
@@ -79,7 +79,7 @@ impl<'tcx, T: PartialEq> PartialEq<Obligation<'tcx, T>> for Obligation<'tcx, T> 
 impl<T: Eq> Eq for Obligation<'_, T> {}
 
 impl<T: Hash> Hash for Obligation<'_, T> {
-    fn hash<H: Hasher>(&self, state: &mut H) -> () {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         // See the comment on `Obligation::eq`.
         self.param_env.hash(state);
         self.predicate.hash(state);

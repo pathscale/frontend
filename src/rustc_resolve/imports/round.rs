@@ -17,12 +17,8 @@ pub(super) fn stage_deltas(counts: Vec<usize>) -> Vec<RoundDelta> {
     });
 
     for (expected, delta) in deltas.iter().enumerate() {
-        assert_eq!(
-            delta.input_index, expected,
-            "rs3_import_round_commit_order"
-        );
+        assert_eq!(delta.input_index, expected, "rs3_import_round_commit_order");
     }
 
     deltas
 }
-

@@ -9,7 +9,9 @@ use crate::rustc_ast as ast;
 use crate::rustc_ast::token::DocFragmentKind;
 use crate::rustc_ast::{AttrStyle, CRATE_NODE_ID, NodeId, Safety};
 use crate::rustc_attr_ir::target::Target;
-use crate::rustc_attr_ir::{AttrArgs, AttrItem, AttrPath, Attribute, AttributeKind, HashIgnoredAttrId};
+use crate::rustc_attr_ir::{
+    AttrArgs, AttrItem, AttrPath, Attribute, AttributeKind, HashIgnoredAttrId,
+};
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, Level, MultiSpan};
 use crate::rustc_feature::{BUILTIN_ATTRIBUTE_MAP, Features};
 use crate::rustc_lint_defs::{LintId, RegisteredTools};
@@ -28,7 +30,11 @@ use crate::rustc_attr_parsing::{AttributeTemplate, ShouldEmit};
 
 // Preserve the ownership bounds when attribute lints become deferred parser output.
 pub struct EmitAttribute(
-    pub Box<
+    #[expect(
+        clippy::type_complexity,
+        reason = "stores a one-shot diagnostic callback with its session lifetime and thread-safety bounds"
+    )]
+    pub  Box<
         dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
             + Send
             + Sync
@@ -147,6 +153,10 @@ impl<'sess> AttributeParser<'sess> {
     /// `rustc_ast_lowering`. Some attributes require access to features to parse, which would
     /// crash if you tried to do so through [`parse_limited_all`](Self::parse_limited_all).
     /// Therefore, if `parse_filter` is None, then features *must* be provided.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn parse_limited_all(
         sess: &'sess Session,
         attrs: &[ast::Attribute],
@@ -172,6 +182,10 @@ impl<'sess> AttributeParser<'sess> {
 
     /// This method parses a single attribute, using `parse_fn`.
     /// This is useful if you already know what exact attribute this is, and want to parse it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn parse_single<T>(
         sess: &'sess Session,
         attr: &ast::Attribute,
@@ -218,6 +232,10 @@ impl<'sess> AttributeParser<'sess> {
 
     /// This method is equivalent to `parse_single`, but parses arguments using `parse_fn` using manually created `args`.
     /// This is useful when you want to parse other things than attributes using attribute parsers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn parse_single_args<T, I>(
         sess: &'sess Session,
         attr_span: Span,
@@ -328,10 +346,10 @@ impl<'sess> AttributeParser<'sess> {
 
         for attr in attrs {
             // If we're only looking for a single attribute, skip all the ones we don't care about.
-            if let Some(filter) = self.parse_filter {
-                if !filter(attr) {
-                    continue;
-                }
+            if let Some(filter) = self.parse_filter
+                && !filter(attr)
+            {
+                continue;
             }
 
             fn is_doc_non_lit_expr(attr: &ast::Attribute) -> bool {
@@ -448,7 +466,7 @@ impl<'sess> AttributeParser<'sess> {
                         Self::check_target(&accept.allowed_targets, "", &mut cx);
                         #[cfg(debug_assertions)]
                         if !cx.shared.has_lint_been_emitted.load(Ordering::Relaxed) {
-                            cx.shared.cx.check_args_used(attr, &args)
+                            cx.shared.cx.check_args_used(&args)
                         }
                     } else if let [sym::diagnostic, _unknown, ..] = &*parts {
                         self.unknown_diagnostic_attr(&n.item.path.segments[1], &mut emit_lint);
@@ -538,10 +556,13 @@ impl<'sess> AttributeParser<'sess> {
     #[cfg(debug_assertions)]
     /// Checks whether all `ArgParser`s were observed by an attribute parser at least once
     /// This check exists because otherwise it is too easy to accidentally ignore the arguments of an attribute
-    fn check_args_used(&self, attr: &ast::Attribute, args: &ArgParser) {
+    fn check_args_used(&self, args: &ArgParser) {
         if let ArgParser::List(items) = args {
             for item in items.mixed() {
-                if let crate::rustc_attr_parsing::parser::MetaItemOrLitParser::MetaItemParser(item) = item {
+                if let crate::rustc_attr_parsing::parser::MetaItemOrLitParser::MetaItemParser(
+                    item,
+                ) = item
+                {
                     if !item.are_args_checked() {
                         self.dcx().span_delayed_bug(
                             item.span(),
@@ -549,7 +570,7 @@ impl<'sess> AttributeParser<'sess> {
                         );
                         return;
                     }
-                    self.check_args_used(attr, item.args());
+                    self.check_args_used(item.args());
                 }
             }
         }

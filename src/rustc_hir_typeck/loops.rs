@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -11,17 +9,17 @@ use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use core::fmt;
 
-use Context::*;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{Destination, Node, find_attr};
 use crate::rustc_middle::hir::nested_filter;
-use crate::span_bug;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::hygiene::DesugaringKind;
 use crate::rustc_span::{BytePos, Span};
+use crate::span_bug;
+use Context::*;
 
 use crate::rustc_hir_typeck::diagnostics::{
     BreakInsideClosure, BreakInsideCoroutine, BreakNonLoop, ConstContinueBadLabel,

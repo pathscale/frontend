@@ -36,10 +36,10 @@ where
     let mut next_child = move_data.move_paths[path].first_child;
     while let Some(child_index) = next_child {
         let move_path_children = &move_data.move_paths[child_index];
-        if let Some(&elem) = move_path_children.place.projection.last() {
-            if cond(elem) {
-                return Some(child_index);
-            }
+        if let Some(&elem) = move_path_children.place.projection.last()
+            && cond(elem)
+        {
+            return Some(child_index);
         }
         next_child = move_path_children.next_sibling;
     }
@@ -198,7 +198,7 @@ pub(crate) fn on_all_inactive_variants<'tcx>(
         };
 
         if inactive_variants.contains(variant_idx) {
-            on_all_children_bits(move_data, variant_mpi, |mpi| handle_inactive_variant(mpi));
+            on_all_children_bits(move_data, variant_mpi, &mut handle_inactive_variant);
         }
     }
 }

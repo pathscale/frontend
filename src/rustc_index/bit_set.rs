@@ -1,9 +1,9 @@
-#[allow(unused_imports)]
-use {alloc::boxed::Box, alloc::string::String, alloc::string::ToString, alloc::vec::Vec};
+use alloc::rc::Rc;
 use core::marker::PhantomData;
 use core::ops::{Bound, Range, RangeBounds};
-use alloc::rc::Rc;
 use core::{fmt, iter, slice};
+#[allow(unused_imports)]
+use {alloc::boxed::Box, alloc::vec::Vec};
 
 use smallvec::{SmallVec, smallvec};
 
@@ -350,9 +350,8 @@ impl<T: Idx> fmt::Debug for DenseBitSet<T> {
     }
 }
 
-impl<T: Idx> ToString for DenseBitSet<T> {
-    fn to_string(&self) -> String {
-        let mut result = String::new();
+impl<T: Idx> fmt::Display for DenseBitSet<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut sep = '[';
 
         // Note: this is a little endian printout of bytes.
@@ -369,7 +368,7 @@ impl<T: Idx> ToString for DenseBitSet<T> {
                 assert!(mask <= 0xFF);
                 let byte = word & mask;
 
-                result.push_str(&format!("{sep}{byte:02x}"));
+                write!(formatter, "{sep}{byte:02x}")?;
 
                 if remain <= 8 {
                     break;
@@ -380,9 +379,7 @@ impl<T: Idx> ToString for DenseBitSet<T> {
             }
             sep = '|';
         }
-        result.push(']');
-
-        result
+        write!(formatter, "]")
     }
 }
 
@@ -1458,8 +1455,8 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
         let words = &mut self.words[..];
-        for index in start..end {
-            words[index] = !0;
+        for word in &mut words[start..end] {
+            *word = !0;
         }
         clear_excess_bits_in_final_word(self.num_columns, &mut self.words[..end]);
     }

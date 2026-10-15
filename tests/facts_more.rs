@@ -50,26 +50,19 @@ fn opaque_body() { compile_error!("opaque: body"); }
     let facts = analyze_source("facts_origin", source).expect("source parses");
     assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
 
-    let clean_source = source.replace(
-        "fn opaque_body() { compile_error!(\"opaque: body\"); }\n",
-        "",
-    );
+    let clean_source =
+        source.replace("fn opaque_body() { compile_error!(\"opaque: body\"); }\n", "");
     let clean_facts = analyze_source("facts_origin_clean", &clean_source)
         .expect("source without opaque body parses");
     assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
 
-    let implementation = facts
-        .impls
-        .iter()
-        .find(|item| item.self_type == "S")
-        .expect("impl S");
+    let implementation = facts.impls.iter().find(|item| item.self_type == "S").expect("impl S");
     assert_eq!(implementation.origin, FactOrigin::Written);
     let derived = clean_facts
         .impls
         .iter()
         .find(|item| {
-            item.self_type == "Derived"
-                && item.items.iter().any(|item| item.name == "clone")
+            item.self_type == "Derived" && item.items.iter().any(|item| item.name == "clone")
         })
         .expect("derived impl");
     assert_eq!(derived.origin, FactOrigin::Builtin);
@@ -187,11 +180,8 @@ pub struct Record {
     let facts = analyze_source("facts_docs", source).expect("source parses");
     assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
 
-    let guide = facts
-        .definitions
-        .iter()
-        .find(|definition| definition.name == "guide")
-        .expect("guide");
+    let guide =
+        facts.definitions.iter().find(|definition| definition.name == "guide").expect("guide");
     assert_eq!(guide.doc.as_deref(), Some("Summary line."));
     assert!(guide.doc_full.as_deref().is_some_and(|text| text.contains("More detail.")));
     let usage = guide
@@ -209,13 +199,12 @@ pub struct Record {
             && example.text.contains(">>> let answer = 42;")
     }));
 
-    let record = facts
-        .definitions
-        .iter()
-        .find(|definition| definition.name == "Record")
-        .expect("Record");
+    let record =
+        facts.definitions.iter().find(|definition| definition.name == "Record").expect("Record");
     assert_eq!(record.fields[0].doc.as_deref(), Some("Field summary."));
-    assert!(record.fields[0].doc_full.as_deref().is_some_and(|text| text.contains("Field detail.")));
+    assert!(
+        record.fields[0].doc_full.as_deref().is_some_and(|text| text.contains("Field detail."))
+    );
     assert!(record.fields[0].doc_sections.iter().any(|section| section.heading == "Details"));
 }
 
@@ -231,10 +220,6 @@ fn call() { assert_eq!(1, 1); }
 "#;
     let facts = analyze_source("facts_asserts", source).expect("source parses");
     assert_eq!(frontend::rustc_const_eval::interp_cx_new_count(), 0);
-    let call = facts
-        .definitions
-        .iter()
-        .find(|definition| definition.name == "call")
-        .expect("call");
+    let call = facts.definitions.iter().find(|definition| definition.name == "call").expect("call");
     assert!(call.asserts.is_empty());
 }

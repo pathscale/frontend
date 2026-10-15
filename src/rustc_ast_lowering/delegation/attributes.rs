@@ -51,10 +51,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
         if !new_attrs.is_empty() {
             let new_attrs = match self.attrs.get(&PARENT_ID) {
-                Some(existing_attrs) => self.arena.alloc_from_iter(
-                    existing_attrs.iter().map(|a| a.clone()).chain(new_attrs.into_iter()),
-                ),
-                None => self.arena.alloc_from_iter(new_attrs.into_iter()),
+                Some(existing_attrs) => {
+                    self.arena.alloc_from_iter(existing_attrs.iter().cloned().chain(new_attrs))
+                }
+                None => self.arena.alloc_from_iter(new_attrs),
             };
 
             self.attrs.insert(PARENT_ID, new_attrs);

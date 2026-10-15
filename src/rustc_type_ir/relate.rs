@@ -1,7 +1,7 @@
 use core::iter;
 
-use derive_where::derive_where;
 use crate::rustc_ast_ir::Mutability;
+use derive_where::derive_where;
 use tracing::{instrument, trace};
 
 use crate::rustc_type_ir::error::{ExpectedFound, TypeError};
@@ -505,15 +505,15 @@ pub fn structurally_relate_tys<I: Interner, R: TypeRelation<I>>(
             } else {
                 // FIXME: this behavior is wrong; relations with binders needs fixing.
                 //        need to relate the bound vars first.
-                let x = relation.relate_ty_args(
+
+                relation.relate_ty_args(
                     a,
                     b,
                     a_def_id.into(),
                     a_args.skip_binder(),
                     b_args.skip_binder(),
                     |args| Ty::new_fn_def(cx, a_def_id, a_args.rebind(args)),
-                );
-                x
+                )
             }
         }
 
@@ -566,9 +566,7 @@ fn const_terms_equal<I: Interner, R: TypeRelation<I>>(
     b: &ty::ConstTerm<I>,
 ) -> bool {
     match (a, b) {
-        (ty::ConstTerm::Literal(a), ty::ConstTerm::Literal(b)) => {
-            relation.relate(*a, *b).is_ok()
-        }
+        (ty::ConstTerm::Literal(a), ty::ConstTerm::Literal(b)) => relation.relate(*a, *b).is_ok(),
         (ty::ConstTerm::Param(a), ty::ConstTerm::Param(b)) => a.index() == b.index(),
         (ty::ConstTerm::Binary(a_op, a_lhs, a_rhs), ty::ConstTerm::Binary(b_op, b_lhs, b_rhs)) => {
             a_op == b_op
@@ -581,10 +579,7 @@ fn const_terms_equal<I: Interner, R: TypeRelation<I>>(
         (ty::ConstTerm::Call(a_def, a_args), ty::ConstTerm::Call(b_def, b_args)) => {
             a_def == b_def
                 && a_args.len() == b_args.len()
-                && a_args
-                    .iter()
-                    .zip(b_args.iter())
-                    .all(|(a, b)| const_terms_equal(relation, a, b))
+                && a_args.iter().zip(b_args.iter()).all(|(a, b)| const_terms_equal(relation, a, b))
         }
         _ => false,
     }
@@ -621,12 +616,8 @@ fn relate_const_alias_terms<I: Interner, R: TypeRelation<I>>(
         return None;
     }
 
-    let a_has_operation = a_term
-        .as_ref()
-        .is_some_and(|(_, term)| const_term_has_operation(term));
-    let b_has_operation = b_term
-        .as_ref()
-        .is_some_and(|(_, term)| const_term_has_operation(term));
+    let a_has_operation = a_term.as_ref().is_some_and(|(_, term)| const_term_has_operation(term));
+    let b_has_operation = b_term.as_ref().is_some_and(|(_, term)| const_term_has_operation(term));
     let a_term = a_term.map(|(_, term)| term).or_else(|| const_term_from_const(a));
     let b_term = b_term.map(|(_, term)| term).or_else(|| const_term_from_const(b));
     let (Some(a_term), Some(b_term)) = (a_term, b_term) else {

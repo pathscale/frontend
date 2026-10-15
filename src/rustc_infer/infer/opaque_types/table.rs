@@ -1,9 +1,9 @@
 use alloc::vec::Vec;
 use core::ops::Deref;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::undo_log::UndoLogs;
-use crate::bug;
 use crate::rustc_middle::ty::{OpaqueTypeKey, ProvisionalHiddenType, Ty};
 use tracing::instrument;
 
@@ -42,9 +42,8 @@ impl<'tcx> OpaqueTypeStorage<'tcx> {
             *self.opaque_types.get_mut(&key).unwrap() = prev;
         } else {
             // FIXME(#120456) - is `swap_remove` correct?
-            match self.opaque_types.swap_remove(&key) {
-                None => bug!("reverted opaque type inference that was never registered: {:?}", key),
-                Some(_) => {}
+            if self.opaque_types.swap_remove(&key).is_none() {
+                bug!("reverted opaque type inference that was never registered: {:?}", key)
             }
         }
     }

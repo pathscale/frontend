@@ -332,9 +332,7 @@ fn classify(attrs: &[Attribute]) -> AttrFacts {
                 // `cfg_attr(predicate, attr, ...)`: harmless when everything it can apply is.
                 let inert = attr.meta_item_list().is_some_and(|list| {
                     list.len() >= 2
-                        && list[1..]
-                            .iter()
-                            .all(|m| m.name().is_some_and(|n| is_inert(n.as_str())))
+                        && list[1..].iter().all(|m| m.name().is_some_and(|n| is_inert(n.as_str())))
                 });
                 if !inert {
                     facts.macro_like = true;
@@ -610,7 +608,7 @@ impl<'a> Index<'a> {
                 let unsettled = is_unsettled(&item.attrs);
                 match &item.kind {
                     AssocItemKind::Fn(f) => {
-                        let one = if unsettled { Assoc::Many } else { Assoc::One(&**f) };
+                        let one = if unsettled { Assoc::Many } else { Assoc::One(f) };
                         entry
                             .fns
                             .entry(f.ident.name)
@@ -1213,10 +1211,9 @@ impl<'a, 'b, 'c> Checker<'a, 'b, 'c> {
         match &ty.kind {
             TyKind::Paren(inner) => self.ty_shape(inner),
             TyKind::Ref(_, mt) => match self.ty_shape(&mt.ty)? {
-                (d, Recv::Value) => Some((
-                    d,
-                    if mt.mutbl == Mutability::Not { Recv::Ref } else { Recv::RefMut },
-                )),
+                (d, Recv::Value) => {
+                    Some((d, if mt.mutbl == Mutability::Not { Recv::Ref } else { Recv::RefMut }))
+                }
                 _ => None,
             },
             TyKind::ImplicitSelf => None,
@@ -1357,13 +1354,7 @@ impl<'a, 'b, 'c> Checker<'a, 'b, 'c> {
         });
     }
 
-    fn check_fn_arity(
-        &mut self,
-        decl: &ast::FnDecl,
-        call: &Expr,
-        callee: &Expr,
-        args: &[P<Expr>],
-    ) {
+    fn check_fn_arity(&mut self, decl: &ast::FnDecl, call: &Expr, callee: &Expr, args: &[P<Expr>]) {
         let Some((fixed, variadic)) = arity(decl) else { return };
         let found = args.len();
         if found < fixed || (found > fixed && !variadic) {
@@ -2244,11 +2235,8 @@ fn check_trait_impls(cx: &Cx<'_>, ix: &Index<'_>, en: Enabled, out: &mut Vec<Dia
         let Some((t, _)) = impl_trait(ix, rec) else { continue };
         let header = rec.imp.of_trait.as_deref();
         let default_impl = header.is_some_and(|h| matches!(h.defaultness, Defaultness::Default(_)));
-        let default_item = rec
-            .imp
-            .items
-            .iter()
-            .any(|it| assoc_facts(it).is_none_or(|f| f.specializable));
+        let default_item =
+            rec.imp.items.iter().any(|it| assoc_facts(it).is_none_or(|f| f.specializable));
         if default_impl || default_item {
             specialized.insert(t);
         }
@@ -2267,7 +2255,8 @@ fn check_trait_impls(cx: &Cx<'_>, ix: &Index<'_>, en: Enabled, out: &mut Vec<Dia
         let Some(table) = tables.entry(t).or_insert_with(|| trait_table(tr)).as_ref() else {
             continue;
         };
-        let Some(items) = rec.imp.items.iter().map(|it| assoc_facts(it)).collect::<Option<Vec<_>>>()
+        let Some(items) =
+            rec.imp.items.iter().map(|it| assoc_facts(it)).collect::<Option<Vec<_>>>()
         else {
             continue;
         };
@@ -2314,10 +2303,8 @@ fn check_trait_impls(cx: &Cx<'_>, ix: &Index<'_>, en: Enabled, out: &mut Vec<Dia
                 .map(|(f, _)| f)
                 .collect();
             if !missing.is_empty() && missing.iter().all(|f| !f.bounded) {
-                let list: Vec<String> = missing
-                    .iter()
-                    .map(|f| format!("`{} {}`", f.kind.keyword(), f.ident))
-                    .collect();
+                let list: Vec<String> =
+                    missing.iter().map(|f| format!("`{} {}`", f.kind.keyword(), f.ident)).collect();
                 let message =
                     format!("not all trait items implemented, missing: {}", list.join(", "));
                 push(cx, out, "E0046", message, header.trait_ref.path.span);
@@ -2509,10 +2496,8 @@ mod tests {
     #[track_caller]
     fn expect(src: &str, want: &[(&str, &str, &str)]) {
         let got = run(src);
-        let want: Vec<(String, String, String)> = want
-            .iter()
-            .map(|(c, m, t)| (c.to_string(), m.to_string(), t.to_string()))
-            .collect();
+        let want: Vec<(String, String, String)> =
+            want.iter().map(|(c, m, t)| (c.to_string(), m.to_string(), t.to_string())).collect();
         assert_eq!(got, want);
     }
 
@@ -2562,10 +2547,7 @@ mod tests {
 
     #[test]
     fn ident_modules_do_not_see_parent_items() {
-        expect(
-            "fn top() {}\nmod m {\n    fn f() { top(); }\n}\n",
-            &[("E0425", NO_VALUE, "top")],
-        );
+        expect("fn top() {}\nmod m {\n    fn f() { top(); }\n}\n", &[("E0425", NO_VALUE, "top")]);
     }
 
     #[test]
@@ -2623,7 +2605,9 @@ mod tests {
         // comes after a by-value step at which a trait method in scope could win, and this
         // module cannot see the traits in scope, so that call is skipped. The receiver written
         // as `&S` is decided.
-        clean("struct S;\nimpl S { fn method(&self, _arg: u8) {} }\n\nfn f() {\n    S.method();\n}\n");
+        clean(
+            "struct S;\nimpl S { fn method(&self, _arg: u8) {} }\n\nfn f() {\n    S.method();\n}\n",
+        );
         expect(
             "struct S;\nimpl S { fn method(&self, _arg: u8) {} }\n\nfn f() {\n    (&S).method();\n}\n",
             &[("E0061", "expected 1 argument, found 0", "()")],
@@ -2643,7 +2627,9 @@ mod tests {
 
     #[test]
     fn method_unknown_receiver() {
-        clean("trait Foo { fn method(&self, _arg: usize) {} }\n\nfn f() {\n    let x;\n    x.method();\n}\n");
+        clean(
+            "trait Foo { fn method(&self, _arg: usize) {} }\n\nfn f() {\n    let x;\n    x.method();\n}\n",
+        );
     }
 
     #[test]
@@ -2769,7 +2755,9 @@ mod tests {
 
     #[test]
     fn missing_record_pat_field_no_diagnostic_if_not_exhaustive() {
-        clean("struct S { foo: i32, bar: () }\nfn baz(s: S) -> i32 {\n    match s {\n        S { foo, .. } => foo,\n    }\n}\n");
+        clean(
+            "struct S { foo: i32, bar: () }\nfn baz(s: S) -> i32 {\n    match s {\n        S { foo, .. } => foo,\n    }\n}\n",
+        );
     }
 
     #[test]
@@ -2786,12 +2774,16 @@ mod tests {
 
     #[test]
     fn test_fill_struct_fields_no_diagnostic() {
-        clean("struct TestStruct { one: i32, two: i64 }\n\nfn test_fn() {\n    let one = 1;\n    let _s = TestStruct{ one, two: 2 };\n}\n");
+        clean(
+            "struct TestStruct { one: i32, two: i64 }\n\nfn test_fn() {\n    let one = 1;\n    let _s = TestStruct{ one, two: 2 };\n}\n",
+        );
     }
 
     #[test]
     fn test_fill_struct_fields_no_diagnostic_on_spread() {
-        clean("struct TestStruct { one: i32, two: i64 }\n\nfn test_fn() {\n    let one = 1;\n    let a = TestStruct{ one, two: 2 };\n    let _ = TestStruct{ ..a };\n}\n");
+        clean(
+            "struct TestStruct { one: i32, two: i64 }\n\nfn test_fn() {\n    let one = 1;\n    let a = TestStruct{ one, two: 2 };\n    let _ = TestStruct{ ..a };\n}\n",
+        );
     }
 
     #[test]
@@ -2807,7 +2799,9 @@ mod tests {
 
     #[test]
     fn test_default_field_values_basic() {
-        clean("#![feature(default_field_values)]\nstruct Struct {\n    a: usize = 0,\n    b: usize,\n}\n\nfn main() {\n    Struct { b: 1, .. };\n}\n");
+        clean(
+            "#![feature(default_field_values)]\nstruct Struct {\n    a: usize = 0,\n    b: usize,\n}\n\nfn main() {\n    Struct { b: 1, .. };\n}\n",
+        );
     }
 
     #[test]
@@ -2828,7 +2822,9 @@ mod tests {
 
     #[test]
     fn test_default_field_values_pattern_matching() {
-        clean("#![feature(default_field_values)]\nstruct Point {\n    x: i32 = 0,\n    y: i32 = 0,\n    z: i32,\n}\n\nfn main() {\n    let Point { x, .. } = Point { z: 5, .. };\n}\n");
+        clean(
+            "#![feature(default_field_values)]\nstruct Point {\n    x: i32 = 0,\n    y: i32 = 0,\n    z: i32,\n}\n\nfn main() {\n    let Point { x, .. } = Point { z: 5, .. };\n}\n",
+        );
     }
 
     // --- no_such_field.rs -----------------------------------------------------------------
@@ -2867,7 +2863,9 @@ mod tests {
 
     #[test]
     fn no_such_field_with_type_macro() {
-        clean("macro_rules! Type { () => { u32 }; }\nstruct Foo { bar: Type![] }\n\nimpl Foo {\n    fn new() -> Self {\n        Foo { bar: 0 }\n    }\n}\n");
+        clean(
+            "macro_rules! Type { () => { u32 }; }\nstruct Foo { bar: Type![] }\n\nimpl Foo {\n    fn new() -> Self {\n        Foo { bar: 0 }\n    }\n}\n",
+        );
     }
 
     #[test]
@@ -2923,7 +2921,9 @@ mod tests {
 
     #[test]
     fn or_pattern_no_diagnostic() {
-        clean("enum Either {A, B}\n\nfn main() {\n    match (Either::A, Either::B) {\n        (Either::A | Either::B, _) => (),\n    }\n}\n");
+        clean(
+            "enum Either {A, B}\n\nfn main() {\n    match (Either::A, Either::B) {\n        (Either::A | Either::B, _) => (),\n    }\n}\n",
+        );
     }
 
     #[test]
@@ -2990,7 +2990,9 @@ mod tests {
 
     #[test]
     fn trait_with_default_value() {
-        clean("trait Marker {\n    const FLAG: bool = false;\n}\nstruct Foo;\nimpl Marker for Foo {}\n");
+        clean(
+            "trait Marker {\n    const FLAG: bool = false;\n}\nstruct Foo;\nimpl Marker for Foo {}\n",
+        );
     }
 
     #[test]
@@ -3036,7 +3038,9 @@ mod tests {
 
     #[test]
     fn no_false_positive_on_specialization() {
-        clean("#![feature(specialization)]\n\npub trait Foo {\n    fn foo();\n}\n\nimpl<T> Foo for T {\n    default fn foo() {}\n}\nimpl Foo for bool {}\n");
+        clean(
+            "#![feature(specialization)]\n\npub trait Foo {\n    fn foo();\n}\n\nimpl<T> Foo for T {\n    default fn foo() {}\n}\nimpl Foo for bool {}\n",
+        );
     }
 
     // --- trait_impl_redundant_assoc_item.rs -----------------------------------------------
@@ -3054,12 +3058,16 @@ mod tests {
 
     #[test]
     fn dont_work_for_negative_impl() {
-        clean("trait Marker {\n    const FLAG: bool = false;\n    fn boo();\n    fn foo () {}\n}\nstruct Foo;\nimpl !Marker for Foo {\n    type T = i32;\n    const FLAG: bool = true;\n    fn bar() {}\n    fn boo() {}\n}\n");
+        clean(
+            "trait Marker {\n    const FLAG: bool = false;\n    fn boo();\n    fn foo () {}\n}\nstruct Foo;\nimpl !Marker for Foo {\n    type T = i32;\n    const FLAG: bool = true;\n    fn bar() {}\n    fn boo() {}\n}\n",
+        );
     }
 
     #[test]
     fn trait_from_elsewhere_is_skipped() {
-        clean("struct Foo;\nimpl dep::Marker for Foo {\n    type T = i32;\n}\nimpl Display for Foo {}\n");
+        clean(
+            "struct Foo;\nimpl dep::Marker for Foo {\n    type T = i32;\n}\nimpl Display for Foo {}\n",
+        );
     }
 
     // --- unresolved_import.rs -------------------------------------------------------------
@@ -3101,7 +3109,9 @@ mod tests {
 
     #[test]
     fn import_into_incomplete_module_is_skipped() {
-        clean("mod m { gen_items!(); }\nuse crate::m::generated;\nmod n { pub use other::*; }\nuse self::n::x;\n");
+        clean(
+            "mod m { gen_items!(); }\nuse crate::m::generated;\nmod n { pub use other::*; }\nuse self::n::x;\n",
+        );
     }
 
     #[test]

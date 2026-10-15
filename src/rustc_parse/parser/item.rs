@@ -19,7 +19,7 @@ use crate::rustc_span::edit_distance::edit_distance;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
 use ast::token::IdentIsRaw;
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::ThinVec;
 use tracing::debug;
 
 use super::diagnostics::ConsumeClosingDelim;
@@ -66,26 +66,42 @@ impl<'a> Parser<'a> {
     pub fn parse_mod(
         &mut self,
         term: ExpTokenPair,
-    ) -> PResult<'a, (AttrVec, ThinVec<P<Item>>, ModSpans)> {
+    ) -> PResult<'a, (AttrVec, ast::ArenaVec<P<Item>>, ModSpans)> {
         let lo = self.token.span;
         let attrs = self.parse_inner_attributes()?;
 
         let post_attr_lo = self.token.span;
-        let mut items: ThinVec<P<_>> = ThinVec::new();
+        let start = self.list_scratch.get_mut().items.len();
+        if start == 0 {
+            let cut_hint = self.token_cursor.depth_zero_item_cuts().len();
+            if cut_hint != 0 {
+                self.list_scratch.get_mut().items.reserve(cut_hint);
+            }
+        }
+        // Keep the final item owned locally so diagnostics never borrow scratch
+        // while calling back into the parser.
+        let mut last_item: Option<P<Item>> = None;
 
         // There shouldn't be any stray semicolons before or after items.
         // `parse_item` consumes the appropriate semicolons so any leftover is an error.
         loop {
-            while self.maybe_consume_incorrect_semicolon(items.last().map(|x| &**x)) {} // Eat all bad semicolons
-            let Some(item) = self.parse_item(ForceCollect::No, AllowConstBlockItems::Yes)? else {
-                break;
+            while self.maybe_consume_incorrect_semicolon(last_item.as_deref()) {} // Eat all bad semicolons
+            let item = match self.parse_item(ForceCollect::No, AllowConstBlockItems::Yes) {
+                Ok(Some(item)) => item,
+                Ok(None) => break,
+                Err(err) => {
+                    self.list_scratch.get_mut().items.truncate(start);
+                    return Err(err);
+                }
             };
-            items.push(item);
+            if let Some(previous) = last_item.replace(item) {
+                self.list_scratch.get_mut().items.push(previous);
+            }
         }
 
         if !self.eat(term) {
             let token_str = super::token_descr(&self.token);
-            if !self.maybe_consume_incorrect_semicolon(items.last().map(|x| &**x)) {
+            if !self.maybe_consume_incorrect_semicolon(last_item.as_deref()) {
                 let is_let = self.token.is_keyword(kw::Let);
                 let is_let_mut = is_let && self.look_ahead(1, |t| t.is_keyword(kw::Mut));
                 let let_has_ident = is_let && !is_let_mut && self.is_kw_followed_by_ident(kw::Let);
@@ -115,12 +131,17 @@ impl<'a> Parser<'a> {
                     }
                 }
                 err.note("for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>");
+                self.list_scratch.get_mut().items.truncate(start);
                 return Err(err);
             }
         }
 
         let inject_use_span = post_attr_lo.data().with_hi(post_attr_lo.lo());
         let mod_spans = ModSpans { inner_span: lo.to(self.prev_token.span), inject_use_span };
+        if let Some(item) = last_item {
+            self.list_scratch.get_mut().items.push(item);
+        }
+        let items = super::take_arena_vec(&mut self.list_scratch.get_mut().items, start);
         Ok((attrs, items, mod_spans))
     }
 }
@@ -258,6 +279,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses one of the items allowed by the flags.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn parse_item_kind(
         &mut self,
         attrs: &mut AttrVec,
@@ -706,11 +731,9 @@ impl<'a> Parser<'a> {
                 generics_snapshot = Some(self.create_snapshot_for_diagnostic());
             }
 
-            let mut generics = Generics::default();
             // impl A for B {}
             //    /\ this is where `generics.span` should point when there are no type params.
-            generics.span = self.prev_token.span.shrink_to_hi();
-            generics
+            Generics { span: self.prev_token.span.shrink_to_hi(), ..Generics::default() }
         };
 
         // The older spelling, `impl<T> const Trait for T`, which libraries written for an earlier
@@ -974,14 +997,14 @@ impl<'a> Parser<'a> {
         attrs: &mut AttrVec,
         mut parse_item: impl FnMut(&mut Parser<'a>) -> PResult<'a, Option<Option<T>>>,
         scratch: for<'p> fn(&'p mut Parser<'a>) -> &'p mut Vec<T>,
-    ) -> PResult<'a, ThinVec<T>> {
+    ) -> PResult<'a, ast::ArenaVec<T>> {
         let open_brace_span = self.token.span;
 
         // Recover `impl Ty;` instead of `impl Ty {}`
         if self.token == TokenKind::Semi {
             self.dcx().emit_err(diagnostics::UseEmptyBlockNotSemi { span: self.token.span });
             self.bump();
-            return Ok(ThinVec::new());
+            return Ok(ast::ArenaVec::new());
         }
 
         self.expect(exp!(OpenBrace))?;
@@ -1075,29 +1098,29 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Ok(super::take_thin_vec(scratch(self), start))
+        Ok(super::take_arena_vec(scratch(self), start))
     }
 
     /// Recover on a doc comment before `}`.
     fn recover_doc_comment_before_brace(&mut self) -> bool {
-        if let token::DocComment(..) = self.token.kind {
-            if self.look_ahead(1, |tok| tok == &token::CloseBrace) {
-                // FIXME: merge with `DocCommentDoesNotDocumentAnything` (E0585)
-                struct_span_code_err!(
-                    self.dcx(),
-                    self.token.span,
-                    E0584,
-                    "found a documentation comment that doesn't document anything",
-                )
-                .with_span_label(self.token.span, "this doc comment doesn't document anything")
-                .with_help(
-                    "doc comments must come before what they document, if a comment was \
+        if let token::DocComment(..) = self.token.kind
+            && self.look_ahead(1, |tok| tok == &token::CloseBrace)
+        {
+            // FIXME: merge with `DocCommentDoesNotDocumentAnything` (E0585)
+            struct_span_code_err!(
+                self.dcx(),
+                self.token.span,
+                E0584,
+                "found a documentation comment that doesn't document anything",
+            )
+            .with_span_label(self.token.span, "this doc comment doesn't document anything")
+            .with_help(
+                "doc comments must come before what they document, if a comment was \
                     intended use `//`",
-                )
-                .emit();
-                self.bump();
-                return true;
-            }
+            )
+            .emit();
+            self.bump();
+            return true;
         }
         false
     }
@@ -1448,7 +1471,7 @@ impl<'a> Parser<'a> {
             let mut attr_span = None;
             let attrs = p.parse_outer_attributes()?;
             if !attrs.is_empty() {
-                let raw_attrs = attrs.take_for_recovery(&p.psess);
+                let raw_attrs = attrs.take_for_recovery(p.psess);
                 attr_span =
                     Some(raw_attrs.first().unwrap().span.to(raw_attrs.last().unwrap().span));
             }
@@ -1675,14 +1698,11 @@ impl<'a> Parser<'a> {
         // FIXME(#100717): needs variant for each `ItemKind` (instead of using `ItemKind::descr()`)
         let span = self.psess.source_map().guess_head_span(span);
         let descr = kind.descr();
-        let help = match kind {
+        let help = !matches!(
+            kind,
             ItemKind::DelegationMac(dm)
-                if matches!(**dm, DelegationMac { suffixes: DelegationSuffixes::Glob(_), .. }) =>
-            {
-                false
-            }
-            _ => true,
-        };
+                if matches!(**dm, DelegationMac { suffixes: DelegationSuffixes::Glob(_), .. })
+        );
         self.dcx().emit_err(diagnostics::BadItemKind { span, descr, ctx, help });
         None
     }
@@ -1810,6 +1830,10 @@ impl<'a> Parser<'a> {
     /// ```ebnf
     /// Const = "const" ($ident | "_") Generics ":" $ty (= $expr)? WhereClause ";" ;
     /// ```
+    #[expect(
+        clippy::type_complexity,
+        reason = "retains the parser's structured const-item result without changing its internal representation"
+    )]
     fn parse_const_item(
         &mut self,
         const_span: Span,
@@ -2193,7 +2217,7 @@ impl<'a> Parser<'a> {
         ident_span: Span,
         parsed_where: bool,
     ) -> PResult<'a, (crate::rustc_ast::ArenaVec<FieldDef>, Recovered)> {
-        let mut fields = ast::ArenaVec::new();
+        let mut fields = smallvec::SmallVec::<[_; 8]>::new();
         let mut recovered = Recovered::No;
         if self.eat(exp!(OpenBrace)) {
             while self.token != token::CloseBrace {
@@ -2224,7 +2248,7 @@ impl<'a> Parser<'a> {
             return Err(err);
         }
 
-        Ok((fields, recovered))
+        Ok((fields.into(), recovered))
     }
 
     fn parse_unsafe_field(&mut self) -> Safety {
@@ -2372,6 +2396,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a structure field declaration.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps parsed field context explicit at the parser recovery boundary"
+    )]
     fn parse_single_struct_field(
         &mut self,
         adt_ty: &str,
@@ -2506,12 +2534,12 @@ impl<'a> Parser<'a> {
         attrs: AttrVec,
     ) -> PResult<'a, FieldDef> {
         let name = self.parse_field_ident(adt_ty, lo)?;
-        if self.token == token::Bang {
-            if let Err(mut err) = self.unexpected() {
-                // Encounter the macro invocation
-                err.subdiagnostic(MacroExpandsToAdtField { adt_ty });
-                return Err(err);
-            }
+        if self.token == token::Bang
+            && let Err(mut err) = self.unexpected()
+        {
+            // Encounter the macro invocation
+            err.subdiagnostic(MacroExpandsToAdtField { adt_ty });
+            return Err(err);
         }
         self.expect_field_ty_separator()?;
         let ty = self.parse_ty()?;

@@ -1,7 +1,5 @@
-use alloc::vec::Vec;
-use hir::def_id::{DefId, LocalDefId};
-use crate::rustc_hir as hir;
 use crate::bug;
+use crate::rustc_hir as hir;
 use crate::rustc_middle::traits::ObligationCause;
 use crate::rustc_middle::traits::solve::Goal;
 use crate::rustc_middle::ty::error::{ExpectedFound, TypeError};
@@ -10,6 +8,8 @@ use crate::rustc_middle::ty::{
     TypeVisitableExt, Unnormalized,
 };
 use crate::rustc_span::Span;
+use alloc::vec::Vec;
+use hir::def_id::{DefId, LocalDefId};
 use tracing::{debug, instrument};
 
 use super::{DefineOpaqueTypes, RegionVariableOrigin};
@@ -269,11 +269,11 @@ impl<'tcx> InferCtxt<'tcx> {
                         .type_of_opaque_hir_typeck(opaque_type_key.def_id)
                         .instantiate(self.tcx, opaque_type_key.args)
                         .skip_norm_wip();
-                    let actual = ty::fold_regions(tcx, actual, |re, _dbi| match re.kind() {
+
+                    ty::fold_regions(tcx, actual, |re, _dbi| match re.kind() {
                         ty::ReErased => self.next_region_var(RegionVariableOrigin::Misc(span)),
                         _ => re,
-                    });
-                    actual
+                    })
                 });
 
                 goals.extend(

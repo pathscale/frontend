@@ -1,5 +1,4 @@
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
 use crate::rustc_ast::token::NtExprKind::*;
 use crate::rustc_ast::token::NtPatKind::*;
 use crate::rustc_ast::token::{self, InvisibleOrigin, MetaVarKind, NonterminalKind, Token};
@@ -7,6 +6,7 @@ use crate::rustc_ast::tokenstream::WithTokens;
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::PResult;
 use crate::rustc_span::{Ident, kw};
+use alloc::boxed::Box;
 
 use crate::rustc_parse::diagnostics::UnexpectedNonterminal;
 use crate::rustc_parse::parser::pat::{CommaRecoveryMode, RecoverColon, RecoverComma};
@@ -103,10 +103,9 @@ impl<'a> Parser<'a> {
                 _ => false,
             },
             NonterminalKind::Pat(pat_kind) => token.can_begin_pattern(pat_kind),
-            NonterminalKind::Lifetime => match &token.kind {
-                token::Lifetime(..) | token::NtLifetime(..) => true,
-                _ => false,
-            },
+            NonterminalKind::Lifetime => {
+                matches!(&token.kind, token::Lifetime(..) | token::NtLifetime(..))
+            }
             NonterminalKind::Guard => match token.kind {
                 token::OpenInvisible(InvisibleOrigin::MetaVar(MetaVarKind::Guard)) => true,
                 _ => token.is_keyword(kw::If),
@@ -137,9 +136,9 @@ impl<'a> Parser<'a> {
             NonterminalKind::Block => {
                 // While a block *expression* may have attributes (e.g. `#[my_attr] { ... }`),
                 // the ':block' matcher does not support them
-                Ok(ParseNtResult::Block(self.collect_tokens_no_attrs(|this| {
-                    this.parse_block().map(|block| WithTokens::new(block))
-                })?))
+                Ok(ParseNtResult::Block(
+                    self.collect_tokens_no_attrs(|this| this.parse_block().map(WithTokens::new))?,
+                ))
             }
             NonterminalKind::Stmt => match self.parse_stmt_nonterminal(ForceCollect::Yes) {
                 Some(stmt) => Ok(ParseNtResult::Stmt(Box::new(stmt))),
@@ -172,7 +171,7 @@ impl<'a> Parser<'a> {
                 ))
             }
             NonterminalKind::Ty => Ok(ParseNtResult::Ty(self.collect_tokens_no_attrs(|this| {
-                this.parse_ty_no_question_mark_recover().map(|ty| WithTokens::new(ty))
+                this.parse_ty_no_question_mark_recover().map(WithTokens::new)
             })?)),
             // This could be handled like a token, since it is one.
             NonterminalKind::Ident => {
@@ -191,9 +190,9 @@ impl<'a> Parser<'a> {
                     this.parse_path(PathStyle::Type).map(|path| WithTokens::new(Box::new(path)))
                 })?))
             }
-            NonterminalKind::Meta => Ok(ParseNtResult::Meta(
-                self.parse_attr_item(ForceCollect::Yes)?.map(|item| Box::new(item)),
-            )),
+            NonterminalKind::Meta => {
+                Ok(ParseNtResult::Meta(self.parse_attr_item(ForceCollect::Yes)?.map(Box::new)))
+            }
             NonterminalKind::Vis => {
                 Ok(ParseNtResult::Vis(self.collect_tokens_no_attrs(|this| {
                     this.parse_visibility(FollowedByType::Yes)

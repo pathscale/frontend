@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Index;
 
@@ -254,7 +254,7 @@ impl<I: Interner> CanonicalVarValues<I> {
                 ty::GenericArgKind::Lifetime(r) => {
                     if matches!(r.kind(), ty::ReBound(ty::BoundVarIndexKind::Canonical, br) if var == br.var())
                     {
-                        var = var + 1;
+                        var += 1;
                     } else {
                         // It's ok if this region var isn't an identity variable
                     }
@@ -262,7 +262,7 @@ impl<I: Interner> CanonicalVarValues<I> {
                 ty::GenericArgKind::Type(ty) => {
                     if matches!(ty.kind(), ty::Bound(ty::BoundVarIndexKind::Canonical, bt) if var == bt.var())
                     {
-                        var = var + 1;
+                        var += 1;
                     } else {
                         return false;
                     }
@@ -270,7 +270,7 @@ impl<I: Interner> CanonicalVarValues<I> {
                 ty::GenericArgKind::Const(ct) => {
                     if matches!(ct.kind(), ty::ConstKind::Bound(ty::BoundVarIndexKind::Canonical, bc) if var == bc.var())
                     {
-                        var = var + 1;
+                        var += 1;
                     } else {
                         return false;
                     }
@@ -347,9 +347,13 @@ impl<I: Interner> CanonicalVarValues<I> {
     pub fn len(&self) -> usize {
         self.var_values.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.var_values.is_empty()
+    }
 }
 
-impl<'a, I: Interner> IntoIterator for &'a CanonicalVarValues<I> {
+impl<I: Interner> IntoIterator for &CanonicalVarValues<I> {
     type Item = I::GenericArg;
     type IntoIter = <I::GenericArgs as SliceLike>::IntoIter;
 

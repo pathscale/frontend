@@ -1,19 +1,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use core::hash::{Hash, Hasher};
 
 use crate::rustc_hashes::Hash64;
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 
-use crate::rustc_data_structures::stable_hash::{FromStableHash, StableHasherHash, impl_stable_traits_for_trivial_type};
+use crate::rustc_data_structures::stable_hash::{
+    FromStableHash, StableHasherHash, impl_stable_traits_for_trivial_type,
+};
 
 #[cfg(test)]
 mod tests;
@@ -44,12 +42,12 @@ impl Fingerprint {
     pub const ZERO: Fingerprint = Fingerprint(0, 0);
 
     #[inline]
-    pub fn new<A, B>(_0: A, _1: B) -> Fingerprint
+    pub fn new<A, B>(first: A, second: B) -> Fingerprint
     where
         A: FingerprintComponent,
         B: FingerprintComponent,
     {
-        Fingerprint(_0.as_u64(), _1.as_u64())
+        Fingerprint(first.as_u64(), second.as_u64())
     }
 
     #[inline]
@@ -143,8 +141,8 @@ impl FromStableHash for Fingerprint {
     type Hash = StableHasherHash;
 
     #[inline]
-    fn from(StableHasherHash([_0, _1]): Self::Hash) -> Self {
-        Fingerprint(_0, _1)
+    fn from(StableHasherHash([first, second]): Self::Hash) -> Self {
+        Fingerprint(first, second)
     }
 }
 
@@ -182,6 +180,10 @@ impl<D: Decoder> Decodable<D> for Fingerprint {
 /// The wrapped `Fingerprint` is private to reduce the chance of a client
 /// invoking undefined behavior by taking a reference to the packed field.
 #[repr(packed)]
+#[expect(
+    clippy::repr_packed_without_abi,
+    reason = "the wrapper preserves the packed fingerprint layout"
+)]
 #[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Clone, Copy, Hash)]
 pub struct PackedFingerprint(Fingerprint);
 

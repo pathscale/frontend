@@ -206,6 +206,10 @@ fn find_and_handle_cycle<'tcx, C: QueryCache>(
 }
 
 #[inline(always)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "query waiting retains distinct query identity, cache and latch inputs"
+)]
 fn wait_for_query<'tcx, C: QueryCache>(
     query: &'tcx QueryVTable<'tcx, C>,
     tcx: TyCtxt<'tcx>,
@@ -330,15 +334,15 @@ where
     // the two could disagree (a session with `jobs.frontend` unset running in a process whose
     // mode is parallel would skip the re-check and could run the query twice, and the second
     // `cache.complete` would then find the key already present).
-    if sync::is_dyn_thread_safe() {
-        if let Some((value, index)) = query.cache.lookup(&key) {
-            tcx.prof.query_cache_hit(index.into());
-            // A cache hit after all, so a consumption like any other. The shard lock is let go
-            // first: consuming outside every item can print.
-            drop(state_lock);
-            tcx.query_system.diagnostics.consume(index);
-            return (value, Some(index));
-        }
+    if sync::is_dyn_thread_safe()
+        && let Some((value, index)) = query.cache.lookup(&key)
+    {
+        tcx.prof.query_cache_hit(index.into());
+        // A cache hit after all, so a consumption like any other. The shard lock is let go
+        // first: consuming outside every item can print.
+        drop(state_lock);
+        tcx.query_system.diagnostics.consume(index);
+        return (value, Some(index));
     }
 
     let current_job_id = current_query_job();

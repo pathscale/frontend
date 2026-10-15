@@ -4,12 +4,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
@@ -67,11 +61,10 @@ pub fn find_param_with_region<'tcx>(
 
     // FIXME: use def_kind
     // Don't perform this on closures
-    match tcx.hir_node_by_def_id(generic_param_scope) {
-        hir::Node::Expr(&hir::Expr { kind: hir::ExprKind::Closure { .. }, .. }) => {
-            return None;
-        }
-        _ => {}
+    if let hir::Node::Expr(&hir::Expr { kind: hir::ExprKind::Closure { .. }, .. }) =
+        tcx.hir_node_by_def_id(generic_param_scope)
+    {
+        return None;
     }
 
     let body = tcx.hir_maybe_body_owned_by(def_id)?;

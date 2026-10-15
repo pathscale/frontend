@@ -5,10 +5,10 @@
 //!
 //! [c]: https://rust-lang.github.io/chalk/book/canonical_queries/canonicalization.html
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::rustc_index::Idx;
-use crate::bug;
 use crate::rustc_middle::ty::{
     self, BoundVar, Flags, GenericArg, InferConst, List, Ty, TyCtxt, TypeFlags, TypeFoldable,
     TypeFolder, TypeSuperFoldable, TypeVisitableExt, TypingModeEqWrapper,
@@ -364,7 +364,7 @@ impl<'cx, 'tcx> TypeFolder<TyCtxt<'tcx>> for Canonicalizer<'cx, 'tcx> {
             ty::Infer(ty::IntVar(vid)) => {
                 let nt = self.infcx.unwrap().opportunistic_resolve_int_var(vid);
                 if nt != t {
-                    return self.fold_ty(nt);
+                    self.fold_ty(nt)
                 } else {
                     self.canonicalize_ty_var(CanonicalVarKind::Int, t)
                 }
@@ -372,7 +372,7 @@ impl<'cx, 'tcx> TypeFolder<TyCtxt<'tcx>> for Canonicalizer<'cx, 'tcx> {
             ty::Infer(ty::FloatVar(vid)) => {
                 let nt = self.infcx.unwrap().opportunistic_resolve_float_var(vid);
                 if nt != t {
-                    return self.fold_ty(nt);
+                    self.fold_ty(nt)
                 } else {
                     self.canonicalize_ty_var(CanonicalVarKind::Float, t)
                 }
@@ -601,9 +601,8 @@ impl<'cx, 'tcx> Canonicalizer<'cx, 'tcx> {
             // Insert universe into the universe map. To preserve the order of the
             // universes in the value being canonicalized, we don't update the
             // universe in `var_kind` until we have finished canonicalizing.
-            match query_state.universe_map.binary_search(&universe) {
-                Err(idx) => query_state.universe_map.insert(idx, universe),
-                Ok(_) => {}
+            if let Err(idx) = query_state.universe_map.binary_search(&universe) {
+                query_state.universe_map.insert(idx, universe)
             }
         }
 
@@ -675,9 +674,7 @@ impl<'cx, 'tcx> Canonicalizer<'cx, 'tcx> {
         self.var_kinds
             .iter()
             .map(|&kind| match kind {
-                CanonicalVarKind::Int | CanonicalVarKind::Float => {
-                    return kind;
-                }
+                CanonicalVarKind::Int | CanonicalVarKind::Float => kind,
                 CanonicalVarKind::Ty { ui, sub_root } => {
                     CanonicalVarKind::Ty { ui: reverse_universe_map[&ui], sub_root }
                 }

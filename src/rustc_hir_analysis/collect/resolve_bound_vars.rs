@@ -12,7 +12,6 @@
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -30,7 +29,6 @@ use crate::rustc_hir::intravisit::{self, InferKind, Visitor, VisitorExt};
 use crate::rustc_hir::{
     self as hir, AmbigArg, GenericArg, GenericParam, GenericParamKind, HirId, LifetimeKind, Node,
 };
-use rustc_macros::extension;
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::middle::resolve_bound_vars::*;
 use crate::rustc_middle::query::Providers;
@@ -38,6 +36,7 @@ use crate::rustc_middle::ty::{self, TyCtxt, TypeSuperVisitable, TypeVisitor, Unn
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::def_id::{DefId, LocalDefId};
 use crate::rustc_span::{Ident, Span, sym};
+use rustc_macros::extension;
 use tracing::{debug, debug_span, instrument};
 
 use crate::rustc_hir_analysis::diagnostics;
@@ -251,7 +250,7 @@ pub(crate) fn provide(providers: &mut Providers) {
         object_lifetime_default,
         late_bound_vars_map: |tcx, id| &tcx.resolve_bound_vars(id).late_bound_vars,
         opaque_captured_lifetimes: |tcx, id| {
-            &tcx.resolve_bound_vars(tcx.local_def_id_to_hir_id(id).owner)
+            tcx.resolve_bound_vars(tcx.local_def_id_to_hir_id(id).owner)
                 .opaque_captured_lifetimes
                 .get(&id)
                 .map_or(&[][..], |x| &x[..])
@@ -486,7 +485,7 @@ impl<'a, 'tcx> Visitor<'tcx> for BoundVarContext<'a, 'tcx> {
 
                 let infer_spans = fn_decl
                     .inputs
-                    .into_iter()
+                    .iter()
                     .filter_map(span_of_infer)
                     .chain(infer_in_rt_sp)
                     .collect::<Vec<_>>();
@@ -805,7 +804,7 @@ impl<'a, 'tcx> Visitor<'tcx> for BoundVarContext<'a, 'tcx> {
                         // If the user doesn't write *anything*, we apply the
                         // trait object lifetime defaulting rules.
                         // E.g., `Box<dyn Debug>` becomes `Box<dyn Debug + 'static>`.
-                        self.resolve_object_lifetime_default(&*lifetime);
+                        self.resolve_object_lifetime_default(lifetime);
                     }
                     LifetimeKind::Infer => {
                         // If the user writes `'_`, we use the *ordinary* elision
@@ -816,7 +815,7 @@ impl<'a, 'tcx> Visitor<'tcx> for BoundVarContext<'a, 'tcx> {
                     }
                     LifetimeKind::Param(..) | LifetimeKind::Static => {
                         // If the user wrote an explicit name, use that.
-                        self.visit_lifetime(&*lifetime);
+                        self.visit_lifetime(lifetime);
                     }
                     LifetimeKind::Error(..) => {}
                 }
@@ -1004,8 +1003,8 @@ impl<'a, 'tcx> Visitor<'tcx> for BoundVarContext<'a, 'tcx> {
 
     fn visit_where_predicate(&mut self, predicate: &'tcx hir::WherePredicate<'tcx>) {
         let hir_id = predicate.hir_id;
-        match predicate.kind {
-            &hir::WherePredicateKind::BoundPredicate(hir::WhereBoundPredicate {
+        match *predicate.kind {
+            hir::WherePredicateKind::BoundPredicate(hir::WhereBoundPredicate {
                 bounded_ty,
                 bounds,
                 bound_generic_params,
@@ -1046,7 +1045,7 @@ impl<'a, 'tcx> Visitor<'tcx> for BoundVarContext<'a, 'tcx> {
                     walk_list!(this, visit_param_bound, bounds);
                 })
             }
-            &hir::WherePredicateKind::RegionPredicate(hir::WhereRegionPredicate {
+            hir::WherePredicateKind::RegionPredicate(hir::WhereRegionPredicate {
                 lifetime,
                 bounds,
                 ..
@@ -1203,7 +1202,7 @@ fn object_lifetime_default(tcx: TyCtxt<'_>, param_def_id: LocalDefId) -> ObjectL
         // Ignore `for<'a> Type: ...` as they can change what
         // lifetimes mean (although we could "just" handle it).
         if bound.bound_generic_params.is_empty() {
-            add_outlives_bounds(&bound.bounds);
+            add_outlives_bounds(bound.bounds);
         }
     }
 
@@ -1390,7 +1389,7 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
                     {
                         let mut diag: crate::rustc_errors::Diag<'_> =
                             crate::rustc_session::diagnostics::feature_err(
-                                &self.tcx.sess,
+                                self.tcx.sess,
                                 sym::anonymous_lifetime_in_impl_trait,
                                 lifetime_ref.ident.span,
                                 "anonymous lifetimes in `impl Trait` are unstable",
@@ -1622,12 +1621,11 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
         mut lifetime: ResolvedArg,
         ident: Ident,
     ) -> ResolvedArg {
-        if let Some(&(opaque_def_id, _)) = opaque_capture_scopes.last() {
-            if let Err(guar) =
+        if let Some(&(opaque_def_id, _)) = opaque_capture_scopes.last()
+            && let Err(guar) =
                 self.check_lifetime_is_capturable(opaque_def_id, lifetime, ident.span)
-            {
-                lifetime = ResolvedArg::Error(guar);
-            }
+        {
+            lifetime = ResolvedArg::Error(guar);
         }
 
         for &(opaque_def_id, captures) in opaque_capture_scopes.iter().rev() {
@@ -1918,7 +1916,7 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
                             .generics_of(assoc_fn.def_id)
                             .own_params
                             .iter()
-                            .map(|param| generic_param_def_as_bound_arg(param)),
+                            .map(generic_param_def_as_bound_arg),
                     );
                     // `resolve_bound_vars` is computed per HIR owner. `visit_early_late`
                     // records this associated function's binder before walking its signature,
@@ -2352,7 +2350,7 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
         let (mut bound_vars, item_def_id, item_segment) = match qpath {
             // If we have a fully qualified method, then we don't need to do any special lookup.
             hir::QPath::Resolved(_, path)
-                if let [.., item_segment] = &path.segments[..]
+                if let [.., item_segment] = path.segments
                     && item_segment.args.is_some_and(|args| {
                         matches!(
                             args.parenthesized,
@@ -2448,11 +2446,7 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
         // We actually turn type parameters into higher-ranked types here, but we
         // deny them later in HIR lowering.
         bound_vars.extend(
-            self.tcx
-                .generics_of(item_def_id)
-                .own_params
-                .iter()
-                .map(|param| generic_param_def_as_bound_arg(param)),
+            self.tcx.generics_of(item_def_id).own_params.iter().map(generic_param_def_as_bound_arg),
         );
         bound_vars.extend(
             self.tcx.fn_sig(item_def_id).instantiate_identity().skip_norm_wip().bound_vars(),

@@ -5,8 +5,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![cfg_attr(test, allow(unused_crate_dependencies))] // Used for integration tests, not unit tests
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -79,7 +77,7 @@ pub trait PatCx: Sized + fmt::Debug {
         &self,
         ctor: &Constructor<Self>,
         ty: &Self::Ty,
-    ) -> impl Iterator<Item = (Self::Ty, PrivateUninhabitedField)> + ExactSizeIterator;
+    ) -> impl ExactSizeIterator<Item = (Self::Ty, PrivateUninhabitedField)>;
 
     /// The set of all the constructors for `ty`.
     ///

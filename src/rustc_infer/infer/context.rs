@@ -1,5 +1,4 @@
 //! Definition of `InferCtxtLike` from the librarified type layer.
-use alloc::vec::Vec;
 use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_middle::traits::ObligationCause;
@@ -9,6 +8,7 @@ use crate::rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
 use crate::rustc_span::{DUMMY_SP, ErrorGuaranteed, Span};
 use crate::rustc_type_ir::solve::TyOrConstInferVar;
 use crate::rustc_type_ir::{TypeSuperFoldable, TypeVisitableExt};
+use alloc::vec::Vec;
 
 use super::type_variable::TypeVariableValue;
 use super::{
@@ -77,24 +77,15 @@ impl<'tcx> crate::rustc_type_ir::InferCtxtLike for InferCtxt<'tcx> {
     }
 
     fn universe_of_ty(&self, vid: ty::TyVid) -> Option<ty::UniverseIndex> {
-        match self.try_resolve_ty_var(vid) {
-            Err(universe) => Some(universe),
-            Ok(_) => None,
-        }
+        self.try_resolve_ty_var(vid).err()
     }
 
     fn universe_of_lt(&self, lt: ty::RegionVid) -> Option<ty::UniverseIndex> {
-        match self.inner.borrow_mut().unwrap_region_constraints().probe_value(lt) {
-            Err(universe) => Some(universe),
-            Ok(_) => None,
-        }
+        self.inner.borrow_mut().unwrap_region_constraints().probe_value(lt).err()
     }
 
     fn universe_of_ct(&self, ct: ty::ConstVid) -> Option<ty::UniverseIndex> {
-        match self.try_resolve_const_var(ct) {
-            Err(universe) => Some(universe),
-            Ok(_) => None,
-        }
+        self.try_resolve_const_var(ct).err()
     }
 
     fn root_ty_var(&self, var: ty::TyVid) -> ty::TyVid {

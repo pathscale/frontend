@@ -1,7 +1,5 @@
 //! Dealing with trait goals, i.e. `T: Trait<'a, U>`.
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_type_ir::data_structures::IndexSet;
 use crate::rustc_type_ir::fast_reject::DeepRejectCtxt;
 use crate::rustc_type_ir::inherent::*;
@@ -16,10 +14,13 @@ use crate::rustc_type_ir::{
     Region, TraitClause, TraitRef, TypeVisitableExt as _, TypingMode, Unnormalized, Upcast as _,
     elaborate,
 };
+use alloc::vec::Vec;
 use tracing::{debug, instrument, trace, warn};
 
 use crate::rustc_next_trait_solver::delegate::SolverDelegate;
-use crate::rustc_next_trait_solver::solve::assembly::structural_traits::{self, AsyncCallableRelevantTypes};
+use crate::rustc_next_trait_solver::solve::assembly::structural_traits::{
+    self, AsyncCallableRelevantTypes,
+};
 use crate::rustc_next_trait_solver::solve::assembly::{
     self, AllowInferenceConstraints, AssembleCandidatesFrom, Candidate, FailedCandidateInfo,
 };
@@ -180,7 +181,7 @@ where
                 trait_clause.skip_binder().trait_ref.args,
             )
         {
-            return Ok(());
+            Ok(())
         } else {
             Err(NoSolution)
         }
@@ -1093,6 +1094,10 @@ where
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the upcast candidate is determined by separate trait-object components"
+    )]
     fn consider_builtin_upcast_to_principal(
         &mut self,
         goal: Goal<I, (I::Ty, I::Ty)>,
@@ -1320,7 +1325,7 @@ where
                 trace!(?def_id, ?goal, "disqualified auto-trait implementation");
                 // No need to actually consider the candidate here,
                 // since we do that in `consider_impl_candidate`.
-                return Some(Err(NoSolution.into()));
+                Some(Err(NoSolution.into()))
             } else {
                 None
             }

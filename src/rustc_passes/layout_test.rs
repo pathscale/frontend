@@ -1,16 +1,16 @@
-use alloc::string::ToString;
+use crate::find_attr;
 use crate::rustc_abi::{HasDataLayout, TargetDataLayout};
 use crate::rustc_hir::attrs::RustcDumpLayoutKind;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::find_attr;
-use crate::span_bug;
 use crate::rustc_middle::ty::layout::{HasTyCtxt, HasTypingEnv, LayoutError, LayoutOfHelpers};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt, Unnormalized};
 use crate::rustc_span::Span;
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::infer::TyCtxtInferExt;
 use crate::rustc_trait_selection::traits::{self, TraitErrors};
+use crate::span_bug;
+use alloc::string::ToString;
 
 pub fn test_layout(tcx: TyCtxt<'_>) {
     if !tcx.features().rustc_attrs() {

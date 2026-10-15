@@ -15,14 +15,14 @@ use crate::datafrog::{Iteration, Relation, RelationLeaper};
 use crate::polonius_engine::facts::FactTypes;
 use crate::polonius_engine::output::{Context, Output};
 
+#[expect(
+    clippy::type_complexity,
+    reason = "the two output relations retain their fact-domain column types"
+)]
 pub(super) fn compute<T: FactTypes>(
     ctx: &Context<'_, T>,
     result: &mut Output<T>,
-) -> (
-    Relation<(T::Loan, T::Point)>,
-    Relation<(T::Origin, T::Origin, T::Point)>,
-) {
-
+) -> (Relation<(T::Loan, T::Point)>, Relation<(T::Origin, T::Origin, T::Point)>) {
     let (errors, subset_errors) = {
         // Static inputs
         let origin_live_on_entry_rel = &ctx.origin_live_on_entry;
@@ -42,9 +42,7 @@ pub(super) fn compute<T: FactTypes>(
 
         // `loan_invalidated_at` facts, stored ready for joins
         let loan_invalidated_at = Relation::from_iter(
-            ctx.loan_invalidated_at
-                .iter()
-                .map(|&(loan, point)| ((loan, point), ())),
+            ctx.loan_invalidated_at.iter().map(|&(loan, point)| ((loan, point), ())),
         );
 
         // different indices for `subset`.
@@ -76,11 +74,8 @@ pub(super) fn compute<T: FactTypes>(
         // explanation.
         let origin_live_on_entry_var =
             iteration.variable::<((T::Origin, T::Point), ())>("origin_live_on_entry");
-        origin_live_on_entry_var.extend(
-            origin_live_on_entry_rel
-                .iter()
-                .map(|&(origin, point)| ((origin, point), ())),
-        );
+        origin_live_on_entry_var
+            .extend(origin_live_on_entry_rel.iter().map(|&(origin, point)| ((origin, point), ())));
 
         // output relations: illegal accesses errors, and illegal subset relations errors
         let errors = iteration.variable("errors");
@@ -110,19 +105,11 @@ pub(super) fn compute<T: FactTypes>(
             // impact performance. Until then, the big reduction in tuples improves performance
             // a lot, even if we're potentially adding a small number of tuples
             // per round just to remove them in the next round.
-            subset
-                .recent
-                .borrow_mut()
-                .elements
-                .retain(|&(origin1, origin2, _)| origin1 != origin2);
+            subset.recent.borrow_mut().elements.retain(|&(origin1, origin2, _)| origin1 != origin2);
 
             // Remap fields to re-index by keys, to prepare the data needed by the rules below.
-            subset_o1p.from_map(&subset, |&(origin1, origin2, point)| {
-                ((origin1, point), origin2)
-            });
-            subset_o2p.from_map(&subset, |&(origin1, origin2, point)| {
-                ((origin2, point), origin1)
-            });
+            subset_o1p.from_map(&subset, |&(origin1, origin2, point)| ((origin1, point), origin2));
+            subset_o2p.from_map(&subset, |&(origin1, origin2, point)| ((origin2, point), origin1));
 
             origin_contains_loan_on_entry_op
                 .from_map(&origin_contains_loan_on_entry, |&(origin, loan, point)| {
@@ -136,11 +123,9 @@ pub(super) fn compute<T: FactTypes>(
             // subset(Origin1, Origin3, Point) :-
             //   subset(Origin1, Origin2, Point),
             //   subset(Origin2, Origin3, Point).
-            subset.from_join(
-                &subset_o2p,
-                &subset_o1p,
-                |&(_origin2, point), &origin1, &origin3| (origin1, origin3, point),
-            );
+            subset.from_join(&subset_o2p, &subset_o1p, |&(_origin2, point), &origin1, &origin3| {
+                (origin1, origin3, point)
+            });
 
             // Rule 3: propagate subsets along the CFG, according to liveness.
             //
@@ -213,11 +198,9 @@ pub(super) fn compute<T: FactTypes>(
             // errors(Loan, Point) :-
             //   loan_invalidated_at(Loan, Point),
             //   loan_live_at(Loan, Point).
-            errors.from_join(
-                &loan_live_at,
-                &loan_invalidated_at,
-                |&(loan, point), _, _| (loan, point),
-            );
+            errors.from_join(&loan_live_at, &loan_invalidated_at, |&(loan, point), _, _| {
+                (loan, point)
+            });
 
             // Rule 9: compute illegal subset relations errors, i.e. the undeclared subsets
             // between two placeholder origins.
@@ -249,11 +232,7 @@ pub(super) fn compute<T: FactTypes>(
         if result.dump_enabled {
             let subset = subset.complete();
             assert!(
-                subset
-                    .iter()
-                    .filter(|&(origin1, origin2, _)| origin1 == origin2)
-                    .count()
-                    == 0,
+                subset.iter().filter(|&(origin1, origin2, _)| origin1 == origin2).count() == 0,
                 "unwanted subset symmetries"
             );
             for &(origin1, origin2, location) in subset.iter() {

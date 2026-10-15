@@ -106,11 +106,8 @@ impl<T> ThinArcSlice<T> {
         let ptr = storage.cast::<Header>();
         // SAFETY: `ptr` is fresh and aligned for `Header`; elements go at `offset`.
         let data = unsafe { raw.add(offset).cast::<T>() };
-        let mut initialization = Initialization {
-            _storage: Storage { ptr: storage, layout },
-            data,
-            initialized: 0,
-        };
+        let mut initialization =
+            Initialization { _storage: Storage { ptr: storage, layout }, data, initialized: 0 };
         unsafe { ptr.as_ptr().write(Header { count: AtomicUsize::new(1), len }) };
         for i in 0..len {
             let item = iter.next().expect("ExactSizeIterator yielded fewer items than its len");
@@ -161,12 +158,20 @@ impl<T> Clone for ThinArcSlice<T> {
     #[inline]
     fn clone(&self) -> Self {
         if self.header().len != 0 {
-            self.header()
-                .count
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                    (count < isize::MAX as usize).then(|| count + 1)
-                })
-                .expect("ThinArcSlice count overflow");
+            let count = &self.header().count;
+            let mut current = count.load(Ordering::Relaxed);
+            loop {
+                assert!(current < isize::MAX as usize, "ThinArcSlice count overflow");
+                match count.compare_exchange_weak(
+                    current,
+                    current + 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
         }
         ThinArcSlice { ptr: self.ptr, _owns: PhantomData }
     }

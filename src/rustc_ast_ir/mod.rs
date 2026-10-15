@@ -21,15 +21,13 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 // tidy-alphabetical-end
-
 use core::fmt;
 
 #[cfg(feature = "nightly")]
-use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
-#[cfg(feature = "nightly")]
 use crate::rustc_span::{Symbol, sym};
+#[cfg(feature = "nightly")]
+use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
 
 pub mod visit;
 

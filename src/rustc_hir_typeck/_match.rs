@@ -1,12 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag};
@@ -264,7 +262,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         let semi = expr.span.shrink_to_hi().with_hi(semi_span.hi());
-        let sugg = crate::rustc_hir_typeck::diagnostics::RemoveSemiForCoerce { expr: expr.span, ret, semi };
+        let sugg = crate::rustc_hir_typeck::diagnostics::RemoveSemiForCoerce {
+            expr: expr.span,
+            ret,
+            semi,
+        };
         diag.subdiagnostic(sugg);
     }
 
@@ -384,7 +386,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         .sess
                         .source_map()
                         .indentation_before(first.span)
-                        .unwrap_or_else(|| String::new());
+                        .unwrap_or_default();
                     sugg.extend([
                         (init.span.between(first.span), format!(";\n{padding}")),
                         (expr.span.shrink_to_hi().with_hi(block.span.hi()), String::new()),
@@ -396,7 +398,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         .sess
                         .source_map()
                         .indentation_before(expr.span)
-                        .unwrap_or_else(|| String::new());
+                        .unwrap_or_default();
                     sugg.extend([
                         (init.span.between(expr.span), format!(";\n{padding}")),
                         (expr.span.shrink_to_hi().with_hi(block.span.hi()), String::new()),

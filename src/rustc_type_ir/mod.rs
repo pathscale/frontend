@@ -21,7 +21,6 @@
 
 // tidy-alphabetical-start
 #![cfg_attr(feature = "nightly", allow(internal_features))]
-#![cfg_attr(feature = "nightly", feature(negative_impls))]
 
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
@@ -37,15 +36,12 @@
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
-#[macro_use]
+use alloc::vec::Vec;
 // Only for `IntoDiagArg::into_diag_arg`, whose signature takes a `&mut Option<PathBuf>` -
 // a parameter this crate never reads (it is `_` at every site here). The std dependency
 // belongs to the diagnostics layer that defines the trait, not to this crate, and it goes
 // when that layer does.
 // tidy-alphabetical-end
-
-
 use core::fmt;
 use core::hash::Hash;
 
@@ -57,7 +53,8 @@ use rustc_macros::{Decodable, Encodable, StableHash};
 pub mod data_structures;
 pub mod elaborate;
 pub mod error;
-pub mod fast_reject;pub mod inherent;
+pub mod fast_reject;
+pub mod inherent;
 pub mod intern;
 pub mod ir_print;
 pub mod lang_items;
@@ -98,6 +95,7 @@ mod unnormalized;
 mod upcast;
 mod visit;
 
+pub use crate::rustc_ast_ir::{FloatTy, IntTy, Movability, Mutability, Pinnedness, UintTy};
 pub use AliasTyKind::*;
 pub use InferTy::*;
 pub use RegionKind::*;
@@ -117,7 +115,6 @@ pub use pattern::*;
 pub use predicate::*;
 pub use predicate_kind::*;
 pub use region_kind::*;
-pub use crate::rustc_ast_ir::{FloatTy, IntTy, Movability, Mutability, Pinnedness, UintTy};
 use rustc_macros::GenericTypeVisitable;
 #[cfg(feature = "nightly")]
 pub use serialize::*;
@@ -265,7 +262,8 @@ pub fn debug_bound_var<T: core::fmt::Write>(
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, GenericTypeVisitable)]
-#[cfg_attr(feature = "nightly", derive(Decodable, Encodable, StableHash))]pub enum Variance {
+#[cfg_attr(feature = "nightly", derive(Decodable, Encodable, StableHash))]
+pub enum Variance {
     Covariant,     // T<A> <: T<B> iff A <: B -- e.g., function return type
     Invariant,     // T<A> <: T<B> iff B == A -- e.g., type of mutable cell
     Contravariant, // T<A> <: T<B> iff B <: A -- e.g., function param type
@@ -473,12 +471,9 @@ impl ClosureKind {
     #[rustfmt::skip]
     pub fn extends(self, other: ClosureKind) -> bool {
         use ClosureKind::*;
-        match (self, other) {
-              (Fn, Fn | FnMut | FnOnce)
+        matches!((self, other), (Fn, Fn | FnMut | FnOnce)
             | (FnMut,   FnMut | FnOnce)
-            | (FnOnce,          FnOnce) => true,
-            _ => false,
-        }
+            | (FnOnce,          FnOnce))
     }
 }
 

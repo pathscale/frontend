@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -18,7 +15,6 @@ mod suggestions;
 use core::cell::{Cell, RefCell};
 use core::ops::Deref;
 
-pub(crate) use inspect_obligations::UseSubtyping;
 use crate::rustc_data_structures::thin_vec::{ThinVec, thin_vec};
 use crate::rustc_errors::DiagCtxtHandle;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
@@ -32,11 +28,12 @@ use crate::rustc_middle::ty::{
     self, CantBeErased, Const, Flags, Ty, TyCtxt, TypeVisitableExt, TypingMode, Unnormalized,
 };
 use crate::rustc_session::Session;
-use crate::rustc_span::{self, DUMMY_SP, ErrorGuaranteed, Ident, Span};
+use crate::rustc_span::{DUMMY_SP, ErrorGuaranteed, Ident, Span};
 use crate::rustc_trait_selection::error_reporting::TypeErrCtxt;
 use crate::rustc_trait_selection::traits::{
     self, FulfillmentError, ObligationCause, ObligationCauseCode, ObligationCtxt,
 };
+pub(crate) use inspect_obligations::UseSubtyping;
 
 use crate::rustc_hir_typeck::coercion::CoerceMany;
 use crate::rustc_hir_typeck::{CoroutineTypes, Diverges, EnclosingBreakables, TypeckRootCtxt};
@@ -224,7 +221,11 @@ impl<'a, 'tcx> Deref for FnCtxt<'a, 'tcx> {
 }
 
 impl<'tcx> crate::rustc_hir_pretty::PpAnn for FnCtxt<'_, 'tcx> {
-    fn nested(&self, state: &mut crate::rustc_hir_pretty::State<'_>, nested: crate::rustc_hir_pretty::Nested) {
+    fn nested(
+        &self,
+        state: &mut crate::rustc_hir_pretty::State<'_>,
+        nested: crate::rustc_hir_pretty::Nested,
+    ) {
         crate::rustc_hir_pretty::PpAnn::nested(
             &(&self.tcx as &dyn crate::rustc_hir::intravisit::HirTyCtxt<'_>),
             state,

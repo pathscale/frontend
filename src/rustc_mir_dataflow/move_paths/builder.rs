@@ -1,5 +1,3 @@
-use core::mem;
-
 use crate::rustc_index::IndexVec;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt, TypeVisitableExt};
@@ -81,7 +79,7 @@ fn new_move_path<'tcx>(
         move_paths.push(MovePath { next_sibling: None, first_child: None, parent, place });
 
     if let Some(parent) = parent {
-        let next_sibling = mem::replace(&mut move_paths[parent].first_child, Some(move_path));
+        let next_sibling = move_paths[parent].first_child.replace(move_path);
         move_paths[move_path].next_sibling = next_sibling;
     }
 
@@ -573,10 +571,10 @@ impl<'a, 'tcx, F: Fn(Ty<'tcx>) -> bool> MoveDataBuilder<'a, 'tcx, F> {
 
         // Check if we are assigning into a field of a union, if so, lookup the place
         // of the union so it is marked as initialized again.
-        if let Some((place_base, ProjectionElem::Field(_, _))) = place.last_projection() {
-            if place_base.ty(self.body, self.tcx).ty.is_union() {
-                place = place_base;
-            }
+        if let Some((place_base, ProjectionElem::Field(_, _))) = place.last_projection()
+            && place_base.ty(self.body, self.tcx).ty.is_union()
+        {
+            place = place_base;
         }
 
         if let LookupResult::Exact(path) = self.data.rev_lookup.find(place) {

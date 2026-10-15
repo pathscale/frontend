@@ -4,13 +4,9 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
-use hir::ConstContext;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag, MultiSpan, msg};
 use crate::rustc_hir as hir;
@@ -19,7 +15,6 @@ use crate::rustc_hir::def_id::DefId;
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::traits::{ImplSource, Obligation, ObligationCause};
 use crate::rustc_middle::mir::CallSource;
-use crate::span_bug;
 use crate::rustc_middle::ty::print::{PrintTraitRefExt as _, with_no_trimmed_paths};
 use crate::rustc_middle::ty::{
     self, AssocContainer, Closure, FnDef, FnPtr, GenericArgKind, GenericArgsRef, Param, TraitRef,
@@ -31,6 +26,8 @@ use crate::rustc_trait_selection::error_reporting::traits::call_kind::{
     CallDesugaringKind, CallKind, call_kind,
 };
 use crate::rustc_trait_selection::traits::SelectionContext;
+use crate::span_bug;
+use hir::ConstContext;
 use tracing::debug;
 
 use super::ConstCx;

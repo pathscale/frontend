@@ -1,17 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use alloc::sync::Arc;
 use core::num::NonZero;
 use core::ops::Deref;
 use core::ptr;
-use alloc::sync::Arc;
 
 use parking_lot::Mutex;
 
@@ -132,7 +128,10 @@ impl Registry {
         let index = slot.index;
         // Never given back, and never left: the thread keeps the slot for as long as it lives.
         core::mem::forget(slot);
-        core::mem::forget(enter_raw(Some(self.clone()), ThreadData { registry_id: self.id(), index }));
+        core::mem::forget(enter_raw(
+            Some(self.clone()),
+            ThreadData { registry_id: self.id(), index },
+        ));
     }
 
     /// Take a free slot, or `None` if every slot is held.

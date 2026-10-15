@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Borrow;
@@ -17,7 +12,9 @@ use core::ops::{Bound, Index, IndexMut, RangeBounds};
 
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext};
 
-use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher, StableOrd};
+use crate::rustc_data_structures::stable_hash::{
+    StableHash, StableHashCtxt, StableHasher, StableOrd,
+};
 
 mod index_map;
 
@@ -231,7 +228,7 @@ impl<K: Ord, V> SortedMap<K, V> {
         // Upstream requires `TrustedLen` here so the `splice` below can trust the size hint.
         // That trait is unstable; `ExactSizeIterator` keeps the intent for callers, and the
         // result is the same either way, only the reservation inside `splice` can differ.
-        mut elements: impl Iterator<Item = (K, V)> + DoubleEndedIterator + ExactSizeIterator,
+        mut elements: impl DoubleEndedIterator<Item = (K, V)> + ExactSizeIterator,
     ) {
         let Some(first) = elements.next() else {
             return;
@@ -326,7 +323,7 @@ impl<K: Ord, V> IntoIterator for SortedMap<K, V> {
     }
 }
 
-impl<'a, K, Q, V> Index<&'a Q> for SortedMap<K, V>
+impl<K, Q, V> Index<&Q> for SortedMap<K, V>
 where
     K: Ord + Borrow<Q>,
     Q: Ord + ?Sized,
@@ -338,7 +335,7 @@ where
     }
 }
 
-impl<'a, K, Q, V> IndexMut<&'a Q> for SortedMap<K, V>
+impl<K, Q, V> IndexMut<&Q> for SortedMap<K, V>
 where
     K: Ord + Borrow<Q>,
     Q: Ord + ?Sized,

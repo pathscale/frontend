@@ -25,7 +25,10 @@ impl Point { fn norm(&self) -> f64 { (self.x * self.x + self.y * self.y).sqrt() 
 #[test]
 fn a_real_file_keeps_its_facts_when_its_bodies_do_not_type_check() {
     ready();
-    let facts = match analyze_source("sample", SOURCE) { Ok(f) => f, Err(e) => panic!("analyze_source refused: {e:?}") };
+    let facts = match analyze_source("sample", SOURCE) {
+        Ok(f) => f,
+        Err(e) => panic!("analyze_source refused: {e:?}"),
+    };
     let names: Vec<&str> = facts.definitions.iter().map(|d| d.name.as_str()).collect();
     for name in ["is_vowel", "count", "Point", "norm"] {
         assert!(names.contains(&name), "{name} missing from {names:?}");
@@ -104,11 +107,8 @@ impl absent::Trait for S {
         .find(|definition| definition.name == "f")
         .expect("unresolved trait impl method remains in definitions");
     let method_prefix = format!("{}::", method.def_path);
-    let nested_unanalyzed = facts
-        .unanalyzed_bodies
-        .iter()
-        .filter(|path| path.starts_with(&method_prefix))
-        .count();
+    let nested_unanalyzed =
+        facts.unanalyzed_bodies.iter().filter(|path| path.starts_with(&method_prefix)).count();
     assert_eq!(
         nested_unanalyzed, 3,
         "the closure, inline const, and array-length const bodies must all be reported exactly once: {:?}",
@@ -191,18 +191,22 @@ fn calls_add() { let _ = Local.add(Local); }
         .iter()
         .find(|definition| definition.name == "analysis_lang_item_prelude")
         .expect("the authored similarly named module remains a source definition");
-    assert!(source
-        .get(authored_module.span.start as usize..authored_module.span.end as usize)
-        .is_some_and(|text| text.starts_with("mod analysis_lang_item_prelude")));
+    assert!(
+        source
+            .get(authored_module.span.start as usize..authored_module.span.end as usize)
+            .is_some_and(|text| text.starts_with("mod analysis_lang_item_prelude"))
+    );
 
     let authored_import = facts
         .imports
         .iter()
         .find(|import| import.path == "crate::analysis_lang_item_prelude::User")
         .expect("the authored import remains a source fact");
-    assert!(source
-        .get(authored_import.span.start as usize..authored_import.span.end as usize)
-        .is_some_and(|text| text.starts_with("use crate::analysis_lang_item_prelude::User;")));
+    assert!(
+        source
+            .get(authored_import.span.start as usize..authored_import.span.end as usize)
+            .is_some_and(|text| text.starts_with("use crate::analysis_lang_item_prelude::User;"))
+    );
     assert!(
         facts.references.iter().any(|reference| {
             reference.to_def_path.ends_with("analysis_lang_item_prelude::User")
@@ -217,11 +221,16 @@ fn calls_add() { let _ = Local.add(Local); }
     );
 
     assert!(
-        facts.definitions.iter().all(|definition| {
-            !matches!(definition.name.as_str(), "Option" | "Some" | "Add")
-        }),
+        facts
+            .definitions
+            .iter()
+            .all(|definition| { !matches!(definition.name.as_str(), "Option" | "Some" | "Add") }),
         "appended analyzer definitions must not be reported: {:?}",
-        facts.definitions.iter().map(|definition| (&definition.name, &definition.span)).collect::<Vec<_>>()
+        facts
+            .definitions
+            .iter()
+            .map(|definition| (&definition.name, &definition.span))
+            .collect::<Vec<_>>()
     );
     assert!(
         facts.modules.iter().flat_map(|module| &module.names).all(|name| {
@@ -276,12 +285,16 @@ fn calls_add() { let _ = Local.add(Local); }
     assert!(authored_add.def_path.contains("__analysis_lang_items::Add"));
     assert_eq!(impl_output.def_path, authored_output.def_path);
     assert_eq!(impl_add.def_path, authored_add.def_path);
-    assert!(source
-        .get(authored_output.span.start as usize..authored_output.span.end as usize)
-        .is_some_and(|text| text.starts_with("type Output")));
-    assert!(source
-        .get(authored_add.span.start as usize..authored_add.span.end as usize)
-        .is_some_and(|text| text.starts_with("fn add")));
+    assert!(
+        source
+            .get(authored_output.span.start as usize..authored_output.span.end as usize)
+            .is_some_and(|text| text.starts_with("type Output"))
+    );
+    assert!(
+        source
+            .get(authored_add.span.start as usize..authored_add.span.end as usize)
+            .is_some_and(|text| text.starts_with("fn add"))
+    );
 
     let authored_user = facts
         .definitions
@@ -445,7 +458,8 @@ fn calls_add() { let _ = Local.add(Local); }
     assert!(!facts.complete, "using injected placeholders is not a complete source analysis");
     assert!(
         facts.diagnostics.iter().any(|diagnostic| {
-            diagnostic.contains("module names") && diagnostic.contains("source-visible names may be missing")
+            diagnostic.contains("module names")
+                && diagnostic.contains("source-visible names may be missing")
         }),
         "removed injected names must not be treated as proving absence: {:?}",
         facts.diagnostics
@@ -461,7 +475,9 @@ fn calls_add() { let _ = Local.add(Local); }
         .diagnostics
         .iter()
         .find(|diagnostic| {
-            diagnostic.contains("compiler identities affected by analyzer-injected lang-item placeholders")
+            diagnostic.contains(
+                "compiler identities affected by analyzer-injected lang-item placeholders",
+            )
         })
         .expect("the compiler path limitation is explicit");
     for path in [
@@ -479,7 +495,10 @@ fn calls_add() { let _ = Local.add(Local); }
         &helper.def_path,
         &local_method.def_path,
     ] {
-        assert!(identity_diagnostic.contains(path.as_ref()), "{path} absent from {identity_diagnostic}");
+        assert!(
+            identity_diagnostic.contains(path.as_ref()),
+            "{path} absent from {identity_diagnostic}"
+        );
     }
 }
 
@@ -502,7 +521,8 @@ fn broken() -> u8 { 1u16 }
     assert!(facts.definitions.iter().any(|definition| definition.name == "Record"));
     assert!(facts.definitions.iter().any(|definition| definition.name == "broken"));
     assert!(facts.diagnostics.iter().any(|diagnostic| diagnostic.contains("mismatched types")));
-    let record = facts.definitions.iter().find(|definition| definition.name == "Record").expect("Record");
+    let record =
+        facts.definitions.iter().find(|definition| definition.name == "Record").expect("Record");
     assert_eq!(record.fields[0].doc.as_deref(), Some("The first line."));
     assert_eq!(record.fields[1].doc, None);
 }
@@ -536,7 +556,10 @@ fn diagnostics_refuse_only_what_the_file_decides() {
     assert!(codes.contains(&"unresolved-ident"), "one spelling on the way out: {found:?}");
     let by_number = Options { codes: Some(vec!["E0425".into()]), ..Options::default() };
     let picked = diagnose_with(broken, &by_number).expect("parses");
-    assert!(picked.iter().all(|d| d.code == "unresolved-ident") && !picked.is_empty(), "{picked:?}");
+    assert!(
+        picked.iter().all(|d| d.code == "unresolved-ident") && !picked.is_empty(),
+        "{picked:?}"
+    );
 }
 
 /// A staged-api crate's stability marks, as rustc's `lookup_stability` reads them: a stable
@@ -562,7 +585,10 @@ impl S {
 #[stable(feature = \"t\", since = \"1.0.0\")]
 impl Pat for S { fn is_in(&self, at: u32) -> bool { true } }
 ";
-    let facts = match analyze_source("staged", source) { Ok(f) => f, Err(e) => panic!("analyze_source refused: {e:?}") };
+    let facts = match analyze_source("staged", source) {
+        Ok(f) => f,
+        Err(e) => panic!("analyze_source refused: {e:?}"),
+    };
     let unstable = |name: &str| -> Vec<Option<&str>> {
         facts.definitions.iter().filter(|d| d.name == name).map(|d| d.unstable.as_deref()).collect()
     };
@@ -653,11 +679,8 @@ impl Holder {
     assert_eq!(implementation.trait_ref.as_deref(), Some("HasItem<T>"), "{implementation:?}");
     assert_eq!(implementation.generics, ["T"], "{implementation:?}");
     assert_eq!(implementation.predicates, ["T: Plain"], "{implementation:?}");
-    let item = implementation
-        .items
-        .iter()
-        .find(|item| item.name == "Item")
-        .expect("associated type");
+    let item =
+        implementation.items.iter().find(|item| item.name == "Item").expect("associated type");
     assert_eq!(item.value.as_deref(), Some("char"));
 }
 

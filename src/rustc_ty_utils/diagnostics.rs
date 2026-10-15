@@ -1,9 +1,9 @@
 //! Errors emitted by ty_utils
 
 use crate::rustc_errors::codes::*;
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::{GenericArg, Ty};
 use crate::rustc_span::Span;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("overflow while checking whether `{$query_ty}` requires drop")]
@@ -26,49 +26,49 @@ pub(crate) struct GenericConstantTooComplex {
 #[derive(Subdiagnostic)]
 pub(crate) enum GenericConstantTooComplexSub {
     #[label("borrowing is not supported in generic constants")]
-    BorrowNotSupported(#[primary_span] Span),
+    Borrow(#[primary_span] Span),
     #[label("dereferencing or taking the address is not supported in generic constants")]
-    AddressAndDerefNotSupported(#[primary_span] Span),
+    AddressAndDeref(#[primary_span] Span),
     #[label("array construction is not supported in generic constants")]
-    ArrayNotSupported(#[primary_span] Span),
+    Array(#[primary_span] Span),
     #[label("blocks are not supported in generic constants")]
-    BlockNotSupported(#[primary_span] Span),
+    Block(#[primary_span] Span),
     #[label("coercing the `never` type is not supported in generic constants")]
-    NeverToAnyNotSupported(#[primary_span] Span),
+    NeverToAny(#[primary_span] Span),
     #[label("tuple construction is not supported in generic constants")]
-    TupleNotSupported(#[primary_span] Span),
+    Tuple(#[primary_span] Span),
     #[label("indexing is not supported in generic constants")]
-    IndexNotSupported(#[primary_span] Span),
+    Index(#[primary_span] Span),
     #[label("field access is not supported in generic constants")]
-    FieldNotSupported(#[primary_span] Span),
+    Field(#[primary_span] Span),
     #[label("const blocks are not supported in generic constants")]
-    ConstBlockNotSupported(#[primary_span] Span),
+    ConstBlock(#[primary_span] Span),
     #[label("struct/enum construction is not supported in generic constants")]
-    AdtNotSupported(#[primary_span] Span),
+    Adt(#[primary_span] Span),
     #[label("pointer casts are not allowed in generic constants")]
-    PointerNotSupported(#[primary_span] Span),
+    Pointer(#[primary_span] Span),
     #[label("coroutine control flow is not allowed in generic constants")]
-    YieldNotSupported(#[primary_span] Span),
+    Yield(#[primary_span] Span),
     #[label("loops and loop control flow are not supported in generic constants")]
-    LoopNotSupported(#[primary_span] Span),
+    Loop(#[primary_span] Span),
     #[label("unsupported binary operation in generic constants")]
-    BinaryNotSupported(#[primary_span] Span),
+    Binary(#[primary_span] Span),
     #[label(".use is not allowed in generic constants")]
-    ByUseNotSupported(#[primary_span] Span),
+    ByUse(#[primary_span] Span),
     #[label(
         "unsupported operation in generic constants, short-circuiting operations would imply control flow"
     )]
-    LogicalOpNotSupported(#[primary_span] Span),
+    LogicalOp(#[primary_span] Span),
     #[label("assignment is not supported in generic constants")]
-    AssignNotSupported(#[primary_span] Span),
+    Assign(#[primary_span] Span),
     #[label("closures and function keywords are not supported in generic constants")]
-    ClosureAndReturnNotSupported(#[primary_span] Span),
+    ClosureAndReturn(#[primary_span] Span),
     #[label("control flow is not supported in generic constants")]
-    ControlFlowNotSupported(#[primary_span] Span),
+    ControlFlow(#[primary_span] Span),
     #[label("assembly is not supported in generic constants")]
-    InlineAsmNotSupported(#[primary_span] Span),
+    InlineAsm(#[primary_span] Span),
     #[label("unsupported operation in generic constants")]
-    OperationNotSupported(#[primary_span] Span),
+    Operation(#[primary_span] Span),
 }
 
 #[derive(Diagnostic)]

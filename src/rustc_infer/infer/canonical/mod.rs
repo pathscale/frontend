@@ -21,11 +21,11 @@
 //!
 //! [c]: https://rust-lang.github.io/chalk/book/canonical_queries/canonicalization.html
 
-pub use instantiate::CanonicalExt;
 use crate::rustc_index::IndexVec;
 pub use crate::rustc_middle::infer::canonical::*;
 use crate::rustc_middle::ty::{self, GenericArg, Ty, TyCtxt, TypeFoldable};
 use crate::rustc_span::Span;
+pub use instantiate::CanonicalExt;
 
 use crate::rustc_infer::infer::{InferCtxt, RegionVariableOrigin};
 
@@ -68,8 +68,8 @@ impl<'tcx> InferCtxt<'tcx> {
             .collect();
 
         let var_values =
-            CanonicalVarValues::instantiate(self.tcx, &canonical.var_kinds, |var_values, info| {
-                self.instantiate_canonical_var(span, info, &var_values, |ui| universes[ui])
+            CanonicalVarValues::instantiate(self.tcx, canonical.var_kinds, |var_values, info| {
+                self.instantiate_canonical_var(span, info, var_values, |ui| universes[ui])
             });
         let result = canonical.instantiate(self.tcx, &var_values);
         (result, var_values)

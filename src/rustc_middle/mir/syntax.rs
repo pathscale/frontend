@@ -6,12 +6,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece, Mutability};
@@ -19,10 +14,10 @@ use crate::rustc_data_structures::packed::Pu128;
 use crate::rustc_hir::CoroutineKind;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_index::IndexVec;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{Span, Spanned, Symbol};
 use crate::rustc_target::asm::InlineAsmRegOrRegClass;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use smallvec::SmallVec;
 
 use super::{BasicBlock, Const, Local, UserTypeProjection};

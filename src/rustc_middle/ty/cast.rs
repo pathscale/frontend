@@ -4,12 +4,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 
@@ -86,7 +80,8 @@ impl<'tcx> CastTy<'tcx> {
 pub fn mir_cast_kind<'tcx>(from_ty: Ty<'tcx>, cast_ty: Ty<'tcx>) -> mir::CastKind {
     let from = CastTy::from_ty(from_ty);
     let cast = CastTy::from_ty(cast_ty);
-    let cast_kind = match (from, cast) {
+
+    match (from, cast) {
         (Some(CastTy::Ptr(_) | CastTy::FnPtr), Some(CastTy::Int(_))) => {
             mir::CastKind::PointerExposeProvenance
         }
@@ -102,6 +97,5 @@ pub fn mir_cast_kind<'tcx>(from_ty: Ty<'tcx>, cast_ty: Ty<'tcx>) -> mir::CastKin
         (_, _) => {
             bug!("Attempting to cast non-castable types {:?} and {:?}", from_ty, cast_ty)
         }
-    };
-    cast_kind
+    }
 }

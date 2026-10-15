@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -41,6 +37,10 @@ use tracing::debug;
 ///
 /// let dyn_incompatible: dyn Foo; // bad, two `Bar` principals.
 /// ```
+#[expect(
+    clippy::type_complexity,
+    reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+)]
 pub fn expand_trait_aliases<'tcx>(
     tcx: TyCtxt<'tcx>,
     clauses: impl IntoIterator<Item = (ty::Clause<'tcx>, Span)>,

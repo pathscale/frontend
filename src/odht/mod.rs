@@ -60,11 +60,10 @@
 //! }
 //! ```
 
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
-
 
 // Branch hints only. The `nightly` versions called `core::intrinsics::likely`/`unlikely`, which
 // is `core_intrinsics`; the plain versions that upstream uses off nightly are now the only ones.
@@ -87,9 +86,9 @@ mod raw_table;
 mod swisstable_group_query;
 mod unhash;
 
+use core::borrow::{Borrow, BorrowMut};
 use error::Error;
 use memory_layout::Header;
-use core::borrow::{Borrow, BorrowMut};
 use swisstable_group_query::REFERENCE_GROUP_SIZE;
 
 pub use crate::odht::fxhash::FxHashFn;
@@ -155,10 +154,7 @@ impl<C: Config> HashTableOwned<C> {
         assert!(max_load_factor_percent <= 100);
         assert!(max_load_factor_percent > 0);
 
-        Self::with_capacity_internal(
-            max_item_count,
-            Factor::from_percent(max_load_factor_percent),
-        )
+        Self::with_capacity_internal(max_item_count, Factor::from_percent(max_load_factor_percent))
     }
 
     fn with_capacity_internal(max_item_count: usize, max_load_factor: Factor) -> HashTableOwned<C> {
@@ -281,17 +277,27 @@ impl<C: Config> HashTableOwned<C> {
     }
 
     #[inline]
+    /// # Safety
+    /// `data` must contain a valid table for `C`, including in-bounds header offsets,
+    /// counts and encoded entries, as required by `from_raw_bytes`.
     pub unsafe fn from_raw_bytes_unchecked(data: &[u8]) -> HashTableOwned<C> {
-        let data = data.to_owned().into_boxed_slice();
-        let allocation = memory_layout::Allocation::from_raw_bytes_unchecked(data);
+        unsafe {
+            let data = data.to_owned().into_boxed_slice();
+            let allocation = memory_layout::Allocation::from_raw_bytes_unchecked(data);
 
-        HashTableOwned { allocation }
+            HashTableOwned { allocation }
+        }
     }
 
     /// Returns the number of items stored in the hash table.
     #[inline]
     pub fn len(&self) -> usize {
         self.allocation.header().item_count()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     #[inline]
@@ -337,10 +343,7 @@ impl<C: Config> HashTableOwned<C> {
             2 * initial_slot_count
         );
         assert_eq!(self.allocation.header().item_count(), initial_item_count);
-        assert_eq!(
-            self.allocation.header().max_load_factor(),
-            initial_max_load_factor
-        );
+        assert_eq!(self.allocation.header().max_load_factor(), initial_max_load_factor);
     }
 }
 
@@ -386,9 +389,12 @@ impl<C: Config, D: Borrow<[u8]>> HashTable<C, D> {
     /// The [HashTable::from_raw_bytes] method provides a safe alternative to this
     /// method.
     #[inline]
+    /// # Safety
+    /// The borrowed bytes must remain a valid table for `C`, including in-bounds
+    /// header offsets, counts and encoded entries, for this table's lifetime.
     pub unsafe fn from_raw_bytes_unchecked(data: D) -> HashTable<C, D> {
-        HashTable {
-            allocation: memory_layout::Allocation::from_raw_bytes_unchecked(data),
+        unsafe {
+            HashTable { allocation: memory_layout::Allocation::from_raw_bytes_unchecked(data) }
         }
     }
 
@@ -417,6 +423,11 @@ impl<C: Config, D: Borrow<[u8]>> HashTable<C, D> {
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
     pub fn raw_bytes(&self) -> &[u8] {
         self.allocation.raw_bytes()
     }
@@ -437,7 +448,7 @@ impl<C: Config, D: Borrow<[u8]> + BorrowMut<[u8]>> HashTable<C, D> {
         let max_load_factor = Factor::from_percent(max_load_factor_percent);
         let byte_count = bytes_needed_internal::<C>(max_item_count, max_load_factor);
         if data.borrow_mut().len() != byte_count {
-            return Err(Error(format!(
+            Err(Error(format!(
                 "byte slice to initialize has wrong length ({} instead of {})",
                 data.borrow_mut().len(),
                 byte_count
@@ -509,10 +520,7 @@ impl<'a, C: Config> Iterator for Iter<'a, C> {
 fn slots_needed(item_count: usize, max_load_factor: Factor) -> usize {
     // Note: we round up here
     let slots_needed = max_load_factor.apply_inverse(item_count);
-    core::cmp::max(
-        slots_needed.checked_next_power_of_two().unwrap(),
-        REFERENCE_GROUP_SIZE,
-    )
+    core::cmp::max(slots_needed.checked_next_power_of_two().unwrap(), REFERENCE_GROUP_SIZE)
 }
 
 fn max_item_count_for(slot_count: usize, max_load_factor: Factor) -> usize {
@@ -569,7 +577,7 @@ impl Factor {
         let x = x as u128;
         let factor = self.0 as u128;
         let base = Self::BASE as u128;
-        ((base * x + factor - 1) / factor) as usize
+        (base * x).div_ceil(factor) as usize
     }
 }
 
@@ -704,10 +712,7 @@ mod tests {
 
     #[test]
     fn load_factor_and_item_count() {
-        assert_eq!(
-            slots_needed(0, Factor::from_percent(100)),
-            REFERENCE_GROUP_SIZE
-        );
+        assert_eq!(slots_needed(0, Factor::from_percent(100)), REFERENCE_GROUP_SIZE);
         assert_eq!(slots_needed(6, Factor::from_percent(60)), 16);
         assert_eq!(slots_needed(5, Factor::from_percent(50)), 16);
         assert_eq!(slots_needed(5, Factor::from_percent(49)), 16);
@@ -754,10 +759,7 @@ mod tests {
         assert_eq!(Factor::from_percent(50).apply_inverse(33), 67);
 
         // // Make sure we can handle large numbers without overflow
-        assert_basically_equal(
-            Factor::from_percent(100).apply_inverse(usize::MAX),
-            usize::MAX,
-        );
+        assert_basically_equal(Factor::from_percent(100).apply_inverse(usize::MAX), usize::MAX);
     }
 
     fn assert_basically_equal(x: usize, y: usize) {

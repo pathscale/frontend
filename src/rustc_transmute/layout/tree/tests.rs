@@ -20,7 +20,8 @@ mod prune {
 
         #[test]
         fn seq_1() {
-            let layout: Tree<Def, crate::Never, crate::Never> = Tree::def(Def::NoSafetyInvariants).then(Tree::byte(0x00));
+            let layout: Tree<Def, crate::Never, crate::Never> =
+                Tree::def(Def::NoSafetyInvariants).then(Tree::byte(0x00));
             assert_eq!(layout.prune(&|d| matches!(d, Def::HasSafetyInvariants)), Tree::byte(0x00));
         }
 

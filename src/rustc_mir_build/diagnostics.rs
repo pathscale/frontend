@@ -1,16 +1,16 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{
     Applicability, Diag, DiagArgValue, DiagCtxtHandle, Diagnostic, EmissionGuarantee, Level,
     MultiSpan, Subdiagnostic, msg,
 };
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_pattern_analysis::diagnostics::Uncovered;
 use crate::rustc_pattern_analysis::rustc::RustcPatCtxt;
 use crate::rustc_span::{Ident, Span, Symbol};
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("call to deprecated safe function `{$function}` is unsafe and requires unsafe block")]
@@ -664,10 +664,10 @@ impl<'a, G: EmissionGuarantee> Diagnostic<'a, G> for NonExhaustivePatternsTypeNo
             diag.note(msg!("the matched value is of type `{$ty}`"));
         }
 
-        if let ty::Ref(_, sub_ty, _) = self.ty.kind() {
-            if !sub_ty.is_inhabited_from(self.cx.tcx, self.cx.module, self.cx.typing_env) {
-                diag.note(msg!("references are always considered inhabited"));
-            }
+        if let ty::Ref(_, sub_ty, _) = self.ty.kind()
+            && !sub_ty.is_inhabited_from(self.cx.tcx, self.cx.module, self.cx.typing_env)
+        {
+            diag.note(msg!("references are always considered inhabited"));
         }
 
         let sm = self.cx.tcx.sess.source_map();

@@ -9,12 +9,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::mem;
 
@@ -522,14 +516,14 @@ fn resolve_local<'tcx>(
     {
         record_rvalue_scope_if_borrow_expr(visitor, expr, visitor.cx.var_parent);
 
-        if let Some(pat) = pat {
-            if is_binding_pat(pat) {
-                record_subexpr_extended_temp_scopes(
-                    &mut visitor.scope_tree,
-                    expr,
-                    visitor.cx.var_parent,
-                );
-            }
+        if let Some(pat) = pat
+            && is_binding_pat(pat)
+        {
+            record_subexpr_extended_temp_scopes(
+                &mut visitor.scope_tree,
+                expr,
+                visitor.cx.var_parent,
+            );
         }
     }
 
@@ -879,7 +873,7 @@ pub(crate) fn region_scope_tree(tcx: TyCtxt<'_>, def_id: LocalDefId) -> &ScopeTr
         if owner.def_id == def_id {
             visitor.scope_tree.parent_map.reserve(tcx.hir_owner_nodes(owner).nodes.len());
         }
-        visitor.visit_body(&body);
+        visitor.visit_body(body);
         visitor.scope_tree
     } else {
         ScopeTree::default()

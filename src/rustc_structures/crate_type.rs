@@ -1,8 +1,8 @@
 use alloc::string::ToString;
 #[cfg(feature = "nightly")]
 use {
-    rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash},
     crate::rustc_span::{Symbol, sym},
+    rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash},
 };
 
 /// Crate type, as specified by `#![crate_type]`

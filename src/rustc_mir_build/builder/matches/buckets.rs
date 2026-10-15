@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use alloc::string::String;
 use core::cmp::Ordering;
 
 use crate::rustc_data_structures::fx::FxIndexMap;
@@ -201,7 +200,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     .filter_map(|br| br.as_constant())
                     .all(|val| matches!(range.contains(val, self.tcx), Some(false)));
 
-                not_contained.then(|| {
+                not_contained.then_some({
                     // No switch values are contained in the pattern range,
                     // so the pattern can be matched only if this test fails.
                     TestBranch::Failure

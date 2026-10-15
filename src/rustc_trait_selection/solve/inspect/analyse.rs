@@ -12,23 +12,23 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::assert_matches;
 
 use crate::rustc_infer::infer::InferCtxt;
-use rustc_macros::extension;
 use crate::rustc_middle::traits::solve::{Certainty, Goal, GoalSource, NoSolution, QueryResult};
-use crate::rustc_middle::ty::{RequiredDepth, TyCtxt, VisitorResult, eager_resolve_vars, try_visit};
+use crate::rustc_middle::ty::{
+    RequiredDepth, TyCtxt, VisitorResult, eager_resolve_vars, try_visit,
+};
 use crate::rustc_middle::{bug, ty};
 use crate::rustc_next_trait_solver::canonical::instantiate_canonical_state;
-use crate::rustc_next_trait_solver::solve::{MaybeCause, MaybeInfo, SolverDelegateEvalExt as _, inspect};
+use crate::rustc_next_trait_solver::solve::{
+    MaybeCause, MaybeInfo, SolverDelegateEvalExt as _, inspect,
+};
 use crate::rustc_span::Span;
+use rustc_macros::extension;
 use thin_vec::ThinVec;
 use tracing::instrument;
 
@@ -331,7 +331,7 @@ impl<'a, 'tcx> InspectGoal<'a, 'tcx> {
     pub fn candidates(&'a self) -> Vec<InspectCandidate<'a, 'tcx>> {
         let mut candidates = vec![];
         let mut nested_goals = vec![];
-        self.candidates_recur(&mut candidates, &mut nested_goals, &self.final_revision);
+        self.candidates_recur(&mut candidates, &mut nested_goals, self.final_revision);
         candidates
     }
 

@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast::{BorrowKind, UnOp};
 use crate::rustc_hir::{Expr, ExprKind, Mutability, find_attr};
@@ -103,7 +98,7 @@ impl<'tcx> LateLintPass<'tcx> for ImplicitAutorefs {
 
         if let Some(adjustments) = adjustments_table.get(inner.hir_id)
             // 4. Any number of automatically inserted deref/derefmut calls.
-            && let adjustments = peel_derefs_adjustments(&**adjustments)
+            && let adjustments = peel_derefs_adjustments(adjustments)
             // 3. An automatically inserted reference (might come from a deref).
             && let [adjustment] = adjustments
             && let Some((borrow_mutbl, through_overloaded_deref)) = has_implicit_borrow(adjustment)
@@ -153,8 +148,8 @@ impl<'tcx> LateLintPass<'tcx> for ImplicitAutorefs {
 fn peel_place_mappers<'tcx>(mut expr: &'tcx Expr<'tcx>) -> &'tcx Expr<'tcx> {
     loop {
         match expr.kind {
-            ExprKind::Index(base, _idx, _) => expr = &base,
-            ExprKind::Field(e, _) => expr = &e,
+            ExprKind::Index(base, _idx, _) => expr = base,
+            ExprKind::Field(e, _) => expr = e,
             _ => break expr,
         }
     }

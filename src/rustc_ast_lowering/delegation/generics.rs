@@ -3,8 +3,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hir::HirId;
-use hir::def::{DefKind, Res};
 use crate::rustc_ast::*;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_hir as hir;
@@ -13,6 +11,8 @@ use crate::rustc_middle::ty::{GenericParamDefKind, TyCtxt};
 use crate::rustc_middle::{bug, ty};
 use crate::rustc_span::symbol::kw;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, sym};
+use hir::HirId;
+use hir::def::{DefKind, Res};
 
 use crate::rustc_ast_lowering::LoweringContext;
 use crate::rustc_ast_lowering::delegation::resolution::resolver::DelegationResolver;
@@ -75,7 +75,7 @@ pub(super) struct GenericsGenerationResult<'hir> {
 
 impl GenericsGenerationResult<'_> {
     pub(super) fn segment_id_for_sig(&self) -> Option<HirId> {
-        self.use_for_sig_inheritance.then(|| self.args_segment_id)
+        self.use_for_sig_inheritance.then_some(self.args_segment_id)
     }
 }
 
@@ -159,6 +159,10 @@ impl<'hir> DelegationGenericArgsIterator<'hir> {
 }
 
 impl<'hir> HirOrTyGenerics<'hir> {
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "converts this enum in place so the delegation lowering state stays in its existing slot"
+    )]
     pub(super) fn into_hir_generics(&mut self, ctx: &mut LoweringContext<'_, 'hir>, span: Span) {
         if let HirOrTyGenerics::Ty(ty) = self {
             let rename_self = ty.pos == GenericsPosition::Child;
@@ -301,7 +305,7 @@ impl<'hir> DelegationResolver<'_, 'hir> {
             if matches!(tcx.def_kind(res), DefKind::Trait | DefKind::TraitAlias) {
                 sig_parent_params = &tcx.generics_of(sig_parent).own_params;
                 self.get_user_args(parent_segment)
-                    .map(|args| ParentSegmentArgs::Specified(args))
+                    .map(ParentSegmentArgs::Specified)
                     .unwrap_or(ParentSegmentArgs::NotSpecified)
             } else {
                 ParentSegmentArgs::Invalid
@@ -339,7 +343,7 @@ impl<'hir> DelegationResolver<'_, 'hir> {
         // Treat empty args `reuse foo::<> as bar` as `reuse foo as bar`,
         // the same logic applied when we call function `fn f<T>(t: T)`
         // like that `f::<>(())`, in HIR no `<>` will be generated.
-        (!args.args.is_empty()).then(|| args)
+        (!args.args.is_empty()).then_some(args)
     }
 
     pub(super) fn resolve_and_generate_generics(
@@ -472,10 +476,7 @@ impl<'hir> DelegationResolver<'_, 'hir> {
                     (
                         GenericArg::Lifetime(_),
                         GenericParamDefKind::Type { .. } | GenericParamDefKind::Const { .. }
-                    ) | (
-                        GenericArg::Type(_) | GenericArg::Const(_),
-                        GenericParamDefKind::Lifetime { .. }
-                    )
+                    ) | (GenericArg::Type(_) | GenericArg::Const(_), GenericParamDefKind::Lifetime)
                 )
             {
                 let (actual, expected) = if matches!(arg, GenericArg::Lifetime(..)) {
@@ -524,7 +525,7 @@ impl<'hir> GenericsGenerationResults<'hir> {
             .generics
             .hir_generics_or_empty()
             .predicates
-            .into_iter()
+            .iter()
             .chain(self.child.generics.hir_generics_or_empty().predicates)
             .copied()
     }
@@ -602,10 +603,12 @@ impl<'hir> LoweringContext<'_, 'hir> {
         // HACK: for now we generate predicates such that all lifetimes are early bound,
         // we can not not generate early-bound lifetimes, but we can't know which of them
         // are late-bound at this level of compilation.
-        let predicates =
-            self.arena.alloc_from_iter(params.iter().filter_map(|p| {
-                p.is_lifetime().then(|| self.generate_lifetime_predicate(p, span))
-            }));
+        let predicates = self.arena.alloc_from_iter(
+            params
+                .iter()
+                .filter(|&p| p.is_lifetime())
+                .map(|p| self.generate_lifetime_predicate(p, span)),
+        );
 
         self.arena.alloc(hir::Generics {
             params,

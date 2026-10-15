@@ -4,7 +4,9 @@
 //! A `TokenStream` is, roughly speaking, a sequence of [`TokenTree`]s,
 //! which are themselves a single [`Token`] or a `Delimited` subsequence of tokens.
 
-use crate::rustc_data_structures::iter_ext::{IterExt as _, SliceExt as _};
+use crate::rustc_data_structures::iter_ext::IterExt as _;
+#[cfg(debug_assertions)]
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::borrow::Cow;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -18,14 +20,15 @@ use crate::rustc_data_structures::thin_arc::ThinArcSlice;
 use crate::rustc_serialize::{Decodable, Encodable};
 use crate::rustc_span::{DUMMY_SP, Span, SpanDecoder, SpanEncoder, Symbol, sym};
 use rustc_macros::{Decodable, Encodable, StableHash, Walkable};
-use thin_vec::ThinVec;
 
 use crate::rustc_ast::ast::AttrStyle;
 use crate::rustc_ast::ast_traits::HasTokens;
 use crate::rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 
+pub(crate) mod compact_token;
 mod flat;
+pub(crate) mod indexed_tape;
 mod on_demand;
 mod source_cursor;
 mod source_token;
@@ -325,9 +328,11 @@ impl LazyAttrTokenStreamInner {
                         let target_len = target.is_some() as usize;
                         tokens.splice(
                             (node_range.0.start as usize)..(node_range.0.end as usize),
-                            target.into_iter().map(|target| FlatToken::AttrsTarget(target)).chain(
-                                iter::repeat(FlatToken::Empty)
-                                    .take(node_range.0.len() - target_len),
+                            target.into_iter().map(FlatToken::AttrsTarget).chain(
+                                core::iter::repeat_n(
+                                    FlatToken::Empty,
+                                    node_range.0.len() - target_len,
+                                ),
                             ),
                         );
                     }
@@ -461,7 +466,7 @@ impl AttrTokenStream {
         for tree in self.0.iter() {
             match tree {
                 AttrTokenTree::Token(inner, spacing) => {
-                    res.push(TokenTree::Token(inner.clone(), *spacing));
+                    res.push(TokenTree::Token(*inner, *spacing));
                 }
                 AttrTokenTree::Delimited(span, spacing, delim, stream) => {
                     res.push(TokenTree::Delimited(
@@ -524,7 +529,7 @@ fn attrs_and_tokens_to_token_trees(
     // `#![my_attr]` at the start of a file. Support for custom attributes in
     // this position is not properly implemented - we always synthesize fake
     // tokens, so we never reach this code.
-    fn insert_inner_attrs(inner_attrs: &[Attribute], tts: &mut Vec<TokenTree>) -> bool {
+    fn insert_inner_attrs(inner_attrs: &[Attribute], tts: &mut [TokenTree]) -> bool {
         for tree in tts.iter_mut().rev() {
             if let TokenTree::Delimited(span, spacing, Delimiter::Brace, stream) = tree {
                 // Found it: the rightmost, outermost braced group.
@@ -760,8 +765,8 @@ impl TokenStream {
             let mut i = 0;
             let mut modified = false;
             while let Some(tt) = stream.0.get(i) {
-                match tt {
-                    &TokenTree::Token(
+                match *tt {
+                    TokenTree::Token(
                         Token { kind: token::DocComment(_, attr_style, data), span },
                         _spacing,
                     ) => {
@@ -774,9 +779,9 @@ impl TokenStream {
                         i += desugared_len;
                     }
 
-                    &TokenTree::Token(..) => i += 1,
+                    TokenTree::Token(..) => i += 1,
 
-                    &TokenTree::Delimited(sp, spacing, delim, ref delim_stream) => {
+                    TokenTree::Delimited(sp, spacing, delim, ref delim_stream) => {
                         if let Some(desugared_delim_stream) = desugar_inner(delim_stream.clone()) {
                             let new_tt =
                                 TokenTree::Delimited(sp, spacing, delim, desugared_delim_stream);
@@ -1123,6 +1128,10 @@ impl TreeTokenCursor {
     }
 
     /// Gets the next token and advances the cursor by one.
+    #[expect(
+        dead_code,
+        reason = "retains the conventional token cursor entrypoint for tokenstream consumers"
+    )]
     pub fn next_and_bump(&mut self) -> (Token, Spacing) {
         self.inlined_next_and_bump_reusing(&mut FrameSpare::default())
     }
@@ -1157,12 +1166,12 @@ impl TreeTokenCursor {
             // One step of `inlined_next_and_bump`.
             token = loop {
                 if let Some(tree) = stream.get(idx) {
-                    match tree {
-                        &TokenTree::Token(token, _) => {
+                    match *tree {
+                        TokenTree::Token(token, _) => {
                             idx += 1;
                             break token;
                         }
-                        &TokenTree::Delimited(sp, _, delim, ref tts) => {
+                        TokenTree::Delimited(sp, _, delim, ref tts) => {
                             if n_entered == LOOK_AHEAD_MAX_ENTERED {
                                 return None;
                             }
@@ -1252,6 +1261,10 @@ impl TreeTokenCursor {
     /// `next_and_bump_delimited`, which runs the full loop from the same
     /// state and so returns the same token.
     #[inline(always)]
+    #[expect(
+        dead_code,
+        reason = "retains the inlined token cursor entrypoint for hot parser paths"
+    )]
     pub fn inlined_next_and_bump(&mut self) -> (Token, Spacing) {
         self.inlined_next_and_bump_reusing(&mut FrameSpare::default())
     }
@@ -1277,14 +1290,14 @@ impl TreeTokenCursor {
             // #67062 we will need to, whereupon the `delim != Delimiter::Invisible` conditions
             // below can be removed.
             if let Some(tree) = self.curr.next() {
-                match tree {
-                    &TokenTree::Token(token, spacing) => {
+                match *tree {
+                    TokenTree::Token(token, spacing) => {
                         debug_assert!(!token.kind.is_delim());
                         let res = (token, spacing);
                         self.curr.bump();
                         return res;
                     }
-                    &TokenTree::Delimited(sp, spacing, delim, ref tts) => {
+                    TokenTree::Delimited(sp, spacing, delim, ref tts) => {
                         let trees = TokenTreeCursor::new(tts.clone());
                         self.curr.bump(); // move past the `Delimited`
                         let outer = mem::replace(&mut self.curr, trees);
@@ -1361,7 +1374,7 @@ mod size_asserts {
     static_assert_size!(AttrTokenStream, 8);
     static_assert_size!(AttrTokenTree, 32);
     static_assert_size!(LazyAttrTokenStream, 8);
-    // Pending source captures now retain two compact on-demand cursor lexemes.
+    // Pending source captures retain a cursor into shared immutable source storage.
     const _: () = assert!(mem::size_of::<LazyAttrTokenStreamInner>() <= 112);
     static_assert_size!(Option<LazyAttrTokenStream>, 8); // must be small, used in many AST nodes
     static_assert_size!(TokenStream, 8);

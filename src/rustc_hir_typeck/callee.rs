@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -10,6 +8,7 @@ use alloc::vec::Vec;
 
 use core::iter;
 
+use crate::bug;
 use crate::rustc_abi::{CanonAbi, ExternAbi};
 use crate::rustc_ast::util::parser::ExprPrecedence;
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexSet};
@@ -21,11 +20,12 @@ use crate::rustc_hir::{self as hir, HirId, find_attr};
 use crate::rustc_hir_analysis::autoderef::Autoderef;
 use crate::rustc_infer::infer::{BoundRegionConversionTime, DefineOpaqueTypes};
 use crate::rustc_infer::traits::{Obligation, ObligationCause, ObligationCauseCode};
-use crate::bug;
 use crate::rustc_middle::ty::adjustment::{
     Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability,
 };
-use crate::rustc_middle::ty::{self, FnSig, GenericArgsRef, Ty, TyCtxt, TypeVisitableExt, Unnormalized};
+use crate::rustc_middle::ty::{
+    self, FnSig, GenericArgsRef, Ty, TyCtxt, TypeVisitableExt, Unnormalized,
+};
 use crate::rustc_span::def_id::LocalDefId;
 use crate::rustc_span::{Ident, Span, sym};
 use crate::rustc_target::spec::{AbiMap, AbiMapping};
@@ -665,6 +665,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// a receiver like in a method call. At this point this routine is used for delegations,
     /// as from this moment we always generate a call (earlier method calls were generated),
     /// so we can both propagate parent generics and get benefits from adjustments from method call.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_argument_types_maybe_method_like(
         &self,
         fn_sig: &FnSig<'tcx>,
@@ -794,9 +798,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // by comparing their hir ids (otherwise we will encounter errors in nested delegations,
         // see tests\ui\delegation\impl-reuse-pass.rs:237).
         let parent_def = self.tcx.hir_get_parent_item(call_expr.hir_id).def_id;
-        let Some(info) = self.tcx.hir_opt_delegation_info(parent_def) else {
-            return None;
-        };
+        let info = self.tcx.hir_opt_delegation_info(parent_def)?;
 
         if call_expr.hir_id != info.call_expr_id {
             return None;
@@ -890,10 +892,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         self.tcx
                             .associated_item(pick.callee.def_id)
                             .trait_container(self.tcx)
-                            .map_or_else(
-                                || String::new(),
-                                |trait_def_id| self.tcx.def_path_str(trait_def_id) + "::"
-                            ),
+                            .map_or_else(String::new, |trait_def_id| self
+                                .tcx
+                                .def_path_str(trait_def_id)
+                                + "::"),
                         segment.ident
                     ),
                     sugg,

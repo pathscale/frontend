@@ -1,6 +1,6 @@
+use crate::rustc_span::{Symbol, sym};
 use alloc::string::String;
 use rustc_macros::StableHash;
-use crate::rustc_span::{Symbol, sym};
 
 #[derive(Clone, Debug, Copy, Eq, PartialEq, StableHash)]
 pub enum AllocatorKind {

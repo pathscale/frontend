@@ -14,8 +14,12 @@ use tracing::instrument;
 use crate::rustc_type_ir::data_structures::SsoHashSet;
 use crate::rustc_type_ir::fold::{FallibleTypeFolder, TypeFoldable, TypeFolder, TypeSuperFoldable};
 use crate::rustc_type_ir::inherent::*;
-use crate::rustc_type_ir::visit::{Flags, TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor};
-use crate::rustc_type_ir::{self as ty, DebruijnIndex, Interner, Region, UniverseIndex, Unnormalized};
+use crate::rustc_type_ir::visit::{
+    Flags, TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor,
+};
+use crate::rustc_type_ir::{
+    self as ty, DebruijnIndex, Interner, Region, UniverseIndex, Unnormalized,
+};
 
 /// `Binder` is a binder for higher-ranked lifetimes or types. It is part of the
 /// compiler's representation for things like `for<'a> Fn(&'a isize)`
@@ -653,7 +657,7 @@ impl<I: Interner, T: TypeFoldable<I>> ty::EarlyBinder<I, T> {
     /// For example, consider `for<T> fn foo<T>(){ .. }`:
     /// - Outside of `foo`, `T` is bound (represented by the presence of `EarlyBinder`).
     /// - Inside of the body of `foo`, we treat `T` as a placeholder by calling
-    /// `instantiate_identity` to discharge the `EarlyBinder`.
+    ///   `instantiate_identity` to discharge the `EarlyBinder`.
     pub fn instantiate_identity(self) -> Unnormalized<I, T> {
         // FIXME(#155345): In case the bound value was already normalized, this
         // is unnecessary. We may want to track explicitly whether `EarlyBinder`

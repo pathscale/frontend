@@ -8,8 +8,8 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use eko::path::{Path, PathBuf};
 use crate::rustc_target::spec::Target;
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_session::search_paths::{PathKind, SearchPath};
 
@@ -21,20 +21,17 @@ pub struct FileSearch {
 }
 
 impl FileSearch {
-    pub fn cli_search_paths<'b>(&'b self, kind: PathKind) -> impl Iterator<Item = &'b SearchPath> {
+    pub fn cli_search_paths(&self, kind: PathKind) -> impl Iterator<Item = &SearchPath> {
         self.cli_search_paths.iter().filter(move |sp| sp.kind.matches(kind))
     }
 
-    pub fn search_paths<'b>(&'b self, kind: PathKind) -> impl Iterator<Item = &'b SearchPath> {
+    pub fn search_paths(&self, kind: PathKind) -> impl Iterator<Item = &SearchPath> {
         // If the crate is `PathKind::Crate` (a top level dependency)
         // and `-Z implicit-sysroot-deps=false`, then don't include the sysroot in the search paths.
         let exclude_sysroot = kind.matches(PathKind::Crate) && !self.use_implicit_sysroot_deps;
         let maybe_tlib = (!exclude_sysroot).then_some(self.tlib_path.as_ref()).flatten();
 
-        self.cli_search_paths
-            .iter()
-            .filter(move |sp| sp.kind.matches(kind))
-            .chain(maybe_tlib.into_iter())
+        self.cli_search_paths.iter().filter(move |sp| sp.kind.matches(kind)).chain(maybe_tlib)
     }
 
     /// Return files from the search dirs of this filesearch that match the given `prefix` and
@@ -58,7 +55,7 @@ impl FileSearch {
         let prefixed_items = &self.files[start..][..end];
 
         prefixed_items
-            .into_iter()
+            .iter()
             .filter(move |c| {
                 c.kind.matches(kind)
                     && !(exclude_sysroot && c.from_sysroot)

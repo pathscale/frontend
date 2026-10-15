@@ -1,6 +1,5 @@
 use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -19,7 +18,6 @@ use crate::rustc_ast::{
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Applicability, Diag, DiagArgValue, PResult, StashKey};
 use crate::rustc_span::{BytePos, ErrorGuaranteed, Ident, Span, Spanned, kw, respan, sym};
-use thin_vec::ThinVec;
 
 use super::{ForceCollect, Parser, PathStyle, Restrictions, Trailing, UsePreAttrPos};
 use crate::rustc_parse::diagnostics::{
@@ -444,8 +442,8 @@ impl<'a> Parser<'a> {
         let has_dot_expr = self.check_noexpect(&token::Dot) // `.`
             && self.look_ahead(1, |tok| {
                 tok.is_ident() // `hello`
-                || is_one_tuple_index(&self, &tok) // `0`
-                || is_two_tuple_indexes(&self, &tok) // `0.0`
+                || is_one_tuple_index(self, tok) // `0`
+                || is_two_tuple_indexes(self, tok) // `0.0`
             });
 
         // Check for operators.
@@ -598,7 +596,7 @@ impl<'a> Parser<'a> {
                                     if *expr_precedence <= ExprPrecedence::Compare as i32 {
                                         format!("({expr})")
                                     } else {
-                                        format!("{expr}")
+                                        expr.to_string()
                                     }
                                 }
                                 _ => unreachable!(),
@@ -715,17 +713,15 @@ impl<'a> Parser<'a> {
             |this| this.parse_pat_no_top_alt(None, None),
         ) {
             Some(pat)
-        } else if let Some(pat) = self.eat_metavar_seq(MetaVarKind::Pat(PatWithOr), |this| {
-            this.parse_pat_no_top_guard(
-                None,
-                RecoverComma::No,
-                RecoverColon::No,
-                CommaRecoveryMode::EitherTupleOrPipe,
-            )
-        }) {
-            Some(pat)
         } else {
-            None
+            self.eat_metavar_seq(MetaVarKind::Pat(PatWithOr), |this| {
+                this.parse_pat_no_top_guard(
+                    None,
+                    RecoverComma::No,
+                    RecoverColon::No,
+                    CommaRecoveryMode::EitherTupleOrPipe,
+                )
+            })
         }
     }
 
@@ -1878,7 +1874,7 @@ impl<'a> Parser<'a> {
             && binding != BindingMode::NONE
             && self.token == token::Colon
             // We found `ref mut? ident:`, try to parse a `name,` or `name }`.
-            && let Some(name_span) = self.look_ahead(1, |t| t.is_ident().then(|| t.span))
+            && let Some(name_span) = self.look_ahead(1, |t| t.is_ident().then_some(t.span))
             && self.look_ahead(2, |t| {
                 t == &token::Comma || t == &token::CloseBrace
             })

@@ -7,15 +7,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
-
 
 crate::rustc_index::newtype_index! {
     #[max = 9999] // Because all error codes have four digits.
@@ -54,4 +47,3 @@ macro_rules! define_error_code_constants_and_diagnostics_table {
 // hard error `macro_expanded_macro_exports_accessed_by_absolute_paths`. Textual scope reaches it
 // instead, which works because `rustc_error_codes` is declared before `rustc_errors` in `lib.rs`.
 error_codes!(define_error_code_constants_and_diagnostics_table);
-

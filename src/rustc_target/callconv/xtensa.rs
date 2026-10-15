@@ -8,12 +8,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::{BackendRepr, HasDataLayout, Size, TyAbiInterface};
 
@@ -38,11 +32,8 @@ where
     let mut arg_gprs_left = NUM_RET_GPRS;
     classify_arg_ty(cx, arg, &mut arg_gprs_left, true);
     // Ret args cannot be passed via stack, we lower to indirect and let the backend handle the invisible reference
-    match arg.mode {
-        super::PassMode::Indirect { attrs: _, meta_attrs: _, ref mut on_stack } => {
-            *on_stack = false;
-        }
-        _ => {}
+    if let super::PassMode::Indirect { attrs: _, meta_attrs: _, ref mut on_stack } = arg.mode {
+        *on_stack = false;
     }
 }
 
@@ -103,7 +94,7 @@ fn classify_arg_ty<'a, Ty, C>(
             arg.cast_to(Reg::i32());
         } else {
             let reg = if needed_align == 2 * 32 { Reg::i64() } else { Reg::i32() };
-            let total = Size::from_bits(((size + 32 - 1) / 32) * 32);
+            let total = Size::from_bits(size.div_ceil(32) * 32);
             arg.cast_to(Uniform::new(reg, total));
         }
     } else {

@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -190,7 +188,7 @@ impl EarlyLintPass for NonAsciiIdents {
         // We will soon sort, so the initial order does not matter.
         let mut symbols: Vec<_> = symbols.iter().collect();
         symbols.sort_by_key(|k| k.1);
-        for &(ref symbol, &sp) in symbols.iter() {
+        for &(symbol, &sp) in symbols.iter() {
             let symbol_str = symbol.as_str();
             if symbol_str.is_ascii() {
                 continue;
@@ -305,7 +303,7 @@ impl EarlyLintPass for NonAsciiIdents {
             script_states.insert(latin_augmented_script_set, ScriptSetUsage::Verified);
 
             let mut has_suspicious = false;
-            for &(ref symbol, &sp) in symbols.iter() {
+            for &(symbol, &sp) in symbols.iter() {
                 let symbol_str = symbol.as_str();
                 for ch in symbol_str.chars() {
                     if ch.is_ascii() {

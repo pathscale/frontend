@@ -4,7 +4,6 @@
 //! but are not declared in one single location (unlike lang features), which means we need to
 //! collect them instead.
 
-use alloc::string::ToString;
 use crate::rustc_hir::attrs::AttributeKind;
 use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::{Attribute, StabilityLevel, StableSince};
@@ -13,6 +12,7 @@ use crate::rustc_middle::middle::lib_features::{FeatureStability, LibFeatures};
 use crate::rustc_middle::query::{LocalCrate, Providers};
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::{Span, Symbol, sym};
+use alloc::string::ToString;
 
 use crate::rustc_passes::diagnostics::{FeaturePreviouslyDeclared, FeatureStableTwice};
 

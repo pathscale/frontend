@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use alloc::sync::Arc;
 
@@ -69,12 +63,13 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
         let mut scc_annotations = SccAnnotations::init(&definitions);
         let mut constraint_sccs = compute_sccs(&outlives_constraints, &mut scc_annotations);
 
-        let added_constraints = crate::rustc_borrowck::handle_placeholders::rewrite_placeholder_outlives(
-            &constraint_sccs,
-            &scc_annotations,
-            universal_regions.fr_static,
-            &mut outlives_constraints,
-        );
+        let added_constraints =
+            crate::rustc_borrowck::handle_placeholders::rewrite_placeholder_outlives(
+                &constraint_sccs,
+                &scc_annotations,
+                universal_regions.fr_static,
+                &mut outlives_constraints,
+            );
 
         if added_constraints {
             scc_annotations = SccAnnotations::init(&definitions);
@@ -90,11 +85,8 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
             RegionValues::new(location_map, universal_regions.len(), placeholder_indices);
         for (variable, definition) in definitions.iter_enumerated() {
             let scc = constraint_sccs.scc(variable);
-            match definition.origin {
-                NllRegionVariableOrigin::FreeRegion => {
-                    scc_values.add_free_region(scc, variable);
-                }
-                _ => {}
+            if let NllRegionVariableOrigin::FreeRegion = definition.origin {
+                scc_values.add_free_region(scc, variable);
             }
         }
 

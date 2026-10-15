@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use eko::file::Error;
@@ -13,9 +10,9 @@ use eko::path::{Path, PathBuf};
 
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, EmissionGuarantee, Level, msg};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Span, Symbol, sym};
 use crate::rustc_target::spec::{PanicStrategy, TargetTuple};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_metadata::locator::CrateFlavor;
 
@@ -372,6 +369,7 @@ pub(crate) struct StableCrateIdCollision {
 
 #[derive(Diagnostic)]
 #[diag("{$path}{$err}")]
+#[expect(dead_code, reason = "retains the dynamic library load diagnostic for proc-macro loading")]
 pub(crate) struct DlError {
     #[primary_span]
     pub span: Span,
@@ -460,10 +458,13 @@ impl<G: EmissionGuarantee> Diagnostic<'_, G> for RegistrationFailedEarlier {
         // The reason goes in the *message* and not only in a note, because the surface that reads
         // these most often - a structured diagnostic table - prints the message and drops
         // the notes, and a reason it cannot print is a reason nobody reads.
-        diag.arg("why", match &self.why {
-            Some(why) => format!(": {why}"),
-            None => String::new(),
-        });
+        diag.arg(
+            "why",
+            match &self.why {
+                Some(why) => format!(": {why}"),
+                None => String::new(),
+            },
+        );
         diag.code(E0463);
         diag.span(self.span);
         diag.note(msg!(
@@ -514,15 +515,13 @@ impl<G: EmissionGuarantee> Diagnostic<'_, G> for CannotFindCrate {
 
             let has_precompiled_std = !self.is_tier_3;
 
-            if self.missing_core {
-                if has_precompiled_std {
-                    // NOTE: this suggests using rustup, even though the user may not have it installed.
-                    // That's because they could choose to install it; or this may give them a hint which
-                    // target they need to install from their distro.
-                    diag.help(msg!(
-                        "consider downloading the target with `rustup target add {$locator_triple}`"
-                    ));
-                }
+            if self.missing_core && has_precompiled_std {
+                // NOTE: this suggests using rustup, even though the user may not have it installed.
+                // That's because they could choose to install it; or this may give them a hint which
+                // target they need to install from their distro.
+                diag.help(msg!(
+                    "consider downloading the target with `rustup target add {$locator_triple}`"
+                ));
             }
 
             // Suggest using #![no_std]. #[no_core] is unstable and not really supported anyway.

@@ -3,8 +3,8 @@
 // seems likely that they should eventually be merged into more
 // general routines.
 
-use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::bug;
+use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_middle::traits::CodegenObligationError;
 use crate::rustc_middle::ty::{self, PseudoCanonicalInput, TyCtxt, TypeVisitableExt};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;

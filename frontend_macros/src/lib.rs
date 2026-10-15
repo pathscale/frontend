@@ -109,9 +109,9 @@ decl_derive!(
 decl_derive!(
     [Lift_Generic, attributes(lift)] => type_ir_derives::lift_derive
 );
-/// By default `#[derive(GenericTypeVisitable)]` bounds every field's type, which recurses forever
-/// for a type whose field mentions `Self`. `#[generic_type_visitable(bounds(...))]` overrides the
-/// bound list for that field, and is empty for the `Self`-only case.
+// By default `#[derive(GenericTypeVisitable)]` bounds every field's type, which recurses forever
+// for a type whose field mentions `Self`. `#[generic_type_visitable(bounds(...))]` overrides the
+// bound list for that field, and is empty for the `Self`-only case.
 decl_derive!(
     [GenericTypeVisitable, attributes(generic_type_visitable)] =>
         type_ir_derives::customizable_type_visitable_derive

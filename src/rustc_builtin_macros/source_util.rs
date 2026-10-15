@@ -7,13 +7,11 @@ use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
-use eko::path::{Path, PathBuf};
 use alloc::rc::Rc;
 use alloc::sync::Arc;
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_ast as ast;
 use crate::rustc_ast::tokenstream::TokenStream;
@@ -273,6 +271,10 @@ pub(crate) fn expand_include_bytes(
     })
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "returns file bytes and their source span alongside the macro diagnostic error"
+)]
 fn load_binary_file(
     cx: &ExtCtxt<'_>,
     original_path: &Path,

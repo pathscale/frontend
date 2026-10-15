@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 // `DynSend` and `DynSync` were `unsafe auto trait`s with a table of negative impls (raw
 // pointers, `Rc`, cells) and hand-written positive impls (atomics, locks, arenas,
@@ -30,12 +24,18 @@ use alloc::vec::Vec;
             Add it to `crate::rustc_data_structures::marker` or use `IntoDynSyncSend` if it's already `Send`")]
 /// A type that could be sent across threads when `sync::is_dyn_thread_safe()` is true.
 /// Implemented for every type; see the note at the top of this file.
+///
+/// # Safety
+/// Implementations are marker-only and must not be used as evidence of thread safety.
 pub unsafe trait DynSend {}
 
 #[diagnostic::on_unimplemented(message = "`{Self}` doesn't implement `DynSync`. \
             Add it to `crate::rustc_data_structures::marker` or use `IntoDynSyncSend` if it's already `Sync`")]
 /// A type that could be shared across threads when `sync::is_dyn_thread_safe()` is true.
 /// Implemented for every type; see the note at the top of this file.
+///
+/// # Safety
+/// Implementations are marker-only and must not be used as evidence of thread safety.
 pub unsafe trait DynSync {}
 
 // SAFETY: no code in this crate moves or shares a value across threads, so these markers

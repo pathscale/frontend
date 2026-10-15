@@ -1,18 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use arrayvec::ArrayVec;
 use crate::rustc_abi::{
     Align, BackendRepr, FieldsShape, Float, HasDataLayout, Primitive, Reg, Size, TyAbiInterface,
     TyAndLayout, Variants,
 };
+use arrayvec::ArrayVec;
 
 use crate::rustc_target::callconv::{ArgAbi, ArgAttribute, CastTarget, FnAbi, Uniform};
 use crate::rustc_target::spec::{HasTargetSpec, Os};
@@ -77,36 +71,36 @@ fn classify<'a, Ty, C>(
         },
         BackendRepr::SimdVector { .. } => {}
         BackendRepr::SimdScalableVector { .. } => {}
-        BackendRepr::ScalarPair { .. } | BackendRepr::Memory { .. } => match arg_layout.fields {
-            FieldsShape::Primitive => {
-                unreachable!("aggregates can't have `FieldsShape::Primitive`")
-            }
-            FieldsShape::Union(_) => {
-                if !arg_layout.is_zst() {
-                    if arg_layout.is_transparent() {
+        BackendRepr::ScalarPair { .. } | BackendRepr::Memory { .. } => {
+            match arg_layout.fields {
+                FieldsShape::Primitive => {
+                    unreachable!("aggregates can't have `FieldsShape::Primitive`")
+                }
+                FieldsShape::Union(_) => {
+                    if !arg_layout.is_zst() && arg_layout.is_transparent() {
                         let non_1zst_elem = arg_layout.non_1zst_field(cx).expect("not exactly one non-1-ZST field in non-ZST repr(transparent) union").1;
                         classify(cx, &non_1zst_elem, offset, double_words);
                     }
                 }
-            }
-            FieldsShape::Array { .. } => {}
-            FieldsShape::Arbitrary { .. } => match arg_layout.variants {
-                Variants::Multiple { .. } => {}
-                Variants::Single { .. } | Variants::Empty => {
-                    // Match Clang by ignoring whether a struct is packed and just considering
-                    // whether individual fields are aligned. GCC currently uses only integer
-                    // registers when passing packed structs.
-                    for i in arg_layout.fields.index_by_increasing_offset() {
-                        classify(
-                            cx,
-                            &arg_layout.field(cx, i),
-                            offset + arg_layout.fields.offset(i),
-                            double_words,
-                        );
+                FieldsShape::Array { .. } => {}
+                FieldsShape::Arbitrary { .. } => match arg_layout.variants {
+                    Variants::Multiple { .. } => {}
+                    Variants::Single { .. } | Variants::Empty => {
+                        // Match Clang by ignoring whether a struct is packed and just considering
+                        // whether individual fields are aligned. GCC currently uses only integer
+                        // registers when passing packed structs.
+                        for i in arg_layout.fields.index_by_increasing_offset() {
+                            classify(
+                                cx,
+                                &arg_layout.field(cx, i),
+                                offset + arg_layout.fields.offset(i),
+                                double_words,
+                            );
+                        }
                     }
-                }
-            },
-        },
+                },
+            }
+        }
     }
 }
 

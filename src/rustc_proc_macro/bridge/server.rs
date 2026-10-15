@@ -9,7 +9,6 @@ use core::hash::Hash;
 use core::ops::{Bound, Range};
 use core::sync::atomic::AtomicU32;
 
-
 // A prelude macro names no path, which is why a `std::` search never saw this one.
 use eko::thread_local;
 
@@ -73,6 +72,7 @@ macro_rules! define_server {
     (
         $(fn $method:ident($($arg:ident: $arg_ty:ty),* $(,)?) $(-> $ret_ty:ty)?;)*
     ) => {
+        #[expect(clippy::result_unit_err, reason = "the bridge protocol uses unit failure sentinels for expansion and identifier validation")]
         pub trait Server {
             type TokenStream: 'static + Clone + Default;
             type Span: 'static + Copy + Eq + Hash;
@@ -223,9 +223,12 @@ impl ExecutionStrategy for MaybeCrossThread {
         force_show_panics: bool,
     ) -> Buffer {
         if self.cross_thread {
-            return bridge_error(input, PanicMessage::StaticStr(
-                "frontend_proc_macro_cross_thread_removed: cross-thread proc-macro execution has been removed",
-            ));
+            return bridge_error(
+                input,
+                PanicMessage::StaticStr(
+                    "frontend_proc_macro_cross_thread_removed: cross-thread proc-macro execution has been removed",
+                ),
+            );
         }
         SameThread.run_bridge_and_client(dispatcher, input, run_client, force_show_panics)
     }

@@ -10,6 +10,5 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for JumpThreading {
     }
 
     fn run_pass(&self, _tcx: TyCtxt<'tcx>, _body: &mut Body<'tcx>) {
-        return;
     }
 }

@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::Debug;
 
@@ -122,12 +117,12 @@ impl LintLevelSets {
 }
 
 fn skippable_lints(tcx: TyCtxt<'_>, (): ()) -> UnordSet<LintId> {
-    let store = unerased_lint_store(&tcx.sess);
+    let store = unerased_lint_store(tcx.sess);
     let root_map = tcx.shallow_lint_levels_on(hir::CRATE_OWNER_ID);
 
     let mut skippable: FxHashSet<LintId> = store
         .get_lints()
-        .into_iter()
+        .iter()
         .filter(|lint| {
             // Lints that show up in future-compat reports must always be run.
             let has_future_breakage =
@@ -142,7 +137,7 @@ fn skippable_lints(tcx: TyCtxt<'_>, (): ()) -> UnordSet<LintId> {
                 || (matches!(level_spec.src, LintLevelSource::Default)
                     && lint.default_level(tcx.sess.edition()) == Level::Allow)
         })
-        .map(|lint| LintId::of(*lint))
+        .map(|lint| LintId::of(lint))
         .collect();
 
     for owner in tcx.hir_crate_items(()).owners() {
@@ -506,10 +501,12 @@ where
         for &(ref lint_name, level) in &self.sess.opts.lint_opts {
             // Checks the validity of lint names derived from the command line.
             let (tool_name, lint_name_only) = parse_lint_and_tool_name(lint_name);
-            if lint_name_only == crate::rustc_lint::WARNINGS.name_lower() && matches!(level, Level::ForceWarn) {
-                self.sess
-                    .dcx()
-                    .emit_err(UnsupportedGroup { lint_group: crate::rustc_lint::WARNINGS.name_lower() });
+            if lint_name_only == crate::rustc_lint::WARNINGS.name_lower()
+                && matches!(level, Level::ForceWarn)
+            {
+                self.sess.dcx().emit_err(UnsupportedGroup {
+                    lint_group: crate::rustc_lint::WARNINGS.name_lower(),
+                });
             }
             match self.store.check_lint_name(lint_name_only, tool_name, self.registered_lint_tools)
             {
@@ -614,14 +611,12 @@ where
                 id.lint.name_lower(),
             );
             let sub = match old_src {
-                LintLevelSource::Default => {
-                    OverruledAttributeSub::DefaultSource { id: id.to_string() }
-                }
+                LintLevelSource::Default => OverruledAttributeSub::Default { id: id.to_string() },
                 LintLevelSource::Node { span, reason, .. } => {
-                    OverruledAttributeSub::NodeSource { span, reason }
+                    OverruledAttributeSub::Node { span, reason }
                 }
                 LintLevelSource::CommandLine(name, _) => {
-                    OverruledAttributeSub::CommandLineSource { id: name }
+                    OverruledAttributeSub::CommandLine { id: name }
                 }
             };
             if !fcw_warning {
@@ -851,7 +846,7 @@ where
                             panic!("renamed lint does not exist: {replace}");
                         };
 
-                        (ids, Symbol::intern(&replace))
+                        (ids, Symbol::intern(replace))
                     }
 
                     CheckLintNameResult::Removed(ref reason) => {
@@ -1000,7 +995,7 @@ where
                 lint,
                 level_spec,
                 Some(span.into()),
-                UnknownLint { sess: &self.sess, lint_id, feature, lint_from_cli },
+                UnknownLint { sess: self.sess, lint_id, feature, lint_from_cli },
             );
         }
 

@@ -43,11 +43,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
@@ -57,10 +52,12 @@ use crate::rustc_target::spec::LinkOutputKind;
 
 pub type CrtObjects = BTreeMap<LinkOutputKind, Vec<Cow<'static, str>>>;
 
+#[expect(dead_code, reason = "retains construction of per-link-kind CRT object recipes")]
 pub(super) fn new(obj_table: &[(LinkOutputKind, &[&'static str])]) -> CrtObjects {
     obj_table.iter().map(|(z, k)| (*z, k.iter().map(|b| (*b).into()).collect())).collect()
 }
 
+#[expect(dead_code, reason = "retains the all-link-kinds CRT recipe for target descriptors")]
 pub(super) fn all(obj: &'static str) -> CrtObjects {
     new(&[
         (LinkOutputKind::DynamicNoPicExe, &[obj]),
@@ -72,6 +69,7 @@ pub(super) fn all(obj: &'static str) -> CrtObjects {
     ])
 }
 
+#[expect(dead_code, reason = "retains the musl self-contained startup object recipe")]
 pub(super) fn pre_musl_self_contained() -> CrtObjects {
     new(&[
         (LinkOutputKind::DynamicNoPicExe, &["crt1.o", "crti.o", "crtbegin.o"]),
@@ -83,6 +81,7 @@ pub(super) fn pre_musl_self_contained() -> CrtObjects {
     ])
 }
 
+#[expect(dead_code, reason = "retains the musl self-contained termination object recipe")]
 pub(super) fn post_musl_self_contained() -> CrtObjects {
     new(&[
         (LinkOutputKind::DynamicNoPicExe, &["crtend.o", "crtn.o"]),
@@ -94,6 +93,7 @@ pub(super) fn post_musl_self_contained() -> CrtObjects {
     ])
 }
 
+#[expect(dead_code, reason = "retains the MinGW self-contained startup object recipe")]
 pub(super) fn pre_mingw_self_contained() -> CrtObjects {
     new(&[
         (LinkOutputKind::DynamicNoPicExe, &["crt2.o"]),
@@ -105,6 +105,7 @@ pub(super) fn pre_mingw_self_contained() -> CrtObjects {
     ])
 }
 
+#[expect(dead_code, reason = "retains the i686 MinGW self-contained startup object recipe")]
 pub(super) fn pre_i686_mingw_self_contained() -> CrtObjects {
     new(&[
         (LinkOutputKind::DynamicNoPicExe, &["crt2.o", "rsbegin.o"]),
@@ -116,18 +117,22 @@ pub(super) fn pre_i686_mingw_self_contained() -> CrtObjects {
     ])
 }
 
+#[expect(dead_code, reason = "retains the i686 MinGW self-contained termination object recipe")]
 pub(super) fn post_i686_mingw_self_contained() -> CrtObjects {
     all("rsend.o")
 }
 
+#[expect(dead_code, reason = "retains the i686 MinGW startup object recipe")]
 pub(super) fn pre_i686_mingw() -> CrtObjects {
     all("rsbegin.o")
 }
 
+#[expect(dead_code, reason = "retains the i686 MinGW termination object recipe")]
 pub(super) fn post_i686_mingw() -> CrtObjects {
     all("rsend.o")
 }
 
+#[expect(dead_code, reason = "retains the WASI self-contained startup object recipe")]
 pub(super) fn pre_wasi_self_contained() -> CrtObjects {
     // Use crt1-command.o instead of crt1.o to enable support for new-style
     // commands. See https://reviews.llvm.org/D81689 for more info.
@@ -142,6 +147,7 @@ pub(super) fn pre_wasi_self_contained() -> CrtObjects {
     ])
 }
 
+#[expect(dead_code, reason = "retains the WASI self-contained termination object recipe")]
 pub(super) fn post_wasi_self_contained() -> CrtObjects {
     new(&[])
 }

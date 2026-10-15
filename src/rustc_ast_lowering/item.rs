@@ -304,7 +304,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         (ty, rhs)
                     },
                 );
-                self.lower_define_opaque(hir_id, &define_opaque);
+                self.lower_define_opaque(hir_id, define_opaque);
                 hir::ItemKind::Const(ident, generics, ty, rhs)
             }
             ItemKind::ConstBlock(ConstBlockItem { span, id, block }) => hir::ItemKind::Const(
@@ -968,7 +968,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
                 if define_opaque.is_some() {
                     if body.is_some() {
-                        self.lower_define_opaque(hir_id, &define_opaque);
+                        self.lower_define_opaque(hir_id, define_opaque);
                     } else {
                         self.dcx().span_err(
                             i.span,
@@ -1029,7 +1029,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     sig.header.coroutine_marker,
                     attrs,
                 );
-                self.lower_define_opaque(hir_id, &define_opaque);
+                self.lower_define_opaque(hir_id, define_opaque);
                 (
                     *ident,
                     generics,
@@ -1206,7 +1206,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                                 ty,
                                 ImplTraitContext::Disallowed(ImplTraitPosition::ConstTy),
                             );
-                            this.lower_define_opaque(hir_id, &define_opaque);
+                            this.lower_define_opaque(hir_id, define_opaque);
                             let rhs = this.lower_const_item_rhs(body, *kind, i.span);
                             hir::ImplItemKind::Const(ty, rhs)
                         },
@@ -1233,7 +1233,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     sig.header.coroutine_marker,
                     attrs,
                 );
-                self.lower_define_opaque(hir_id, &define_opaque);
+                self.lower_define_opaque(hir_id, define_opaque);
 
                 (*ident, (generics, hir::ImplItemKind::Fn(sig, body_id)))
             }
@@ -1409,6 +1409,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     /// Takes what may be the body of an `async fn` or a `gen fn` and wraps it in an `async {}` or
     /// `gen {}` block as appropriate.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn lower_maybe_coroutine_body(
         &mut self,
         fn_decl_span: Span,
@@ -1919,7 +1923,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
         // Introduce extra lifetimes if late resolution tells us to.
         let extra_lifetimes = self.owner.extra_lifetime_params(self.owner.id);
-        params.extend(extra_lifetimes.into_iter().map(|&(ident, node_id, kind)| {
+        params.extend(extra_lifetimes.iter().map(|&(ident, node_id, kind)| {
             self.lifetime_res_to_generic_param(
                 ident,
                 node_id,
@@ -1979,6 +1983,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
         self.define_opaque = Some(define_opaque);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub(super) fn lower_generic_bound_predicate(
         &mut self,
         ident: Ident,

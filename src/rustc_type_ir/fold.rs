@@ -45,11 +45,11 @@
 //! - u.fold_with(folder)
 //! ```
 
-#[allow(unused_imports)]
-use {alloc::boxed::Box, alloc::vec::Vec};
+use alloc::sync::Arc;
 use core::convert::Infallible;
 use core::mem;
-use alloc::sync::Arc;
+#[allow(unused_imports)]
+use {alloc::boxed::Box, alloc::vec::Vec};
 
 use crate::rustc_index::{Idx, IndexVec};
 use thin_vec::ThinVec;
@@ -605,6 +605,10 @@ where
     value.fold_with(&mut folder)
 }
 
+#[expect(
+    clippy::enum_variant_names,
+    reason = "each variant names both its scope and target rigidness"
+)]
 enum RigidnessFoldMode {
     AllToRigid,
     AllToNonRigid,

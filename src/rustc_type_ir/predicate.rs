@@ -110,6 +110,10 @@ impl<I: Interner> RegionConstraint<I> {
     feature = "nightly",
     derive(Decodable_NoContext, Encodable_NoContext, StableHash_NoContext)
 )]
+#[expect(
+    clippy::manual_non_exhaustive,
+    reason = "the private marker enforces construction through the checked trait-reference constructors"
+)]
 pub struct TraitRef<I: Interner> {
     pub def_id: I::TraitId,
     pub args: I::GenericArgs,
@@ -383,6 +387,10 @@ impl<I: Interner> ty::Binder<I, ExistentialPredicate<I>> {
     feature = "nightly",
     derive(Decodable_NoContext, Encodable_NoContext, StableHash_NoContext)
 )]
+#[expect(
+    clippy::manual_non_exhaustive,
+    reason = "the private marker enforces construction through the checked existential-reference constructors"
+)]
 pub struct ExistentialTraitRef<I: Interner> {
     pub def_id: I::TraitId,
     pub args: I::GenericArgs,
@@ -448,6 +456,10 @@ impl<I: Interner> ty::Binder<I, ExistentialTraitRef<I>> {
 #[cfg_attr(
     feature = "nightly",
     derive(Decodable_NoContext, Encodable_NoContext, StableHash_NoContext)
+)]
+#[expect(
+    clippy::manual_non_exhaustive,
+    reason = "the private marker enforces construction through the checked projection constructors"
 )]
 pub struct ExistentialProjection<I: Interner> {
     pub def_id: I::TraitAssocTermId,

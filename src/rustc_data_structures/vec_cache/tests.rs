@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::*;
@@ -85,15 +80,14 @@ fn sparse_inserts() {
     }
 }
 
-
 #[test]
 fn slot_entries_table() {
     assert_eq!(
         ENTRIES_BY_BUCKET,
         [
             256, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288,
-            1048576, 2097152, 4194304, 8388608, 16777216, 33554432, 67108864, 134217728,
-            268435456, 536870912, 1073741824, 2147483648
+            1048576, 2097152, 4194304, 8388608, 16777216, 33554432, 67108864, 134217728, 268435456,
+            536870912, 1073741824, 2147483648
         ]
     );
 }

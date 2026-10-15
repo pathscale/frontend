@@ -1,16 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 use core::iter;
 
+use crate::bug;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Diag, IntoDiagArg};
 use crate::rustc_hir::def::{CtorOf, DefKind, Namespace, Res};
@@ -19,7 +18,6 @@ use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{
     self as hir, Body, Closure, Expr, ExprKind, FnRetTy, HirId, LetStmt, LocalSource, PatKind,
 };
-use crate::bug;
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::ty::adjustment::{Adjust, Adjustment, AutoBorrow, DerefAdjustKind};
 use crate::rustc_middle::ty::print::{FmtPrinter, PrettyPrinter, Print, Printer};
@@ -162,7 +160,10 @@ impl InferenceDiagnosticsParentData {
 }
 
 impl IntoDiagArg for UnderspecifiedArgKind {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        _: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         let kind = match self {
             Self::Type { .. } => "type",
             Self::Const { is_parameter: true } => "const_with_param",
@@ -223,7 +224,8 @@ impl<'a, 'tcx> TypeFolder<TyCtxt<'tcx>> for ClosureEraser<'a, 'tcx> {
                     .iter()
                     .map(|param| param.default_value(self.cx()).is_some())
                     .collect();
-                let ty = Ty::new_adt(
+
+                Ty::new_adt(
                     self.cx(),
                     *def,
                     self.cx().mk_args_from_iter(generics.into_iter().zip(args.iter()).map(
@@ -251,8 +253,7 @@ impl<'a, 'tcx> TypeFolder<TyCtxt<'tcx>> for ClosureEraser<'a, 'tcx> {
                             }
                         },
                     )),
-                );
-                ty
+                )
             }
             _ if ty.has_infer() => {
                 // This type has a (potentially nested) type parameter that we couldn't figure out.
@@ -657,7 +658,7 @@ enum InferSourceKind<'tcx> {
 }
 
 impl<'tcx> InferSource<'tcx> {
-    fn from_expansion(&self) -> bool {
+    fn expansion_is_from_macro(&self) -> bool {
         let source_from_expansion = match self.kind {
             InferSourceKind::LetBinding { insert_span, .. }
             | InferSourceKind::ClosureArg { insert_span, .. }
@@ -706,6 +707,10 @@ impl<'tcx> InferSourceKind<'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggestion<'local>(
         &self,
         tcx: TyCtxt<'tcx>,
@@ -1003,7 +1008,7 @@ impl<'a, 'tcx> FindInferSourceVisitor<'a, 'tcx> {
     /// previous sources. We generally prefer earlier sources.
     #[instrument(level = "debug", skip(self))]
     fn update_infer_source(&mut self, mut new_source: InferSource<'tcx>) {
-        if new_source.from_expansion() {
+        if new_source.expansion_is_from_macro() {
             return;
         }
 
@@ -1266,36 +1271,34 @@ impl<'a, 'tcx> FindInferSourceVisitor<'a, 'tcx> {
                 if let DefKind::Impl { .. } = tcx.def_kind(parent_def_id) {
                     let parent_ty =
                         tcx.type_of(parent_def_id).instantiate(tcx, args).skip_norm_wip();
-                    match (parent_ty.kind(), &ty.kind) {
-                        (
-                            ty::Adt(def, args),
-                            hir::TyKind::Path(hir::QPath::Resolved(_self_ty, path)),
-                        ) => {
-                            if tcx.res_generics_def_id(path.res) != Some(def.did()) {
-                                match path.res {
-                                    Res::Def(DefKind::TyAlias, _) => {
-                                        // FIXME: Ideally we should support this. For that
-                                        // we have to map back from the self type to the
-                                        // type alias though. That's difficult.
-                                        //
-                                        // See the `need_type_info/type-alias.rs` test for
-                                        // some examples.
-                                    }
-                                    // There cannot be inference variables in the self type,
-                                    // so there's nothing for us to do here.
-                                    Res::SelfTyParam { .. } | Res::SelfTyAlias { .. } => {}
-                                    _ => warn!(
-                                        "unexpected path: def={:?} args={:?} path={:?}",
-                                        def, args, path,
-                                    ),
+                    if let (
+                        ty::Adt(def, args),
+                        hir::TyKind::Path(hir::QPath::Resolved(_self_ty, path)),
+                    ) = (parent_ty.kind(), &ty.kind)
+                    {
+                        if tcx.res_generics_def_id(path.res) != Some(def.did()) {
+                            match path.res {
+                                Res::Def(DefKind::TyAlias, _) => {
+                                    // FIXME: Ideally we should support this. For that
+                                    // we have to map back from the self type to the
+                                    // type alias though. That's difficult.
+                                    //
+                                    // See the `need_type_info/type-alias.rs` test for
+                                    // some examples.
                                 }
-                            } else {
-                                return Box::new(
-                                    self.resolved_path_inferred_arg_iter(path, args).chain(segment),
-                                );
+                                // There cannot be inference variables in the self type,
+                                // so there's nothing for us to do here.
+                                Res::SelfTyParam { .. } | Res::SelfTyAlias { .. } => {}
+                                _ => warn!(
+                                    "unexpected path: def={:?} args={:?} path={:?}",
+                                    def, args, path,
+                                ),
                             }
+                        } else {
+                            return Box::new(
+                                self.resolved_path_inferred_arg_iter(path, args).chain(segment),
+                            );
                         }
-                        _ => (),
                     }
                 }
 
@@ -1316,52 +1319,48 @@ impl<'a, 'tcx> Visitor<'tcx> for FindInferSourceVisitor<'a, 'tcx> {
     fn visit_local(&mut self, local: &'tcx LetStmt<'tcx>) {
         intravisit::walk_local(self, local);
 
-        if let Some(mut ty) = self.opt_node_type(local.hir_id) {
-            if self.generic_arg_contains_target(ty.into()) {
-                fn get_did(
-                    typeck_results: &TypeckResults<'_>,
-                    expr: &hir::Expr<'_>,
-                ) -> Option<DefId> {
-                    match expr.kind {
-                        hir::ExprKind::Match(expr, _, hir::MatchSource::TryDesugar(_))
-                            if let hir::ExprKind::Call(_, [expr]) = expr.kind =>
-                        {
-                            get_did(typeck_results, expr)
-                        }
-                        hir::ExprKind::Call(base, _args)
-                            if let hir::ExprKind::Path(path) = base.kind
-                                && let hir::QPath::Resolved(_, path) = path
-                                && let Res::Def(_, did) = path.res =>
-                        {
-                            Some(did)
-                        }
-                        hir::ExprKind::MethodCall(..)
-                            if let Some(did) =
-                                typeck_results.type_dependent_def_id(expr.hir_id) =>
-                        {
-                            Some(did)
-                        }
-                        _ => None,
+        if let Some(mut ty) = self.opt_node_type(local.hir_id)
+            && self.generic_arg_contains_target(ty.into())
+        {
+            fn get_did(typeck_results: &TypeckResults<'_>, expr: &hir::Expr<'_>) -> Option<DefId> {
+                match expr.kind {
+                    hir::ExprKind::Match(expr, _, hir::MatchSource::TryDesugar(_))
+                        if let hir::ExprKind::Call(_, [expr]) = expr.kind =>
+                    {
+                        get_did(typeck_results, expr)
                     }
+                    hir::ExprKind::Call(base, _args)
+                        if let hir::ExprKind::Path(path) = base.kind
+                            && let hir::QPath::Resolved(_, path) = path
+                            && let Res::Def(_, did) = path.res =>
+                    {
+                        Some(did)
+                    }
+                    hir::ExprKind::MethodCall(..)
+                        if let Some(did) = typeck_results.type_dependent_def_id(expr.hir_id) =>
+                    {
+                        Some(did)
+                    }
+                    _ => None,
                 }
-                if let Some(t) = self.ty
-                    && ty.has_infer()
-                {
-                    ty = t;
-                }
-                if let LocalSource::Normal = local.source
-                    && local.ty.is_none()
-                {
-                    self.update_infer_source(InferSource {
-                        span: local.pat.span,
-                        kind: InferSourceKind::LetBinding {
-                            insert_span: local.pat.span.shrink_to_hi(),
-                            pattern_name: local.pat.simple_ident(),
-                            ty,
-                            def_id: local.init.and_then(|expr| get_did(self.typeck_results, expr)),
-                        },
-                    });
-                }
+            }
+            if let Some(t) = self.ty
+                && ty.has_infer()
+            {
+                ty = t;
+            }
+            if let LocalSource::Normal = local.source
+                && local.ty.is_none()
+            {
+                self.update_infer_source(InferSource {
+                    span: local.pat.span,
+                    kind: InferSourceKind::LetBinding {
+                        insert_span: local.pat.span.shrink_to_hi(),
+                        pattern_name: local.pat.simple_ident(),
+                        ty,
+                        def_id: local.init.and_then(|expr| get_did(self.typeck_results, expr)),
+                    },
+                });
             }
         }
     }
@@ -1462,29 +1461,28 @@ impl<'a, 'tcx> Visitor<'tcx> for FindInferSourceVisitor<'a, 'tcx> {
             }
         }
 
-        if let Some(node_ty) = self.opt_node_type(expr.hir_id) {
-            if let (
+        if let Some(node_ty) = self.opt_node_type(expr.hir_id)
+            && let (
                 &ExprKind::Closure(&Closure { fn_decl, body, fn_decl_span, .. }),
                 ty::Closure(_, args),
             ) = (&expr.kind, node_ty.kind())
-            {
-                let output = args.as_closure().sig().output().skip_binder();
-                if self.generic_arg_contains_target(output.into()) {
-                    let body = self.tecx.tcx.hir_body(body);
-                    let should_wrap_expr = if matches!(body.value.kind, ExprKind::Block(..)) {
-                        None
-                    } else {
-                        Some(body.value.span.shrink_to_hi())
-                    };
-                    self.update_infer_source(InferSource {
-                        span: fn_decl_span,
-                        kind: InferSourceKind::ClosureReturn {
-                            ty: output,
-                            data: &fn_decl.output,
-                            should_wrap_expr,
-                        },
-                    })
-                }
+        {
+            let output = args.as_closure().sig().output().skip_binder();
+            if self.generic_arg_contains_target(output.into()) {
+                let body = self.tecx.tcx.hir_body(body);
+                let should_wrap_expr = if matches!(body.value.kind, ExprKind::Block(..)) {
+                    None
+                } else {
+                    Some(body.value.span.shrink_to_hi())
+                };
+                self.update_infer_source(InferSource {
+                    span: fn_decl_span,
+                    kind: InferSourceKind::ClosureReturn {
+                        ty: output,
+                        data: &fn_decl.output,
+                        should_wrap_expr,
+                    },
+                })
             }
         }
 
@@ -1505,7 +1503,7 @@ impl<'a, 'tcx> Visitor<'tcx> for FindInferSourceVisitor<'a, 'tcx> {
             && tcx.hir_opt_delegation_sig_id(expr.hir_id.owner.def_id).is_none()
         {
             let successor =
-                method_args.get(0).map_or_else(|| (")", span.hi()), |arg| (", ", arg.span.lo()));
+                method_args.first().map_or_else(|| (")", span.hi()), |arg| (", ", arg.span.lo()));
             let args = self.tecx.resolve_vars_if_possible(args);
             self.update_infer_source(InferSource {
                 span: path.ident.span,

@@ -105,10 +105,10 @@ fn dropless_allocations_are_aligned_and_hold_their_values() {
     let wide: Vec<&mut u128> = (0..PAST_SEVERAL_CHUNKS).map(|n| arena.alloc(n as u128)).collect();
     assert!(bytes.iter().enumerate().all(|(n, byte)| **byte == n as u8));
     assert!(wide.iter().enumerate().all(|(n, word)| **word == n as u128
-        && core::ptr::from_ref::<u128>(word).addr() % align_of::<u128>() == 0));
+        && core::ptr::from_ref::<u128>(word).addr().is_multiple_of(align_of::<u128>())));
     for align in [1, 2, 8, 16, 64, 4096] {
         let raw = arena.alloc_raw(Layout::from_size_align(24, align).unwrap());
-        assert_eq!(raw.addr() % align, 0, "alloc_raw ignored alignment {align}");
+        assert!(raw.addr().is_multiple_of(align), "alloc_raw ignored alignment {align}");
     }
 }
 

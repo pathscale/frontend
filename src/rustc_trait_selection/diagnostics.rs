@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -19,10 +17,10 @@ use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::intravisit::{Visitor, VisitorExt, walk_ty};
 use crate::rustc_hir::{self as hir, AmbigArg, FnRetTy, GenericParamKind, Node};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::print::{PrintTraitRefExt as _, TraitRefPrintOnlyTraitPath};
 use crate::rustc_middle::ty::{self, Binder, ClosureKind, FnSig, GenericArg, Region, Ty, TyCtxt};
 use crate::rustc_span::{BytePos, Ident, Span, Symbol, kw, sym};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_trait_selection::error_reporting::infer::ObligationCauseAsDiagArg;
 use crate::rustc_trait_selection::error_reporting::infer::need_type_info::UnderspecifiedArgKind;
@@ -386,6 +384,10 @@ impl<'a> SourceKindSubdiag<'a> {
 
 /// Suggestion to specify generic parameter(s) via `::<>`.
 #[derive(Subdiagnostic)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Suggestion` suffix identifies the generic argument diagnostic alternatives."
+)]
 pub(crate) enum SpecifyGenericParamsSuggestion {
     #[suggestion(
         "consider specifying the generic {$arg_count ->
@@ -914,7 +916,10 @@ pub(crate) enum TyOrSig<'tcx> {
 }
 
 impl IntoDiagArg for TyOrSig<'_> {
-    fn into_diag_arg(self, path: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        path: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         match self {
             TyOrSig::Ty(ty) => ty.into_diag_arg(path),
             TyOrSig::ClosureSig(sig) => sig.into_diag_arg(path),

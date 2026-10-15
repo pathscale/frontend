@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use crate::rustc_attr_ir::{
     CoverageAttrKind, InstrumentFnAttr, OptimizeAttr, RtsanSetting, UsedBy, find_attr,
 };
@@ -7,6 +5,8 @@ use crate::rustc_feature::AttributeStability;
 use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::edition::Edition::Edition2024;
 use crate::rustc_structures::SanitizerSet;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use super::prelude::*;
 use crate::rustc_attr_parsing::attributes::AttributeSafety;
@@ -352,21 +352,18 @@ impl NoArgsAttributeParser for TrackCallerParser {
     const CREATE: fn(Span) -> AttributeKind = AttributeKind::TrackCaller;
 
     fn finalize_check(cx: &FinalizeCheckContext<'_, '_>, attr_span: Span) {
-        match cx.target {
-            Target::Fn => {
-                // `#[track_caller]` is not valid on weak lang items because they are called via
-                // `extern` declarations and `#[track_caller]` would alter their ABI.
-                if let Some(item) = find_attr!(cx.parsed_attrs, Lang(item) => item)
-                    && item.is_weak()
-                {
-                    cx.emit_err(TrackCallerOnLangItem {
-                        attr_span,
-                        name: item.name(),
-                        sig_span: cx.target_span,
-                    });
-                }
+        if cx.target == Target::Fn {
+            // `#[track_caller]` is not valid on weak lang items because they are called via
+            // `extern` declarations and `#[track_caller]` would alter their ABI.
+            if let Some(item) = find_attr!(cx.parsed_attrs, Lang(item) => item)
+                && item.is_weak()
+            {
+                cx.emit_err(TrackCallerOnLangItem {
+                    attr_span,
+                    name: item.name(),
+                    sig_span: cx.target_span,
+                });
             }
-            _ => {}
         }
     }
 }
@@ -820,7 +817,7 @@ impl SingleAttributeParser for PatchableFunctionEntryParser {
         let mut entry = None;
         let mut section = None;
 
-        if meta_item_list.len() == 0 {
+        if meta_item_list.is_empty() {
             cx.adcx().expected_at_least_one_argument(meta_item_list.span);
             return None;
         }

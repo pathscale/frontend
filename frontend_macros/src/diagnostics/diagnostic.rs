@@ -1,4 +1,3 @@
-
 #![deny(unused_must_use)]
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -24,7 +23,7 @@ impl<'a> DiagnosticDerive<'a> {
             let body = builder.body(variant);
 
             let Some(message) = builder.primary_message() else {
-                return DiagnosticDeriveError::ErrorHandled.to_compile_error();
+                return DiagnosticDeriveError::ErrorHandled.into_compile_error();
             };
             let message = message.diag_message();
 

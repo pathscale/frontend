@@ -1,9 +1,9 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_errors::codes::*;
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Span, Symbol};
 use crate::rustc_structures::Limit;
+use alloc::string::String;
+use alloc::vec::Vec;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[help(

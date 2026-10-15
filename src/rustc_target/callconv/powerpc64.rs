@@ -5,12 +5,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::{HasDataLayout, TyAbiInterface};
 
@@ -18,6 +12,10 @@ use crate::rustc_target::callconv::{Align, ArgAbi, FnAbi, Reg, RegKind, Uniform}
 use crate::rustc_target::spec::{HasTargetSpec, LlvmAbi, Os};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "ABI and AIX are the target ABI and operating system spellings"
+)]
 enum ABI {
     ELFv1, // original ABI used for powerpc64 (big-endian)
     ELFv2, // newer ABI used for powerpc64le and musl (both endians)

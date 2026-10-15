@@ -1,20 +1,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::sorted_map::SortedIndexMultiMap;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::{DefKind, Namespace};
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::def_id::ModId;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Symbol};
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 use super::{TyCtxt, Visibility};
 use crate::rustc_middle::ty;
@@ -287,6 +283,10 @@ impl AssocItems {
 
     pub fn len(&self) -> usize {
         self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
     }
 
     /// Returns an iterator over all associated items with the given name, ignoring hygiene.

@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::LocalDefId;
@@ -11,6 +10,7 @@ use crate::rustc_middle::ty::{
 };
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::Span;
+use alloc::vec::Vec;
 use tracing::{instrument, trace};
 
 use crate::rustc_ty_utils::diagnostics::{DuplicateArg, NotParam};

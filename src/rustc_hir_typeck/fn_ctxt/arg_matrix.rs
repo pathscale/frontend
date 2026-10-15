@@ -1,15 +1,11 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::cmp::Ordering;
 use core::cmp;
+use core::cmp::Ordering;
 
 use crate::rustc_index::IndexVec;
 use crate::rustc_middle::ty::error::TypeError;
@@ -224,8 +220,8 @@ impl<'tcx> ArgMatrix<'tcx> {
                     // We look for swaps explicitly, instead of just falling back on permutations
                     // so that cases like (A,B,C,D) given (B,A,D,C) show up as two swaps,
                     // instead of a large permutation of 4 elements.
-                    for j in 0..cmp::min(ai.len(), ii.len()) {
-                        if i == j || matches!(mat[j][j], Compatibility::Compatible) {
+                    for (j, row) in mat.iter().enumerate().take(cmp::min(ai.len(), ii.len())) {
+                        if i == j || matches!(row[j], Compatibility::Compatible) {
                             continue;
                         }
                         if matches!(mat[i][j], Compatibility::Compatible)
@@ -271,7 +267,7 @@ impl<'tcx> ArgMatrix<'tcx> {
                             if matches!(c, Compatibility::Compatible) { Some(i) } else { None }
                         })
                         .collect();
-                if compat.len() < 1 {
+                if compat.is_empty() {
                     // try to find a cycle even when this could go into multiple slots, see #101097
                     is_cycle = false;
                     break;

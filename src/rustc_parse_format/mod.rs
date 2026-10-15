@@ -19,17 +19,16 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 // tidy-alphabetical-start
 // We want to be able to build this crate with a stable compiler,
 // so no `#![feature]` attributes should be added.
 // tidy-alphabetical-end
 
-#[macro_use]
 use core::ops::Range;
 
 pub use Alignment::*;
@@ -591,7 +590,9 @@ impl<'input> Parser<'input> {
                     // Recover from `r#ident` in format strings.
                     if word == "r"
                         && let Some((r, _, '#')) = self.peek()
-                        && self.peek_ahead().is_some_and(|(_, _, c)| crate::rustc_lexer::is_id_start(c))
+                        && self
+                            .peek_ahead()
+                            .is_some_and(|(_, _, c)| crate::rustc_lexer::is_id_start(c))
                     {
                         self.input_vec_index += 1;
                         let prefix_end = r.end;
@@ -910,7 +911,7 @@ impl<'input> Parser<'input> {
                 0,
                 ParseError {
                     description: "expected `}`, found `?`".to_owned(),
-                    note: Some(format!("to print `{{`, you can escape it using `{{{{`",)),
+                    note: Some("to print `{`, you can escape it using `{{`".to_string()),
                     label: "expected `:` before `?` to format with `Debug`".to_owned(),
                     span: range,
                     secondary_label: None,
@@ -928,7 +929,7 @@ impl<'input> Parser<'input> {
                     description:
                         "python's f-string debug `=` is not supported in rust, use `dbg(x)` instead"
                             .to_owned(),
-                    note: Some(format!("to print `{{`, you can escape it using `{{{{`",)),
+                    note: Some("to print `{`, you can escape it using `{{`".to_string()),
                     label: "expected `}`".to_owned(),
                     span: range,
                     secondary_label: self
@@ -1039,7 +1040,7 @@ impl<'input> Parser<'input> {
                     description:
                         "python's numeric grouping `,` is not supported in rust format strings"
                             .to_owned(),
-                    note: Some(format!("to print `{{`, you can escape it using `{{{{`",)),
+                    note: Some("to print `{`, you can escape it using `{{`".to_string()),
                     label: "expected `}`".to_owned(),
                     span: range,
                     secondary_label: self

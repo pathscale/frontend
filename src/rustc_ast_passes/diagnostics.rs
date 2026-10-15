@@ -1,12 +1,12 @@
 //! Errors emitted by ast_passes.
 
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag, EmissionGuarantee, Subdiagnostic};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Ident, Span, Symbol};
+use alloc::string::String;
+use alloc::vec::Vec;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("visibility qualifiers are not permitted here", code = E0449)]

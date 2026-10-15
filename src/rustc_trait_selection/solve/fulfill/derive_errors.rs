@@ -1,11 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
@@ -21,7 +17,9 @@ use crate::rustc_middle::traits::query::NoSolution;
 use crate::rustc_middle::ty::error::{ExpectedFound, TypeError};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
-use crate::rustc_next_trait_solver::solve::{GoalEvaluation, MaybeInfo, SolverDelegateEvalExt as _};
+use crate::rustc_next_trait_solver::solve::{
+    GoalEvaluation, MaybeInfo, SolverDelegateEvalExt as _,
+};
 use tracing::{instrument, trace};
 
 use crate::rustc_trait_selection::solve::delegate::SolverDelegate;

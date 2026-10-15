@@ -5,10 +5,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -16,7 +12,6 @@ use crate::rustc_ast::{self as ast, GenericArg, GenericParamKind, Generics, TyKi
 use crate::rustc_expand::base::ExtCtxt;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw};
 pub(crate) use Ty::*;
-use thin_vec::ThinVec;
 
 /// A path, e.g., `::std::option::Option::<i32>` (global). Has support
 /// for type parameters.
@@ -75,6 +70,10 @@ pub(crate) enum Ty {
     /// For () return types.
     Unit,
     /// An arbitrary type.
+    #[expect(
+        clippy::enum_variant_names,
+        reason = "AstTy distinguishes the AST-backed type from the other derived type forms"
+    )]
     AstTy(P<ast::Ty>),
 }
 

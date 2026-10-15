@@ -9,17 +9,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_data_structures::graph::dominators::Dominators;
 use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_index::{IndexSlice, IndexVec};
-use crate::bug;
 use crate::rustc_middle::middle::resolve_bound_vars::Set1;
 use crate::rustc_middle::mir::visit::*;
 use crate::rustc_middle::mir::*;
@@ -125,19 +120,6 @@ impl SsaLocals {
     /// Return the number of uses if a local that are not "Deref".
     pub(super) fn num_direct_uses(&self, local: Local) -> u32 {
         self.direct_uses[local]
-    }
-
-    #[inline]
-    pub(super) fn assignment_dominates(
-        &self,
-        dominators: &Dominators<BasicBlock>,
-        local: Local,
-        location: Location,
-    ) -> bool {
-        match self.assignments[local] {
-            Set1::One(def) => def.dominates(location, dominators),
-            _ => false,
-        }
     }
 
     pub(super) fn assignments<'a, 'tcx>(

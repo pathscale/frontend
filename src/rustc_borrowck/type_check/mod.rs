@@ -3,8 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -13,6 +11,7 @@ use alloc::vec::Vec;
 use alloc::sync::Arc;
 use core::{fmt, iter, mem};
 
+use crate::bug;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::frozen::Frozen;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
@@ -29,7 +28,6 @@ use crate::rustc_infer::infer::{
     BoundRegionConversionTime, InferCtxt, NllRegionVariableOrigin, RegionVariableOrigin,
 };
 use crate::rustc_infer::traits::{Obligation, ObligationCause, PredicateObligations};
-use crate::bug;
 use crate::rustc_middle::mir::visit::{NonMutatingUseContext, PlaceContext, Visitor};
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::traits::query::NoSolution;
@@ -54,11 +52,17 @@ use crate::rustc_borrowck::diagnostics::UniverseInfo;
 use crate::rustc_borrowck::polonius::PoloniusContext;
 use crate::rustc_borrowck::polonius::legacy::{PoloniusFacts, PoloniusLocationTable};
 use crate::rustc_borrowck::region_infer::TypeTest;
-use crate::rustc_borrowck::region_infer::values::{LivenessValues, PlaceholderIndex, PlaceholderIndices};
+use crate::rustc_borrowck::region_infer::values::{
+    LivenessValues, PlaceholderIndex, PlaceholderIndices,
+};
 use crate::rustc_borrowck::session_diagnostics::{MoveUnsized, SimdIntrinsicArgConst};
-use crate::rustc_borrowck::type_check::free_region_relations::{CreateResult, UniversalRegionRelations};
+use crate::rustc_borrowck::type_check::free_region_relations::{
+    CreateResult, UniversalRegionRelations,
+};
 use crate::rustc_borrowck::universal_regions::{DefiningTy, UniversalRegions};
-use crate::rustc_borrowck::{BorrowCheckRootCtxt, BorrowckInferCtxt, DeferredClosureRequirements, path_utils};
+use crate::rustc_borrowck::{
+    BorrowCheckRootCtxt, BorrowckInferCtxt, DeferredClosureRequirements, path_utils,
+};
 
 macro_rules! span_mirbug {
     ($context:expr, $elem:expr, $($message:tt)*) => ({
@@ -104,6 +108,10 @@ mod relate_tys;
 /// - `polonius_facts` -- when using Polonius, this is the generated set of Polonius facts
 /// - `move_data` -- move-data constructed when performing the maybe-init dataflow analysis
 /// - `location_map` -- map between MIR `Location` and `PointIndex`
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+)]
 pub(crate) fn type_check<'tcx>(
     root_cx: &BorrowCheckRootCtxt<'_, 'tcx>,
     infcx: &BorrowckInferCtxt<'tcx>,
@@ -376,6 +384,10 @@ pub enum Locations {
 }
 
 impl Locations {
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "Retains the established public name used by compiler callers."
+    )]
     pub fn from_location(&self) -> Option<Location> {
         match self {
             Locations::All(_) => None,
@@ -948,13 +960,12 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
     fn visit_local_decl(&mut self, local: Local, local_decl: &LocalDecl<'tcx>) {
         self.super_local_decl(local, local_decl);
 
-        for user_ty in
-            local_decl
-                .user_ty
-                .as_deref()
-                .map(UserTypeProjections::projections)
-                .into_iter()
-                .flatten()
+        for user_ty in local_decl
+            .user_ty
+            .as_deref()
+            .map(UserTypeProjections::projections)
+            .into_iter()
+            .flatten()
         {
             let span = self.user_type_annotations[user_ty.base].span;
 
@@ -1000,7 +1011,6 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                     //
                     // Unbound parts of arguments were never required to be Sized
                     // - maybe we should make that a warning.
-                    return;
                 }
                 LocalKind::Temp => {
                     let span = local_decl.source_info.span;
@@ -1735,21 +1745,21 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                 Const::Unevaluated(uv, _) => Some(uv),
             };
 
-            if let Some(uv) = maybe_uneval {
-                if uv.promoted.is_none() {
-                    let tcx = self.tcx();
-                    let def_id = uv.def;
-                    if tcx.def_kind(def_id) == DefKind::AnonConst
-                        && tcx.anon_const_kind(def_id) == ty::AnonConstKind::NonTypeSystemInline
-                    {
-                        let def_id = def_id.expect_local();
-                        let clauses = self.prove_closure_bounds(tcx, def_id, uv.args, location);
-                        self.normalize_and_prove_instantiated_clauses(
-                            def_id.to_def_id(),
-                            clauses,
-                            location.to_locations(),
-                        );
-                    }
+            if let Some(uv) = maybe_uneval
+                && uv.promoted.is_none()
+            {
+                let tcx = self.tcx();
+                let def_id = uv.def;
+                if tcx.def_kind(def_id) == DefKind::AnonConst
+                    && tcx.anon_const_kind(def_id) == ty::AnonConstKind::NonTypeSystemInline
+                {
+                    let def_id = def_id.expect_local();
+                    let clauses = self.prove_closure_bounds(tcx, def_id, uv.args, location);
+                    self.normalize_and_prove_instantiated_clauses(
+                        def_id.to_def_id(),
+                        clauses,
+                        location.to_locations(),
+                    );
                 }
             }
         }
@@ -1870,7 +1880,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
 
                 assert_eq!(tcx.trait_impl_of_assoc(def_id), None);
                 self.prove_clauses(
-                    args.terms().map(|t| ty::ClauseKind::WellFormed(t.into())),
+                    args.terms().map(ty::ClauseKind::WellFormed),
                     locations,
                     ConstraintCategory::Boring,
                 );
@@ -2760,12 +2770,15 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         let parent_args = tcx.mk_args(parent_args);
 
         assert_eq!(typeck_root_args.len(), parent_args.len());
-        if let Err(_) = self.eq_args(
-            typeck_root_args,
-            parent_args,
-            location.to_locations(),
-            ConstraintCategory::BoringNoLocation,
-        ) {
+        if self
+            .eq_args(
+                typeck_root_args,
+                parent_args,
+                location.to_locations(),
+                ConstraintCategory::BoringNoLocation,
+            )
+            .is_err()
+        {
             span_mirbug!(
                 self,
                 def_id,

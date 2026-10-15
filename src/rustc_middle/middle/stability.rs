@@ -5,11 +5,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::num::NonZero;
 
@@ -21,10 +18,10 @@ use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::{self as hir, ConstStability, DefaultBodyStability, HirId, Stability};
 use crate::rustc_lint_defs::builtin::{DEPRECATED, DEPRECATED_IN_FUTURE};
 use crate::rustc_lint_defs::{DeprecatedSinceKind, Lint};
-use rustc_macros::{Decodable, Encodable, StableHash, Subdiagnostic};
 use crate::rustc_session::Session;
 use crate::rustc_session::diagnostics::feature_err_issue;
 use crate::rustc_span::{Span, Symbol, sym};
+use rustc_macros::{Decodable, Encodable, StableHash, Subdiagnostic};
 use tracing::debug;
 
 pub use self::StabilityLevel::*;
@@ -297,20 +294,19 @@ fn suggestion_for_allocator_api(
     span: Span,
     feature: Symbol,
 ) -> Option<(Span, String, String, Applicability)> {
-    if feature == sym::allocator_api {
-        if let Some(trait_) = tcx.opt_parent(def_id) {
-            if tcx.is_diagnostic_item(sym::Vec, trait_) {
-                let sm = tcx.sess.psess.source_map();
-                let inner_types = sm.span_extend_to_prev_char(span, '<', true);
-                if let Ok(snippet) = sm.span_to_snippet(inner_types) {
-                    return Some((
-                        inner_types,
-                        "consider wrapping the inner types in tuple".to_string(),
-                        format!("({snippet})"),
-                        Applicability::MaybeIncorrect,
-                    ));
-                }
-            }
+    if feature == sym::allocator_api
+        && let Some(trait_) = tcx.opt_parent(def_id)
+        && tcx.is_diagnostic_item(sym::Vec, trait_)
+    {
+        let sm = tcx.sess.psess.source_map();
+        let inner_types = sm.span_extend_to_prev_char(span, '<', true);
+        if let Ok(snippet) = sm.span_to_snippet(inner_types) {
+            return Some((
+                inner_types,
+                "consider wrapping the inner types in tuple".to_string(),
+                format!("({snippet})"),
+                Applicability::MaybeIncorrect,
+            ));
         }
     }
     None
@@ -364,25 +360,25 @@ impl<'tcx> TyCtxt<'tcx> {
         allow_unstable: AllowUnstable,
     ) -> EvalResult {
         // Deprecated attributes apply in-crate and cross-crate.
-        if let Some(id) = id {
-            if let Some(depr_entry) = self.lookup_deprecation_entry(def_id) {
-                let parent_def_id = self.hir_get_parent_item(id);
-                let skip = self
-                    .lookup_deprecation_entry(parent_def_id.to_def_id())
-                    .is_some_and(|parent_depr| parent_depr.same_origin(&depr_entry));
+        if let Some(id) = id
+            && let Some(depr_entry) = self.lookup_deprecation_entry(def_id)
+        {
+            let parent_def_id = self.hir_get_parent_item(id);
+            let skip = self
+                .lookup_deprecation_entry(parent_def_id.to_def_id())
+                .is_some_and(|parent_depr| parent_depr.same_origin(&depr_entry));
 
-                // #[deprecated] doesn't emit a notice if we're not on the
-                // topmost deprecation. For example, if a struct is deprecated,
-                // the use of a field won't be linted.
-                //
-                // With #![staged_api], we want to emit down the whole
-                // hierarchy.
-                let depr_attr = &depr_entry.attr;
-                if !skip || depr_attr.is_since_rustc_version() {
-                    late_report_deprecation(self, depr_attr, span, method_span, id, def_id);
-                }
-            };
-        }
+            // #[deprecated] doesn't emit a notice if we're not on the
+            // topmost deprecation. For example, if a struct is deprecated,
+            // the use of a field won't be linted.
+            //
+            // With #![staged_api], we want to emit down the whole
+            // hierarchy.
+            let depr_attr = &depr_entry.attr;
+            if !skip || depr_attr.is_since_rustc_version() {
+                late_report_deprecation(self, depr_attr, span, method_span, id, def_id);
+            }
+        };
 
         let is_staged_api = self.lookup_stability(def_id.krate.as_def_id()).is_some();
         if !is_staged_api {
@@ -620,40 +616,38 @@ impl<'tcx> TyCtxt<'tcx> {
             def_id, span, stability
         );
 
-        match stability {
-            Some(ConstStability {
-                level: hir::StabilityLevel::Unstable { reason, issue, implied_by, .. },
-                feature,
-                ..
-            }) => {
-                if span.allows_unstable(feature) {
-                    debug!("body stability: skipping span={:?} since it is internal", span);
-                    return;
-                }
-                if self.features().enabled(feature) {
-                    return;
-                }
-
-                // If this item was previously part of a now-stabilized feature which is still
-                // enabled (i.e. the user hasn't removed the attribute for the stabilized feature
-                // yet) then allow use of this item.
-                if let Some(implied_by) = implied_by
-                    && self.features().enabled(implied_by)
-                {
-                    return;
-                }
-
-                report_unstable(
-                    self.sess,
-                    feature,
-                    reason.to_opt_reason(),
-                    issue,
-                    None,
-                    span,
-                    UnstableKind::Const(const_kw_span),
-                );
+        if let Some(ConstStability {
+            level: hir::StabilityLevel::Unstable { reason, issue, implied_by, .. },
+            feature,
+            ..
+        }) = stability
+        {
+            if span.allows_unstable(feature) {
+                debug!("body stability: skipping span={:?} since it is internal", span);
+                return;
             }
-            Some(_) | None => {}
+            if self.features().enabled(feature) {
+                return;
+            }
+
+            // If this item was previously part of a now-stabilized feature which is still
+            // enabled (i.e. the user hasn't removed the attribute for the stabilized feature
+            // yet) then allow use of this item.
+            if let Some(implied_by) = implied_by
+                && self.features().enabled(implied_by)
+            {
+                return;
+            }
+
+            report_unstable(
+                self.sess,
+                feature,
+                reason.to_opt_reason(),
+                issue,
+                None,
+                span,
+                UnstableKind::Const(const_kw_span),
+            );
         }
     }
 

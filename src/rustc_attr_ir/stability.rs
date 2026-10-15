@@ -1,8 +1,8 @@
 use core::num::NonZero;
 
 use crate::rustc_ast::attr::version::RustcVersion;
-use rustc_macros::{BlobDecodable, Decodable, Encodable, PrintAttribute, StableHash};
 use crate::rustc_span::{ErrorGuaranteed, Symbol, sym};
+use rustc_macros::{BlobDecodable, Decodable, Encodable, PrintAttribute, StableHash};
 
 use crate::rustc_attr_ir::PrintAttribute;
 

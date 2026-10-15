@@ -1,17 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
-use Determinacy::*;
-use Namespace::*;
 use crate::rustc_ast::{self as ast, NodeId};
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::def::{DefKind, MacroKinds, Namespace, NonMacroAttrKind, PartialRes, PerNS};
@@ -21,10 +16,14 @@ use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::{ExpnId, ExpnKind, LocalExpnId, MacroKind, SyntaxContext};
 use crate::rustc_span::{Ident, Span, kw, sym};
+use Determinacy::*;
+use Namespace::*;
 use smallvec::SmallVec;
 use tracing::{debug, instrument};
 
-use crate::rustc_resolve::diagnostics::{ParamKindInEnumDiscriminant, ParamKindInNonTrivialAnonConst};
+use crate::rustc_resolve::diagnostics::{
+    ParamKindInEnumDiscriminant, ParamKindInNonTrivialAnonConst,
+};
 use crate::rustc_resolve::hygiene::Macros20NormalizedSyntaxContext;
 use crate::rustc_resolve::imports::{Import, NameResolution, cycle_detection};
 use crate::rustc_resolve::late::{
@@ -330,6 +329,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// Invariant: This must only be called during main resolution, not during
     /// import resolution.
     #[instrument(level = "debug", skip(self, ribs))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     pub(crate) fn resolve_ident_in_lexical_scope(
         mut self,
         mut ident: Ident,
@@ -412,7 +415,6 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
         unreachable!()
     }
-
 }
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
@@ -437,6 +439,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn resolve_ident_in_scope_set_inner(
         self,
         ident: IdentKey,
@@ -571,6 +577,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn resolve_ident_in_scope(
         mut self,
         ident: IdentKey,
@@ -858,6 +868,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn maybe_push_ambiguity(
         &mut self,
         ident: IdentKey,
@@ -944,16 +958,9 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             // Skip ambiguity errors for nonglob module bindings "overridden"
             // by glob module bindings in the same module.
             // FIXME: Remove with lang team approval.
-            let issue_149681_hack = match scope {
-                Scope::ModuleGlobs(m1, _)
-                    if innermost_results[1..]
+            let issue_149681_hack = matches!(scope, Scope::ModuleGlobs(m1, _) if innermost_results[1..]
                         .iter()
-                        .any(|(_, s)| matches!(*s, Scope::ModuleNonGlobs(m2, _) if m1 == m2)) =>
-                {
-                    true
-                }
-                _ => false,
-            };
+                        .any(|(_, s)| matches!(*s, Scope::ModuleNonGlobs(m2, _) if m1 == m2)));
 
             if issue_145575_hack || issue_149681_hack {
                 self.set_issue_145575_hack_applied();
@@ -994,7 +1001,6 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
         false
     }
-
 }
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
@@ -1028,11 +1034,14 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     pub(crate) fn path_root_is_crate_root(&self, ident: Ident) -> bool {
         ident.name == kw::PathRoot && ident.span.is_rust_2015() && self.tcx.sess.is_rust_2015()
     }
-
 }
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     #[instrument(level = "debug", skip(self))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     pub(crate) fn resolve_ident_in_module(
         self,
         module: ModuleOrUniformRoot<'ra>,
@@ -1138,8 +1147,12 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     }
 
     /// Attempts to resolve `ident` in namespace `ns` of non-glob bindings in an external `module`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn resolve_ident_in_extern_module_non_globs_unadjusted(
-        mut self,
+        self,
         module: ExternModule<'ra>,
         ident: IdentKey,
         orig_ident_span: Span,
@@ -1177,6 +1190,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     }
 
     /// Attempts to resolve `ident` in namespace `ns` of non-glob bindings in a local `module`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn resolve_ident_in_local_module_non_globs_unadjusted(
         mut self,
         module: LocalModule<'ra>,
@@ -1245,6 +1262,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     }
 
     /// Attempts to resolve `ident` in namespace `ns` of glob bindings in `module`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn resolve_ident_in_module_globs_unadjusted(
         mut self,
         module: LocalModule<'ra>,
@@ -1283,17 +1304,17 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
         // Check if one of single imports can still define the name,
         // if it can then our result is not determined and can be invalidated.
-        if let Some(resolution) = resolution {
-            if self.reborrow().single_import_can_define_name(
+        if let Some(resolution) = resolution
+            && self.reborrow().single_import_can_define_name(
                 &resolution,
                 binding,
                 ns,
                 ignore_import,
                 ignore_decl,
                 parent_scope,
-            ) {
-                return Err(ControlFlow::Break(Undetermined));
-            }
+            )
+        {
+            return Err(ControlFlow::Break(Undetermined));
         }
 
         // So we have a resolution that's from a glob import. This resolution is determined
@@ -1427,9 +1448,8 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         }
 
         self.record_use(ident, binding, used);
-        return Ok(binding);
+        Ok(binding)
     }
-
 }
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
@@ -1472,12 +1492,11 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             let ImportKind::Single { source, target, decls, .. } = &single_import.kind else {
                 unreachable!();
             };
-            if source != target {
-                if decls.iter().all(|d| d.get().decl().is_none()) {
-                    return true;
-                } else if decls[ns].get().decl().is_none() && binding.is_some() {
-                    return true;
-                }
+            if source != target
+                && (decls.iter().all(|d| d.get().decl().is_none())
+                    || decls[ns].get().decl().is_none() && binding.is_some())
+            {
+                return true;
             }
 
             match self.reborrow().resolve_ident_in_module(
@@ -1502,12 +1521,15 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
 
         false
     }
-
 }
 
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Validate a local resolution (from ribs).
     #[instrument(level = "debug", skip(self, all_ribs))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn validate_res_from_ribs(
         &self,
         rib_index: usize,
@@ -1837,7 +1859,6 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
         res
     }
-
 }
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
@@ -1884,6 +1905,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     pub(crate) fn resolve_path_with_ribs(
         mut self,
         path: &[Segment],
@@ -1945,8 +1970,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                     }
                     let mut ctxt = ident.span.ctxt().normalize_to_macros_2_0();
                     let current_module = self.resolve_self(&mut ctxt, parent_scope.module);
-                    let current_module_path = module_to_string(current_module)
-                        .map_or_else(|| "crate".to_string(), |path| format!("crate::rustc_resolve::{path}"));
+                    let current_module_path = module_to_string(current_module).map_or_else(
+                        || "crate".to_string(),
+                        |path| format!("crate::rustc_resolve::{path}"),
+                    );
                     return PathResult::failed(
                         ident,
                         false,
@@ -2026,9 +2053,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                             )
                         } else if name == kw::SelfLower {
                             (
-                                format!(
-                                    "`self` in paths can only be used in start position or last position"
-                                ),
+                                "`self` in paths can only be used in start position or last position".to_string(),
                                 "can only be used in path start position or last position"
                                     .to_string(),
                             )
@@ -2133,11 +2158,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                         return PathResult::NonModule(PartialRes::new(Res::Err));
                     } else if opt_ns.is_some() && (is_last || maybe_assoc) {
                         if let Some(finalize) = finalize {
-                            self.lint_if_path_starts_with_module(
-                                finalize,
-                                path,
-                                second_binding,
-                            );
+                            self.lint_if_path_starts_with_module(finalize, path, second_binding);
                         }
                         record_segment_res(self.reborrow(), finalize, res, id);
                         return PathResult::NonModule(PartialRes::with_unresolved_segments(
@@ -2178,12 +2199,12 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                                 let scope = match &path[..segment_idx] {
                                     [.., prev] => {
                                         if prev.ident.name == kw::PathRoot {
-                                            format!("the crate root")
+                                            "the crate root".to_string()
                                         } else {
                                             format!("`{}`", prev.ident)
                                         }
                                     }
-                                    _ => format!("this scope"),
+                                    _ => "this scope".to_string(),
                                 };
                                 // FIXME: reword, as the reason we expected a module is because of
                                 // the following path segment.
@@ -2220,8 +2241,8 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
                         module_had_parse_errors,
                         module,
                         || {
-                            let (message, label, suggestion, help) =
-                                this.report_path_resolution_error(
+                            let (message, label, suggestion, help) = this
+                                .report_path_resolution_error(
                                     path,
                                     opt_ns,
                                     parent_scope,

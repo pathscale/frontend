@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -31,20 +29,17 @@ declare_lint_pass!(DisallowedPassByRef => [DISALLOWED_PASS_BY_REF]);
 
 impl<'tcx> LateLintPass<'tcx> for DisallowedPassByRef {
     fn check_ty(&mut self, cx: &LateContext<'_>, ty: &'tcx hir::Ty<'tcx, AmbigArg>) {
-        match &ty.kind {
-            TyKind::Ref(_, hir::MutTy { ty: inner_ty, mutbl: hir::Mutability::Not }) => {
-                if cx.tcx.trait_impl_of_assoc(ty.hir_id.owner.to_def_id()).is_some() {
-                    return;
-                }
-                if let Some(t) = path_for_rustc_pass_by_value(cx, inner_ty) {
-                    cx.emit_span_lint(
-                        DISALLOWED_PASS_BY_REF,
-                        ty.span,
-                        DisallowedPassByRefDiag { ty: t, suggestion: ty.span },
-                    );
-                }
+        if let TyKind::Ref(_, hir::MutTy { ty: inner_ty, mutbl: hir::Mutability::Not }) = &ty.kind {
+            if cx.tcx.trait_impl_of_assoc(ty.hir_id.owner.to_def_id()).is_some() {
+                return;
             }
-            _ => {}
+            if let Some(t) = path_for_rustc_pass_by_value(cx, inner_ty) {
+                cx.emit_span_lint(
+                    DISALLOWED_PASS_BY_REF,
+                    ty.span,
+                    DisallowedPassByRefDiag { ty: t, suggestion: ty.span },
+                );
+            }
         }
     }
 }
@@ -60,10 +55,9 @@ fn path_for_rustc_pass_by_value(cx: &LateContext<'_>, ty: &hir::Ty<'_>) -> Optio
             Res::SelfTyAlias { alias_to: did, is_trait_impl: false, .. } => {
                 if let ty::Adt(adt, args) =
                     cx.tcx.type_of(did).instantiate_identity().skip_norm_wip().kind()
+                    && find_attr!(cx.tcx, adt.did(), RustcPassByValue)
                 {
-                    if find_attr!(cx.tcx, adt.did(), RustcPassByValue) {
-                        return Some(cx.tcx.def_path_str_with_args(adt.did(), args));
-                    }
+                    return Some(cx.tcx.def_path_str_with_args(adt.did(), args));
                 }
             }
             _ => (),

@@ -12,13 +12,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::assert_matches;
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use core::hash::{Hash, Hasher};
@@ -26,14 +25,8 @@ use core::marker::PhantomData;
 use core::num::NonZero;
 use core::ops::ControlFlow;
 use core::ptr::NonNull;
-use core::{fmt, iter, str};
-use crate::assert_matches;
+use core::{fmt, str};
 
-pub use adt::*;
-pub use assoc::*;
-pub use generic_args::{GenericArgKind, TermKind, *};
-pub use generics::*;
-pub use intrinsic::IntrinsicDef;
 use crate::rustc_abi::{
     Align, FieldIdx, Integer, IntegerType, ReprFlags, ReprOptions, ScalableElt, VariantIdx,
 };
@@ -55,10 +48,6 @@ use crate::rustc_hir::definitions::PerParentDisambiguatorState;
 use crate::rustc_index::bit_set::BitMatrix;
 use crate::rustc_index::{IndexVec, static_assert_size};
 pub use crate::rustc_lint_defs::RegisteredTools;
-use rustc_macros::{
-    BlobDecodable, Decodable, Encodable, StableHash, TyDecodable, TyEncodable, TypeFoldable,
-    TypeVisitable, extension,
-};
 use crate::rustc_serialize::{Decodable, Encodable};
 use crate::rustc_session::config::OptLevel;
 use crate::rustc_span::def_id::{LocalModId, ModId};
@@ -69,8 +58,19 @@ pub use crate::rustc_type_ir::data_structures::{DelayedMap, DelayedSet};
 pub use crate::rustc_type_ir::fast_reject::DeepRejectCtxt;
 pub use crate::rustc_type_ir::relate::VarianceDiagInfo;
 pub use crate::rustc_type_ir::search_graph::RequiredDepth;
-pub use crate::rustc_type_ir::solve::{CandidatePreferenceMode, SizedTraitKind, VisibleForLeakCheck};
+pub use crate::rustc_type_ir::solve::{
+    CandidatePreferenceMode, SizedTraitKind, VisibleForLeakCheck,
+};
 pub use crate::rustc_type_ir::*;
+pub use adt::*;
+pub use assoc::*;
+pub use generic_args::{GenericArgKind, TermKind, *};
+pub use generics::*;
+pub use intrinsic::IntrinsicDef;
+use rustc_macros::{
+    BlobDecodable, Decodable, Encodable, StableHash, TyDecodable, TyEncodable, TypeFoldable,
+    TypeVisitable, extension,
+};
 use tracing::{debug, instrument};
 pub use vtable::*;
 
@@ -90,7 +90,6 @@ pub use self::context::{
 };
 pub use self::fold::*;
 pub use self::instance::{Instance, InstanceKind, ReifyReason, ShimKind};
-pub(crate) use self::list::RawList;
 pub use self::list::{List, ListWithCachedTypeInfo};
 pub use self::opaque_types::OpaqueTypeKey;
 pub use self::pattern::{Pattern, PatternKind};
@@ -891,14 +890,10 @@ impl<'tcx> Term<'tcx> {
 
     pub fn is_non_rigid_alias(self) -> bool {
         match self.kind() {
-            ty::TermKind::Ty(ty) => match ty.kind() {
-                ty::Alias(ty::IsRigid::No, _) => true,
-                _ => false,
-            },
-            ty::TermKind::Const(ct) => match ct.kind() {
-                ty::ConstKind::Alias(ty::IsRigid::No, _) => true,
-                _ => false,
-            },
+            ty::TermKind::Ty(ty) => matches!(ty.kind(), ty::Alias(ty::IsRigid::No, _)),
+            ty::TermKind::Const(ct) => {
+                matches!(ct.kind(), ty::ConstKind::Alias(ty::IsRigid::No, _))
+            }
         }
     }
 
@@ -942,12 +937,12 @@ impl<'tcx> TermKind<'tcx> {
         let (tag, ptr) = match self {
             TermKind::Ty(ty) => {
                 // Ensure we can use the tag bits.
-                assert_eq!(align_of_val(&*ty.0.0) & TAG_MASK, 0);
+                assert_eq!(align_of_val(ty.0.0) & TAG_MASK, 0);
                 (TYPE_TAG, NonNull::from(ty.0.0).cast())
             }
             TermKind::Const(ct) => {
                 // Ensure we can use the tag bits.
-                assert_eq!(align_of_val(&*ct.0.0) & TAG_MASK, 0);
+                assert_eq!(align_of_val(ct.0.0) & TAG_MASK, 0);
                 (CONST_TAG, NonNull::from(ct.0.0).cast())
             }
         };
@@ -1501,6 +1496,10 @@ impl VariantDef {
     /// If someone speeds up attribute loading to not be a performance concern, they can
     /// remove this hack and use the constructor `DefId` everywhere.
     #[instrument(level = "debug")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor accepts the distinct definition data fields"
+    )]
     pub fn new(
         name: Symbol,
         variant_did: Option<DefId>,
@@ -2073,7 +2072,9 @@ impl<'tcx> TyCtxt<'tcx> {
         attr: Symbol,
     ) -> impl Iterator<Item = &'tcx crate::rustc_attr_ir::Attribute> {
         #[expect(deprecated)]
-        self.get_all_attrs(did).iter().filter(move |a: &&crate::rustc_attr_ir::Attribute| a.has_name(attr))
+        self.get_all_attrs(did)
+            .iter()
+            .filter(move |a: &&crate::rustc_attr_ir::Attribute| a.has_name(attr))
     }
 
     /// Gets all attributes.
@@ -2208,16 +2209,17 @@ impl<'tcx> TyCtxt<'tcx> {
                 // Even minimal, empty coroutine has 3 states (RESERVED_VARIANTS),
                 // so variant_fields and variant_source_info should have 3 elements.
                 let variant_fields: IndexVec<VariantIdx, IndexVec<FieldIdx, CoroutineSavedLocal>> =
-                    iter::repeat(IndexVec::new()).take(CoroutineArgs::RESERVED_VARIANTS).collect();
+                    core::iter::repeat_n(IndexVec::new(), CoroutineArgs::RESERVED_VARIANTS)
+                        .collect();
                 let variant_source_info: IndexVec<VariantIdx, SourceInfo> =
-                    iter::repeat(source_info).take(CoroutineArgs::RESERVED_VARIANTS).collect();
+                    core::iter::repeat_n(source_info, CoroutineArgs::RESERVED_VARIANTS).collect();
                 let proxy_layout = CoroutineLayout {
                     field_tys: [].into(),
                     variant_fields,
                     variant_source_info,
                     storage_conflicts: BitMatrix::new(0, 0),
                 };
-                return Ok(self.arena.alloc(proxy_layout));
+                Ok(self.arena.alloc(proxy_layout))
             } else {
                 self.async_drop_coroutine_layout(def_id, args)
             }
@@ -2265,10 +2267,7 @@ impl<'tcx> TyCtxt<'tcx> {
         let Some(of_trait) = self.hir_expect_item(local_def_id).expect_impl().of_trait else {
             return false;
         };
-        matches!(
-            of_trait.trait_ref.path.res,
-            Res::Def(DefKind::Trait | DefKind::TraitAlias, _)
-        )
+        matches!(of_trait.trait_ref.path.res, Res::Def(DefKind::Trait | DefKind::TraitAlias, _))
     }
 
     /// If the given `DefId` is an associated item of an impl,

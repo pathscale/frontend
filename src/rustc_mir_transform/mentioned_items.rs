@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_middle::mir::visit::Visitor;
@@ -61,14 +56,11 @@ impl<'tcx> Visitor<'tcx> for MentionedItemsVisitor<'_, 'tcx> {
             }
             mir::TerminatorKind::InlineAsm { operands, .. } => {
                 for op in operands {
-                    match *op {
-                        mir::InlineAsmOperand::SymFn { ref value } => {
-                            self.mentioned_items.push(Spanned {
-                                node: MentionedItem::Fn(value.const_.ty()),
-                                span: span(),
-                            });
-                        }
-                        _ => {}
+                    if let mir::InlineAsmOperand::SymFn { ref value } = *op {
+                        self.mentioned_items.push(Spanned {
+                            node: MentionedItem::Fn(value.const_.ty()),
+                            span: span(),
+                        });
                     }
                 }
             }

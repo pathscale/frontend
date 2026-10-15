@@ -1,11 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -50,7 +46,7 @@ pub(super) fn extract_refined_covspans<'tcx>(
     // For each expansion with its call-site in the body span, try to
     // distill a corresponding covspan.
     for &child_context in &node.child_contexts {
-        if let Some(covspan) = single_covspan_for_child_context(tcx, &expn_tree, child_context) {
+        if let Some(covspan) = single_covspan_for_child_context(tcx, expn_tree, child_context) {
             covspans.push(covspan);
         }
     }
@@ -262,6 +258,7 @@ fn compare_spans(a: Span, b: Span) -> core::cmp::Ordering {
         .then_with(|| Ord::cmp(&a.hi(), &b.hi()).reverse())
 }
 
+#[expect(clippy::result_large_err, reason = "source mapping returns its existing detailed position error without allocation")]
 fn ensure_non_empty_span(source_map: &SourceMap, span: Span) -> Option<Span> {
     if !span.is_empty() {
         return Some(span);

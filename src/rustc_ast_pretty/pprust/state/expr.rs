@@ -1,11 +1,10 @@
 #[allow(unused_imports)]
 use crate::rustc_ast::ptr::P;
 use alloc::string::ToString;
+use core::fmt::Write;
 #[allow(unused_imports)]
 use {alloc::boxed::Box, alloc::string::String};
-use core::fmt::Write;
 
-use ast::{ForLoopKind, MatchKind};
 use crate::rustc_ast::util::classify;
 use crate::rustc_ast::util::literal::escape_byte_str_symbol;
 use crate::rustc_ast::util::parser::{self, ExprPrecedence, Fixity};
@@ -13,6 +12,7 @@ use crate::rustc_ast::{
     self as ast, BinOpKind, BlockCheckMode, FormatAlignment, FormatArgPosition, FormatArgsPiece,
     FormatCount, FormatDebugHex, FormatSign, FormatTrait, YieldKind, token,
 };
+use ast::{ForLoopKind, MatchKind};
 
 use crate::rustc_ast_pretty::pp::Breaks::Inconsistent;
 use crate::rustc_ast_pretty::pprust::state::fixup::FixupContext;

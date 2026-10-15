@@ -1,4 +1,3 @@
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -12,21 +11,22 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::vec::Vec;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::Cow;
+use alloc::vec::Vec;
 use core::fmt::Display;
 
 use crate::rustc_ast::attr::version::RustcVersion;
 use crate::rustc_data_structures::fx::FxIndexSet;
-use crate::rustc_data_structures::stable_hash::{StableCompare, StableHash, StableHashCtxt, StableHasher};
+use crate::rustc_data_structures::stable_hash::{
+    StableCompare, StableHash, StableHashCtxt, StableHasher,
+};
 use crate::rustc_error_messages::{DiagArgValue, IntoDiagArg};
 use crate::rustc_hir_id::HirId;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{AttrId, Ident, Symbol, sym};
+use rustc_macros::{Decodable, Encodable, StableHash};
 use serde::{Deserialize, Serialize};
 
 pub use self::Level::*;
@@ -60,12 +60,10 @@ macro_rules! pluralize {
 // FIXME(estebank): this needs to be changed to go through the translation machinery.
 pub fn listify<T>(list: &[T], fmt: impl Fn(&T) -> String) -> Option<String> {
     Some(match list {
-        [only] => fmt(&only),
-        [others @ .., last] => format!(
-            "{} and {}",
-            others.iter().map(|i| fmt(i)).collect::<Vec<_>>().join(", "),
-            fmt(&last),
-        ),
+        [only] => fmt(only),
+        [others @ .., last] => {
+            format!("{} and {}", others.iter().map(&fmt).collect::<Vec<_>>().join(", "), fmt(last),)
+        }
         [] => return None,
     })
 }
@@ -217,13 +215,17 @@ impl Level {
 
     /// Converts a lower-case string to a level. This will never construct the expect
     /// level as that would require a [`LintExpectationId`].
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "optional level lookup retains its established Option return type"
+    )]
     pub fn from_str(x: &str) -> Option<Self> {
         match x {
             "allow" => Some(Level::Allow),
             "warn" => Some(Level::Warn),
             "deny" => Some(Level::Deny),
             "forbid" => Some(Level::Forbid),
-            "expect" | _ => None,
+            _ => None,
         }
     }
 
@@ -624,6 +626,10 @@ impl LintId {
     }
 
     /// Gets the name of the lint.
+    #[expect(
+        clippy::inherent_to_string,
+        reason = "lint identifiers retain their established owned-name accessor"
+    )]
     pub fn to_string(&self) -> String {
         self.lint.name_lower()
     }
@@ -640,7 +646,7 @@ impl StableCompare for LintId {
     const CAN_USE_UNSTABLE_SORT: bool = true;
 
     fn stable_cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.lint_name_raw().cmp(&other.lint_name_raw())
+        self.lint_name_raw().cmp(other.lint_name_raw())
     }
 }
 
@@ -734,7 +740,7 @@ macro_rules! declare_lint {
             desc: $desc,
             is_externally_loaded: false,
             $($v: true,)*
-            $(feature_gate: Some(crate::rustc_span::sym::$gate),)?
+            $(feature_gate: Some($crate::rustc_span::sym::$gate),)?
             $(future_incompatible: Some($crate::rustc_lint_defs::FutureIncompatibleInfo {
                 reason: $reason,
                 $($field: $val,)*
@@ -780,7 +786,7 @@ macro_rules! declare_tool_lint {
             report_in_external_macro: $external,
             future_incompatible: None,
             is_externally_loaded: true,
-            $(feature_gate: Some(crate::rustc_span::sym::$gate),)?
+            $(feature_gate: Some($crate::rustc_span::sym::$gate),)?
             crate_level_only: false,
             $(eval_always: $eval_always,)?
             ..$crate::rustc_lint_defs::Lint::default_fields_for_macro()
@@ -860,13 +866,13 @@ macro_rules! fcw {
         })
     };
     (@edition 2024) => {
-        crate::rustc_span::edition::Edition::Edition2024
+        $crate::rustc_span::edition::Edition::Edition2024
     };
     (@edition 2021) => {
-        crate::rustc_span::edition::Edition::Edition2021
+        $crate::rustc_span::edition::Edition::Edition2021
     };
     (@edition 2018) => {
-        crate::rustc_span::edition::Edition::Edition2018
+        $crate::rustc_span::edition::Edition::Edition2018
     };
 }
 pub use crate::declare_lint;

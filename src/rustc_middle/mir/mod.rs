@@ -5,11 +5,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
@@ -18,8 +14,6 @@ use core::fmt::{self, Debug, Formatter};
 use core::iter;
 use core::ops::{Index, IndexMut};
 
-pub use basic_blocks::BasicBlocks;
-use either::Either;
 use crate::polonius_engine::Atom;
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 pub use crate::rustc_ast::{Mutability, Pinnedness};
@@ -33,15 +27,19 @@ use crate::rustc_hir::{
 };
 use crate::rustc_index::bit_set::DenseBitSet;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_serialize::{Decodable, Encodable};
 use crate::rustc_span::{DUMMY_SP, Span, Spanned, Symbol};
+pub use basic_blocks::BasicBlocks;
+use either::Either;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use tracing::{debug, trace};
 
 pub use self::query::*;
 use crate::rustc_middle::mir::interpret::{AllocRange, Scalar};
 use crate::rustc_middle::ty::codec::{TyDecoder, TyEncoder};
-use crate::rustc_middle::ty::print::{FmtPrinter, Printer, pretty_print_const, with_no_trimmed_paths};
+use crate::rustc_middle::ty::print::{
+    FmtPrinter, Printer, pretty_print_const, with_no_trimmed_paths,
+};
 use crate::rustc_middle::ty::{
     self, GenericArg, GenericArgsRef, Instance, InstanceKind, List, ShimKind, Ty, TyCtxt,
     TypeVisitableExt, TypingEnv, UserTypeAnnotationIndex,
@@ -338,6 +336,10 @@ pub struct Body<'tcx> {
 }
 
 impl<'tcx> Body<'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor takes each independently stored body component"
+    )]
     pub fn new(
         source: MirSource<'tcx>,
         basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>,
@@ -498,7 +500,7 @@ impl<'tcx> Body<'tcx> {
 
     /// Returns an iterator over all function arguments.
     #[inline]
-    pub fn args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator + use<> {
+    pub fn args_iter(&self) -> impl ExactSizeIterator<Item = Local> + use<> {
         (1..self.arg_count + 1).map(Local::new)
     }
 
@@ -1185,10 +1187,7 @@ impl<'tcx> LocalDecl<'tcx> {
 
     /// Returns `true` if this is a DerefTemp
     pub fn is_deref_temp(&self) -> bool {
-        match self.local_info() {
-            LocalInfo::DerefTemp => true,
-            _ => false,
-        }
+        matches!(self.local_info(), LocalInfo::DerefTemp)
     }
 
     /// Returns `true` is the local is from a compiler desugaring, e.g.,
@@ -1483,10 +1482,10 @@ impl SourceScope {
         let scope_data = &source_scopes[self];
         if let Some((inlined_instance, _)) = scope_data.inlined {
             Some(inlined_instance)
-        } else if let Some(inlined_scope) = scope_data.inlined_parent_scope {
-            Some(source_scopes[inlined_scope].inlined.unwrap().0)
         } else {
-            None
+            scope_data
+                .inlined_parent_scope
+                .map(|inlined_scope| source_scopes[inlined_scope].inlined.unwrap().0)
         }
     }
 }
@@ -1555,7 +1554,7 @@ pub struct UserTypeProjections {
 }
 
 impl UserTypeProjections {
-    pub fn projections(&self) -> impl Iterator<Item = &UserTypeProjection> + ExactSizeIterator {
+    pub fn projections(&self) -> impl ExactSizeIterator<Item = &UserTypeProjection> {
         self.contents.iter()
     }
 }

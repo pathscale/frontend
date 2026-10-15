@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir as hir;
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass};
@@ -57,7 +52,11 @@ declare_lint! {
 declare_lint_pass!(UnitBindings => [UNIT_BINDINGS]);
 
 impl<'tcx> LateLintPass<'tcx> for UnitBindings {
-    fn check_local(&mut self, cx: &crate::rustc_lint::LateContext<'tcx>, local: &'tcx hir::LetStmt<'tcx>) {
+    fn check_local(
+        &mut self,
+        cx: &crate::rustc_lint::LateContext<'tcx>,
+        local: &'tcx hir::LetStmt<'tcx>,
+    ) {
         // Suppress warning if user:
         // - explicitly ascribes a type to the pattern
         // - explicitly wrote `let pat = ();`

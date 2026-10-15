@@ -1,6 +1,4 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
+use crate::bug;
 use crate::rustc_arena::{DroplessArena, TypedArena};
 use crate::rustc_ast::Mutability;
 use crate::rustc_data_structures::fx::FxIndexSet;
@@ -13,7 +11,6 @@ use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_lint_defs::builtin::{
     BINDINGS_WITH_VARIANT_NAME, IRREFUTABLE_LET_PATTERNS, UNREACHABLE_PATTERNS,
 };
-use crate::bug;
 use crate::rustc_middle::thir::visit::Visitor;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty::print::with_no_trimmed_paths;
@@ -27,6 +24,9 @@ use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::hygiene::DesugaringKind;
 use crate::rustc_span::{Ident, Span};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use tracing::instrument;
 
 use crate::rustc_mir_build::diagnostics::*;
@@ -39,7 +39,7 @@ pub(crate) fn check_match(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(), Err
     let dropless_arena = DroplessArena::default();
     let mut visitor = MatchVisitor {
         tcx,
-        thir: &*thir,
+        thir: &thir,
         typeck_results,
         typing_env: ty::TypingEnv::post_typeck_until_borrowck_for_mir_build(tcx, def_id),
         hir_source: tcx.local_def_id_to_hir_id(def_id),
@@ -402,10 +402,9 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
         arms: &[MatchArm<'p, 'tcx>],
         scrut_ty: Ty<'tcx>,
     ) -> Result<UsefulnessReport<'p, 'tcx>, ErrorGuaranteed> {
-        let report =
-            crate::rustc_pattern_analysis::rustc::analyze_match(&cx, &arms, scrut_ty).map_err(|err| {
+        let report = crate::rustc_pattern_analysis::rustc::analyze_match(cx, arms, scrut_ty)
+            .inspect_err(|&err| {
                 self.error = Err(err);
-                err
             })?;
 
         // Warn unreachable subpatterns.
@@ -466,8 +465,8 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
             let let_else_span = self.check_irrefutable_option_some(pat, scrut, span);
 
             let sm = self.tcx.sess.source_map();
-            let next_token_start = sm.span_extend_while_whitespace(span.clone()).hi();
-            let line_span = sm.span_extend_to_line(span.clone()).with_lo(next_token_start);
+            let next_token_start = sm.span_extend_while_whitespace(span).hi();
+            let line_span = sm.span_extend_to_line(span).with_lo(next_token_start);
             let else_keyword_span = sm.span_until_whitespace(line_span);
             self.lint_single_let(span, Some(else_keyword_span), let_else_span);
         }
@@ -600,8 +599,12 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
                     any_arm_has_guard && {
                         let guardless_arms: Vec<_> =
                             tarms.iter().map(|arm| MatchArm { has_guard: false, ..*arm }).collect();
-                        crate::rustc_pattern_analysis::rustc::analyze_match(&cx, &guardless_arms, scrut.ty)
-                            .is_ok_and(|report| report.non_exhaustiveness_witnesses.is_empty())
+                        crate::rustc_pattern_analysis::rustc::analyze_match(
+                            &cx,
+                            &guardless_arms,
+                            scrut.ty,
+                        )
+                        .is_ok_and(|report| report.non_exhaustiveness_witnesses.is_empty())
                     }
                 };
                 self.error = Err(report_non_exhaustive_match(
@@ -695,7 +698,7 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
             && let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(pat.span)
         {
             // If the pattern to match is an integer literal:
-            if snippet.chars().all(|c| c.is_digit(10)) {
+            if snippet.chars().all(|c| c.is_ascii_digit()) {
                 // Then give a suggestion, the user might've meant to create a binding instead.
                 misc_suggestion = Some(MiscPatternSuggestion::AttemptedIntegerLiteral {
                     start_span: pat.span.shrink_to_lo(),
@@ -727,7 +730,7 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
 
         // Emit an extra note if the first uncovered witness would be uninhabited
         // if we disregard visibility.
-        let witness_1_is_privately_uninhabited = if let Some(witness_1) = witnesses.get(0)
+        let witness_1_is_privately_uninhabited = if let Some(witness_1) = witnesses.first()
             && let ty::Adt(adt, args) = witness_1.ty().kind()
             && adt.is_enum()
             && let Constructor::Variant(variant_index) = witness_1.ctor()
@@ -742,7 +745,7 @@ impl<'p, 'tcx> MatchVisitor<'p, 'tcx> {
             false
         };
 
-        let witness_1 = cx.print_witness_pat(witnesses.get(0).unwrap());
+        let witness_1 = cx.print_witness_pat(witnesses.first().unwrap());
 
         self.error = Err(self.tcx.dcx().emit_err(PatternNotCovered {
             span: pat.span,
@@ -914,10 +917,10 @@ fn check_never_pattern<'tcx>(
     cx: &PatCtxt<'_, 'tcx>,
     pat: &Pat<'tcx>,
 ) -> Result<(), ErrorGuaranteed> {
-    if let PatKind::Never = pat.kind {
-        if !cx.is_uninhabited(pat.ty) {
-            return Err(cx.tcx.dcx().emit_err(NonEmptyNeverPattern { span: pat.span, ty: pat.ty }));
-        }
+    if let PatKind::Never = pat.kind
+        && !cx.is_uninhabited(pat.ty)
+    {
+        return Err(cx.tcx.dcx().emit_err(NonEmptyNeverPattern { span: pat.span, ty: pat.ty }));
     }
     Ok(())
 }
@@ -1167,10 +1170,10 @@ fn find_fallback_pattern_typo<'tcx>(
             for (_, node) in cx.tcx.hir_parent_iter(hir_id) {
                 match node {
                     hir::Node::Stmt(hir::Stmt { kind: hir::StmtKind::Let(let_stmt), .. }) => {
-                        if let hir::PatKind::Binding(_, _, binding_name, _) = let_stmt.pat.kind {
-                            if name == binding_name.name {
-                                lint.pattern_let_binding = Some(binding_name.span);
-                            }
+                        if let hir::PatKind::Binding(_, _, binding_name, _) = let_stmt.pat.kind
+                            && name == binding_name.name
+                        {
+                            lint.pattern_let_binding = Some(binding_name.span);
                         }
                     }
                     hir::Node::Block(hir::Block { stmts, .. }) => {
@@ -1250,6 +1253,10 @@ fn is_const_pat_that_looks_like_binding<'tcx>(tcx: TyCtxt<'tcx>, pat: &Pat<'tcx>
 }
 
 /// Report that a match is not exhaustive.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 fn report_non_exhaustive_match<'p, 'tcx>(
     cx: &PatCtxt<'p, 'tcx>,
     thir: &Thir<'tcx>,
@@ -1286,11 +1293,7 @@ fn report_non_exhaustive_match<'p, 'tcx>(
     );
     err.span_label(
         sp,
-        format!(
-            "pattern{} {} not covered",
-            crate::pluralize!(witnesses.len()),
-            joined_patterns
-        ),
+        format!("pattern{} {} not covered", crate::pluralize!(witnesses.len()), joined_patterns),
     );
 
     // Point at the definition of non-covered `enum` variants.
@@ -1336,10 +1339,10 @@ fn report_non_exhaustive_match<'p, 'tcx>(
         }
     }
 
-    if let ty::Ref(_, sub_ty, _) = scrut_ty.kind() {
-        if !sub_ty.is_inhabited_from(cx.tcx, cx.module, cx.typing_env) {
-            err.note("references are always considered inhabited");
-        }
+    if let ty::Ref(_, sub_ty, _) = scrut_ty.kind()
+        && !sub_ty.is_inhabited_from(cx.tcx, cx.module, cx.typing_env)
+    {
+        err.note("references are always considered inhabited");
     }
 
     for &arm in arms {
@@ -1380,7 +1383,7 @@ fn report_non_exhaustive_match<'p, 'tcx>(
         }
     } else {
         // ignore-tidy-todo
-        format!("_ => todo!()")
+        "_ => todo!()".to_string()
     };
     let mut suggestion = None;
     let sm = cx.tcx.sess.source_map();
@@ -1512,11 +1515,11 @@ fn collect_special_tys<'tcx>(
     if matches!(pat.ctor(), Constructor::NonExhaustive | Constructor::Never) {
         special_tys.insert(*pat.ty());
     }
-    if let Constructor::IntRange(range) = pat.ctor() {
-        if cx.is_range_beyond_boundaries(range, *pat.ty()) {
-            // The range denotes the values before `isize::MIN` or the values after `usize::MAX`/`isize::MAX`.
-            special_tys.insert(*pat.ty());
-        }
+    if let Constructor::IntRange(range) = pat.ctor()
+        && cx.is_range_beyond_boundaries(range, *pat.ty())
+    {
+        // The range denotes the values before `isize::MIN` or the values after `usize::MAX`/`isize::MAX`.
+        special_tys.insert(*pat.ty());
     }
     pat.iter_fields().for_each(|field_pat| collect_special_tys(cx, field_pat, special_tys))
 }

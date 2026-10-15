@@ -12,13 +12,13 @@ use crate::rustc_abi::ExternAbi;
 use crate::rustc_attr_ir::{CfgEntry, PeImportNameType};
 use crate::rustc_data_structures::sync::{AppendOnlyIndexVec, FreezeLock};
 use crate::rustc_hir_id::definitions::{DefKey, DefPath, DefTable, Definitions};
-use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use crate::rustc_span::def_id::{
     CrateNum, DefId, DefPathHash, LOCAL_CRATE, LocalDefId, StableCrateId, StableCrateIdMap,
 };
-use crate::rustc_span::{Span, Symbol};
 use crate::rustc_span::edition::Edition;
+use crate::rustc_span::{Span, Symbol};
 use crate::rustc_structures::NativeLibKind;
+use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 
 /// Where a crate came from on the local filesystem. One of these three options
 /// must be non-None.

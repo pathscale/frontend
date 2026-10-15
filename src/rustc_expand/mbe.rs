@@ -14,21 +14,20 @@ mod metavar_expr;
 mod quoted;
 mod transcribe;
 
-use metavar_expr::MetaVarExpr;
 use crate::rustc_ast::token::{Delimiter, InvisibleOrigin, NonterminalKind, Token, TokenKind};
 use crate::rustc_ast::tokenstream::{
-    DelimSpacing, DelimSpan, Spacing, TokenStream as AstTokenStream,
-    TokenTree as AstTokenTree,
+    DelimSpacing, DelimSpan, Spacing, TokenStream as AstTokenStream, TokenTree as AstTokenTree,
 };
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_feature::Features;
 use crate::rustc_parse::parser::ParseNtResult;
 use crate::rustc_session::Session;
-use rustc_macros::{Decodable, Encodable};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::{LocalExpnId, Transparency};
 use crate::rustc_span::{Ident, MacroRulesNormalizedIdent, Span};
+use metavar_expr::MetaVarExpr;
+use rustc_macros::{Decodable, Encodable};
 
 /// Contains the sub-token-trees of a "delimited" token tree such as `(a b c)`.
 /// The delimiters are not represented explicitly in the `tts` vector.
@@ -138,7 +137,9 @@ fn bind_schema_metavariables(
                             .values
                             .iter()
                             .cloned()
-                            .map(|stream| macro_parser::MatchedSingle(schema_metavar(stream, ident.span)))
+                            .map(|stream| {
+                                macro_parser::MatchedSingle(schema_metavar(stream, ident.span))
+                            })
                             .collect(),
                     )
                 } else {
@@ -183,6 +184,10 @@ fn bind_schema_metavariables(
     Some(count)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub(crate) fn transcribe_schema(
     sess: &Session,
     rhs: AstTokenStream,

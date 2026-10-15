@@ -59,10 +59,9 @@
 //! might later infer `?U` to something like `&'b u32`, which would
 //! imply that `'b: 'a`.
 
-use alloc::vec::Vec;
+use crate::bug;
 use crate::rustc_data_structures::transitive_relation::TransitiveRelation;
 use crate::rustc_data_structures::undo_log::UndoLogs;
-use crate::bug;
 use crate::rustc_middle::mir::ConstraintCategory;
 use crate::rustc_middle::ty::outlives::{Component, push_outlives_components};
 use crate::rustc_middle::ty::{
@@ -70,6 +69,7 @@ use crate::rustc_middle::ty::{
     TyCtxt, TypeVisitableExt, eager_resolve_vars,
 };
 use crate::rustc_span::Span;
+use alloc::vec::Vec;
 use smallvec::smallvec;
 use tracing::{debug, instrument};
 
@@ -226,7 +226,7 @@ impl<'tcx> InferCtxt<'tcx> {
         outlives_env: &OutlivesEnvironment<'tcx>,
     ) {
         let assumptions = crate::rustc_type_ir::region_constraint::Assumptions::new(
-            outlives_env.known_type_outlives().into_iter().cloned().collect(),
+            outlives_env.known_type_outlives().to_vec(),
             outlives_env.free_region_map().relation.clone(),
         );
         self.destructure_solver_region_constraints(assumptions, self);
@@ -240,7 +240,7 @@ impl<'tcx> InferCtxt<'tcx> {
         region_outlives: TransitiveRelation<RegionVid>,
     ) {
         let assumptions = crate::rustc_type_ir::region_constraint::Assumptions::new(
-            known_type_outlives.into_iter().cloned().collect(),
+            known_type_outlives.to_vec(),
             region_outlives.maybe_map(|r| Some(Region::new_var(self.tcx, r))).unwrap(),
         );
         self.destructure_solver_region_constraints(assumptions, conversion);
@@ -264,7 +264,8 @@ impl<'tcx> InferCtxt<'tcx> {
                 &assumptions,
             );
         debug!(?constraint);
-        let constraint = crate::rustc_type_ir::region_constraint::evaluate_solver_constraint(&constraint);
+        let constraint =
+            crate::rustc_type_ir::region_constraint::evaluate_solver_constraint(&constraint);
         debug!(?constraint);
 
         let mut constraints = vec![constraint];
@@ -553,7 +554,8 @@ where
         // These are guaranteed to apply, no matter the inference
         // results.
         let trait_bounds: Vec<_> =
-            crate::rustc_type_ir::outlives::declared_bounds_from_definition(self.tcx, alias_ty).collect();
+            crate::rustc_type_ir::outlives::declared_bounds_from_definition(self.tcx, alias_ty)
+                .collect();
 
         debug!(?trait_bounds);
 
@@ -667,7 +669,7 @@ where
     }
 }
 
-impl<'cx, 'tcx> TypeOutlivesDelegate<'tcx> for &'cx InferCtxt<'tcx> {
+impl<'tcx> TypeOutlivesDelegate<'tcx> for &InferCtxt<'tcx> {
     fn push_sub_region_constraint(
         &mut self,
         origin: SubregionOrigin<'tcx>,

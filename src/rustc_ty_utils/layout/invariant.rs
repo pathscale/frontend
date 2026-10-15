@@ -62,12 +62,9 @@ pub(super) fn layout_sanity_check<'tcx>(cx: &LayoutCx<'tcx>, layout: &TyAndLayou
     }
 
     fn skip_newtypes<'tcx>(cx: &LayoutCx<'tcx>, layout: &TyAndLayout<'tcx>) -> TyAndLayout<'tcx> {
-        match *layout.ty.kind() {
-            ty::UnsafeBinder(bound_ty) => {
-                let ty = cx.tcx().instantiate_bound_regions_with_erased(bound_ty.into());
-                return skip_newtypes(cx, &TyAndLayout { ty, ..*layout });
-            }
-            _ => {}
+        if let ty::UnsafeBinder(bound_ty) = *layout.ty.kind() {
+            let ty = cx.tcx().instantiate_bound_regions_with_erased(bound_ty.into());
+            return skip_newtypes(cx, &TyAndLayout { ty, ..*layout });
         }
 
         if matches!(layout.layout.variants(), Variants::Multiple { .. }) {
@@ -131,7 +128,6 @@ pub(super) fn layout_sanity_check<'tcx>(cx: &LayoutCx<'tcx>, layout: &TyAndLayou
                     }
                     FieldsShape::Union(..) => {
                         // FIXME: I guess we could also check something here? Like, look at all fields?
-                        return;
                     }
                     FieldsShape::Arbitrary { .. } => {
                         // Should be an enum, the only field is the discriminant.

@@ -1,18 +1,18 @@
+use alloc::borrow::Cow;
+use core::array::IntoIter;
+use core::fmt::Debug;
 #[allow(unused_imports)]
 use {alloc::boxed::Box, alloc::string::String, alloc::vec::Vec};
-use core::array::IntoIter;
-use alloc::borrow::Cow;
-use core::fmt::Debug;
 
 use crate::rustc_ast as ast;
 use crate::rustc_ast::NodeId;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_error_messages::{DiagArgValue, IntoDiagArg};
 use crate::rustc_hir_id::HirId;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::Symbol;
 use crate::rustc_span::def_id::{DefId, LocalDefId};
 use crate::rustc_span::hygiene::MacroKind;
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 // `crate::rustc_hir`, not `crate`. Upstream this file is in the `rustc_hir` crate and `crate` was
 // that crate, so `hir::Safety` named its root. Here `crate` is `frontend` and `rustc_hir` is a
@@ -704,6 +704,10 @@ impl<T> PerNS<T> {
     /// Note: Do you really want to use this? Often you know which namespace a
     /// name will belong in, and you can consider just that namespace directly,
     /// rather than iterating through all of them.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "preserves the explicit fixed-order namespace iterator used by existing compiler callers"
+    )]
     pub fn into_iter(self) -> IntoIter<T, 3> {
         [self.value_ns, self.type_ns, self.macro_ns].into_iter()
     }

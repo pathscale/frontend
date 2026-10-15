@@ -30,7 +30,7 @@ pub trait DebugWithContext<C>: Eq + fmt::Debug {
         self.fmt_with(ctxt, f)?;
 
         if f.alternate() {
-            write!(f, "\n")?;
+            writeln!(f)?;
         } else {
             write!(f, "\t")?;
         }
@@ -52,22 +52,6 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.this.fmt_with(self.ctxt, f)
-    }
-}
-
-/// Implements `fmt::Debug` by deferring to `<T as DebugWithContext<C>>::fmt_diff_with`.
-pub(crate) struct DebugDiffWithAdapter<'a, T, C> {
-    pub(crate) new: T,
-    pub(crate) old: T,
-    pub(crate) ctxt: &'a C,
-}
-
-impl<T, C> fmt::Debug for DebugDiffWithAdapter<'_, T, C>
-where
-    T: DebugWithContext<C>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.new.fmt_diff_with(&self.old, self.ctxt, f)
     }
 }
 

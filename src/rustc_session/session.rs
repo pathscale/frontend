@@ -133,22 +133,22 @@ pub struct PointerAuthSchema {
 impl PointerAuthSchema {
     pub fn function_pointers_default(target: &Target) -> Self {
         assert!(target.cfg_abi == CfgAbi::Pauthtest);
-        return Self {
+        Self {
             is_address_discriminated: PointerAuthAddressDiscriminator::HardwareAddress(false),
             discrimination_kind: PointerAuthDiscrimination::None,
             key: PointerAuthARM8_3Key::ASIA,
             constant_discriminator: 0,
-        };
+        }
     }
     pub fn init_fini_default(target: &Target) -> Self {
         assert!(target.cfg_abi == CfgAbi::Pauthtest);
-        return Self {
+        Self {
             is_address_discriminated: PointerAuthAddressDiscriminator::Synthetic(1),
             discrimination_kind: PointerAuthDiscrimination::None,
             key: PointerAuthARM8_3Key::ASIA,
             // ptrauth_string_discriminator("init_fini")
             constant_discriminator: 0xd9d4,
-        };
+        }
     }
 }
 
@@ -178,7 +178,7 @@ pub struct PointerAuthConfig {
 impl PointerAuthConfig {
     fn default(target: &Target) -> Self {
         assert!(target.cfg_abi == CfgAbi::Pauthtest);
-        return Self {
+        Self {
             return_addresses: true,
             auth_traps: true,
             indirect_gotos: true,
@@ -190,7 +190,7 @@ impl PointerAuthConfig {
             typeinfo_vt_ptr_discrimination: true,
             vt_ptr_addr_discrimination: true,
             vt_ptr_type_discrimination: true,
-        };
+        }
     }
     pub fn calculate_pauth_abi_version(&self, target: &Target) -> u32 {
         assert!(target.cfg_abi == CfgAbi::Pauthtest);
@@ -789,7 +789,7 @@ impl Session {
         if found_positive || found_negative {
             found_positive
         } else if crate_type == Some(CrateType::ProcMacro)
-            || crate_type == None && self.opts.crate_types.contains(&CrateType::ProcMacro)
+            || crate_type.is_none() && self.opts.crate_types.contains(&CrateType::ProcMacro)
         {
             // FIXME: When crate_type is not available,
             // we use compiler options to determine the crate_type.
@@ -831,7 +831,7 @@ impl Session {
             .opts
             .sysroot
             .all_paths()
-            .map(|sysroot| filesearch::make_target_bin_path(&sysroot, config::host_tuple()));
+            .map(|sysroot| filesearch::make_target_bin_path(sysroot, config::host_tuple()));
 
         if self_contained {
             // The self-contained tools are expected to be e.g. in `bin/self-contained` in the
@@ -1152,12 +1152,12 @@ impl Session {
             // Windows on Arm only supports PAC Key B for return address signing, as shown in
             // https://github.com/llvm/llvm-project/pull/203989. We parse the CLI flags for branch
             // protection and target separately though, so we adjust this possible discrepancy here.
-            if self.target.os == Os::Windows && self.target.arch == Arch::AArch64 {
-                if let Some(pac_ret) = bp.pac_ret.as_mut()
-                    && pac_ret.key == PAuthKey::A
-                {
-                    pac_ret.key = PAuthKey::B;
-                }
+            if self.target.os == Os::Windows
+                && self.target.arch == Arch::AArch64
+                && let Some(pac_ret) = bp.pac_ret.as_mut()
+                && pac_ret.key == PAuthKey::A
+            {
+                pac_ret.key = PAuthKey::B;
             }
         }
 
@@ -1322,7 +1322,7 @@ impl Session {
     }
 
     pub fn sanitizers(&self) -> SanitizerSet {
-        return self.opts.unstable_opts.sanitizer | self.target.options.default_sanitizers;
+        self.opts.unstable_opts.sanitizer | self.target.options.default_sanitizers
     }
 
     pub fn pointer_authentication(&self) -> bool {
@@ -1359,19 +1359,18 @@ fn default_emitter(sopts: &config::Options, source_map: Arc<SourceMap>) -> Box<D
     let source_map = if sopts.unstable_opts.link_only { None } else { Some(source_map) };
 
     match sopts.error_format {
-        config::ErrorOutputType::HumanReadable { kind, color_config: _ } => match kind {
-            HumanReadableErrorType { short, unicode } => {
-                // Everything the snippet renderer took is gone with it: `diagnostic_width`
-                // wrapped the source line, `theme` picked box-drawing characters,
-                // `terminal_url` made an error code clickable, `macro_backtrace` and
-                // `ignored_directories_in_source_blocks` chose which frames to draw. A plain
-                // line has no width, no theme and no frames. The options still parse; they
-                // simply have nothing to configure.
-                let _ = (macro_backtrace, track_diagnostics, terminal_url, unicode);
-                let emitter = PlainEmitter::new().sm(source_map).short_message(short);
-                Box::new(emitter)
-            }
-        },
+        config::ErrorOutputType::HumanReadable { kind, color_config: _ } => {
+            let HumanReadableErrorType { short, unicode } = kind;
+            // Everything the snippet renderer took is gone with it: `diagnostic_width`
+            // wrapped the source line, `theme` picked box-drawing characters,
+            // `terminal_url` made an error code clickable, `macro_backtrace` and
+            // `ignored_directories_in_source_blocks` chose which frames to draw. A plain
+            // line has no width, no theme and no frames. The options still parse; they
+            // simply have nothing to configure.
+            let _ = (macro_backtrace, track_diagnostics, terminal_url, unicode);
+            let emitter = PlainEmitter::new().sm(source_map).short_message(short);
+            Box::new(emitter)
+        }
         config::ErrorOutputType::Json { pretty, json_rendered, color_config } => Box::new(
             JsonEmitter::new(Box::new(stderr()), source_map, pretty, json_rendered, color_config)
                 .ui_testing(sopts.unstable_opts.ui_testing)
@@ -1471,7 +1470,7 @@ pub fn build_session(
         .map(|sysroot| SearchPath::from_sysroot_and_triple(sysroot, wasm_proc_macro_tuple.tuple()));
 
     let prof = SelfProfilerRef::new(
-        sopts.unstable_opts.time_passes.then(|| sopts.unstable_opts.time_passes_format),
+        sopts.unstable_opts.time_passes.then_some(sopts.unstable_opts.time_passes_format),
     );
 
     let ctfe_backtrace = Lock::new(match eko::env::var("RUSTC_CTFE_BACKTRACE") {
@@ -1606,24 +1605,25 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
 
     // Make sure that any given profiling data actually exists so LLVM can't
     // decide to silently skip PGO.
-    if let Some(ref path) = sess.opts.cg.profile_use {
-        if !path.exists() {
-            sess.dcx().emit_err(diagnostics::ProfileUseFileDoesNotExist { path });
-        }
+    if let Some(ref path) = sess.opts.cg.profile_use
+        && !path.exists()
+    {
+        sess.dcx().emit_err(diagnostics::ProfileUseFileDoesNotExist { path });
     }
 
     // Do the same for sample profile data.
-    if let Some(ref path) = sess.opts.cg.profile_sample_use {
-        if !path.exists() {
-            sess.dcx().emit_err(diagnostics::ProfileSampleUseFileDoesNotExist { path });
-        }
+    if let Some(ref path) = sess.opts.cg.profile_sample_use
+        && !path.exists()
+    {
+        sess.dcx().emit_err(diagnostics::ProfileSampleUseFileDoesNotExist { path });
     }
 
     // Unwind tables cannot be disabled if the target requires them.
-    if let Some(include_uwtables) = sess.opts.cg.force_unwind_tables {
-        if sess.target.requires_uwtable && !include_uwtables {
-            sess.dcx().emit_err(diagnostics::TargetRequiresUnwindTables);
-        }
+    if let Some(include_uwtables) = sess.opts.cg.force_unwind_tables
+        && sess.target.requires_uwtable
+        && !include_uwtables
+    {
+        sess.dcx().emit_err(diagnostics::TargetRequiresUnwindTables);
     }
 
     // Sanitizers can only be used on platforms that we know have working sanitizer codegen.
@@ -1692,10 +1692,8 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     }
 
     // Canonical jump tables requires CFI.
-    if sess.is_sanitizer_cfi_canonical_jump_tables_disabled() {
-        if !sess.is_sanitizer_cfi_enabled() {
-            sess.dcx().emit_err(diagnostics::SanitizerCfiCanonicalJumpTablesRequiresCfi);
-        }
+    if sess.is_sanitizer_cfi_canonical_jump_tables_disabled() && !sess.is_sanitizer_cfi_enabled() {
+        sess.dcx().emit_err(diagnostics::SanitizerCfiCanonicalJumpTablesRequiresCfi);
     }
 
     // KCFI arity indicator requires KCFI.
@@ -1704,17 +1702,17 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     }
 
     // LLVM CFI pointer generalization requires CFI or KCFI.
-    if sess.is_sanitizer_cfi_generalize_pointers_enabled() {
-        if !(sess.is_sanitizer_cfi_enabled() || sess.is_sanitizer_kcfi_enabled()) {
-            sess.dcx().emit_err(diagnostics::SanitizerCfiGeneralizePointersRequiresCfi);
-        }
+    if sess.is_sanitizer_cfi_generalize_pointers_enabled()
+        && !(sess.is_sanitizer_cfi_enabled() || sess.is_sanitizer_kcfi_enabled())
+    {
+        sess.dcx().emit_err(diagnostics::SanitizerCfiGeneralizePointersRequiresCfi);
     }
 
     // LLVM CFI integer normalization requires CFI or KCFI.
-    if sess.is_sanitizer_cfi_normalize_integers_enabled() {
-        if !(sess.is_sanitizer_cfi_enabled() || sess.is_sanitizer_kcfi_enabled()) {
-            sess.dcx().emit_err(diagnostics::SanitizerCfiNormalizeIntegersRequiresCfi);
-        }
+    if sess.is_sanitizer_cfi_normalize_integers_enabled()
+        && !(sess.is_sanitizer_cfi_enabled() || sess.is_sanitizer_kcfi_enabled())
+    {
+        sess.dcx().emit_err(diagnostics::SanitizerCfiNormalizeIntegersRequiresCfi);
     }
 
     // LTO unit splitting requires LTO.
@@ -1727,27 +1725,25 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
     }
 
     // VFE requires LTO.
-    if sess.lto() != config::Lto::Fat {
-        if sess.opts.unstable_opts.virtual_function_elimination {
-            sess.dcx().emit_err(diagnostics::UnstableVirtualFunctionElimination);
-        }
+    if sess.lto() != config::Lto::Fat && sess.opts.unstable_opts.virtual_function_elimination {
+        sess.dcx().emit_err(diagnostics::UnstableVirtualFunctionElimination);
     }
 
-    if sess.opts.unstable_opts.stack_protector != StackProtector::None {
-        if !sess.target.options.supports_stack_protector {
-            sess.dcx().emit_warn(diagnostics::StackProtectorNotSupportedForTarget {
-                stack_protector: sess.opts.unstable_opts.stack_protector,
-                target_triple: &sess.opts.target_triple,
-            });
-        }
+    if sess.opts.unstable_opts.stack_protector != StackProtector::None
+        && !sess.target.options.supports_stack_protector
+    {
+        sess.dcx().emit_warn(diagnostics::StackProtectorNotSupportedForTarget {
+            stack_protector: sess.opts.unstable_opts.stack_protector,
+            target_triple: &sess.opts.target_triple,
+        });
     }
 
-    if sess.opts.unstable_opts.small_data_threshold.is_some() {
-        if sess.target.small_data_threshold_support() == SmallDataThresholdSupport::None {
-            sess.dcx().emit_warn(diagnostics::SmallDataThresholdNotSupportedForTarget {
-                target_triple: &sess.opts.target_triple,
-            })
-        }
+    if sess.opts.unstable_opts.small_data_threshold.is_some()
+        && sess.target.small_data_threshold_support() == SmallDataThresholdSupport::None
+    {
+        sess.dcx().emit_warn(diagnostics::SmallDataThresholdNotSupportedForTarget {
+            target_triple: &sess.opts.target_triple,
+        })
     }
 
     if sess.opts.unstable_opts.branch_protection.is_some() && sess.target.arch != Arch::AArch64 {
@@ -1758,7 +1754,7 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         sess.opts.cg.dwarf_version.or(sess.opts.unstable_opts.dwarf_version)
     {
         // DWARF 1 is not supported by LLVM and DWARF 6 is not yet finalized.
-        if dwarf_version < 2 || dwarf_version > 5 {
+        if !(2..=5).contains(&dwarf_version) {
             sess.dcx().emit_err(diagnostics::UnsupportedDwarfVersion { dwarf_version });
         }
     }
@@ -1806,16 +1802,16 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         sess.dcx().emit_err(diagnostics::IncompatibleLinkerFlavor { flavor, compatible_list });
     }
 
-    if sess.opts.unstable_opts.function_return != FunctionReturn::default() {
-        if !matches!(sess.target.arch, Arch::X86 | Arch::X86_64) {
-            sess.dcx().emit_err(diagnostics::FunctionReturnRequiresX86OrX8664);
-        }
+    if sess.opts.unstable_opts.function_return != FunctionReturn::default()
+        && !matches!(sess.target.arch, Arch::X86 | Arch::X86_64)
+    {
+        sess.dcx().emit_err(diagnostics::FunctionReturnRequiresX86OrX8664);
     }
 
-    if sess.opts.unstable_opts.indirect_branch_cs_prefix {
-        if !matches!(sess.target.arch, Arch::X86 | Arch::X86_64) {
-            sess.dcx().emit_err(diagnostics::IndirectBranchCsPrefixRequiresX86OrX8664);
-        }
+    if sess.opts.unstable_opts.indirect_branch_cs_prefix
+        && !matches!(sess.target.arch, Arch::X86 | Arch::X86_64)
+    {
+        sess.dcx().emit_err(diagnostics::IndirectBranchCsPrefixRequiresX86OrX8664);
     }
 
     if let Some(regparm) = sess.opts.unstable_opts.regparm {
@@ -1826,10 +1822,8 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
             sess.dcx().emit_err(diagnostics::UnsupportedRegparmArch);
         }
     }
-    if sess.opts.unstable_opts.reg_struct_return {
-        if sess.target.arch != Arch::X86 {
-            sess.dcx().emit_err(diagnostics::UnsupportedRegStructReturnArch);
-        }
+    if sess.opts.unstable_opts.reg_struct_return && sess.target.arch != Arch::X86 {
+        sess.dcx().emit_err(diagnostics::UnsupportedRegStructReturnArch);
     }
 
     // The code model check applies to `thunk` and `thunk-extern`, but not `thunk-inline`, so it is
@@ -1849,19 +1843,18 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         }
     }
 
-    if sess.opts.unstable_opts.packed_stack {
-        if sess.target.arch != Arch::S390x {
-            sess.dcx().emit_err(diagnostics::UnsupportedPackedStack);
-        }
+    if sess.opts.unstable_opts.packed_stack && sess.target.arch != Arch::S390x {
+        sess.dcx().emit_err(diagnostics::UnsupportedPackedStack);
     }
 
-    if let Some(ref cpu_name) = sess.opts.cg.target_cpu {
-        if cpu_name == NATIVE_CPU && sess.target.requires_consistent_cpu {
-            sess.dcx().emit_fatal(diagnostics::NativeTargetCpuNotAllowed {
-                target_triple: &sess.opts.target_triple,
-                need_explicit_cpu: sess.target.need_explicit_cpu,
-            });
-        }
+    if let Some(ref cpu_name) = sess.opts.cg.target_cpu
+        && cpu_name == NATIVE_CPU
+        && sess.target.requires_consistent_cpu
+    {
+        sess.dcx().emit_fatal(diagnostics::NativeTargetCpuNotAllowed {
+            target_triple: &sess.opts.target_triple,
+            need_explicit_cpu: sess.target.need_explicit_cpu,
+        });
     }
 }
 
@@ -1929,11 +1922,10 @@ impl EarlyDiagCtxt {
 
 fn mk_emitter(output: ErrorOutputType) -> Box<DynEmitter> {
     let emitter: Box<DynEmitter> = match output {
-        config::ErrorOutputType::HumanReadable { kind, color_config: _ } => match kind {
-            HumanReadableErrorType { short, unicode: _ } => {
-                Box::new(PlainEmitter::new().short_message(short))
-            }
-        },
+        config::ErrorOutputType::HumanReadable { kind, color_config: _ } => {
+            let HumanReadableErrorType { short, unicode: _ } = kind;
+            Box::new(PlainEmitter::new().short_message(short))
+        }
         config::ErrorOutputType::Json { pretty, json_rendered, color_config } => {
             Box::new(JsonEmitter::new(
                 Box::new(stderr()),

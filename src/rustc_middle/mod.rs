@@ -27,7 +27,8 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![allow(internal_features)]#![cfg_attr(doc, feature(intra_doc_pointers))]
+#![allow(internal_features)]
+#![cfg_attr(doc, feature(intra_doc_pointers))]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
@@ -45,13 +46,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 #[cfg(test)]
 mod tests;

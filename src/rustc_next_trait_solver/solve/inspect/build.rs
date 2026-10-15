@@ -8,9 +8,9 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use derive_where::derive_where;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::{self as ty, Interner};
+use derive_where::derive_where;
 
 use crate::rustc_next_trait_solver::canonical;
 use crate::rustc_next_trait_solver::delegate::SolverDelegate;

@@ -2,8 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -17,19 +15,18 @@ use crate::rustc_data_structures::profiling::TimePassesFormat;
 use crate::rustc_errors::ColorConfig;
 use crate::rustc_errors::emitter::HumanReadableErrorType;
 use crate::rustc_lint_defs::Level;
+use crate::rustc_session::EarlyDiagCtxt;
 use crate::rustc_session::config::{
     AnnotateMoves, AutoDiff, BranchProtection, CFGuard, CodegenRetagOptions, CoverageLevel,
-    CoverageOptions, DebugInfo, ErrorOutputType, ExternEntry, ExternLocation,
-    Externs, FmtDebug, FunctionReturn, IncrementalStateAssertion, InliningThreshold,
-    InstrumentCoverage, InstrumentMcount, InstrumentMcountOpts, InstrumentXRay, LinkSelfContained,
-    LinkerPluginLto, LocationDetail, LtoCli, MirIncludeSpans, NextSolverConfig, Offload, Options,
-    OutFileName, OutputType, OutputTypes, PAuthKey, PacRet, Passes, PatchableFunctionEntry,
-    Polonius, Strip, SwitchWithOptPath, SymbolManglingVersion,
-    WasiExecModel,
+    CoverageOptions, DebugInfo, ErrorOutputType, ExternEntry, ExternLocation, Externs, FmtDebug,
+    FunctionReturn, IncrementalStateAssertion, InliningThreshold, InstrumentCoverage,
+    InstrumentMcount, InstrumentMcountOpts, InstrumentXRay, LinkSelfContained, LinkerPluginLto,
+    LocationDetail, LtoCli, MirIncludeSpans, NextSolverConfig, Offload, Options, OutFileName,
+    OutputType, OutputTypes, PAuthKey, PacRet, Passes, PatchableFunctionEntry, Polonius, Strip,
+    SwitchWithOptPath, SymbolManglingVersion, WasiExecModel,
 };
 use crate::rustc_session::search_paths::SearchPath;
 use crate::rustc_session::utils::{CanonicalizedPath, NativeLib};
-use crate::rustc_session::EarlyDiagCtxt;
 use crate::rustc_span::SourceFileHashAlgorithm;
 use crate::rustc_structures::{CollapseMacroDebuginfo, NativeLibKind};
 use crate::rustc_target::spec::{
@@ -55,9 +52,8 @@ where
     }
 }
 
-
 fn mk_map<K: Ord, V>(entries: Vec<(K, V)>) -> BTreeMap<K, V> {
-    BTreeMap::from_iter(entries.into_iter())
+    BTreeMap::from_iter(entries)
 }
 
 fn assert_same_clone(x: &Options) {
@@ -89,7 +85,6 @@ fn assert_non_crate_hash_different(x: &Options, y: &Options) {
     assert_same_clone(x);
     assert_same_clone(y);
 }
-
 
 #[test]
 fn test_output_types_tracking_hash_different_paths() {

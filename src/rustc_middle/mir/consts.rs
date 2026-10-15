@@ -1,25 +1,21 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 // `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
 use crate::rustc_middle::mir::interpret::InterpResultExt as _;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::{self, Debug, Display, Formatter};
 
 use crate::rustc_abi::{HasDataLayout, Size};
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_span::{DUMMY_SP, Span};
 use crate::rustc_type_ir::TypeVisitableExt;
+use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 
 use super::interpret::ReportedErrorInfo;
-use crate::rustc_middle::mir::interpret::{AllocId, AllocRange, ErrorHandled, GlobalAlloc, Scalar, alloc_range};
+use crate::rustc_middle::mir::interpret::{
+    AllocId, AllocRange, ErrorHandled, GlobalAlloc, Scalar, alloc_range,
+};
 use crate::rustc_middle::mir::{Promoted, pretty_print_const_value};
 use crate::rustc_middle::ty::print::{pretty_print_const, with_no_trimmed_paths};
 use crate::rustc_middle::ty::{self, ConstKind, GenericArgsRef, ScalarInt, Ty, TyCtxt};
@@ -207,10 +203,10 @@ impl ConstValue {
             start: Size::ZERO,
             size: Size::from_bytes(alloc.0.len()),
         });
-        if let Err(range) = init_range {
-            if range.size == alloc.0.size() {
-                return true;
-            }
+        if let Err(range) = init_range
+            && range.size == alloc.0.size()
+        {
+            return true;
         }
         false
     }

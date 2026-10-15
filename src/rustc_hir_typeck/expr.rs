@@ -47,7 +47,9 @@ use crate::rustc_trait_selection::infer::InferCtxtExt;
 use crate::rustc_trait_selection::traits::{self, ObligationCauseCode, ObligationCtxt};
 use tracing::{debug, instrument, trace};
 
-use crate::rustc_hir_typeck::Expectation::{self, ExpectCastableToType, ExpectHasType, NoExpectation};
+use crate::rustc_hir_typeck::Expectation::{
+    self, ExpectCastableToType, ExpectHasType, NoExpectation,
+};
 use crate::rustc_hir_typeck::callee::SplatLoweringInfo;
 use crate::rustc_hir_typeck::coercion::CoerceMany;
 use crate::rustc_hir_typeck::diagnostics::{
@@ -117,7 +119,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         if let Err(mut err) = self.demand_suptype_diag(expr.span, expected_ty, ty) {
-            let _ = self.emit_type_mismatch_suggestions(
+            self.emit_type_mismatch_suggestions(
                 &mut err,
                 expr.peel_drop_temps(),
                 ty,
@@ -394,7 +396,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             ExprKind::DropTemps(e) => self.check_expr_with_expectation(e, expected),
             ExprKind::Array(args) => self.check_expr_array(args, expected, expr),
             ExprKind::ConstBlock(ref block) => self.check_expr_const_block(block, expected),
-            ExprKind::Repeat(element, ref count) => {
+            ExprKind::Repeat(element, count) => {
                 self.check_expr_repeat(element, count, expected, expr)
             }
             ExprKind::Tup(elts) => self.check_expr_tuple(elts, expected, expr),
@@ -517,8 +519,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Does this expression refer to a place that either:
     /// * Is based on a local or static.
     /// * Contains a dereference
-    /// Note that the adjustments for the children of `expr` should already
-    /// have been resolved.
+    ///   Note that the adjustments for the children of `expr` should already
+    ///   have been resolved.
     fn check_named_place_expr(&self, oprnd: &'tcx hir::Expr<'tcx>) {
         let is_named = oprnd.is_place_expr(|base| {
             // Allow raw borrows if there are any deref adjustments.
@@ -627,7 +629,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             let fn_sig = ty.fn_sig(tcx);
 
             if tcx.is_intrinsic(did, sym::transmute) {
-                let Some(from) = fn_sig.inputs().skip_binder().get(0) else {
+                let Some(from) = fn_sig.inputs().skip_binder().first() else {
                     span_bug!(
                         tcx.def_span(did),
                         "intrinsic fn `transmute` defined with no parameters"
@@ -779,11 +781,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     coerce.coerce_forced_unit(
                         self,
                         &cause,
-                        |mut err| {
-                            self.suggest_missing_semicolon(&mut err, expr, e_ty, false, false);
-                            self.suggest_mismatched_types_on_tail(
-                                &mut err, expr, ty, e_ty, target_id,
-                            );
+                        |err| {
+                            self.suggest_missing_semicolon(err, expr, e_ty, false, false);
+                            self.suggest_mismatched_types_on_tail(err, expr, ty, e_ty, target_id);
                             let error =
                                 Some(TypeError::Sorts(ExpectedFound { expected: ty, found: e_ty }));
                             self.annotate_loop_expected_due_to_inference(err, expr, error);
@@ -837,12 +837,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 // ... except when we try to 'break rust;'.
                 // ICE this expression in particular (see #43162).
-                if let ExprKind::Path(QPath::Resolved(_, path)) = e.kind {
-                    if let [segment] = path.segments
-                        && segment.ident.name == sym::rust
-                    {
-                        fatally_break_rust(self.tcx, expr.span);
-                    }
+                if let ExprKind::Path(QPath::Resolved(_, path)) = e.kind
+                    && let [segment] = path.segments
+                    && segment.ident.name == sym::rust
+                {
+                    fatally_break_rust(self.tcx, expr.span);
                 }
             }
 
@@ -895,7 +894,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             self.check_return_or_body_tail(e, true);
         } else {
-            let mut coercion = self.ret_coercion.as_ref().unwrap().borrow_mut();
+            let Some(ret_coercion) = self.ret_coercion.as_ref() else { unreachable!() };
+            let mut coercion = ret_coercion.borrow_mut();
             if self.ret_coercion_span.get().is_none() {
                 self.ret_coercion_span.set(Some(expr.span));
             }
@@ -1273,11 +1273,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if let Some(lhs_deref_ty) = self.deref_once_mutably_for_diagnostic(lhs_ty) {
                 // Can only assign if the type is sized, so if `DerefMut` yields a type that is
                 // unsized, do not suggest dereferencing it.
-                let lhs_deref_ty_is_sized = self
-                    .tcx
-                    .lang_items()
-                    .get(LangItem::Sized)
-                    .is_some_and(|sized| {
+                let lhs_deref_ty_is_sized =
+                    self.tcx.lang_items().get(LangItem::Sized).is_some_and(|sized| {
                         self.infcx
                             .type_implements_trait(sized, [lhs_deref_ty], self.param_env)
                             .may_apply()
@@ -1864,6 +1861,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         adt_ty
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_expr_struct_fields(
         &self,
         adt_ty: Ty<'tcx>,
@@ -2008,7 +2009,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let mut missing_optional_fields = Vec::new();
                 for f in &variant.fields {
                     let ident = self.tcx.adjust_ident(f.ident(self.tcx), variant.def_id);
-                    if let Some(_) = remaining_fields.remove(&ident) {
+                    if remaining_fields.remove(&ident).is_some() {
                         if f.value.is_none() {
                             missing_mandatory_fields.push(ident);
                         } else {
@@ -2116,7 +2117,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 );
                                 let ident =
                                     self.tcx.adjust_ident(f.ident(self.tcx), variant.def_id);
-                                if let Some(_) = remaining_fields.remove(&ident) {
+                                if remaining_fields.remove(&ident).is_some() {
                                     let target_ty = self.field_ty(base_expr.span, f, args);
                                     let cause = self.misc(base_expr.span);
                                     match self.at(&cause, self.param_env).sup(
@@ -2185,7 +2186,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             (ty::Adt(adt, _), ty::Adt(base_adt, _)) if adt == base_adt);
                         if self.tcx.sess.is_nightly_build() && same_adt {
                             feature_err(
-                                &self.tcx.sess,
+                                self.tcx.sess,
                                 sym::type_changing_struct_update,
                                 base_expr.span,
                                 "type changing struct updating is experimental",
@@ -2288,6 +2289,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ///
     /// error: aborting due to 1 previous error
     /// ```
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_missing_fields(
         &self,
         adt_ty: Ty<'tcx>,
@@ -2434,6 +2439,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ///
     /// error: aborting due to 1 previous error
     /// ```
+    #[expect(
+        clippy::type_complexity,
+        reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+    )]
     fn report_private_fields(
         &self,
         adt_ty: Ty<'tcx>,
@@ -2488,7 +2497,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             let mut items = self
                 .tcx
                 .inherent_impls(def_id)
-                .into_iter()
+                .iter()
                 .flat_map(|&i| self.tcx.associated_items(i).in_definition_order())
                 // Only assoc fn with no receivers.
                 .filter(|item| item.is_fn() && !item.is_method())
@@ -2808,17 +2817,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                 }
                 ty::Tuple(tys) => {
-                    if let Ok(index) = field.as_str().parse::<usize>() {
-                        if field.name == sym::integer(index) {
-                            if let Some(&field_ty) = tys.get(index) {
-                                let adjustments = self.adjust_steps(&autoderef);
-                                self.apply_adjustments(base, adjustments);
-                                self.register_predicates(autoderef.into_obligations());
+                    if let Ok(index) = field.as_str().parse::<usize>()
+                        && field.name == sym::integer(index)
+                        && let Some(&field_ty) = tys.get(index)
+                    {
+                        let adjustments = self.adjust_steps(&autoderef);
+                        self.apply_adjustments(base, adjustments);
+                        self.register_predicates(autoderef.into_obligations());
 
-                                self.write_field_index(expr.hir_id, FieldIdx::from_usize(index));
-                                return field_ty;
-                            }
-                        }
+                        self.write_field_index(expr.hir_id, FieldIdx::from_usize(index));
+                        return field_ty;
                     }
                 }
                 _ => {}
@@ -2896,7 +2904,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             };
             let maybe_partial_suffix = |field: &str| -> Option<&str> {
                 let first_chars = ['f', 'l'];
-                if field.len() >= 1
+                if !field.is_empty()
                     && field.to_lowercase().starts_with(first_chars)
                     && field[1..].chars().all(|c| c.is_ascii_digit())
                 {
@@ -3204,7 +3212,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             format!("{val} is a raw pointer; try dereferencing it"),
             vec![
                 (base.span.shrink_to_lo(), "(*".into()),
-                (base.span.between(field.span), format!(").")),
+                (base.span.between(field.span), ").".to_string()),
             ],
             Applicability::MaybeIncorrect,
         );
@@ -3377,7 +3385,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         if fields.iter().all(|field| !field.vis.is_accessible_from(mod_id, tcx)) {
                             return None;
                         }
-                        return Some(
+                        Some(
                             fields
                                 .iter()
                                 .filter(move |field| {
@@ -3393,10 +3401,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                     )
                                 })
                                 .collect::<Vec<_>>(),
-                        );
+                        )
                     }
                     ty::Tuple(types) => {
-                        return Some(
+                        Some(
                             types
                                 .iter()
                                 .enumerate()
@@ -3404,7 +3412,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 .take(100)
                                 .map(|(i, ty)| (Ident::from_str(&i.to_string()), ty))
                                 .collect::<Vec<_>>(),
-                        );
+                        )
                     }
                     _ => None,
                 }
@@ -3726,10 +3734,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     fn check_expr_asm(&self, asm: &'tcx hir::InlineAsm<'tcx>, span: Span) -> Ty<'tcx> {
-        if let crate::rustc_ast::AsmMacro::NakedAsm = asm.asm_macro {
-            if !find_attr!(self.tcx, self.body_def_id, Naked(..)) {
-                self.tcx.dcx().emit_err(NakedAsmOutsideNakedFn { span });
-            }
+        if let crate::rustc_ast::AsmMacro::NakedAsm = asm.asm_macro
+            && !find_attr!(self.tcx, self.body_def_id, Naked(..))
+        {
+            self.tcx.dcx().emit_err(NakedAsmOutsideNakedFn { span });
         }
 
         let mut diverge = asm.asm_macro.diverges(asm.options);
@@ -3774,7 +3782,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     };
 
                     if let Err(diag) =
-                        self.demand_coerce_diag(&body.value, ty, target_ty, None, AllowTwoPhase::No)
+                        self.demand_coerce_diag(body.value, ty, target_ty, None, AllowTwoPhase::No)
                     {
                         diag.emit();
                     }
@@ -3817,7 +3825,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) -> Ty<'tcx> {
         let mut current_container = self.lower_ty(container).normalized;
         let mut field_indices = Vec::with_capacity(fields.len());
-        let mut fields = fields.into_iter();
+        let mut fields = fields.iter();
 
         while let Some(&field) = fields.next() {
             let container = self.structurally_resolve_type(expr.span, current_container);
@@ -3828,7 +3836,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                     if !self.tcx.features().offset_of_enum() {
                         crate::rustc_session::diagnostics::feature_err(
-                            &self.tcx.sess,
+                            self.tcx.sess,
                             sym::offset_of_enum,
                             ident.span,
                             "using enums in offset_of is experimental",
@@ -3951,23 +3959,22 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 ty::Tuple(tys) => {
                     if let Ok(index) = field.as_str().parse::<usize>()
                         && field.name == sym::integer(index)
+                        && let Some(&field_ty) = tys.get(index)
                     {
-                        if let Some(&field_ty) = tys.get(index) {
-                            if self.tcx.features().offset_of_slice() {
-                                self.require_type_has_static_alignment(field_ty, expr.span);
-                            } else {
-                                self.require_type_is_sized(
-                                    field_ty,
-                                    expr.span,
-                                    ObligationCauseCode::Misc,
-                                );
-                            }
-
-                            field_indices.push((current_container, FIRST_VARIANT, index.into()));
-                            current_container = field_ty;
-
-                            continue;
+                        if self.tcx.features().offset_of_slice() {
+                            self.require_type_has_static_alignment(field_ty, expr.span);
+                        } else {
+                            self.require_type_is_sized(
+                                field_ty,
+                                expr.span,
+                                ObligationCauseCode::Misc,
+                            );
                         }
+
+                        field_indices.push((current_container, FIRST_VARIANT, index.into()));
+                        current_container = field_ty;
+
+                        continue;
                     }
                 }
                 _ => (),

@@ -2,22 +2,20 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use core::fmt::Write as _;
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
-use core::any::Any;
-use eko::file as io;
-use eko::path::{Path, PathBuf};
 use alloc::sync::Arc;
-use eko::thread::{LazyLock, OnceLock};
-use core::{iter};
+use core::any::Any;
+use core::iter;
 use eko::file as fs;
+use eko::path::{Path, PathBuf};
+use eko::thread::{LazyLock, OnceLock};
 
 use crate::rustc_ast as ast;
 use crate::rustc_attr_parsing::{AttributeParser, ShouldEmit};
@@ -66,7 +64,7 @@ use tracing::{info, instrument};
 use crate::rustc_interface::interface::Compiler;
 use crate::rustc_interface::{diagnostics, limits, util};
 
-pub fn parse<'a>(sess: &'a Session) -> ast::Crate {
+pub fn parse(sess: &Session) -> ast::Crate {
     // A library read records a root that parsed with errors as a loss (`Session::record_loss`).
     let mark = sess.parse_mark();
     let mut krate = sess
@@ -466,17 +464,17 @@ fn early_lint_checks(tcx: TyCtxt<'_>, (): ()) {
             spans.sort();
             if ident == sym::ferris {
                 enum FerrisFix {
-                    SnakeCase,
-                    ScreamingSnakeCase,
-                    PascalCase,
+                    Snake,
+                    ScreamingSnake,
+                    Pascal,
                 }
 
                 impl FerrisFix {
-                    const fn as_str(self) -> &'static str {
+                    const fn as_str(&self) -> &'static str {
                         match self {
-                            FerrisFix::SnakeCase => "ferris",
-                            FerrisFix::ScreamingSnakeCase => "FERRIS",
-                            FerrisFix::PascalCase => "Ferris",
+                            FerrisFix::Snake => "ferris",
+                            FerrisFix::ScreamingSnake => "FERRIS",
+                            FerrisFix::Pascal => "Ferris",
                         }
                     }
                 }
@@ -484,17 +482,17 @@ fn early_lint_checks(tcx: TyCtxt<'_>, (): ()) {
                 let first_span = spans[0];
                 let prev_source = sess.psess.source_map().span_to_prev_source(first_span);
                 let ferris_fix = prev_source
-                    .map_or(FerrisFix::SnakeCase, |source| {
+                    .map_or(FerrisFix::Snake, |source| {
                         let mut source_before_ferris = source.split_whitespace().rev();
                         match source_before_ferris.next() {
                             Some("struct" | "trait" | "mod" | "union" | "type" | "enum") => {
-                                FerrisFix::PascalCase
+                                FerrisFix::Pascal
                             }
-                            Some("const" | "static") => FerrisFix::ScreamingSnakeCase,
+                            Some("const" | "static") => FerrisFix::ScreamingSnake,
                             Some("mut") if source_before_ferris.next() == Some("static") => {
-                                FerrisFix::ScreamingSnakeCase
+                                FerrisFix::ScreamingSnake
                             }
-                            _ => FerrisFix::SnakeCase,
+                            _ => FerrisFix::Snake,
                         }
                     })
                     .as_str();
@@ -518,14 +516,22 @@ fn early_lint_checks(tcx: TyCtxt<'_>, (): ()) {
         lint_store,
         tcx.registered_lint_tools(()),
         Some(lint_buffer),
-        EarlyCheckNode::CrateRoot(&*krate, &*krate.attrs),
+        EarlyCheckNode::CrateRoot(krate, &krate.attrs),
     )
 }
 
 // Behaviour change: `OsStr` is a `std` type, so the key and the value are now plain byte
 // slices. The query declaration in `rustc_middle/src/queries.rs` has to agree.
 fn env_var_os<'tcx>(tcx: TyCtxt<'tcx>, key: &'tcx [u8]) -> Option<&'tcx [u8]> {
-    let value = core::str::from_utf8(key).ok().and_then(eko::env::var_os);
+    let value = core::str::from_utf8(key).ok().and_then(|key| {
+        if let Some(value) = tcx.sess.opts.logical_env.get(key) {
+            Some(value.as_bytes().to_vec())
+        } else if tcx.sess.opts.isolated_env {
+            None
+        } else {
+            eko::env::var_os(key)
+        }
+    });
 
     let value_tcx = value.as_ref().map(|value| {
         // The value is already bytes, so it goes into the arena as it stands. This used to go
@@ -717,15 +723,12 @@ fn write_out_deps(tcx: TyCtxt<'_>, outputs: &OutputFilenames, out_filenames: &[P
         }
 
         if sess.binary_dep_depinfo() {
-            if let Some(ref backend) = sess.opts.unstable_opts.codegen_backend {
-                if backend.contains('.') {
-                    // If the backend name contain a `.`, it is the path to an external dynamic
-                    // library. If not, it is not a path.
-                    files.extend(hash_iter_files(
-                        iter::once(backend.to_string()),
-                        checksum_hash_algo,
-                    ));
-                }
+            if let Some(ref backend) = sess.opts.unstable_opts.codegen_backend
+                && backend.contains('.')
+            {
+                // If the backend name contain a `.`, it is the path to an external dynamic
+                // library. If not, it is not a path.
+                files.extend(hash_iter_files(iter::once(backend.to_string()), checksum_hash_algo));
             }
 
             for &cnum in tcx.crates(()) {
@@ -882,25 +885,24 @@ pub fn write_dep_info(tcx: TyCtxt<'_>) {
         generated_output_paths(tcx, outputs, sess.io.output_file.is_some(), crate_name);
 
     // Ensure the source file isn't accidentally overwritten during compilation.
-    if let Some(input_path) = sess.io.input.opt_path() {
-        if sess.opts.will_create_output_file() {
-            if output_contains_path(&output_paths, input_path) {
-                sess.dcx()
-                    .emit_fatal(diagnostics::InputFileWouldBeOverWritten { path: input_path });
-            }
-            if let Some(dir_path) = output_conflicts_with_dir(&output_paths) {
-                sess.dcx().emit_fatal(diagnostics::GeneratedFileConflictsWithDirectory {
-                    input_path,
-                    dir_path,
-                });
-            }
+    if let Some(input_path) = sess.io.input.opt_path()
+        && sess.opts.will_create_output_file()
+    {
+        if output_contains_path(&output_paths, input_path) {
+            sess.dcx().emit_fatal(diagnostics::InputFileWouldBeOverWritten { path: input_path });
+        }
+        if let Some(dir_path) = output_conflicts_with_dir(&output_paths) {
+            sess.dcx().emit_fatal(diagnostics::GeneratedFileConflictsWithDirectory {
+                input_path,
+                dir_path,
+            });
         }
     }
 
-    if let Some(ref dir) = sess.io.temps_dir {
-        if fs::create_dir_all(dir).is_err() {
-            sess.dcx().emit_fatal(diagnostics::TempsDirError);
-        }
+    if let Some(ref dir) = sess.io.temps_dir
+        && fs::create_dir_all(dir).is_err()
+    {
+        sess.dcx().emit_fatal(diagnostics::TempsDirError);
     }
 
     write_out_deps(tcx, outputs, &output_paths);
@@ -908,12 +910,11 @@ pub fn write_dep_info(tcx: TyCtxt<'_>) {
     let only_dep_info = sess.opts.output_types.contains_key(&OutputType::DepInfo)
         && sess.opts.output_types.len() == 1;
 
-    if !only_dep_info {
-        if let Some(ref dir) = sess.io.output_dir {
-            if fs::create_dir_all(dir).is_err() {
-                sess.dcx().emit_fatal(diagnostics::OutDirError);
-            }
-        }
+    if !only_dep_info
+        && let Some(ref dir) = sess.io.output_dir
+        && fs::create_dir_all(dir).is_err()
+    {
+        sess.dcx().emit_fatal(diagnostics::OutDirError);
     }
 }
 
@@ -925,7 +926,7 @@ pub fn write_interface<'tcx>(tcx: TyCtxt<'tcx>) {
     let (_, krate) = tcx.resolver_for_lowering();
 
     let krate = crate::rustc_ast_pretty::pprust::print_crate_as_interface(
-        &*krate.borrow(),
+        &krate.borrow(),
         tcx.sess.psess.edition,
         &tcx.sess.psess.attr_id_generator,
     );
@@ -1046,14 +1047,13 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     let definitions = FreezeLock::new(definitions);
 
     let stable_crate_ids = FreezeLock::new(StableCrateIdMap::default());
-    let untracked =
-        Untracked {
-            cstore,
-            source_span: AppendOnlyIndexVec::new(),
-            definitions,
-            def_table,
-            stable_crate_ids,
-        };
+    let untracked = Untracked {
+        cstore,
+        source_span: AppendOnlyIndexVec::new(),
+        definitions,
+        def_table,
+        stable_crate_ids,
+    };
 
     // We're constructing the HIR here; we don't care what we will
     // read, since we haven't even constructed the *input* to
@@ -1107,7 +1107,7 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
     let hir_arena = unsafe { &*hir_arena_owner.0 };
     let gcx_cell = unsafe { &*gcx_owner.0 };
 
-    let res = TyCtxt::create_global_ctxt(
+    TyCtxt::create_global_ctxt(
         gcx_cell,
         &compiler.sess,
         crate_types,
@@ -1156,12 +1156,14 @@ pub fn create_and_enter_global_ctxt<T, F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> T>(
             tcx.finish();
             res
         },
-    );
-
-    res
+    )
 }
 
 struct DiagCallback<'tcx> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "the diagnostic callback binds its output lifetime to each diagnostic context"
+    )]
     callback: Box<
         // `+ DynSend + DynSync` dropped: no longer auto traits (see
         // `rustc_data_structures/marker.rs`).
@@ -1281,46 +1283,50 @@ fn run_required_analyses(tcx: TyCtxt<'_>) {
 
     sess.time("MIR_borrow_checking", || {
         let owners = tcx.hir_body_owner_ids();
-        run_stage_weighted(owners, owners.len(), |owners, index| {
-            tcx.stage_weight(owners[index], cost::TYPECK)
-        }, |owners, index| {
-            let def_id = owners[index];
-            let not_typeck_child = !tcx.is_typeck_child(def_id.to_def_id());
-            if not_typeck_child {
-                // Child unsafety and borrowck happens together with the parent
-                tcx.ensure_ok().check_unsafety(def_id);
-            }
-            if tcx.is_trivial_const(def_id) {
-                return;
-            }
-            if not_typeck_child {
-                tcx.ensure_ok().mir_borrowck(def_id);
-                tcx.ensure_ok().check_transmutes(def_id);
-                if !tcx.sess.opts.unstable_opts.offload.is_empty() {
-                    tcx.ensure_ok().check_offloads(def_id);
+        run_stage_weighted(
+            owners,
+            owners.len(),
+            |owners, index| tcx.stage_weight(owners[index], cost::TYPECK),
+            |owners, index| {
+                let def_id = owners[index];
+                let not_typeck_child = !tcx.is_typeck_child(def_id.to_def_id());
+                if not_typeck_child {
+                    // Child unsafety and borrowck happens together with the parent
+                    tcx.ensure_ok().check_unsafety(def_id);
                 }
-            }
-            tcx.ensure_ok().has_ffi_unwind_calls(def_id);
-            tcx.ensure_ok().check_liveness(def_id);
+                if tcx.is_trivial_const(def_id) {
+                    return;
+                }
+                if not_typeck_child {
+                    tcx.ensure_ok().mir_borrowck(def_id);
+                    tcx.ensure_ok().check_transmutes(def_id);
+                    if !tcx.sess.opts.unstable_opts.offload.is_empty() {
+                        tcx.ensure_ok().check_offloads(def_id);
+                    }
+                }
+                tcx.ensure_ok().has_ffi_unwind_calls(def_id);
+                tcx.ensure_ok().check_liveness(def_id);
 
-            // If we need to codegen, ensure that we emit all errors from
-            // `mir_drops_elaborated_and_const_checked` now, to avoid discovering
-            // them later during codegen.
-            if tcx.sess.opts.output_types.should_codegen()
-                || tcx.hir_body_const_context(def_id).is_some()
-            {
-                tcx.ensure_ok().mir_drops_elaborated_and_const_checked(def_id);
-            }
-            if tcx.is_coroutine(def_id.to_def_id())
-                && (!tcx.is_async_drop_in_place_coroutine(def_id.to_def_id()))
-            {
-                // Eagerly check the unsubstituted layout for cycles.
-                tcx.ensure_ok()
-                    .layout_of(ty::TypingEnv::codegen(tcx, def_id.to_def_id()).as_query_input(
-                        tcx.type_of(def_id).instantiate_identity().skip_norm_wip(),
-                    ));
-            }
-        });
+                // If we need to codegen, ensure that we emit all errors from
+                // `mir_drops_elaborated_and_const_checked` now, to avoid discovering
+                // them later during codegen.
+                if tcx.sess.opts.output_types.should_codegen()
+                    || tcx.hir_body_const_context(def_id).is_some()
+                {
+                    tcx.ensure_ok().mir_drops_elaborated_and_const_checked(def_id);
+                }
+                if tcx.is_coroutine(def_id.to_def_id())
+                    && (!tcx.is_async_drop_in_place_coroutine(def_id.to_def_id()))
+                {
+                    // Eagerly check the unsubstituted layout for cycles.
+                    tcx.ensure_ok().layout_of(
+                        ty::TypingEnv::codegen(tcx, def_id.to_def_id()).as_query_input(
+                            tcx.type_of(def_id).instantiate_identity().skip_norm_wip(),
+                        ),
+                    );
+                }
+            },
+        );
     });
 
     sess.time("layout_testing", || layout_test::test_layout(tcx));
@@ -1463,14 +1469,17 @@ fn analysis(tcx: TyCtxt<'_>, (): ()) {
     if tcx.sess.opts.unstable_opts.validate_mir {
         sess.time("ensuring_final_MIR_is_computable", || {
             let owners = tcx.hir_body_owner_ids();
-            run_stage_weighted(owners, owners.len(), |owners, index| {
-                tcx.stage_weight(owners[index], cost::TYPECK)
-            }, |owners, index| {
-                let def_id = owners[index];
-                if !tcx.is_trivial_const(def_id) {
-                    tcx.instance_mir(ty::InstanceKind::Item(def_id.into()));
-                }
-            });
+            run_stage_weighted(
+                owners,
+                owners.len(),
+                |owners, index| tcx.stage_weight(owners[index], cost::TYPECK),
+                |owners, index| {
+                    let def_id = owners[index];
+                    if !tcx.is_trivial_const(def_id) {
+                        tcx.instance_mir(ty::InstanceKind::Item(def_id.into()));
+                    }
+                },
+            );
         });
     }
 }
@@ -1501,13 +1510,15 @@ fn library_analysis(tcx: TyCtxt<'_>) {
     // item says so, so the read records it even when the fatal error came with no diagnostic of
     // its own (a path that named no trait, a poisoned query).
     let step = |item: LocalDefId, what: &str, f: &dyn Fn()| {
-        if catch_fatal_errors(|| f()).is_err() {
+        if catch_fatal_errors(f).is_err() {
             tcx.dcx().span_err(tcx.def_span(item), format!("{what} stopped on a fatal error"));
         }
     };
 
     for owner in tcx.hir_crate_items(()).owners() {
-        step(owner.def_id, "lowering this item's signature", &|| lower_signature(tcx, owner.def_id));
+        step(owner.def_id, "lowering this item's signature", &|| {
+            lower_signature(tcx, owner.def_id)
+        });
     }
 
     for &owner in tcx.hir_body_owner_ids() {
@@ -1516,7 +1527,7 @@ fn library_analysis(tcx: TyCtxt<'_>) {
         {
             let root = tcx.typeck_root_def_id_local(body);
             step(root, "type checking the body around a constant", &|| {
-                let _ = tcx.ensure_ok().typeck(root);
+                tcx.ensure_ok().typeck(root);
             });
         }
     }
@@ -1536,7 +1547,7 @@ fn lower_signature(tcx: TyCtxt<'_>, item: LocalDefId) {
     if kind.has_generics() {
         for param in &tcx.generics_of(def_id).own_params {
             match param.kind {
-                ty::GenericParamDefKind::Lifetime { .. } => {}
+                ty::GenericParamDefKind::Lifetime => {}
                 ty::GenericParamDefKind::Type { has_default, .. } => {
                     if has_default {
                         tcx.ensure_ok().type_of(param.def_id);
@@ -1778,7 +1789,7 @@ fn default_output_for_target(sess: &Session) -> CrateType {
 fn get_recursion_limit(krate_attrs: &[ast::Attribute], sess: &Session) -> Limit {
     let attr = AttributeParser::parse_limited_sym_should_emit(
         sess,
-        &krate_attrs,
+        krate_attrs,
         &[sym::recursion_limit],
         DUMMY_SP,
         None,

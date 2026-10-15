@@ -28,8 +28,8 @@ use core::fmt::{self, Debug};
 use crate::rustc_data_structures::stable_hash::{
     StableHash, StableHashCtxt, StableHasher, StableOrd, ToStableHashKey,
 };
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::def_id::{CRATE_DEF_ID, DefId, DefIndex, DefPathHash, LocalDefId};
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Encodable, Decodable)]
 pub struct OwnerId {
@@ -154,12 +154,7 @@ impl fmt::Display for HirId {
 }
 
 crate::define_stable_id_collections!(HirIdMap, HirIdSet, HirIdMapEntry, HirId);
-crate::define_id_collections!(
-    ItemLocalMap,
-    ItemLocalSet,
-    ItemLocalMapEntry,
-    ItemLocalId
-);
+crate::define_id_collections!(ItemLocalMap, ItemLocalSet, ItemLocalMapEntry, ItemLocalId);
 
 crate::rustc_index::newtype_index! {
     /// An `ItemLocalId` uniquely identifies something within a given "item-like";

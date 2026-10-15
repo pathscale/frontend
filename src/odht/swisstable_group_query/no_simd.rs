@@ -37,10 +37,7 @@ impl GroupQuery {
 
         let empty_mask = group & repeat(0x80);
 
-        GroupQuery {
-            eq_mask,
-            empty_mask,
-        }
+        GroupQuery { eq_mask, empty_mask }
     }
 
     #[inline]

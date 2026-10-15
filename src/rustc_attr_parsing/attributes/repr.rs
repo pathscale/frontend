@@ -1,12 +1,12 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_abi::{Align, Size};
 use crate::rustc_ast::{IntTy, LitIntType, LitKind, UintTy};
 use crate::rustc_attr_ir::IntType::{SignedInt, UnsignedInt};
 use crate::rustc_attr_ir::ReprAttr;
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_session::diagnostics::feature_err;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use super::prelude::*;
 use crate::rustc_attr_parsing::diagnostics;
@@ -206,10 +206,7 @@ fn parse_repr(cx: &mut AcceptContext<'_, '_>, param: &MetaItemParser) -> Option<
         Some(sym::isize) => repr_int!(isize, ReprInt(SignedInt(IntTy::Isize))),
         Some(sym::usize) => repr_int!(usize, ReprInt(UnsignedInt(UintTy::Usize))),
         _ => {
-            cx.adcx().expected_specific_argument(
-                param.span(),
-                REPR_OPTIONS,
-            );
+            cx.adcx().expected_specific_argument(param.span(), REPR_OPTIONS);
             None
         }
     }

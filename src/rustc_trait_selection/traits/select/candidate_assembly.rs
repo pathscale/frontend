@@ -9,20 +9,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
-use hir::def_id::DefId;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::{self as hir, CoroutineDesugaring, CoroutineKind};
-use crate::rustc_infer::traits::{Obligation, PolyTraitObligation, PredicateObligation, SelectionError};
+use crate::rustc_infer::traits::{
+    Obligation, PolyTraitObligation, PredicateObligation, SelectionError,
+};
 use crate::rustc_middle::ty::fast_reject::DeepRejectCtxt;
 use crate::rustc_middle::ty::{
     self, ExistentialPredicate, FieldInfo, SizedTraitKind, TraitRef, Ty, TypeVisitableExt,
@@ -30,6 +27,7 @@ use crate::rustc_middle::ty::{
 };
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::DUMMY_SP;
+use hir::def_id::DefId;
 use tracing::{debug, instrument, trace};
 
 use super::SelectionCandidate::*;
@@ -464,9 +462,9 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     // always be called once. It additionally implements `Fn`/`FnMut`
                     // only if it has no upvars referencing the closure-env lifetime,
                     // and if the closure kind permits it.
-                    if closure_kind.extends(kind) && !args.has_self_borrows() {
-                        candidates.vec.push(ClosureCandidate { is_const });
-                    } else if kind == ty::ClosureKind::FnOnce {
+                    if kind == ty::ClosureKind::FnOnce
+                        || closure_kind.extends(kind) && !args.has_self_borrows()
+                    {
                         candidates.vec.push(ClosureCandidate { is_const });
                     }
                 } else if kind == ty::ClosureKind::FnOnce {
@@ -511,11 +509,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 };
 
                 debug!(?coroutine_kind);
-                match coroutine_kind {
-                    CoroutineKind::Desugared(CoroutineDesugaring::Async, _) => {
-                        candidates.vec.push(AsyncClosureCandidate);
-                    }
-                    _ => (),
+                if let CoroutineKind::Desugared(CoroutineDesugaring::Async, _) = coroutine_kind {
+                    candidates.vec.push(AsyncClosureCandidate);
                 }
             }
             // Closures and fn pointers implement `AsyncFn*` if their return types
@@ -739,10 +734,10 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     ty::PredicateKind::Clause(ty::ClauseKind::Trait(pred))
                 })),
             );
-            if let Ok(r) = self.evaluate_root_obligation(&obligation) {
-                if !r.may_apply() {
-                    return true;
-                }
+            if let Ok(r) = self.evaluate_root_obligation(&obligation)
+                && !r.may_apply()
+            {
+                return true;
             }
         }
         false
@@ -1060,10 +1055,10 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     if auto_traits_compatible {
                         candidates.vec.push(BuiltinUnsizeCandidate);
                     }
-                } else if principal_def_id_a.is_some() && principal_def_id_b.is_some() {
+                } else if let (Some(principal_a), Some(target_trait_did)) =
+                    (a_data.principal(), principal_def_id_b)
+                {
                     // not casual unsizing, now check whether this is trait upcasting coercion.
-                    let principal_a = a_data.principal().unwrap();
-                    let target_trait_did = principal_def_id_b.unwrap();
                     let source_trait_ref = principal_a.with_self_ty(self.tcx(), source);
 
                     for (idx, upcast_trait_ref) in
@@ -1109,10 +1104,10 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             }
 
             // `Struct<T>` -> `Struct<U>`
-            (&ty::Adt(def_id_a, _), &ty::Adt(def_id_b, _)) if def_id_a.is_struct() => {
-                if def_id_a == def_id_b {
-                    candidates.vec.push(BuiltinUnsizeCandidate);
-                }
+            (&ty::Adt(def_id_a, _), &ty::Adt(def_id_b, _))
+                if def_id_a.is_struct() && def_id_a == def_id_b =>
+            {
+                candidates.vec.push(BuiltinUnsizeCandidate);
             }
 
             _ => {}
@@ -1511,7 +1506,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             // in `library/core/src/field.rs` as well as the new trait solver `fn
             // consider_builtin_field_candidate` in
             // `compiler/rustc_next_trait_solver/src/solve/trait_goals.rs`.
-            && match self.infcx.evaluate_obligation(&PredicateObligation::new(
+            && matches!(self.infcx.evaluate_obligation(&PredicateObligation::new(
                 self.tcx(),
                 obligation.cause.clone(),
                 obligation.param_env,
@@ -1520,11 +1515,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     self.tcx().require_lang_item(LangItem::Sized, DUMMY_SP),
                     [base],
                 ),
-            )) {
-                Ok(res) if res.must_apply_modulo_regions() => true,
-                _ => false,
-            }
-            && match self.infcx.evaluate_obligation(&PredicateObligation::new(
+            )), Ok(res) if res.must_apply_modulo_regions())
+            && matches!(self.infcx.evaluate_obligation(&PredicateObligation::new(
                 self.tcx(),
                 obligation.cause.clone(),
                 obligation.param_env,
@@ -1533,10 +1525,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     self.tcx().require_lang_item(LangItem::Sized, DUMMY_SP),
                     [ty],
                 ),
-            )) {
-                Ok(res) if res.must_apply_modulo_regions() => true,
-                _ => false,
-            }
+            )), Ok(res) if res.must_apply_modulo_regions())
             && match base.kind() {
                 ty::Adt(def, _) => def.is_struct() && !def.repr().packed(),
                 ty::Tuple(..) => true,

@@ -1,8 +1,8 @@
-use alloc::vec::Vec;
 use crate::rustc_ast::SyntheticAttr;
 use crate::rustc_ast::attr::data_structures::CfgEntry;
 use crate::rustc_attr_ir::{Attribute, AttributeKind};
 use crate::rustc_span::Span;
+use alloc::vec::Vec;
 use thin_vec::ThinVec;
 
 /// Contains the state necessary to convert synthetic attributes to parsed attributes.

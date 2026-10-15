@@ -1,12 +1,11 @@
 //! Validates the MIR to ensure that invariants are upheld.
 
+use alloc::string::ToString;
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -237,8 +236,7 @@ impl<'a, 'tcx> CfgChecker<'a, 'tcx> {
         for (mut bb, parent) in parent.iter_enumerated_mut() {
             stack.clear();
             stack.insert(bb);
-            loop {
-                let Some(parent) = parent.take() else { break };
+            while let Some(parent) = parent.take() {
                 let no_cycle = stack.insert(parent);
                 if !no_cycle {
                     self.fail(
@@ -327,7 +325,7 @@ impl<'a, 'tcx> Visitor<'tcx> for CfgChecker<'a, 'tcx> {
             }
             StatementKind::Coverage(kind) => {
                 if self.body.phase >= MirPhase::Analysis(AnalysisPhase::PostCleanup)
-                    && let CoverageKind::BlockMarker { .. } | CoverageKind::SpanMarker { .. } = kind
+                    && let CoverageKind::BlockMarker { .. } | CoverageKind::SpanMarker = kind
                 {
                     self.fail(
                         location,
@@ -428,8 +426,8 @@ impl<'a, 'tcx> Visitor<'tcx> for CfgChecker<'a, 'tcx> {
                 }
 
                 for arg in args {
-                    if let Operand::Move(place) = &arg.node {
-                        if most_packed_projection(self.tcx, &self.body.local_decls, *place)
+                    if let Operand::Move(place) = &arg.node
+                        && most_packed_projection(self.tcx, &self.body.local_decls, *place)
                             .is_some()
                         {
                             // This is bad! The callee will expect the memory to be aligned.
@@ -441,7 +439,6 @@ impl<'a, 'tcx> Visitor<'tcx> for CfgChecker<'a, 'tcx> {
                                 ),
                             );
                         }
-                    }
                 }
 
                 if let ty::FnDef(did, ..) = *func.ty(&self.body.local_decls, self.tcx).kind()
@@ -887,7 +884,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                 let ty::UnsafeBinder(binder_ty) = *binder_ty.ty.kind() else {
                     self.fail(
                         location,
-                        format!("WrapUnsafeBinder does not produce a ty::UnsafeBinder"),
+                        "WrapUnsafeBinder does not produce a ty::UnsafeBinder".to_string(),
                     );
                     return;
                 };
@@ -963,8 +960,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
         // Ensure all downcast projections are followed by field projections.
         let mut projections_iter = place.projection.iter();
         while let Some(proj) = projections_iter.next() {
-            if matches!(proj, ProjectionElem::Downcast(..)) {
-                if !matches!(projections_iter.next(), Some(ProjectionElem::Field(..))) {
+            if matches!(proj, ProjectionElem::Downcast(..))
+                && !matches!(projections_iter.next(), Some(ProjectionElem::Field(..))) {
                     self.fail(
                         location,
                         format!(
@@ -972,23 +969,20 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                         ),
                     );
                 }
-            }
         }
 
         if let ClearCrossCrate::Set(ref local_info) =
             self.body.local_decls[place.local].local_info
             && let LocalInfo::DerefTemp = **local_info
             && !place.is_indirect_first_projection()
-        {
-            if cntxt != PlaceContext::MutatingUse(MutatingUseContext::Store)
-                || place.as_local().is_none()
+            && (cntxt != PlaceContext::MutatingUse(MutatingUseContext::Store)
+                || place.as_local().is_none())
             {
                 self.fail(
                     location,
-                    format!("`DerefTemp` locals must only be dereferenced or directly assigned to"),
+                    "`DerefTemp` locals must only be dereferenced or directly assigned to".to_string(),
                 );
             }
-        }
 
         if self.body.phase < MirPhase::Runtime(RuntimePhase::Initial)
             && let Some(i) = place
@@ -1141,11 +1135,10 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                             if !self.mir_assign_valid_types(metadata_ty, self.tcx.types.usize) {
                                 self.fail(location, "slice metadata must be usize");
                             }
-                        } else if pointee_ty.is_sized(self.tcx, self.typing_env) {
-                            if metadata_ty != self.tcx.types.unit {
+                        } else if pointee_ty.is_sized(self.tcx, self.typing_env)
+                            && metadata_ty != self.tcx.types.unit {
                                 self.fail(location, "metadata for pointer-to-thin must be unit");
                             }
-                        }
                     } else {
                         self.fail(location, "raw pointer aggregate must have 2 fields");
                     }
@@ -1429,8 +1422,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                             );
                         }
 
-                        if matches!(kind, CastKind::BoxDerefTransmute) {
-                            if !target_type.is_raw_ptr() {
+                        if matches!(kind, CastKind::BoxDerefTransmute)
+                            && !target_type.is_raw_ptr() {
                                 self.fail(
                                     location,
                                     format!(
@@ -1438,7 +1431,6 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                                     ),
                                 );
                             }
-                        }
                     }
                     CastKind::Subtype => {
                         if !util::sub_types(self.tcx, self.typing_env, op_ty, *target_type) {
@@ -1460,7 +1452,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TypeChecker<'a, 'tcx> {
                 let ty::UnsafeBinder(binder_ty) = *ty.kind() else {
                     self.fail(
                         location,
-                        format!("WrapUnsafeBinder does not produce a ty::UnsafeBinder"),
+                        "WrapUnsafeBinder does not produce a ty::UnsafeBinder".to_string(),
                     );
                     return;
                 };

@@ -55,7 +55,6 @@ This API is completely unstable and subject to change.
 
 */
 
-
 // tidy-alphabetical-start
 
 // ---------------------------------------------------------------------------------------------
@@ -77,12 +76,7 @@ This API is completely unstable and subject to change.
 // `#[derive]` can use them without the name appearing in this file - so a `std::` search cannot
 // see them and they are not trimmed by inspection. They sit below every `#![...]` because an
 // inner attribute must precede all items, and a `use` is an item.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 // These are used by Clippy.
 pub mod check;
@@ -133,7 +127,7 @@ fn check_c_variadic_abi(tcx: TyCtxt<'_>, decl: &hir::FnDecl<'_>, abi: ExternAbi,
         CVariadicStatus::Unstable { feature } => {
             if !tcx.features().enabled(feature) {
                 feature_err(
-                    &tcx.sess,
+                    tcx.sess,
                     feature,
                     span,
                     format!("C-variadic functions with the {abi} calling convention are unstable"),
@@ -200,21 +194,24 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
     // One stage over the body owners, each item read in place from the crate's frozen list, and
     // weighing its source at type checking's rate.
     let owners = tcx.hir_body_owner_ids();
-    run_stage_weighted(owners, owners.len(), |owners, index| {
-        tcx.stage_weight(owners[index], cost::TYPECK)
-    }, |owners, index| {
-        let item_def_id = owners[index];
-        let def_kind = tcx.def_kind(item_def_id);
-        // Skip `AnonConst`s and type system `InlineConst`s because we feed their `type_of` in
-        // `feed_anon_const_type`.
-        // Also skip items for which typeck forwards to parent typeck.
-        if !(def_kind == DefKind::AnonConst
-            && tcx.anon_const_kind(item_def_id) != ty::AnonConstKind::NonTypeSystemInline
-            || tcx.is_typeck_child(item_def_id.to_def_id()))
-        {
-            tcx.ensure_ok().typeck(item_def_id);
-        }
-    });
+    run_stage_weighted(
+        owners,
+        owners.len(),
+        |owners, index| tcx.stage_weight(owners[index], cost::TYPECK),
+        |owners, index| {
+            let item_def_id = owners[index];
+            let def_kind = tcx.def_kind(item_def_id);
+            // Skip `AnonConst`s and type system `InlineConst`s because we feed their `type_of` in
+            // `feed_anon_const_type`.
+            // Also skip items for which typeck forwards to parent typeck.
+            if !(def_kind == DefKind::AnonConst
+                && tcx.anon_const_kind(item_def_id) != ty::AnonConstKind::NonTypeSystemInline
+                || tcx.is_typeck_child(item_def_id.to_def_id()))
+            {
+                tcx.ensure_ok().typeck(item_def_id);
+            }
+        },
+    );
 
     // This has to be a second pass over the body owners, after every body has been
     // type-checked above. `needs_coroutine_by_move_body_def_id` asks for `type_of`, and for a
@@ -226,14 +223,19 @@ pub fn check_crate(tcx: TyCtxt<'_>) {
     //
     // Each item is a lookup or two, not a walk of the body: one nanosecond an item, so only a
     // crate of a quarter of a million bodies fans it out.
-    run_stage_weighted(owners, owners.len(), |_, _| 1, |owners, index| {
-        let item_def_id = owners[index];
-        // Ensure we generate the new `DefId` before finishing `check_crate`.
-        // Afterwards we freeze the list of `DefId`s.
-        if tcx.needs_coroutine_by_move_body_def_id(item_def_id.to_def_id()) {
-            tcx.ensure_done().coroutine_by_move_body_def_id(item_def_id);
-        }
-    });
+    run_stage_weighted(
+        owners,
+        owners.len(),
+        |_, _| 1,
+        |owners, index| {
+            let item_def_id = owners[index];
+            // Ensure we generate the new `DefId` before finishing `check_crate`.
+            // Afterwards we freeze the list of `DefId`s.
+            if tcx.needs_coroutine_by_move_body_def_id(item_def_id.to_def_id()) {
+                tcx.ensure_done().coroutine_by_move_body_def_id(item_def_id);
+            }
+        },
+    );
 
     if tcx.features().rustc_attrs() {
         tcx.sess.time("dumping_rustc_attr_data", || {

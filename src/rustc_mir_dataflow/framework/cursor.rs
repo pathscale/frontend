@@ -1,6 +1,5 @@
 //! Random access inspection of the results of a dataflow analysis.
 
-use alloc::borrow::ToOwned;
 use core::cmp::Ordering;
 use core::ops::Deref;
 
@@ -196,10 +195,10 @@ where
         debug_assert_eq!(target.block, self.pos.block);
 
         let block_data = &self.body[target.block];
-        let next_effect = self.pos.curr_effect_index.map_or_else(
-            || A::Direction::first_index(block_data),
-            |idx| A::Direction::next_index(idx),
-        );
+        let next_effect = self
+            .pos
+            .curr_effect_index
+            .map_or_else(|| A::Direction::first_index(block_data), A::Direction::next_index);
         let target_effect_index = effect.at_index(target.statement_index);
 
         let mut idx = next_effect;

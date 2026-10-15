@@ -1,21 +1,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::cmp::Ordering;
 
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, extension};
 use crate::rustc_type_ir as ir;
+use rustc_macros::{StableHash, extension};
 
-use crate::rustc_middle::ty::{self, EarlyBinder, Ty, TyCtxt, TypeFlags, Upcast, UpcastFrom, WithCachedTypeInfo};
+use crate::rustc_middle::ty::{
+    self, EarlyBinder, Ty, TyCtxt, TypeFlags, Upcast, UpcastFrom, WithCachedTypeInfo,
+};
 
 pub type TraitRef<'tcx> = ir::TraitRef<TyCtxt<'tcx>>;
 pub type AliasTerm<'tcx> = ir::AliasTerm<TyCtxt<'tcx>>;
@@ -119,7 +115,10 @@ impl<'tcx> Predicate<'tcx> {
 }
 
 impl<'tcx> crate::rustc_errors::IntoDiagArg for Predicate<'tcx> {
-    fn into_diag_arg(self, path: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        path: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         ty::tls::with(|tcx| {
             let pred = tcx.short_string(tcx.lift(self), path);
             crate::rustc_errors::DiagArgValue::Str(alloc::borrow::Cow::Owned(pred))
@@ -128,7 +127,10 @@ impl<'tcx> crate::rustc_errors::IntoDiagArg for Predicate<'tcx> {
 }
 
 impl<'tcx> crate::rustc_errors::IntoDiagArg for Clause<'tcx> {
-    fn into_diag_arg(self, path: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        path: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         ty::tls::with(|tcx| {
             let clause = tcx.short_string(tcx.lift(self), path);
             crate::rustc_errors::DiagArgValue::Str(alloc::borrow::Cow::Owned(clause))
@@ -488,7 +490,7 @@ impl<'tcx> UpcastFrom<TyCtxt<'tcx>, ClauseKind<'tcx>> for Clause<'tcx> {
 
 impl<'tcx> UpcastFrom<TyCtxt<'tcx>, ty::Binder<'tcx, ClauseKind<'tcx>>> for Clause<'tcx> {
     fn upcast_from(from: ty::Binder<'tcx, ClauseKind<'tcx>>, tcx: TyCtxt<'tcx>) -> Self {
-        tcx.mk_predicate(from.map_bound(|clause| PredicateKind::Clause(clause))).expect_clause()
+        tcx.mk_predicate(from.map_bound(PredicateKind::Clause)).expect_clause()
     }
 }
 

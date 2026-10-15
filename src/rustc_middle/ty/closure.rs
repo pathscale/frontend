@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::Write;
@@ -14,9 +11,9 @@ use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::HirId;
 use crate::rustc_hir::def_id::LocalDefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_span::def_id::LocalDefIdMap;
 use crate::rustc_span::{Ident, Span, Symbol};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 
 use super::TyCtxt;
 use crate::rustc_middle::hir::place::{

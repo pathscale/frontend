@@ -6,12 +6,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 use alloc::borrow::Cow;
 use core::iter;
@@ -25,7 +21,9 @@ use crate::rustc_hir::{self as hir, FnSig, HirId, ItemKind, find_attr};
 use crate::rustc_infer::infer::{self, InferCtxt, TyCtxtInferExt};
 use crate::rustc_infer::traits::{ObligationCause, ObligationCauseCode, TraitErrors};
 use crate::rustc_middle::ty::error::{ExpectedFound, TypeError};
-use crate::rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt, TypeVisitableExt, TypingMode, Unnormalized};
+use crate::rustc_middle::ty::{
+    self, ParamEnv, Ty, TyCtxt, TypeVisitableExt, TypingMode, Unnormalized,
+};
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, Symbol};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::regions::InferCtxtRegionExt;
@@ -358,8 +356,8 @@ fn check_early_region_bounds<'tcx>(
         where_span,
     });
 
-    diag.span_label(eii_attr_span, format!("required because of this attribute"));
-    return Err(diag.emit());
+    diag.span_label(eii_attr_span, "required because of this attribute".to_string());
+    Err(diag.emit())
 }
 
 fn check_number_of_arguments<'tcx>(
@@ -455,11 +453,15 @@ fn report_number_of_arguments_mismatch<'tcx>(
         ),
     );
 
-    err.span_label(eii_attr_span, format!("required because of this attribute"));
+    err.span_label(eii_attr_span, "required because of this attribute".to_string());
 
     err.emit()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+)]
 fn report_eii_mismatch<'tcx>(
     infcx: &InferCtxt<'tcx>,
     mut cause: ObligationCause<'tcx>,

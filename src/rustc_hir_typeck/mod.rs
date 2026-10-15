@@ -20,10 +20,8 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -58,8 +56,6 @@ mod typeck_root_ctxt;
 mod upvar;
 mod writeback;
 
-pub use coercion::can_coerce;
-use fn_ctxt::FnCtxt;
 use crate::rustc_data_structures::unord::UnordSet;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag, ErrorGuaranteed, struct_span_code_err};
@@ -68,7 +64,9 @@ use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::{HirId, HirIdMap, Node};
 use crate::rustc_hir_analysis::check::check_abi;
 use crate::rustc_hir_analysis::hir_ty_lowering::HirTyLowerer;
-use crate::rustc_infer::traits::{ObligationCauseCode, ObligationInspector, TraitEngine, WellFormedLoc};
+use crate::rustc_infer::traits::{
+    ObligationCauseCode, ObligationInspector, TraitEngine, WellFormedLoc,
+};
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{self, FnSigKind, Ty, TyCtxt, Unnormalized};
@@ -76,6 +74,8 @@ use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_session::config;
 use crate::rustc_span::Span;
 use crate::rustc_span::def_id::LocalDefId;
+pub use coercion::can_coerce;
+use fn_ctxt::FnCtxt;
 use tracing::{debug, instrument};
 use typeck_root_ctxt::TypeckRootCtxt;
 
@@ -89,7 +89,7 @@ use crate::rustc_hir_typeck::gather_locals::GatherLocalsVisitor;
 #[macro_export]
 macro_rules! type_error_struct {
     ($dcx:expr, $span:expr, $typ:expr, $code:expr, $($message:tt)*) => ({
-        let mut err = crate::struct_span_code_err!($dcx, $span, $code, $($message)*);
+        let mut err = $crate::struct_span_code_err!($dcx, $span, $code, $($message)*);
 
         if $typ.references_error() {
             err.downgrade_to_delayed_bug();
@@ -397,8 +397,8 @@ fn extend_err_with_const_context(
 fn infer_type_if_missing<'tcx>(fcx: &FnCtxt<'_, 'tcx>, node: Node<'tcx>) -> Option<Ty<'tcx>> {
     let tcx = fcx.tcx;
     let def_id = fcx.body_def_id;
-    let expected_type = if let Some(&hir::Ty { kind: hir::TyKind::Infer(()), span, .. }) = node.ty()
-    {
+
+    if let Some(&hir::Ty { kind: hir::TyKind::Infer(()), span, .. }) = node.ty() {
         if let Some(item) = tcx.opt_associated_item(def_id.into())
             && let ty::AssocKind::Const { .. } = item.kind
             && let ty::AssocContainer::TraitImpl(Ok(trait_item_def_id)) = item.container
@@ -432,8 +432,7 @@ fn infer_type_if_missing<'tcx>(fcx: &FnCtxt<'_, 'tcx>, node: Node<'tcx>) -> Opti
         }
     } else {
         None
-    };
-    expected_type
+    }
 }
 
 /// When `check_fn` is invoked on a coroutine (i.e., a body that
@@ -497,6 +496,10 @@ impl<'tcx> EnclosingBreakables<'tcx> {
     }
 }
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_unexpected_variant_res(
         &self,
         res: Res,
@@ -727,7 +730,9 @@ fn fatally_break_rust(tcx: TyCtxt<'_>, span: Span) -> ! {
          https://github.com/rust-lang/rust/issues/43162#issuecomment-320764675",
     );
     diag.note(format!("rustc {} running on {}", tcx.sess.cfg_version, config::host_tuple(),));
-    if let Some((flags, excluded_cargo_defaults)) = crate::rustc_session::utils::extra_compiler_flags() {
+    if let Some((flags, excluded_cargo_defaults)) =
+        crate::rustc_session::utils::extra_compiler_flags()
+    {
         diag.note(format!("compiler flags: {}", flags.join(" ")));
         if excluded_cargo_defaults {
             diag.note("some of the compiler flags provided by cargo are hidden");

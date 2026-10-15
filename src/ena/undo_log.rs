@@ -8,7 +8,6 @@
 //! Since the `*Storage` variants do not have an undo log `with_log` must be called with the
 //! unified log before any mutating actions.
 
-
 use alloc::vec::Vec;
 
 /// A trait which allows undo actions (`T`) to be pushed which can be used to rollback actions at a
@@ -43,7 +42,7 @@ pub trait UndoLogs<T> {
     }
 }
 
-impl<'a, T, U> UndoLogs<T> for &'a mut U
+impl<T, U> UndoLogs<T> for &mut U
 where
     U: UndoLogs<T>,
 {
@@ -142,10 +141,7 @@ pub struct VecLog<T> {
 
 impl<T> Default for VecLog<T> {
     fn default() -> Self {
-        VecLog {
-            log: Vec::new(),
-            num_open_snapshots: 0,
-        }
+        VecLog { log: Vec::new(), num_open_snapshots: 0 }
     }
 }
 
@@ -174,9 +170,7 @@ impl<T> Snapshots<T> for VecLog<T> {
 
     fn start_snapshot(&mut self) -> Snapshot {
         self.num_open_snapshots += 1;
-        Snapshot {
-            undo_len: self.log.len(),
-        }
+        Snapshot { undo_len: self.log.len() }
     }
 
     fn rollback_to<R>(&mut self, values: impl FnOnce() -> R, snapshot: Snapshot)

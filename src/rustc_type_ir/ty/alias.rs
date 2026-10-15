@@ -18,6 +18,10 @@ use crate::rustc_type_ir::{AliasConstKind, AliasTermKind, AliasTyKind, Interner}
     feature = "nightly",
     derive(Decodable_NoContext, Encodable_NoContext, StableHash_NoContext)
 )]
+#[expect(
+    clippy::manual_non_exhaustive,
+    reason = "the private marker enforces construction through the validated alias constructors"
+)]
 pub struct Alias<I: Interner, K> {
     pub kind: K,
 

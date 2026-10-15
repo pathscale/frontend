@@ -1,13 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::sorted_map::SortedMap;
 use crate::rustc_data_structures::thin_vec::ThinVec;
@@ -20,7 +19,6 @@ use crate::rustc_errors::{
 use crate::rustc_hir::def::{CtorOf, DefKind, Res};
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::{self as hir, HirId};
-use crate::bug;
 use crate::rustc_middle::ty::fast_reject::{TreatParams, simplify_type};
 use crate::rustc_middle::ty::print::{PrintPolyTraitRefExt as _, PrintTraitRefExt as _};
 use crate::rustc_middle::ty::{
@@ -83,7 +81,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             if trait_segment.args().parenthesized == hir::GenericArgsParentheses::ParenSugar {
                 // For now, require that parenthetical notation be used only with `Fn()` etc.
                 feature_err(
-                    &self.tcx().sess,
+                    self.tcx().sess,
                     sym::unboxed_closures,
                     span,
                     "parenthetical notation is only stable when used with `Fn`-family traits",
@@ -218,15 +216,13 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         let wider_candidate_names: Vec<_> = visible_traits
             .iter()
             .flat_map(|trait_def_id| tcx.associated_items(*trait_def_id).in_definition_order())
-            .filter_map(|item| {
-                (!item.is_impl_trait_in_trait() && item.tag() == assoc_tag).then(|| item.name())
-            })
+            .filter(|&item| !item.is_impl_trait_in_trait() && item.tag() == assoc_tag)
+            .map(|item| item.name())
             .collect();
 
         if let Some(suggested_name) =
             find_best_match_for_name(&wider_candidate_names, assoc_ident.name, None)
-        {
-            if let [best_trait] = visible_traits
+            && let [best_trait] = visible_traits
                 .iter()
                 .copied()
                 .filter(|&trait_def_id| {
@@ -235,16 +231,16 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                         .any(|item| item.tag() == assoc_tag)
                 })
                 .collect::<Vec<_>>()[..]
-            {
-                let trait_name = tcx.def_path_str(best_trait);
-                err.label = Some(diagnostics::AssocItemNotFoundLabel::FoundInOtherTrait {
-                    span: assoc_ident.span,
-                    assoc_kind,
-                    trait_name: &trait_name,
-                    suggested_name,
-                    identically_named: suggested_name == assoc_ident.name,
-                });
-                if let AssocItemQSelf::TyParam(ty_param_def_id, ty_param_span) = qself
+        {
+            let trait_name = tcx.def_path_str(best_trait);
+            err.label = Some(diagnostics::AssocItemNotFoundLabel::FoundInOtherTrait {
+                span: assoc_ident.span,
+                assoc_kind,
+                trait_name: &trait_name,
+                suggested_name,
+                identically_named: suggested_name == assoc_ident.name,
+            });
+            if let AssocItemQSelf::TyParam(ty_param_def_id, ty_param_span) = qself
                     // Not using `self.item_def_id()` here as that would yield the opaque type itself if we're
                     // inside an opaque type while we're interested in the overarching type alias (TAIT).
                     // FIXME: However, for trait aliases, this incorrectly returns the enclosing module...
@@ -252,85 +248,83 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                         tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(ty_param_def_id))
                     // FIXME: ...which obviously won't have any generics.
                     && let Some(generics) = tcx.hir_get_generics(item_def_id.def_id)
-                {
-                    // FIXME: Suggest adding supertrait bounds if we have a `Self` type param.
-                    // FIXME(trait_alias): Suggest adding `Self: Trait` to
-                    // `trait Alias = where Self::Proj:;` with `trait Trait { type Proj; }`.
-                    if generics
-                        .bounds_for_param(ty_param_def_id)
-                        .flat_map(|pred| pred.bounds.iter())
-                        .any(|b| match b {
-                            hir::GenericBound::Trait(t, ..) => {
-                                t.trait_ref.trait_def_id() == Some(best_trait)
-                            }
-                            _ => false,
-                        })
-                    {
-                        // The type param already has a bound for `trait_name`, we just need to
-                        // change the associated item.
-                        err.sugg = Some(diagnostics::AssocItemNotFoundSugg::SimilarInOtherTrait {
-                            span: assoc_ident.span,
-                            trait_name: &trait_name,
-                            assoc_kind,
-                            suggested_name,
-                        });
-                        return self.dcx().emit_err(err);
-                    }
-
-                    let trait_args = &ty::GenericArgs::identity_for_item(tcx, best_trait)[1..];
-                    let mut trait_ref = trait_name.clone();
-                    let applicability = if let [arg, args @ ..] = trait_args {
-                        use core::fmt::Write;
-                        write!(trait_ref, "</* {arg}").unwrap();
-                        args.iter().try_for_each(|arg| write!(trait_ref, ", {arg}")).unwrap();
-                        trait_ref += " */>";
-                        Applicability::HasPlaceholders
-                    } else {
-                        Applicability::MaybeIncorrect
-                    };
-
-                    let identically_named = suggested_name == assoc_ident.name;
-
-                    if let DefKind::TyAlias = tcx.def_kind(item_def_id)
-                        && !tcx.type_alias_is_checked(item_def_id)
-                    {
-                        err.sugg =
-                            Some(diagnostics::AssocItemNotFoundSugg::SimilarInOtherTraitQPath {
-                                lo: ty_param_span.shrink_to_lo(),
-                                mi: ty_param_span.shrink_to_hi(),
-                                hi: (!identically_named).then_some(assoc_ident.span),
-                                trait_ref,
-                                identically_named,
-                                suggested_name,
-                                assoc_kind,
-                                applicability,
-                            });
-                    } else {
-                        let mut err = self.dcx().create_err(err);
-                        if suggest_constraining_type_param(
-                            tcx,
-                            generics,
-                            &mut err,
-                            &qself_str,
-                            &trait_ref,
-                            Some(best_trait),
-                            None,
-                        ) && !identically_named
-                        {
-                            // We suggested constraining a type parameter, but the associated item on it
-                            // was also not an exact match, so we also suggest changing it.
-                            err.span_suggestion_verbose(
-                                assoc_ident.span,
-                                msg!("...and changing the associated {$assoc_kind} name"),
-                                suggested_name,
-                                Applicability::MaybeIncorrect,
-                            );
+            {
+                // FIXME: Suggest adding supertrait bounds if we have a `Self` type param.
+                // FIXME(trait_alias): Suggest adding `Self: Trait` to
+                // `trait Alias = where Self::Proj:;` with `trait Trait { type Proj; }`.
+                if generics
+                    .bounds_for_param(ty_param_def_id)
+                    .flat_map(|pred| pred.bounds.iter())
+                    .any(|b| match b {
+                        hir::GenericBound::Trait(t, ..) => {
+                            t.trait_ref.trait_def_id() == Some(best_trait)
                         }
-                        return err.emit();
-                    }
+                        _ => false,
+                    })
+                {
+                    // The type param already has a bound for `trait_name`, we just need to
+                    // change the associated item.
+                    err.sugg = Some(diagnostics::AssocItemNotFoundSugg::SimilarInOtherTrait {
+                        span: assoc_ident.span,
+                        trait_name: &trait_name,
+                        assoc_kind,
+                        suggested_name,
+                    });
+                    return self.dcx().emit_err(err);
                 }
-                return self.dcx().emit_err(err);
+
+                let trait_args = &ty::GenericArgs::identity_for_item(tcx, best_trait)[1..];
+                let mut trait_ref = trait_name.clone();
+                let applicability = if let [arg, args @ ..] = trait_args {
+                    use core::fmt::Write;
+                    write!(trait_ref, "</* {arg}").unwrap();
+                    args.iter().try_for_each(|arg| write!(trait_ref, ", {arg}")).unwrap();
+                    trait_ref += " */>";
+                    Applicability::HasPlaceholders
+                } else {
+                    Applicability::MaybeIncorrect
+                };
+
+                let identically_named = suggested_name == assoc_ident.name;
+
+                if let DefKind::TyAlias = tcx.def_kind(item_def_id)
+                    && !tcx.type_alias_is_checked(item_def_id)
+                {
+                    err.sugg = Some(diagnostics::AssocItemNotFoundSugg::SimilarInOtherTraitQPath {
+                        lo: ty_param_span.shrink_to_lo(),
+                        mi: ty_param_span.shrink_to_hi(),
+                        hi: (!identically_named).then_some(assoc_ident.span),
+                        trait_ref,
+                        identically_named,
+                        suggested_name,
+                        assoc_kind,
+                        applicability,
+                    });
+                } else {
+                    let mut err = self.dcx().create_err(err);
+                    if suggest_constraining_type_param(
+                        tcx,
+                        generics,
+                        &mut err,
+                        &qself_str,
+                        &trait_ref,
+                        Some(best_trait),
+                        None,
+                    ) && !identically_named
+                    {
+                        // We suggested constraining a type parameter, but the associated item on it
+                        // was also not an exact match, so we also suggest changing it.
+                        err.span_suggestion_verbose(
+                            assoc_ident.span,
+                            msg!("...and changing the associated {$assoc_kind} name"),
+                            suggested_name,
+                            Applicability::MaybeIncorrect,
+                        );
+                    }
+                    return err.emit();
+                }
             }
+            return self.dcx().emit_err(err);
         }
 
         // If we still couldn't find any associated item, and only one associated item exists,
@@ -431,12 +425,13 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
 
         let assoc_kind_str = assoc_tag_str(assoc_tag);
         let qself_str = qself.to_string(tcx);
-        let mut err = self.dcx().create_err(crate::rustc_hir_analysis::diagnostics::AmbiguousAssocItem {
-            span,
-            assoc_kind: assoc_kind_str,
-            assoc_ident,
-            qself: &qself_str,
-        });
+        let mut err =
+            self.dcx().create_err(crate::rustc_hir_analysis::diagnostics::AmbiguousAssocItem {
+                span,
+                assoc_kind: assoc_kind_str,
+                assoc_ident,
+                qself: &qself_str,
+            });
         // Provide a more specific error code index entry for equality bindings.
         err.code(
             if let Some(constraint) = constraint
@@ -601,6 +596,10 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+    )]
     pub(super) fn report_unresolved_type_relative_path(
         &self,
         self_ty: Ty<'tcx>,
@@ -803,7 +802,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                              path",
                         ),
                         types
-                            .into_iter()
+                            .iter()
                             .map(|type_str| format!("<{type_str} as Example>::")),
                         Applicability::HasPlaceholders,
                         SuggestionStyle::ShowAlways,
@@ -1130,10 +1129,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         let mut in_expr_or_pat = false;
         if let ([], [bound]) = (&potential_assoc_items[..], &trait_bounds) {
             let grandparent = tcx.parent_hir_node(tcx.parent_hir_id(bound.trait_ref.hir_ref_id));
-            in_expr_or_pat = match grandparent {
-                hir::Node::Expr(_) | hir::Node::Pat(_) => true,
-                _ => false,
-            };
+            in_expr_or_pat = matches!(grandparent, hir::Node::Expr(_) | hir::Node::Pat(_));
         }
 
         // We get all the associated items that *are* set, so that we can check if any of
@@ -1366,7 +1362,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         qself: &hir::Ty<'_>,
     ) -> Result<(), ErrorGuaranteed> {
         let tcx = self.tcx();
-        if let Some((_, node)) = tcx.hir_parent_iter(qself.hir_id).skip(1).next()
+        if let Some((_, node)) = tcx.hir_parent_iter(qself.hir_id).nth(1)
             && let hir::Node::Expr(hir::Expr {
                 kind:
                     hir::ExprKind::Path(hir::QPath::TypeRelative(
@@ -1731,6 +1727,10 @@ pub fn prohibit_assoc_item_constraint(
     err.emit()
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "Boxing this established diagnostic error would add allocation to the error path."
+)]
 pub(crate) fn fn_trait_to_string(
     tcx: TyCtxt<'_>,
     trait_segment: &hir::PathSegment<'_>,
@@ -2017,7 +2017,9 @@ pub(super) struct AmbiguityBetweenVariantAndAssocItem<'tcx> {
     pub(super) mode: super::LowerTypeRelativePathMode,
 }
 
-impl<'a, 'tcx> crate::rustc_errors::Diagnostic<'a, ()> for AmbiguityBetweenVariantAndAssocItem<'tcx> {
+impl<'a, 'tcx> crate::rustc_errors::Diagnostic<'a, ()>
+    for AmbiguityBetweenVariantAndAssocItem<'tcx>
+{
     fn into_diag(
         self,
         dcx: crate::rustc_errors::DiagCtxtHandle<'a>,

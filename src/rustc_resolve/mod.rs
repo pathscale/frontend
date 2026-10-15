@@ -30,30 +30,19 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::cell::RefMut;
 use alloc::collections::BTreeSet;
-use core::ops::ControlFlow;
 use alloc::sync::Arc;
-use eko::thread::OnceLock;
+use core::cell::RefMut;
+use core::ops::ControlFlow;
 use core::{fmt, mem};
+use eko::thread::OnceLock;
 
-use diagnostics::{ParamKindInEnumDiscriminant, ParamKindInNonTrivialAnonConst};
-use effective_visibilities::EffectiveVisibilitiesVisitor;
-use hygiene::Macros20NormalizedSyntaxContext;
-use imports::{Import, ImportData, ImportKind, NameResolution, PendingDecl};
-use late::{
-    ForwardGenericParamBanReason, HasGenericParams, PathSource, PatternSource,
-    UnnecessaryQualification,
-};
-pub use macros::registered_lint_tools_ast;
-use macros::{MacroRulesDecl, MacroRulesScope, MacroRulesScopeRef};
 use crate::rustc_arena::{DroplessArena, TypedArena};
 use crate::rustc_ast::node_id::NodeMap;
 use crate::rustc_ast::{
@@ -73,7 +62,9 @@ use crate::rustc_hir::def::Namespace::{self, *};
 use crate::rustc_hir::def::{
     self, CtorOf, DefKind, DocLinkResMap, MacroKinds, NonMacroAttrKind, PartialRes, PerNS,
 };
-use crate::rustc_hir::def_id::{CRATE_DEF_ID, CrateNum, DefId, LOCAL_CRATE, LocalDefId, LocalDefIdMap};
+use crate::rustc_hir::def_id::{
+    CRATE_DEF_ID, CrateNum, DefId, LOCAL_CRATE, LocalDefId, LocalDefIdMap,
+};
 use crate::rustc_hir::definitions::{PerParentDisambiguatorState, PerParentDisambiguatorsMap};
 use crate::rustc_hir::{PrimTy, TraitCandidate, find_attr};
 use crate::rustc_index::bit_set::DenseBitSet;
@@ -91,6 +82,16 @@ use crate::rustc_span::def_id::{LocalModId, ModId};
 use crate::rustc_span::hygiene::{ExpnId, LocalExpnId, MacroKind, SyntaxContext, Transparency};
 use crate::rustc_span::{DUMMY_SP, Ident, Span, Symbol, kw, sym};
 use crate::rustc_structures::CrateType;
+use diagnostics::{ParamKindInEnumDiscriminant, ParamKindInNonTrivialAnonConst};
+use effective_visibilities::EffectiveVisibilitiesVisitor;
+use hygiene::Macros20NormalizedSyntaxContext;
+use imports::{Import, ImportData, ImportKind, NameResolution, PendingDecl};
+use late::{
+    ForwardGenericParamBanReason, HasGenericParams, PathSource, PatternSource,
+    UnnecessaryQualification,
+};
+pub use macros::registered_lint_tools_ast;
+use macros::{MacroRulesDecl, MacroRulesScope, MacroRulesScopeRef};
 use smallvec::{SmallVec, smallvec};
 use tracing::{debug, instrument};
 
@@ -550,14 +551,12 @@ enum ModuleKind {
     /// An anonymous module; e.g., just a block.
     ///
     /// ```
-    /// fn main() {
-    ///     fn f() {} // (1)
-    ///     { // This is an anonymous module
-    ///         f(); // This resolves to (2) as we are inside the block.
-    ///         fn f() {} // (2)
-    ///     }
-    ///     f(); // Resolves to (1)
+    /// fn f() {} // (1)
+    /// { // This is an anonymous module
+    ///     f(); // This resolves to (2) as we are inside the block.
+    ///     fn f() {} // (2)
     /// }
+    /// f(); // Resolves to (1)
     /// ```
     Block,
     /// Any module with a name.
@@ -693,6 +692,10 @@ impl<'ra> Resolutions<'ra> {
 /// * curly-braced block with statements
 ///
 /// You can use [`ModuleData::kind`] to determine the kind of module this is.
+#[expect(
+    clippy::type_complexity,
+    reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+)]
 struct ModuleData<'ra> {
     /// The direct parent module (it may not be a `mod`, however).
     parent: Option<Module<'ra>>,
@@ -1368,6 +1371,10 @@ struct DelegationFnSig {
 /// The main resolver class.
 ///
 /// This is the visitor that walks the whole crate.
+#[expect(
+    clippy::type_complexity,
+    reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+)]
 pub struct Resolver<'ra, 'tcx> {
     tcx: TyCtxt<'tcx>,
 
@@ -1652,6 +1659,10 @@ impl<'ra> ResolverArenas<'ra> {
     fn alloc_ast_paths(&'ra self, paths: &[ast::Path]) -> &'ra [ast::Path] {
         self.ast_paths.alloc_from_iter(paths.iter().cloned())
     }
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This Arc preserves identity for caller-thread resolver data that is not Send or Sync."
+    )]
     fn alloc_macro(&'ra self, ext: SyntaxExtension) -> &'ra Arc<SyntaxExtension> {
         self.macros.alloc(Arc::new(ext))
     }
@@ -1687,17 +1698,11 @@ impl<'tcx> Resolver<'_, 'tcx> {
         self.owners[&owner].node_id_to_def_id[&id]
     }
 
-    /// Get the `DefId` of a child of the current owner
-    fn opt_local_def_id(&self, node: NodeId) -> Option<LocalDefId> {
-        self.current_owner.node_id_to_def_id.get(&node).copied()
-    }
-
-    /// Get the `DefId` of a child of the current owner
-    fn local_def_id(&self, node: NodeId) -> LocalDefId {
-        self.opt_local_def_id(node).unwrap_or_else(|| panic!("no entry for node id: `{node:?}`"))
-    }
-
     /// Adds a definition with a parent definition.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn create_def(
         &mut self,
         parent: LocalDefId,
@@ -2288,7 +2293,9 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Test if AmbiguityError ambi is any identical to any one inside ambiguity_errors
     fn matches_previous_ambiguity_error(&self, ambi: &AmbiguityError<'_>) -> bool {
         // if the span location and ident as well as its span are the same
-        self.ambiguity_errors.iter().any(|ambiguity_error| same_ambiguity_error(ambiguity_error, ambi))
+        self.ambiguity_errors
+            .iter()
+            .any(|ambiguity_error| same_ambiguity_error(ambiguity_error, ambi))
     }
 
     /// `CmResolver::record_use` on this resolver, for the many callers that hold it mutably.
@@ -2506,40 +2513,43 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     ) -> &'tcx [TraitCandidate<'tcx>] {
         let mut found_traits = Vec::new();
 
-        if let Some(module) = current_trait {
-            if self.trait_may_have_item(Some(module), assoc_item) {
-                let def_id = module.def_id();
-                found_traits.push(TraitCandidate {
-                    def_id,
-                    import_ids: &[],
-                    lint_ambiguous: false,
-                });
-            }
+        if let Some(module) = current_trait
+            && self.trait_may_have_item(Some(module), assoc_item)
+        {
+            let def_id = module.def_id();
+            found_traits.push(TraitCandidate { def_id, import_ids: &[], lint_ambiguous: false });
         }
 
         let scope_set = ScopeSet::All(TypeNS);
         let ctxt = Macros20NormalizedSyntaxContext::new(sp.ctxt());
-        self.reborrow().visit_scopes(scope_set, parent_scope, ctxt, sp, None, |mut this, scope, _, _| {
-            match scope {
-                Scope::ModuleNonGlobs(module, _) => {
-                    this.traits_in_module(module, assoc_item, &mut found_traits);
-                }
-                Scope::ModuleGlobs(..) => {
-                    // Already handled in `ModuleNonGlobs` (but see #144993).
-                }
-                Scope::StdLibPrelude => {
-                    if let Some(module) = this.prelude {
+        self.reborrow().visit_scopes(
+            scope_set,
+            parent_scope,
+            ctxt,
+            sp,
+            None,
+            |mut this, scope, _, _| {
+                match scope {
+                    Scope::ModuleNonGlobs(module, _) => {
                         this.traits_in_module(module, assoc_item, &mut found_traits);
                     }
+                    Scope::ModuleGlobs(..) => {
+                        // Already handled in `ModuleNonGlobs` (but see #144993).
+                    }
+                    Scope::StdLibPrelude => {
+                        if let Some(module) = this.prelude {
+                            this.traits_in_module(module, assoc_item, &mut found_traits);
+                        }
+                    }
+                    Scope::ExternPreludeItems
+                    | Scope::ExternPreludeFlags
+                    | Scope::ToolAttributePrelude
+                    | Scope::BuiltinTypes => {}
+                    _ => unreachable!(),
                 }
-                Scope::ExternPreludeItems
-                | Scope::ExternPreludeFlags
-                | Scope::ToolAttributePrelude
-                | Scope::BuiltinTypes => {}
-                _ => unreachable!(),
-            }
-            ControlFlow::<()>::Continue(())
-        });
+                ControlFlow::<()>::Continue(())
+            },
+        );
 
         self.tcx.hir_arena.alloc_slice(&found_traits)
     }
@@ -2552,8 +2562,8 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     ) {
         // Filled for every local module before a frozen stage starts (`late_resolve_crate`), so
         // this writes nothing there.
-        module.ensure_traits(&**self);
-        let traits = module.traits.borrow_checked(&**self);
+        module.ensure_traits(self);
+        let traits = module.traits.borrow_checked(self);
         for &(trait_name, trait_binding, trait_module, lint_ambiguous) in
             traits.as_ref().unwrap().iter()
         {
@@ -3058,7 +3068,12 @@ impl<'ra> LateSink<'ra> {
 
     /// `Resolver::record_partial_res`, into the sink, with the same "resolved twice" check
     /// against both places a resolution can be.
-    fn record_partial_res(&mut self, r: &Resolver<'ra, '_>, node_id: NodeId, resolution: PartialRes) {
+    fn record_partial_res(
+        &mut self,
+        r: &Resolver<'ra, '_>,
+        node_id: NodeId,
+        resolution: PartialRes,
+    ) {
         debug!("(recording res) recording {:?} for {}", resolution, node_id);
         if let Some(prev_res) = r.partial_res_map.get(&node_id) {
             panic!("path resolved multiple times ({prev_res:?} before, {resolution:?} now)");
@@ -3078,7 +3093,7 @@ impl<'ra> LateSink<'ra> {
 
 impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// This is needed because the type may allow mutable access and is therefore not `Copy`.
-    pub(crate) fn reborrow(&mut self) -> CmResolver<'_, 'ra, 'tcx> {
+    pub(in crate::rustc_resolve) fn reborrow(&mut self) -> CmResolver<'_, 'ra, 'tcx> {
         match self {
             CmResolver::Ref(r) => CmResolver::Ref(r),
             CmResolver::Mut(r) => CmResolver::Mut(r),
@@ -3093,7 +3108,7 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
     /// Panics unless this is `Mut`: a `Late` resolver is shared, and its writes go through the
     /// accessors below, which name the sink.
     #[track_caller]
-    pub(crate) fn get_mut(&mut self) -> &mut Resolver<'ra, 'tcx> {
+    pub(in crate::rustc_resolve) fn get_mut(&mut self) -> &mut Resolver<'ra, 'tcx> {
         match self {
             CmResolver::Ref(_) => panic!("can't mutably borrow an immutable reference"),
             CmResolver::Mut(r) => r,
@@ -3269,7 +3284,7 @@ mod ref_mut {
 
     /// A wrapper around a [`Cell`] that only allows mutation based on a condition in the resolver.
     #[derive(Default)]
-    pub(crate) struct CmCell<T>(Cell<T>);
+    pub(in crate::rustc_resolve) struct CmCell<T>(Cell<T>);
 
     impl<T: Copy + fmt::Debug> fmt::Debug for CmCell<T> {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -3284,11 +3299,11 @@ mod ref_mut {
     }
 
     impl<T: Copy> CmCell<T> {
-        pub(crate) const fn get(&self) -> T {
+        pub(in crate::rustc_resolve) const fn get(&self) -> T {
             self.0.get()
         }
 
-        pub(crate) fn update<'ra, 'tcx>(
+        pub(in crate::rustc_resolve) fn update<'ra, 'tcx>(
             &self,
             r: &mut Resolver<'ra, 'tcx>,
             f: impl FnOnce(T) -> T,
@@ -3299,15 +3314,19 @@ mod ref_mut {
     }
 
     impl<T> CmCell<T> {
-        pub(crate) const fn new(value: T) -> CmCell<T> {
+        pub(in crate::rustc_resolve) const fn new(value: T) -> CmCell<T> {
             CmCell(Cell::new(value))
         }
 
-        pub(crate) fn set<'ra, 'tcx>(&self, val: T, _: &mut Resolver<'ra, 'tcx>) {
+        pub(in crate::rustc_resolve) fn set<'ra, 'tcx>(&self, val: T, _: &mut Resolver<'ra, 'tcx>) {
             self.0.set(val);
         }
 
-        pub(crate) fn set_checked<'ra, 'tcx>(&self, val: T, r: &Resolver<'ra, 'tcx>) {
+        pub(in crate::rustc_resolve) fn set_checked<'ra, 'tcx>(
+            &self,
+            val: T,
+            r: &Resolver<'ra, 'tcx>,
+        ) {
             assert!(
                 writes_allowed(r),
                 "Cannot mutate `CmCell` during speculative resolution or a frozen late stage"
@@ -3315,12 +3334,12 @@ mod ref_mut {
             self.0.set(val);
         }
 
-        pub(crate) fn into_inner(self) -> T {
+        pub(in crate::rustc_resolve) fn into_inner(self) -> T {
             self.0.into_inner()
         }
     }
 
-    pub(crate) enum CmRef<'b, T> {
+    pub(in crate::rustc_resolve) enum CmRef<'b, T> {
         /// A tracked borrow of a [`CmRefCell`]
         Tracked(Ref<'b, T>),
         /// An untracked or normal reference (not dynamically borrow-checked by `RefCell`)
@@ -3338,9 +3357,9 @@ mod ref_mut {
         }
     }
 
-    pub(crate) mod speculative {
+    pub(in crate::rustc_resolve) mod speculative {
         #[derive(Debug, Clone, Copy, Default)]
-        pub(crate) struct SpeculativeFlag(bool);
+        pub(in crate::rustc_resolve) struct SpeculativeFlag(bool);
 
         impl SpeculativeFlag {
             /// # SAFETY
@@ -3349,17 +3368,17 @@ mod ref_mut {
             /// the speculative flag:
             /// - `tracked` borrows before setting it to `true`.
             /// - `untracked` borrows before setting it to `false`.
-            pub(crate) unsafe fn set(&mut self, value: bool) {
+            pub(in crate::rustc_resolve) unsafe fn set(&mut self, value: bool) {
                 self.0 = value;
             }
 
-            pub(crate) fn is_speculative(&self) -> bool {
+            pub(in crate::rustc_resolve) fn is_speculative(&self) -> bool {
                 self.0
             }
         }
     }
 
-    pub(crate) mod frozen {
+    pub(in crate::rustc_resolve) mod frozen {
         /// Set for exactly the span of late resolution's stage, when the units read the module
         /// graph from several threads at once and nothing may write it.
         ///
@@ -3367,7 +3386,7 @@ mod ref_mut {
         /// it is allowed (`cm_mut` asserts only that it is not speculative), and frozen mode
         /// performs none, so the two cannot share a flag without one of them lying.
         #[derive(Debug, Clone, Copy, Default)]
-        pub(crate) struct FrozenFlag(bool);
+        pub(in crate::rustc_resolve) struct FrozenFlag(bool);
 
         impl FrozenFlag {
             /// # SAFETY
@@ -3376,11 +3395,11 @@ mod ref_mut {
             /// handed out must be dropped before the flag changes (tracked ones before it is set,
             /// untracked ones before it is cleared), and nothing may write a `CmRefCell`, a
             /// `CmCell` or a lazily filled cache of the module graph while it is set.
-            pub(crate) unsafe fn set(&mut self, value: bool) {
+            pub(in crate::rustc_resolve) unsafe fn set(&mut self, value: bool) {
                 self.0 = value;
             }
 
-            pub(crate) fn is_frozen(&self) -> bool {
+            pub(in crate::rustc_resolve) fn is_frozen(&self) -> bool {
                 self.0
             }
         }
@@ -3388,20 +3407,23 @@ mod ref_mut {
 
     /// A wrapper around a [`RefCell`] that only allows writes (mutable borrows) based on a condition in the resolver.
     #[derive(Default)]
-    pub(crate) struct CmRefCell<T>(RefCell<T>);
+    pub(in crate::rustc_resolve) struct CmRefCell<T>(RefCell<T>);
 
     impl<T> CmRefCell<T> {
-        pub(crate) fn new(value: T) -> CmRefCell<T> {
+        pub(in crate::rustc_resolve) fn new(value: T) -> CmRefCell<T> {
             CmRefCell(RefCell::new(value))
         }
 
         #[track_caller]
-        pub(crate) fn borrow_mut<'ra, 'tcx>(&self, r: &mut Resolver<'ra, 'tcx>) -> RefMut<'_, T> {
+        pub(in crate::rustc_resolve) fn borrow_mut<'ra, 'tcx>(
+            &self,
+            r: &mut Resolver<'ra, 'tcx>,
+        ) -> RefMut<'_, T> {
             self.try_borrow_mut(r).unwrap()
         }
 
         #[track_caller]
-        pub(crate) fn borrow_mut_checked<'ra, 'tcx>(
+        pub(in crate::rustc_resolve) fn borrow_mut_checked<'ra, 'tcx>(
             &self,
             r: &Resolver<'ra, 'tcx>,
         ) -> RefMut<'_, T> {
@@ -3409,7 +3431,7 @@ mod ref_mut {
         }
 
         #[track_caller]
-        pub(crate) fn try_borrow_mut_checked<'ra, 'tcx>(
+        pub(in crate::rustc_resolve) fn try_borrow_mut_checked<'ra, 'tcx>(
             &self,
             r: &Resolver<'ra, 'tcx>,
         ) -> Result<RefMut<'_, T>, BorrowMutError> {
@@ -3422,18 +3444,24 @@ mod ref_mut {
         }
 
         #[track_caller]
-        pub(crate) fn try_borrow_mut<'ra, 'tcx>(
+        pub(in crate::rustc_resolve) fn try_borrow_mut<'ra, 'tcx>(
             &self,
             _: &mut Resolver<'ra, 'tcx>,
         ) -> Result<RefMut<'_, T>, BorrowMutError> {
             self.0.try_borrow_mut()
         }
 
-        pub(crate) fn borrow<'ra, 'tcx>(&self, _: &mut Resolver<'ra, 'tcx>) -> Ref<'_, T> {
+        pub(in crate::rustc_resolve) fn borrow<'ra, 'tcx>(
+            &self,
+            _: &mut Resolver<'ra, 'tcx>,
+        ) -> Ref<'_, T> {
             self.0.borrow()
         }
 
-        pub(crate) fn borrow_checked<'ra, 'tcx>(&self, r: &Resolver<'ra, 'tcx>) -> CmRef<'_, T> {
+        pub(in crate::rustc_resolve) fn borrow_checked<'ra, 'tcx>(
+            &self,
+            r: &Resolver<'ra, 'tcx>,
+        ) -> CmRef<'_, T> {
             if r.speculative_flag.is_speculative() || r.frozen_flag.is_frozen() {
                 // `try_borrow_unguarded` is unsafe because it returns a `&T` instead
                 // of `Ref<'_, T>`. It does provides an extra check to make sure no live
@@ -3464,7 +3492,7 @@ mod ref_mut {
     }
 
     impl<T: Default> CmRefCell<T> {
-        pub(crate) fn take<'ra, 'tcx>(&self, r: &Resolver<'ra, 'tcx>) -> T {
+        pub(in crate::rustc_resolve) fn take<'ra, 'tcx>(&self, r: &Resolver<'ra, 'tcx>) -> T {
             if !writes_allowed(r) {
                 panic!(
                     "not allowed to mutate a CmRefCell during speculative resolution or a frozen \
@@ -3482,16 +3510,18 @@ mod hygiene {
     /// A newtype around `SyntaxContext` that can only keep contexts produced by
     /// [SyntaxContext::normalize_to_macros_2_0].
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-    pub(crate) struct Macros20NormalizedSyntaxContext(SyntaxContext);
+    pub(in crate::rustc_resolve) struct Macros20NormalizedSyntaxContext(SyntaxContext);
 
     impl Macros20NormalizedSyntaxContext {
         #[inline]
-        pub(crate) fn new(ctxt: SyntaxContext) -> Macros20NormalizedSyntaxContext {
+        pub(in crate::rustc_resolve) fn new(
+            ctxt: SyntaxContext,
+        ) -> Macros20NormalizedSyntaxContext {
             Macros20NormalizedSyntaxContext(ctxt.normalize_to_macros_2_0())
         }
 
         #[inline]
-        pub(crate) fn new_adjusted(
+        pub(in crate::rustc_resolve) fn new_adjusted(
             mut ctxt: SyntaxContext,
             expn_id: ExpnId,
         ) -> (Macros20NormalizedSyntaxContext, Option<ExpnId>) {
@@ -3500,14 +3530,19 @@ mod hygiene {
         }
 
         #[inline]
-        pub(crate) fn new_unchecked(ctxt: SyntaxContext) -> Macros20NormalizedSyntaxContext {
+        pub(in crate::rustc_resolve) fn new_unchecked(
+            ctxt: SyntaxContext,
+        ) -> Macros20NormalizedSyntaxContext {
             debug_assert_eq!(ctxt, ctxt.normalize_to_macros_2_0());
             Macros20NormalizedSyntaxContext(ctxt)
         }
 
         /// The passed closure must preserve the context's normalized-ness.
         #[inline]
-        pub(crate) fn update_unchecked<R>(&mut self, f: impl FnOnce(&mut SyntaxContext) -> R) -> R {
+        pub(in crate::rustc_resolve) fn update_unchecked<R>(
+            &mut self,
+            f: impl FnOnce(&mut SyntaxContext) -> R,
+        ) -> R {
             let ret = f(&mut self.0);
             debug_assert_eq!(self.0, self.0.normalize_to_macros_2_0());
             ret

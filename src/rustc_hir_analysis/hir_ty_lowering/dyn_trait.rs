@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -57,12 +55,13 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         match syntax {
             TraitObjectSyntax::Dyn => {}
             TraitObjectSyntax::None => {
-                match self.prohibit_or_lint_bare_trait_object_ty(span, hir_id, hir_bounds) {
+                if let Some(guar) =
+                    self.prohibit_or_lint_bare_trait_object_ty(span, hir_id, hir_bounds)
+                {
                     // Don't continue with type analysis if the `dyn` keyword is missing.
                     // It generates confusing errors, especially if the user meant to use
                     // another keyword like `impl`.
-                    Some(guar) => return Ty::new_error(tcx, guar),
-                    None => {}
+                    return Ty::new_error(tcx, guar);
                 }
             }
         }
@@ -566,7 +565,8 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         // error.
         let r = derived_region_bounds[0];
         if derived_region_bounds[1..].iter().any(|r1| r != *r1) {
-            self.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::AmbiguousLifetimeBound { span });
+            self.dcx()
+                .emit_err(crate::rustc_hir_analysis::diagnostics::AmbiguousLifetimeBound { span });
         }
         Some(r)
     }
@@ -608,10 +608,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         let tcx = self.tcx();
         let [poly_trait_ref, ..] = hir_bounds else { return None };
 
-        let in_path = match tcx.parent_hir_node(hir_id).path() {
-            Some(hir::QPath::TypeRelative(qself, _)) if qself.hir_id == hir_id => true,
-            _ => false,
-        };
+        let in_path = matches!(tcx.parent_hir_node(hir_id).path(), Some(hir::QPath::TypeRelative(qself, _)) if qself.hir_id == hir_id);
         let needs_bracket = in_path
             && !tcx
                 .sess
@@ -767,7 +764,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                 diag.span_suggestion_verbose(
                     impl_self_ty.span.shrink_to_hi(),
                     "you might have intended to implement this trait for a given type",
-                    format!(" for /* Type */"),
+                    " for /* Type */".to_string(),
                     Applicability::HasPlaceholders,
                 );
                 return;

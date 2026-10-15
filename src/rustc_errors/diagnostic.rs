@@ -1,7 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use alloc::boxed::Box;
 use alloc::format;
@@ -18,8 +17,8 @@ use core::ops::{Deref, DerefMut};
 use crate::rustc_ast::attr::version::RustcVersion;
 use crate::rustc_error_messages::{DiagArgMap, DiagArgName, DiagArgValue, IntoDiagArg};
 use crate::rustc_lint_defs::{Applicability, LintExpectationId};
-use rustc_macros::{Decodable, Encodable};
 use crate::rustc_span::{DUMMY_SP, Span, Spanned, Symbol};
+use rustc_macros::{Decodable, Encodable};
 use tracing::debug;
 
 // `ExplicitBug` is no longer imported: with `panic = "abort"` the payload cannot be caught, so
@@ -124,7 +123,6 @@ impl EmissionGuarantee for crate::rustc_span::fatal_error::FatalError {
 ///   impls to be consistent with them.
 pub trait Diagnostic<'a, G: EmissionGuarantee = ErrorGuaranteed> {
     /// Write out as a diagnostic out of `DiagCtxt`.
-    #[must_use]
     #[track_caller]
     fn into_diag(self, dcx: DiagCtxtHandle<'a>, level: Level) -> Diag<'a, G>;
 }
@@ -191,6 +189,12 @@ pub struct IsLint {
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiagStyledString(pub Vec<StringPart>);
 
+impl Default for DiagStyledString {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DiagStyledString {
     pub fn new() -> DiagStyledString {
         DiagStyledString(vec![])
@@ -225,7 +229,7 @@ impl DiagStyledString {
         let segments = core::mem::take(&mut self.0);
         let mut iter = segments.into_iter();
         let Some(mut prev) = iter.next() else { return };
-        while let Some(segment) = iter.next() {
+        for segment in iter {
             if prev.style == segment.style {
                 prev.content.push_str(&segment.content);
             } else {
@@ -406,6 +410,10 @@ impl DiagInner {
     }
 
     /// Fields used for Hash, and PartialEq trait.
+    #[expect(
+        clippy::type_complexity,
+        reason = "keeps the diagnostic comparison key as one borrowed view of its fields"
+    )]
     fn keys(
         &self,
     ) -> (
@@ -708,12 +716,12 @@ impl<'a, G: EmissionGuarantee> Diag<'a, G> {
             expected_label
         ))];
         msg.extend(expected.0);
-        msg.push(StringPart::normal(format!("`")));
+        msg.push(StringPart::normal("`".to_string()));
         msg.extend(expected_extra.0);
-        msg.push(StringPart::normal(format!("\n")));
+        msg.push(StringPart::normal("\n".to_string()));
         msg.push(StringPart::normal(format!("{}{} `", " ".repeat(found_padding), found_label)));
         msg.extend(found.0);
-        msg.push(StringPart::normal(format!("`")));
+        msg.push(StringPart::normal("`".to_string()));
         msg.extend(found_extra.0);
 
         // For now, just attach these as notes.
@@ -1367,7 +1375,7 @@ impl<'a, G: EmissionGuarantee> Diag<'a, G> {
 
     /// Cancels this diagnostic and returns its first message, if it exists.
     pub fn cancel_into_message(self) -> Option<String> {
-        let s = self.diag.as_ref()?.messages.get(0)?.0.as_str().map(ToString::to_string);
+        let s = self.diag.as_ref()?.messages.first()?.0.as_str().map(ToString::to_string);
         self.cancel();
         s
     }

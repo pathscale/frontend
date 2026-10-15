@@ -12,15 +12,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use crate::rustc_infer::infer::InferCtxt;
 use crate::bug;
+use crate::rustc_infer::infer::InferCtxt;
 use crate::rustc_middle::traits::ObligationCause;
 use crate::rustc_middle::ty::abstract_const::NotConstEvaluatable;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitable, TypeVisitableExt, TypeVisitor};
@@ -77,9 +71,12 @@ pub fn is_const_evaluatable<'tcx>(
                 tcx.dcx().span_bug(span, "evaluating `ConstKind::Expr` is not currently supported");
             }
             ty::ConstKind::Alias(_, _) => {
-                match crate::rustc_trait_selection::traits::try_evaluate_const(infcx, unexpanded_ct, param_env, |ty| {
-                    Ok::<_, crate::Never>(ty.skip_norm_wip())
-                }) {
+                match crate::rustc_trait_selection::traits::try_evaluate_const(
+                    infcx,
+                    unexpanded_ct,
+                    param_env,
+                    |ty| Ok::<_, crate::Never>(ty.skip_norm_wip()),
+                ) {
                     // No interpreter: a concrete constant that was not computed is unknown, and
                     // unknown counts as evaluatable rather than as an unreported error.
                     Err(EvaluateConstErr::HasGenericsOrInfers) => Ok(()),
@@ -107,9 +104,12 @@ pub fn is_const_evaluatable<'tcx>(
             _ => bug!("unexpected constkind in `is_const_evalautable: {unexpanded_ct:?}`"),
         };
 
-        match crate::rustc_trait_selection::traits::try_evaluate_const(infcx, unexpanded_ct, param_env, |ty| {
-            Ok::<_, crate::Never>(ty.skip_norm_wip())
-        }) {
+        match crate::rustc_trait_selection::traits::try_evaluate_const(
+            infcx,
+            unexpanded_ct,
+            param_env,
+            |ty| Ok::<_, crate::Never>(ty.skip_norm_wip()),
+        ) {
             // If we're evaluating a generic foreign constant, under a nightly compiler while
             // the current crate does not enable `feature(generic_const_exprs)`, abort
             // compilation with a useful error.
@@ -209,15 +209,12 @@ fn satisfied_from_param_env<'tcx>(
     let mut single_match: Option<Result<ty::Const<'tcx>, ()>> = None;
 
     for clause in param_env.caller_bounds() {
-        match clause.kind().skip_binder() {
-            ty::ClauseKind::ConstEvaluatable(ce) => {
-                let b_ct = tcx.expand_abstract_consts(ce);
-                let mut v = Visitor { ct, infcx, param_env, single_match };
-                let _ = b_ct.visit_with(&mut v);
+        if let ty::ClauseKind::ConstEvaluatable(ce) = clause.kind().skip_binder() {
+            let b_ct = tcx.expand_abstract_consts(ce);
+            let mut v = Visitor { ct, infcx, param_env, single_match };
+            b_ct.visit_with(&mut v);
 
-                single_match = v.single_match;
-            }
-            _ => {} // don't care
+            single_match = v.single_match;
         }
     }
 

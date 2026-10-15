@@ -6,7 +6,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -15,6 +14,7 @@ use alloc::vec::Vec;
 
 use core::slice;
 
+use crate::bug;
 use crate::rustc_abi as abi;
 use crate::rustc_ast::BindingMode;
 use crate::rustc_ast::util::parser::ExprPrecedence;
@@ -31,11 +31,12 @@ use crate::rustc_lint_defs::{
     FutureIncompatibleInfo, Lint, LintExpectationId, LintId, StableLintExpectationId,
     UnstableLintExpectationId,
 };
-use crate::bug;
 use crate::rustc_middle::lint::{LevelSpec, StableLevelSpec, UnstableLevelSpec};
 use crate::rustc_middle::middle::privacy::EffectiveVisibilities;
 use crate::rustc_middle::ty::layout::{LayoutError, LayoutOfHelpers, TyAndLayout};
-use crate::rustc_middle::ty::print::{PrintError, PrintTraitRefExt as _, Printer, with_no_trimmed_paths};
+use crate::rustc_middle::ty::print::{
+    PrintError, PrintTraitRefExt as _, Printer, with_no_trimmed_paths,
+};
 use crate::rustc_middle::ty::{
     self, GenericArg, RegisteredTools, Ty, TyCtxt, TypingEnv, TypingMode, Unnormalized,
 };
@@ -158,6 +159,12 @@ pub enum CheckLintNameResult<'a> {
     MissingTool,
 }
 
+impl Default for LintStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LintStore {
     pub fn new() -> LintStore {
         LintStore {
@@ -171,7 +178,7 @@ impl LintStore {
         }
     }
 
-    pub fn get_lints<'t>(&'t self) -> &'t [&'static Lint] {
+    pub fn get_lints(&self) -> &[&'static Lint] {
         &self.lints
     }
 

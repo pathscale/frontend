@@ -4,7 +4,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -20,9 +19,11 @@
 // ---------------------------------------------------------------------------------------------
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::span_bug;
-use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitable, Unnormalized, VisitorResult, try_visit};
+use crate::rustc_middle::ty::{
+    self, TyCtxt, TypeVisitable, Unnormalized, VisitorResult, try_visit,
+};
 use crate::rustc_span::Span;
+use crate::span_bug;
 use tracing::{instrument, trace};
 
 pub trait SpannedTypeVisitor<'tcx> {
@@ -78,7 +79,7 @@ pub fn walk_types<'tcx, V: SpannedTypeVisitor<'tcx>>(
             }
         }
         // Walk over the type behind the alias or the type of the item
-        DefKind::TyAlias { .. }
+        DefKind::TyAlias
         | DefKind::AssocTy
         | DefKind::Static { .. }
         | DefKind::Const { .. }

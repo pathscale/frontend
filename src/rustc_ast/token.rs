@@ -153,13 +153,13 @@ impl Delimiter {
     // This exists because `InvisibleOrigin`s should not be compared. It is only used for
     // assertions.
     pub fn eq_ignoring_invisible_origin(&self, other: &Delimiter) -> bool {
-        match (self, other) {
-            (Delimiter::Parenthesis, Delimiter::Parenthesis) => true,
-            (Delimiter::Brace, Delimiter::Brace) => true,
-            (Delimiter::Bracket, Delimiter::Bracket) => true,
-            (Delimiter::Invisible(_), Delimiter::Invisible(_)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (Delimiter::Parenthesis, Delimiter::Parenthesis)
+                | (Delimiter::Brace, Delimiter::Brace)
+                | (Delimiter::Bracket, Delimiter::Bracket)
+                | (Delimiter::Invisible(_), Delimiter::Invisible(_))
+        )
     }
 
     #[inline]
@@ -648,10 +648,7 @@ impl TokenKind {
     }
 
     pub fn is_close_delim_or_eof(&self) -> bool {
-        match self {
-            CloseParen | CloseBrace | CloseBracket | CloseInvisible(_) | Eof => true,
-            _ => false,
-        }
+        matches!(self, CloseParen | CloseBrace | CloseBracket | CloseInvisible(_) | Eof)
     }
 }
 

@@ -5,22 +5,19 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::rustc_infer::traits::PredicateObligations;
-use rustc_macros::extension;
 pub use crate::rustc_middle::traits::query::NormalizationResult;
 use crate::rustc_middle::ty::{
     self, FallibleTypeFolder, Flags, Ty, TyCtxt, TypeFoldable, TypeSuperFoldable,
     TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor, TypingMode, Unnormalized,
 };
 use crate::rustc_span::DUMMY_SP;
+use rustc_macros::extension;
 use tracing::{debug, info, instrument};
 
 use super::NoSolution;
@@ -86,11 +83,11 @@ impl<'a, 'tcx> At<'a, 'tcx> {
         };
 
         if self.infcx.next_trait_solver() {
-            match crate::rustc_trait_selection::solve::deeply_normalize_with_skipped_universes::<_, ScrubbedTraitError<'tcx>>(
-                self,
-                Unnormalized::new_wip(value),
-                universes,
-            ) {
+            match crate::rustc_trait_selection::solve::deeply_normalize_with_skipped_universes::<
+                _,
+                ScrubbedTraitError<'tcx>,
+            >(self, Unnormalized::new_wip(value), universes)
+            {
                 Ok(value) => {
                     return Ok(Normalized { value, obligations: PredicateObligations::new() });
                 }
@@ -289,12 +286,20 @@ impl<'a, 'tcx> FallibleTypeFolder<TyCtxt<'tcx>> for QueryNormalizer<'a, 'tcx> {
         };
 
         let constant = match alias_const.kind {
-            ty::AliasConstKind::Anon { .. } => crate::rustc_trait_selection::traits::with_replaced_escaping_bound_vars(
-                self.infcx,
-                &mut self.universes,
-                constant,
-                |constant| crate::rustc_trait_selection::traits::evaluate_const(&self.infcx, constant, self.param_env),
-            ),
+            ty::AliasConstKind::Anon { .. } => {
+                crate::rustc_trait_selection::traits::with_replaced_escaping_bound_vars(
+                    self.infcx,
+                    &mut self.universes,
+                    constant,
+                    |constant| {
+                        crate::rustc_trait_selection::traits::evaluate_const(
+                            self.infcx,
+                            constant,
+                            self.param_env,
+                        )
+                    },
+                )
+            }
             _ => self.try_fold_free_or_assoc(alias_const.into())?.expect_const(),
         };
         debug!(?constant, ?self.param_env);

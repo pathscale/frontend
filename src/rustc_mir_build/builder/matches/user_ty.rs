@@ -4,10 +4,10 @@
 //! This avoids having to repeatedly clone a partly-built [`UserTypeProjections`]
 //! at every step of the traversal, which is what the previous code was doing.
 
+use crate::assert_matches;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::iter;
-use crate::assert_matches;
 
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_data_structures::smallvec::SmallVec;

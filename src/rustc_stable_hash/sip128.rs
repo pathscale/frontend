@@ -2,8 +2,8 @@
 
 // This code is very hot and uses lots of arithmetic, avoid overflow checks for performance.
 // See https://github.com/rust-lang/rust/pull/119440#issuecomment-1874255727
-use crate::rustc_stable_hash::int_overflow::{DebugStrictAdd, DebugStrictSub};
 use crate::rustc_stable_hash::ExtendedHasher;
+use crate::rustc_stable_hash::int_overflow::{DebugStrictAdd, DebugStrictSub};
 
 use core::hash::Hasher;
 use core::mem::{self, MaybeUninit};
@@ -70,9 +70,7 @@ struct State {
 }
 
 macro_rules! compress {
-    ($state:expr) => {{
-        compress!($state.v0, $state.v1, $state.v2, $state.v3)
-    }};
+    ($state:expr) => {{ compress!($state.v0, $state.v1, $state.v2, $state.v3) }};
     ($v0:expr, $v1:expr, $v2:expr, $v3:expr) => {{
         $v0 = $v0.wrapping_add($v1);
         $v2 = $v2.wrapping_add($v3);
@@ -255,11 +253,8 @@ impl SipHasher128 {
             // This function should only be called when the write fills the buffer.
             // Therefore, when LEN == 1, the new `self.nbuf` must be zero.
             // LEN is statically known, so the branch is optimized away.
-            self.nbuf = if LEN == 1 {
-                0
-            } else {
-                nbuf.debug_strict_add(LEN).debug_strict_sub(BUFFER_SIZE)
-            };
+            self.nbuf =
+                if LEN == 1 { 0 } else { nbuf.debug_strict_add(LEN).debug_strict_sub(BUFFER_SIZE) };
             self.processed = self.processed.debug_strict_add(BUFFER_SIZE);
         }
     }
@@ -337,9 +332,7 @@ impl SipHasher128 {
             let extra_bytes_left = input_left % ELEM_SIZE;
 
             for _ in 0..elems_left {
-                let elem = (msg.as_ptr().add(processed) as *const u64)
-                    .read_unaligned()
-                    .to_le();
+                let elem = (msg.as_ptr().add(processed) as *const u64).read_unaligned().to_le();
                 self.state.v3 ^= elem;
                 Sip13Rounds::c_rounds(&mut self.state);
                 self.state.v0 ^= elem;
@@ -352,9 +345,7 @@ impl SipHasher128 {
             copy_nonoverlapping_small(src, dst, extra_bytes_left);
 
             self.nbuf = extra_bytes_left;
-            self.processed = self
-                .processed
-                .debug_strict_add(nbuf.debug_strict_add(processed));
+            self.processed = self.processed.debug_strict_add(nbuf.debug_strict_add(processed));
         }
     }
 
@@ -381,7 +372,7 @@ impl SipHasher128 {
         }
 
         // Get remaining partial element.
-        let elem = if nbuf % ELEM_SIZE != 0 {
+        let elem = if !nbuf.is_multiple_of(ELEM_SIZE) {
             unsafe {
                 // Ensure element is initialized by writing zero bytes. At most
                 // `ELEM_SIZE - 1` are required given the above check. It's safe

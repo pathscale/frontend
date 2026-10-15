@@ -1,23 +1,19 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use core::any::Any;
 use alloc::borrow::Cow;
+use core::any::Any;
 use core::fmt;
 
-use either::Either;
 use crate::rustc_abi::{Align, Size, VariantIdx};
 use crate::rustc_errors::{DiagArgValue, ErrorGuaranteed, IntoDiagArg};
-use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::{DUMMY_SP, Span, Symbol};
+use either::Either;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 
 use super::{AllocId, AllocRange, ConstAllocation, Pointer, Scalar};
 use crate::rustc_middle::diagnostics;
@@ -51,13 +47,13 @@ impl ErrorHandled {
     }
 
     pub fn emit_note(&self, tcx: TyCtxt<'_>) {
-        match self {
-            &ErrorHandled::Reported(err, span) => {
+        match *self {
+            ErrorHandled::Reported(err, span) => {
                 if !err.allowed_in_infallible && !span.is_dummy() {
                     tcx.dcx().emit_note(diagnostics::ErroneousConstant { span });
                 }
             }
-            &ErrorHandled::TooGeneric(_) => {}
+            ErrorHandled::TooGeneric(_) => {}
         }
     }
 }
@@ -214,6 +210,10 @@ impl<'tcx> InterpErrorInfo<'tcx> {
     ///
     /// This is NOT the preferred way to render an error; use `report` from `const_eval` instead.
     /// However, this is useful when error messages appear in ICEs.
+    #[expect(
+        clippy::inherent_to_string,
+        reason = "rendering this diagnostic string also prints its compiler backtrace"
+    )]
     pub fn to_string(&self) -> String {
         self.0.backtrace.print_backtrace();
         self.0.kind.to_string()

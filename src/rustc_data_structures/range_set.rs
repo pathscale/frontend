@@ -1,19 +1,18 @@
-/// Represents a set of `Size` values as a sorted list of ranges.
-///
-/// These are (offset, length) pairs, and they are sorted and mutually disjoint,
-/// and never adjacent (i.e. there's always a gap between two of them).
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
-// search cannot see them - and a `#[derive]` can use them without the name appearing
-// in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone)]
 pub struct RangeSet<T>(pub Vec<(T, T)>);
+
+impl<T> Default for RangeSet<T>
+where
+    T: Copy + Ord + Default,
+    T: core::ops::Add<Output = T>,
+    T: core::ops::Sub<Output = T>,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<T> RangeSet<T>
 where

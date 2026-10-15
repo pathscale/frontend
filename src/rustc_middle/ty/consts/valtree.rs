@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt;
@@ -162,7 +157,7 @@ impl<'tcx> Value<'tcx> {
         }
 
         // We create an iterator that yields `Option<u8>`
-        let iterator = self.to_branch().into_iter().map(|ct| {
+        let iterator = self.to_branch().iter().map(|ct| {
             (*ct)
                 .try_to_value()
                 .and_then(|value| (value.ty == tcx.types.u8).then_some(value))
@@ -189,7 +184,7 @@ impl<'tcx> Value<'tcx> {
     #[inline]
     pub fn to_branch(self) -> &'tcx [ty::Const<'tcx>] {
         match &**self.valtree {
-            ValTreeKind::Branch(branch) => &**branch,
+            ValTreeKind::Branch(branch) => branch,
             ValTreeKind::Leaf(..) => bug!("expected branch, got {:?}", self),
         }
     }

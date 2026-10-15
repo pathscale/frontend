@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::{Expr, ExprKind, ItemKind, Node, find_attr};
@@ -73,7 +68,7 @@ impl<'tcx> LateLintPass<'tcx> for InteriorMutableConsts {
             && !cx
                 .typeck_results()
                 .expr_adjustments(receiver)
-                .into_iter()
+                .iter()
                 .any(|adj| matches!(adj.kind, Adjust::Deref(_)))
             // Let's do the attribute check after the other checks for perf reasons
             && find_attr!(

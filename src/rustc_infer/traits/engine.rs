@@ -43,6 +43,10 @@ pub enum TraitErrors<E> {
 
 impl<E> TraitErrors<E> {
     #[inline]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "the method requires an exact-size iterator for its empty fast path"
+    )]
     pub fn from_iter(iter: impl ExactSizeIterator<Item = E>) -> TraitErrors<E> {
         if iter.len() == 0 { TraitErrors::NoErrors } else { TraitErrors::HasErrors(iter.collect()) }
     }
@@ -95,6 +99,10 @@ impl<E> TraitErrors<E> {
             TraitErrors::HasErrors(errors) => errors.len(),
             TraitErrors::NoErrors => 0,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -166,7 +174,6 @@ pub trait TraitEngine<'tcx, E: 'tcx>: 'tcx {
     /// Err: remove the obligation from the list and return an error
     ///
     /// Returns a list of errors from obligations that evaluated to Err.
-    #[must_use]
     fn try_evaluate_obligations(&mut self, infcx: &InferCtxt<'tcx>) -> TraitErrors<E>;
 
     fn collect_remaining_errors(&mut self, infcx: &InferCtxt<'tcx>) -> TraitErrors<E>;
@@ -179,7 +186,6 @@ pub trait TraitEngine<'tcx, E: 'tcx>: 'tcx {
     /// Err: remove the obligation from the list and return an error
     ///
     /// Returns a list of errors from obligations that evaluated to Ambiguous or Err.
-    #[must_use]
     fn evaluate_obligations_error_on_ambiguity(
         &mut self,
         infcx: &InferCtxt<'tcx>,

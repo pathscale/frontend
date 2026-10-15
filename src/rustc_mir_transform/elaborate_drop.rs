@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -21,7 +18,7 @@ use crate::rustc_middle::ty::util::{Discr, IntTypeExt};
 use crate::rustc_middle::ty::{self, GenericArgsRef, Ty, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_mir_dataflow::DropFlagState;
-use crate::rustc_span::{DUMMY_SP, dummy_spanned, sym};
+use crate::rustc_span::{dummy_spanned, sym};
 use itertools::Itertools;
 use tracing::{debug, instrument};
 
@@ -174,6 +171,10 @@ where
 /// value.
 ///
 /// When this returns, the MIR patch in the `elaborator` contains the necessary changes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "drop elaboration consumes independent block and unwind state"
+)]
 pub(crate) fn elaborate_drop<'b, 'tcx, D>(
     elaborator: &mut D,
     source_info: SourceInfo,

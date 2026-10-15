@@ -1,15 +1,15 @@
 //! Utilities for rendering escape sequence errors as diagnostics.
 
-use alloc::vec::Vec;
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 use core::iter::once;
 use core::ops::Range;
 
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, ErrorGuaranteed};
-use rustc_literal_escaper::{EscapeError, Mode};
 use crate::rustc_span::{BytePos, Span};
+use rustc_literal_escaper::{EscapeError, Mode};
 use tracing::debug;
 
 use crate::rustc_parse::diagnostics::{
@@ -271,7 +271,7 @@ pub(crate) fn emit_unescape_error(
             let mut suggestion_len = 0;
             let (c, char_span) = last_char();
             let chars = once(c).chain(lit[range.end..].chars());
-            for c in chars.take(6).take_while(|c| c.is_digit(16)) {
+            for c in chars.take(6).take_while(|c| c.is_ascii_hexdigit()) {
                 suggestion.push(c);
                 suggestion_len += c.len_utf8();
             }

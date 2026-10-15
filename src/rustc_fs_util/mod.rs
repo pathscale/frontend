@@ -16,7 +16,6 @@
 //! is kept as the identity it already was on Unix rather than deleted, because its caller in
 //! `rustc_codegen_ssa` reads as a deliberate step and removing the call is that crate's decision.
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //

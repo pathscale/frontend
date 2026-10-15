@@ -65,16 +65,18 @@ fn expand(client: Client, input: ServerTokens) -> Result<ServerTokens, ErrorGuar
         let mut resolver = Resolver::new(tcx, &[], DUMMY_SP, DUMMY_SP, arenas);
         let config = ExpansionConfig::default(tcx.crate_name(LOCAL_CRATE), tcx.features());
         let mut ecx = ExtCtxt::new(tcx.sess, config, &mut resolver, None);
-        ecx.current_expansion.id = tcx.with_stable_hashing_context(|hcx| LocalExpnId::fresh(
-            ExpnData::default(
-                ExpnKind::Macro(MacroKind::Bang, Symbol::intern("bridge_witness")),
-                DUMMY_SP,
-                tcx.sess.edition(),
-                Some(CRATE_DEF_ID.to_def_id()),
-                None,
-            ),
-            hcx,
-        ));
+        ecx.current_expansion.id = tcx.with_stable_hashing_context(|hcx| {
+            LocalExpnId::fresh(
+                ExpnData::default(
+                    ExpnKind::Macro(MacroKind::Bang, Symbol::intern("bridge_witness")),
+                    DUMMY_SP,
+                    tcx.sess.edition(),
+                    Some(CRATE_DEF_ID.to_def_id()),
+                    None,
+                ),
+                hcx,
+            )
+        });
         BangProcMacro { client }.expand(&mut ecx, DUMMY_SP, input)
     })
 }
@@ -99,9 +101,11 @@ fn outer(input: pm::TokenStream) -> pm::TokenStream {
 fn run(source: Arc<String>, legacy: bool) {
     let messages = Arc::new(eko::thread::Mutex::new(Vec::<String>::new()));
     let sink = Arc::clone(&messages);
-    let mut opts = Options::default();
-    opts.edition = frontend::rustc_span::edition::Edition::Edition2024;
-    opts.unstable_features = UnstableFeatures::Allow;
+    let mut opts = Options {
+        edition: frontend::rustc_span::edition::Edition::Edition2024,
+        unstable_features: UnstableFeatures::Allow,
+        ..Options::default()
+    };
     if legacy {
         opts.unstable_opts.proc_macro_execution_strategy = ProcMacroExecutionStrategy::CrossThread;
     }
@@ -109,9 +113,12 @@ fn run(source: Arc<String>, legacy: bool) {
         opts,
         input: Input::Str {
             name: FileName::Custom("bridge_witness_crate.rs".into()),
-            input: Arc::new("#![feature(no_core)]
+            input: Arc::new(
+                "#![feature(no_core)]
 #![no_core]
-".to_string()),
+"
+                .to_string(),
+            ),
         },
         psess_created: Some(Box::new(move |psess| psess.set_emitter(Box::new(Messages(sink))))),
         using_internal_features: &USING_INTERNAL_FEATURES,
@@ -125,29 +132,48 @@ fn run(source: Arc<String>, legacy: bool) {
                 FileName::Custom("bridge_witness_input.rs".into()),
                 source,
                 None,
-            ).unwrap_or_else(|_| panic!("frontend_threads_input_tokens"));
+            )
+            .unwrap_or_else(|_| panic!("frontend_threads_input_tokens"));
             let before = pprust::tts_to_string(&input);
             if legacy {
-                assert!(expand(Client::expand1(echo), input).is_err(), "frontend_threads_legacy_refusal");
+                assert!(
+                    expand(Client::expand1(echo), input).is_err(),
+                    "frontend_threads_legacy_refusal"
+                );
                 let recorded = messages.lock();
-                assert!(recorded.iter().any(|m| m.contains("frontend_proc_macro_cross_thread_removed")),
-                    "frontend_threads_legacy_error_name: {:?}", &*recorded);
+                assert!(
+                    recorded.iter().any(|m| m.contains("frontend_proc_macro_cross_thread_removed")),
+                    "frontend_threads_legacy_error_name: {:?}",
+                    *recorded
+                );
                 println!("frontend_threads_legacy_refusal: ok");
             } else {
                 let output = expand(Client::expand1(outer), input.clone())
                     .unwrap_or_else(|_| panic!("frontend_threads_outer_result"));
                 assert_eq!(pprust::tts_to_string(&output), before, "frontend_threads_echo_tokens");
                 assert!(!pm::is_available(), "frontend_threads_bridge_restored");
-                assert!(expand(Client::expand1(panic_client), input.clone()).is_err(),
-                    "frontend_threads_panic_reported");
+                assert!(
+                    expand(Client::expand1(panic_client), input.clone()).is_err(),
+                    "frontend_threads_panic_reported"
+                );
                 let recovered = expand(Client::expand1(echo), input)
                     .unwrap_or_else(|_| panic!("frontend_threads_after_panic"));
-                assert_eq!(pprust::tts_to_string(&recovered), before, "frontend_threads_recovered_tokens");
+                assert_eq!(
+                    pprust::tts_to_string(&recovered),
+                    before,
+                    "frontend_threads_recovered_tokens"
+                );
                 let recorded = messages.lock();
-                assert!(recorded.iter().any(|m| m.contains("frontend_proc_macro_nested_bridge")),
-                    "frontend_threads_nested_error_name: {:?}", &*recorded);
-                assert!(recorded.iter().any(|m| m.contains("frontend_threads_client_panic")),
-                    "frontend_threads_panic_error_name: {:?}", &*recorded);
+                assert!(
+                    recorded.iter().any(|m| m.contains("frontend_proc_macro_nested_bridge")),
+                    "frontend_threads_nested_error_name: {:?}",
+                    *recorded
+                );
+                assert!(
+                    recorded.iter().any(|m| m.contains("frontend_threads_client_panic")),
+                    "frontend_threads_panic_error_name: {:?}",
+                    *recorded
+                );
                 println!("frontend_threads_bridge: {before}");
             }
             // The refusal and deliberate panic are the witness's expected diagnostics.

@@ -4,15 +4,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::mem;
 use alloc::sync::Arc;
+use core::mem;
 
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_data_structures::sync::run_stage;
@@ -625,6 +623,10 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Resolve macro path with error reporting and recovery.
     /// Uses dummy syntax extensions for unresolved macros or macros with unexpected resolutions
     /// for better error recovery.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn smart_resolve_macro_path(
         &mut self,
         path: &ast::Path,
@@ -706,7 +708,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             _ => panic!("expected `DefKind::Macro` or `Res::NonMacroAttr`"),
         };
 
-        self.check_stability_and_deprecation(&ext, path, node_id);
+        self.check_stability_and_deprecation(ext, path, node_id);
 
         let unexpected_res = if !ext.macro_kinds().contains(kind.into()) {
             Some((kind.article(), kind.descr_expected()))
@@ -764,7 +766,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             } else {
                 "custom inner attributes are unstable"
             };
-            feature_err(&self.tcx.sess, sym::custom_inner_attributes, path.span, msg).emit();
+            feature_err(self.tcx.sess, sym::custom_inner_attributes, path.span, msg).emit();
         }
 
         Ok((ext, res))
@@ -793,6 +795,10 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn resolve_macro_or_delegation_path(
         mut self,
         ast_path: &ast::Path,
@@ -961,8 +967,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 this.tcx.untracked().definitions.read_phase(|| {
                     run_stage(resolutions, len, |resolutions, index| {
                         let mut sink = LateSink::default();
-                        CmResolver::Late(this, &mut sink)
-                            .finalize_macro_resolution(resolutions, index, krate);
+                        CmResolver::Late(this, &mut sink).finalize_macro_resolution(
+                            resolutions,
+                            index,
+                            krate,
+                        );
                         sink
                     })
                 })
@@ -1067,13 +1076,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         res: Res,
     ) {
         if let Some(initial_res) = initial_res {
-            if res != initial_res {
-                if self.ambiguity_errors.is_empty() {
-                    // Make sure compilation does not succeed if preferred macro resolution
-                    // has changed after the macro had been expanded. In theory all such
-                    // situations should be reported as errors, so this is a bug.
-                    self.dcx().span_delayed_bug(span, "inconsistent resolution for a macro");
-                }
+            if res != initial_res && self.ambiguity_errors.is_empty() {
+                // Make sure compilation does not succeed if preferred macro resolution
+                // has changed after the macro had been expanded. In theory all such
+                // situations should be reported as errors, so this is a bug.
+                self.dcx().span_delayed_bug(span, "inconsistent resolution for a macro");
             }
         } else if self.tcx.dcx().has_errors().is_none() && self.privacy_errors.is_empty() {
             // It's possible that the macro was unresolved (indeterminate) and silently
@@ -1097,6 +1104,10 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 /// The macro resolutions expansion recorded, taken by `finalize_macro_resolutions`: unit `i` of
 /// the finalization is the `i`th of the multi-segment paths, then the single-segment names, then
 /// the built-in attribute names, each list in the order it was recorded.
+#[expect(
+    clippy::type_complexity,
+    reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+)]
 struct MacroResolutions<'ra> {
     multi: Vec<(Vec<Segment>, Span, MacroKind, ParentScope<'ra>, Option<Res>, Namespace)>,
     single: Vec<(Ident, MacroKind, ParentScope<'ra>, Option<Decl<'ra>>, Option<Span>)>,
@@ -1338,7 +1349,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
             let is_allowed =
                 |feature| self.features.enabled(feature) || span.allows_unstable(feature);
-            let allowed_by_implication = implied_by.is_some_and(|feature| is_allowed(feature));
+            let allowed_by_implication = implied_by.is_some_and(is_allowed);
             if !is_allowed(feature) && !allowed_by_implication {
                 stability::report_unstable(
                     self.tcx.sess,
@@ -1369,15 +1380,16 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         res: Option<Res>,
         span: Span,
     ) {
-        if let Some(Res::NonMacroAttr(kind)) = res {
-            if kind != NonMacroAttrKind::Tool && decl.is_none_or(|b| b.is_import()) {
-                self.dcx().emit_err(diagnostics::CannotUseThroughAnImport {
-                    span,
-                    article: kind.article(),
-                    descr: kind.descr(),
-                    binding_span: decl.map(|d| d.span),
-                });
-            }
+        if let Some(Res::NonMacroAttr(kind)) = res
+            && kind != NonMacroAttrKind::Tool
+            && decl.is_none_or(|b| b.is_import())
+        {
+            self.dcx().emit_err(diagnostics::CannotUseThroughAnImport {
+                span,
+                article: kind.article(),
+                descr: kind.descr(),
+                binding_span: decl.map(|d| d.span),
+            });
         }
     }
 }

@@ -2,7 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -11,7 +10,7 @@ use alloc::vec::Vec;
 
 use core::ops::Range;
 
-use parse::Position::ArgumentNamed;
+use crate::exp;
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::{
     Expr, ExprKind, FormatAlignment, FormatArgPosition, FormatArgPositionKind, FormatArgs,
@@ -27,9 +26,9 @@ use crate::rustc_errors::{
 use crate::rustc_expand::base::*;
 use crate::rustc_lint_defs::LintId;
 use crate::rustc_lint_defs::builtin::NAMED_ARGUMENTS_USED_POSITIONALLY;
-use crate::exp;
 use crate::rustc_parse_format as parse;
 use crate::rustc_span::{BytePos, ErrorGuaranteed, Ident, InnerSpan, Span, Symbol};
+use parse::Position::ArgumentNamed;
 
 use crate::rustc_builtin_macros::diagnostics;
 use crate::rustc_builtin_macros::util::{ExprToSpannedString, expr_to_spanned_string};
@@ -725,6 +724,10 @@ fn invalid_placeholder_type_error(
     ecx.dcx().emit_err(diagnostics::FormatUnknownTrait { span: sp.unwrap_or(fmt_span), ty, suggs });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 fn report_missing_placeholders(
     ecx: &ExtCtxt<'_>,
     unused: Vec<(Span, bool)>,
@@ -769,12 +772,12 @@ fn report_missing_placeholders(
         })
         .collect::<Vec<_>>();
 
-    if !placeholders.is_empty() {
-        if let Some(new_diag) = report_redundant_format_arguments(ecx, args, used, placeholders) {
-            diag.cancel();
-            new_diag.emit();
-            return;
-        }
+    if !placeholders.is_empty()
+        && let Some(new_diag) = report_redundant_format_arguments(ecx, args, used, placeholders)
+    {
+        diag.cancel();
+        new_diag.emit();
+        return;
     }
 
     // Used to ensure we only report translations for *one* kind of foreign format.
@@ -974,32 +977,29 @@ fn report_invalid_references(
 
     let mut e;
 
-    if template.iter().all(|piece| match piece {
-        FormatArgsPiece::Placeholder(FormatPlaceholder {
-            argument: FormatArgPosition { kind: FormatArgPositionKind::Number, .. },
-            ..
-        }) => false,
-        FormatArgsPiece::Placeholder(FormatPlaceholder {
-            format_options:
-                FormatOptions {
-                    precision:
-                        Some(FormatCount::Argument(FormatArgPosition {
-                            kind: FormatArgPositionKind::Number,
-                            ..
-                        })),
+    if template.iter().all(|piece| {
+        !matches!(
+            piece,
+            FormatArgsPiece::Placeholder(FormatPlaceholder {
+                argument: FormatArgPosition { kind: FormatArgPositionKind::Number, .. },
+                ..
+            }) | FormatArgsPiece::Placeholder(FormatPlaceholder {
+                format_options: FormatOptions {
+                    precision: Some(FormatCount::Argument(FormatArgPosition {
+                        kind: FormatArgPositionKind::Number,
+                        ..
+                    })),
                     ..
-                }
-                | FormatOptions {
-                    width:
-                        Some(FormatCount::Argument(FormatArgPosition {
-                            kind: FormatArgPositionKind::Number,
-                            ..
-                        })),
+                } | FormatOptions {
+                    width: Some(FormatCount::Argument(FormatArgPosition {
+                        kind: FormatArgPositionKind::Number,
+                        ..
+                    })),
                     ..
                 },
-            ..
-        }) => false,
-        _ => true,
+                ..
+            })
+        )
     }) {
         // There are no numeric positions.
         // Collect all the implicit positions:

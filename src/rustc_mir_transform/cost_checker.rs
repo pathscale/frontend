@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::bug;
 use crate::rustc_middle::mir::visit::*;
@@ -71,22 +65,18 @@ impl<'b, 'tcx> CostChecker<'b, 'tcx> {
 
 impl<'tcx> Visitor<'tcx> for CostChecker<'_, 'tcx> {
     fn visit_operand(&mut self, operand: &Operand<'tcx>, _: Location) {
-        match operand {
-            Operand::RuntimeChecks(RuntimeChecks::UbChecks) => {
-                if !self
-                    .tcx
-                    .sess
-                    .opts
-                    .unstable_opts
-                    .inline_mir_preserve_debug
-                    .unwrap_or(self.tcx.sess.ub_checks())
-                {
-                    // If this is in optimized MIR it's because it's used later, so if we don't need UB
-                    // checks this session, give a bonus here to offset the cost of the call later.
-                    self.bonus += CALL_PENALTY;
-                }
-            }
-            _ => {}
+        if let Operand::RuntimeChecks(RuntimeChecks::UbChecks) = operand
+            && !self
+                .tcx
+                .sess
+                .opts
+                .unstable_opts
+                .inline_mir_preserve_debug
+                .unwrap_or(self.tcx.sess.ub_checks())
+        {
+            // If this is in optimized MIR it's because it's used later, so if we don't need UB
+            // checks this session, give a bonus here to offset the cost of the call later.
+            self.bonus += CALL_PENALTY;
         }
     }
 

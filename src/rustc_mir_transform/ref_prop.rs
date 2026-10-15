@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 
@@ -117,11 +111,10 @@ fn move_to_copy_pointers<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         }
 
         fn visit_operand(&mut self, operand: &mut Operand<'tcx>, loc: Location) {
-            if let Operand::Move(place) = *operand {
-                if place.ty(self.local_decls, self.tcx).ty.is_any_ptr() {
+            if let Operand::Move(place) = *operand
+                && place.ty(self.local_decls, self.tcx).ty.is_any_ptr() {
                     *operand = Operand::Copy(place);
                 }
-            }
             self.super_operand(operand, loc);
         }
     }

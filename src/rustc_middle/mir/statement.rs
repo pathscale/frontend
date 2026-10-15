@@ -3,11 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::Debug;
@@ -433,7 +429,7 @@ impl<'tcx> Place<'tcx> {
     #[inline]
     pub fn iter_projections(
         self,
-    ) -> impl Iterator<Item = (PlaceRef<'tcx>, PlaceElem<'tcx>)> + DoubleEndedIterator {
+    ) -> impl DoubleEndedIterator<Item = (PlaceRef<'tcx>, PlaceElem<'tcx>)> {
         self.as_ref().iter_projections()
     }
 
@@ -477,9 +473,9 @@ impl<'tcx> Place<'tcx> {
         PlaceTy::from_ty(local_decls.local_decls()[local].ty).multi_projection_ty(tcx, projection)
     }
 
-    pub fn ty<D: ?Sized>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> PlaceTy<'tcx>
+    pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> PlaceTy<'tcx>
     where
-        D: HasLocalDecls<'tcx>,
+        D: ?Sized + HasLocalDecls<'tcx>,
     {
         Place::ty_from(self.local, self.projection, local_decls, tcx)
     }
@@ -567,7 +563,7 @@ impl<'tcx> PlaceRef<'tcx> {
     #[inline]
     pub fn iter_projections(
         self,
-    ) -> impl Iterator<Item = (PlaceRef<'tcx>, PlaceElem<'tcx>)> + DoubleEndedIterator {
+    ) -> impl DoubleEndedIterator<Item = (PlaceRef<'tcx>, PlaceElem<'tcx>)> {
         self.projection.iter().enumerate().map(move |(i, proj)| {
             let base = PlaceRef { local: self.local, projection: &self.projection[..i] };
             (base, *proj)

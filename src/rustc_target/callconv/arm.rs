@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::{ArmCall, CanonAbi, HasDataLayout, TyAbiInterface};
 
@@ -57,11 +51,9 @@ where
         return;
     }
 
-    if vfp {
-        if let Some(uniform) = is_homogeneous_aggregate(cx, ret) {
-            ret.cast_to(uniform);
-            return;
-        }
+    if vfp && let Some(uniform) = is_homogeneous_aggregate(cx, ret) {
+        ret.cast_to(uniform);
+        return;
     }
 
     let size = ret.layout.size;
@@ -100,11 +92,11 @@ where
 
     // watchOS also passes homogeneous aggregates in VFP registers, and unlike `AapcsVfp` it does
     // so even for variadics and for `extern "aapcs"`: the backend will use GPRs if needed.
-    if vfp || matches!(abi_kind, ArmAbiKind::Aapcs16Vfp) {
-        if let Some(uniform) = is_homogeneous_aggregate(cx, arg) {
-            arg.cast_to(uniform);
-            return;
-        }
+    if (vfp || matches!(abi_kind, ArmAbiKind::Aapcs16Vfp))
+        && let Some(uniform) = is_homogeneous_aggregate(cx, arg)
+    {
+        arg.cast_to(uniform);
+        return;
     }
 
     // For the composites that are left, watchOS adopts the 64-bit AAPCS rule: those larger than

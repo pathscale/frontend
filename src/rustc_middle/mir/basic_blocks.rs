@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::sync::Arc;
@@ -16,8 +11,8 @@ use crate::rustc_data_structures::graph;
 use crate::rustc_data_structures::graph::dominators::{Dominators, dominators};
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_index::{IndexSlice, IndexVec};
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use smallvec::SmallVec;
 
 use crate::rustc_middle::mir::traversal::Postorder;
@@ -83,6 +78,10 @@ impl<'tcx> BasicBlocks<'tcx> {
 
     /// Returns mutable reference to basic blocks. Invalidates CFG cache.
     #[inline]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "the method also invalidates the cached control-flow graph"
+    )]
     pub fn as_mut(&mut self) -> &mut IndexVec<BasicBlock, BasicBlockData<'tcx>> {
         self.invalidate_cfg_cache();
         &mut self.basic_blocks

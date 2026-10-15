@@ -1,7 +1,7 @@
-use alloc::boxed::Box;
 use crate::rustc_attr_ir::AttributeKind;
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_span::sym;
+use alloc::boxed::Box;
 
 use crate::rustc_attr_parsing::attributes::diagnostic::*;
 use crate::rustc_attr_parsing::attributes::prelude::*;

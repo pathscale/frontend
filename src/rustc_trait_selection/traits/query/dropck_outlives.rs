@@ -1,12 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_infer::traits::TraitErrors;
@@ -20,7 +16,9 @@ use tracing::{debug, instrument};
 use crate::rustc_trait_selection::solve::NextSolverError;
 use crate::rustc_trait_selection::traits::query::NoSolution;
 use crate::rustc_trait_selection::traits::query::normalize::QueryNormalizeExt;
-use crate::rustc_trait_selection::traits::{FromSolverError, Normalized, ObligationCause, ObligationCtxt, OldSolverError};
+use crate::rustc_trait_selection::traits::{
+    FromSolverError, Normalized, ObligationCause, ObligationCtxt, OldSolverError,
+};
 
 /// This returns true if the type `ty` is "trivial" for
 /// dropck-outlives -- that is, if it doesn't require any types to

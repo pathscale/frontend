@@ -4,10 +4,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -20,8 +18,7 @@ use crate::rustc_data_structures::sync::{AppendOnlyVec, Lock};
 use crate::rustc_errors::emitter::EmitterWithNote;
 use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::{
-    BufferedEarlyLint, ColorConfig, DecorateDiagCompat, Diag, DiagCtxt, DiagCtxtHandle, Level,
-    MultiSpan,
+    BufferedEarlyLint, DecorateDiagCompat, Diag, DiagCtxt, DiagCtxtHandle, Level, MultiSpan,
 };
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::hygiene::ExpnId;
@@ -142,6 +139,12 @@ pub struct ParseSess {
     pub attr_id_generator: AttrIdGenerator,
 }
 
+impl Default for ParseSess {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ParseSess {
     /// Used for testing.
     pub fn new() -> Self {
@@ -230,10 +233,7 @@ impl ParseSess {
     }
 
     pub fn dyn_buffer_lint_sess<
-        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()>
-            + Send
-            + Sync
-            + 'static,
+        F: for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &Session) -> Diag<'a, ()> + Send + Sync + 'static,
     >(
         &self,
         lint: &'static Lint,

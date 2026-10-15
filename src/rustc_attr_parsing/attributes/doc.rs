@@ -1,6 +1,3 @@
-use alloc::boxed::Box;
-use alloc::string::String;
-use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_ast::ast::{AttrStyle, LitKind, MetaItemLit};
 use crate::rustc_attr_ir::target::Target;
 use crate::rustc_attr_ir::{
@@ -8,10 +5,13 @@ use crate::rustc_attr_ir::{
     DocInline, HideOrShow,
 };
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap, IndexEntry};
+use crate::rustc_data_structures::iter_ext::IterExt as _;
 use crate::rustc_errors::Applicability;
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_lint_defs::builtin::{INVALID_DOC_ATTRIBUTES, UNUSED_ATTRIBUTES};
 use crate::rustc_span::{Span, Symbol, edition, sym};
+use alloc::boxed::Box;
+use alloc::string::String;
 
 use super::prelude::{ALL_TARGETS, AllowedTargets};
 use super::{AcceptMapping, AttributeParser, template};
@@ -464,7 +464,8 @@ impl DocParser {
                         }
                     }
 
-                    let values = values.unwrap_or(DocCfgHideShow::new_with_only_key(item.span()));                    for cfg_name in &cfg_names {
+                    let values = values.unwrap_or(DocCfgHideShow::new_with_only_key(item.span()));
+                    for cfg_name in &cfg_names {
                         match cfg_hide_show.values.entry(*cfg_name) {
                             IndexEntry::Vacant(v) => {
                                 v.insert(values.clone());

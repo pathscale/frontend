@@ -48,20 +48,20 @@
 //! codegen unit can get invalidated:
 //!
 //! 1. The most straightforward case is when the BODY of a function or global
-//! changes. Then any codegen unit containing the code for that item has to be
-//! re-compiled. Note that this includes all codegen units where the function
-//! has been inlined.
+//!    changes. Then any codegen unit containing the code for that item has to be
+//!    re-compiled. Note that this includes all codegen units where the function
+//!    has been inlined.
 //!
 //! 2. The next case is when the SIGNATURE of a function or global changes. In
-//! this case, all codegen units containing a REFERENCE to that item have to be
-//! re-compiled. This is a superset of case 1.
+//!    this case, all codegen units containing a REFERENCE to that item have to be
+//!    re-compiled. This is a superset of case 1.
 //!
 //! 3. The final and most subtle case is when a REFERENCE to a generic function
-//! is added or removed somewhere. Even though the definition of the function
-//! might be unchanged, a new REFERENCE might introduce a new monomorphized
-//! instance of this function which has to be placed and compiled somewhere.
-//! Conversely, when removing a REFERENCE, it might have been the last one with
-//! that particular set of generic arguments and thus we have to remove it.
+//!    is added or removed somewhere. Even though the definition of the function
+//!    might be unchanged, a new REFERENCE might introduce a new monomorphized
+//!    instance of this function which has to be placed and compiled somewhere.
+//!    Conversely, when removing a REFERENCE, it might have been the last one with
+//!    that particular set of generic arguments and thus we have to remove it.
 //!
 //! From the above we see that just using one codegen unit per source-level
 //! module is not such a good idea, since just adding a REFERENCE to some
@@ -92,21 +92,16 @@
 //! source-level module, functions from the same module will be available for
 //! inlining, even when they are not marked `#[inline]`.
 
-use alloc::vec::Vec;
-use crate::rustc_data_structures::iter_ext::SliceExt as _;
-use alloc::string::String;
-use alloc::string::ToString;
-use core::cmp;
-use hashbrown::hash_map::Entry;
+use crate::bug;
 use crate::rustc_data_structures::either::Either;
 use crate::rustc_data_structures::fx::FxIndexSet;
+use crate::rustc_data_structures::iter_ext::SliceExt as _;
 use crate::rustc_data_structures::unord::{UnordMap, UnordSet};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::attrs::{InlineAttr, Linkage};
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, DefIdSet, LOCAL_CRATE};
 use crate::rustc_hir::definitions::DefPathDataName;
-use crate::bug;
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::middle::exported_symbols::{SymbolExportInfo, SymbolExportLevel};
 use crate::rustc_middle::mir::StatementKind;
@@ -120,6 +115,11 @@ use crate::rustc_middle::util::Providers;
 use crate::rustc_session::CodegenUnits;
 use crate::rustc_span::Symbol;
 use crate::rustc_target::spec::SymbolVisibility;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::cmp;
+use hashbrown::hash_map::Entry;
 use tracing::debug;
 
 use crate::rustc_monomorphize::collector::{self, MonoItemCollectionStrategy, UsageMap};
@@ -495,7 +495,7 @@ fn merge_codegen_units<'tcx>(
             // sync with this code.
             let suffix = format!("{index:0num_digits$}");
             let numbered_codegen_unit_name =
-                cgu_name_builder.build_cgu_name_no_mangle(LOCAL_CRATE, &["cgu"], Some(suffix));
+                cgu_name_builder.build_cgu_name_no_mangle(LOCAL_CRATE, ["cgu"], Some(suffix));
             cgu.set_name(numbered_codegen_unit_name);
 
             cgu.set_symbol_name(Symbol::intern(&crate::rustc_symbol_mangling::mangle_cgu(
@@ -750,7 +750,7 @@ fn compute_codegen_unit_name(
 
 // Anything we can't find a proper codegen unit for goes into this.
 fn fallback_cgu_name(name_builder: &mut CodegenUnitNameBuilder<'_>) -> Symbol {
-    name_builder.build_cgu_name(LOCAL_CRATE, &["fallback"], Some("cgu"))
+    name_builder.build_cgu_name(LOCAL_CRATE, ["fallback"], Some("cgu"))
 }
 
 fn mono_item_linkage_and_visibility<'tcx>(
@@ -1242,11 +1242,11 @@ pub(crate) fn provide(providers: &mut Providers) {
                     .map(|bb| {
                         bb.statements
                             .iter()
-                            .filter_map(|stmt| match stmt.kind {
-                                StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => {
-                                    None
-                                }
-                                _ => Some(stmt),
+                            .filter(|stmt| {
+                                !matches!(
+                                    stmt.kind,
+                                    StatementKind::StorageLive(_) | StatementKind::StorageDead(_)
+                                )
                             })
                             .count()
                             + 1

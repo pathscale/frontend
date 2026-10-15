@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use crate::rustc_lint_defs::builtin::NON_EXHAUSTIVE_OMITTED_PATTERNS;
 use crate::rustc_span::ErrorGuaranteed;
+use alloc::vec::Vec;
 use tracing::instrument;
 
 use crate::rustc_pattern_analysis::MatchArm;

@@ -8,8 +8,8 @@ use crate::rustc_ast::*;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::{self as hir, Target};
-use crate::span_bug;
 use crate::rustc_span::{DesugaringKind, Ident, Span, Spanned, respan};
+use crate::span_bug;
 
 use crate::rustc_ast_lowering::diagnostics::{
     ArbitraryExpressionInPattern, ExtraDoubleDot, MisplacedDoubleDot, SubTupleBinding,

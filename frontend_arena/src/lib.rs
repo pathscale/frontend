@@ -28,7 +28,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -452,7 +451,10 @@ impl DroplessArena {
                 // `drop`.
                 unsafe { self.write_from_iter(iter, len, mem) }
             }
-            (_, _) => outline(move || self.try_alloc_from_iter(iter.map(Ok::<T, core::convert::Infallible>)).unwrap_or_else(|never| match never {})),
+            (_, _) => outline(move || {
+                self.try_alloc_from_iter(iter.map(Ok::<T, core::convert::Infallible>))
+                    .unwrap_or_else(|never| match never {})
+            }),
         }
     }
 

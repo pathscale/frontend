@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use super::{
     AdtExpr, AdtExprBase, Arm, Block, ClosureExpr, Expr, ExprKind, InlineAsmExpr, InlineAsmOperand,
@@ -140,14 +134,8 @@ pub fn walk_expr<'thir, 'tcx: 'thir, V: Visitor<'thir, 'tcx>>(
             }
         }
         Adt(ref adt_expr) => {
-            let AdtExpr {
-                ref fields,
-                ref base,
-                adt_def: _,
-                variant_index: _,
-                args: _,
-                user_ty: _,
-            } = **adt_expr;
+            let AdtExpr { ref fields, ref base, adt_def: _, variant_index: _, args: _, user_ty: _ } =
+                **adt_expr;
             for field in &**fields {
                 visitor.visit_expr(&visitor.thir()[field.expr]);
             }
@@ -163,13 +151,8 @@ pub fn walk_expr<'thir, 'tcx: 'thir, V: Visitor<'thir, 'tcx>>(
         | ValueUnwrapUnsafeBinder { source }
         | WrapUnsafeBinder { source } => visitor.visit_expr(&visitor.thir()[source]),
         Closure(ref closure_expr) => {
-            let ClosureExpr {
-                closure_id: _,
-                args: _,
-                upvars: _,
-                movability: _,
-                fake_reads: _,
-            } = **closure_expr;
+            let ClosureExpr { closure_id: _, args: _, upvars: _, movability: _, fake_reads: _ } =
+                **closure_expr;
         }
         Literal { lit: _, neg: _ } => {}
         NonHirLiteral { lit: _, user_ty: _ } => {}
@@ -246,7 +229,7 @@ pub fn walk_block<'thir, 'tcx: 'thir, V: Visitor<'thir, 'tcx>>(
 ) {
     let Block { stmts, expr, targeted_by_break: _, region_scope: _, span: _, safety_mode: _ } =
         block;
-    for &stmt in &*stmts {
+    for &stmt in stmts {
         visitor.visit_stmt(&visitor.thir()[stmt]);
     }
     if let Some(expr) = expr {

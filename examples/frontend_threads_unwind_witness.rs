@@ -33,16 +33,24 @@ fn main() {
 
     let caught = catch::<_, ()>(|| panic!("{expected}"));
     assert!(caught.is_err(), "frontend_threads_initial_catch");
-    assert_eq!(take_last_panic().as_deref(), Some(expected.as_str()), "frontend_threads_recorded_input");
+    assert_eq!(
+        take_last_panic().as_deref(),
+        Some(expected.as_str()),
+        "frontend_threads_recorded_input"
+    );
     assert_eq!(take_last_panic(), None, "frontend_threads_record_consumed");
 
     let resumed = catch::<_, ()>(|| {
-        let payload = catch::<_, ()>(|| panic!("{expected}"))
-            .expect_err("frontend_threads_inner_catch");
+        let payload =
+            catch::<_, ()>(|| panic!("{expected}")).expect_err("frontend_threads_inner_catch");
         resume(payload)
     });
     assert!(resumed.is_err(), "frontend_threads_resume_unwinds");
-    assert_eq!(take_last_panic().as_deref(), Some(expected.as_str()), "frontend_threads_resume_original");
+    assert_eq!(
+        take_last_panic().as_deref(),
+        Some(expected.as_str()),
+        "frontend_threads_resume_original"
+    );
     assert_eq!(take_last_panic(), None, "frontend_threads_resume_consumed");
 
     let next = format!("deliberate: next {input}");

@@ -1,8 +1,8 @@
 use alloc::boxed::Box;
 use core::fmt;
 
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::{Span, Symbol};
+use rustc_macros::{Decodable, Encodable, StableHash};
 use thin_vec::ThinVec;
 
 use crate::rustc_ast::attr::version::RustcVersion;

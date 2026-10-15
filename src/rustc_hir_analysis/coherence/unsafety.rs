@@ -4,15 +4,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_errors::codes::*;
-use crate::struct_span_code_err;
 use crate::rustc_hir::Safety;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_middle::ty::ImplPolarity::*;
@@ -20,6 +14,7 @@ use crate::rustc_middle::ty::print::PrintTraitRefExt as _;
 use crate::rustc_middle::ty::{ImplTraitHeader, TraitDef, TyCtxt};
 use crate::rustc_span::ErrorGuaranteed;
 use crate::rustc_span::def_id::LocalDefId;
+use crate::struct_span_code_err;
 
 pub(super) fn check_item(
     tcx: TyCtxt<'_>,
@@ -46,7 +41,7 @@ pub(super) fn check_item(
     match (trait_def_safety, unsafe_attr, trait_header.safety, trait_header.polarity) {
         (Safety::Safe, None, Safety::Unsafe, Positive) => {
             let span = tcx.def_span(def_id);
-            return Err(struct_span_code_err!(
+            Err(struct_span_code_err!(
                 tcx.dcx(),
                 tcx.def_span(def_id),
                 E0199,
@@ -59,12 +54,12 @@ pub(super) fn check_item(
                 "",
                 crate::rustc_errors::Applicability::MachineApplicable,
             )
-            .emit());
+            .emit())
         }
 
         (Safety::Unsafe, _, Safety::Safe, Positive) => {
             let span = tcx.def_span(def_id);
-            return Err(struct_span_code_err!(
+            Err(struct_span_code_err!(
                 tcx.dcx(),
                 span,
                 E0200,
@@ -93,12 +88,12 @@ pub(super) fn check_item(
                 "unsafe ",
                 crate::rustc_errors::Applicability::MaybeIncorrect,
             )
-            .emit());
+            .emit())
         }
 
         (Safety::Safe, Some(attr_name), Safety::Safe, Positive) => {
             let span = tcx.def_span(def_id);
-            return Err(struct_span_code_err!(
+            Err(struct_span_code_err!(
                 tcx.dcx(),
                 span,
                 E0569,
@@ -117,7 +112,7 @@ pub(super) fn check_item(
                 "unsafe ",
                 crate::rustc_errors::Applicability::MaybeIncorrect,
             )
-            .emit());
+            .emit())
         }
 
         (_, _, Safety::Unsafe, Negative) => {

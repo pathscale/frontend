@@ -3,12 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 use core::ops::ControlFlow;
 
@@ -506,6 +502,10 @@ fn normalize_to_error<'a, 'tcx>(
 
 /// When normalizing a const alias, register a `ConstArgHasType` obligation
 /// to ensure the const value's type matches the declared type.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+)]
 fn push_const_arg_has_type_obligation<'tcx>(
     tcx: TyCtxt<'tcx>,
     obligations: &mut PredicateObligations<'tcx>,
@@ -717,38 +717,38 @@ fn project<'cx, 'tcx>(
     // `<dyn Trait>::Name` is only valid when `Trait` is dyn-compatible.
     // If it isn't, create an error at the projection site and return a tainted error term.
     let self_ty = selcx.infcx.shallow_resolve(obligation.predicate.self_ty());
-    if let ty::Dynamic(data, ..) = self_ty.kind() {
-        if let Some(def_id) = data.principal_def_id() {
-            let tcx = selcx.tcx();
-            // Delaying a bug is fine here:
-            // - In case of a dymmy span, we are in a canonical query.
-            // - `CheckAssociatedTypeBounds` means that the trait object is part of the trait's item bounds
-            //   or the impl's associated type; both are checked at their own definition
-            //   where the error is already reported with a better span.
-            if !tcx.is_dyn_compatible(def_id) {
-                let span = obligation.cause.span;
-                let guar = if span.is_dummy()
-                    || matches!(
-                        obligation.cause.code(),
-                        ObligationCauseCode::CheckAssociatedTypeBounds { .. }
-                    ) {
-                    tcx.dcx().span_delayed_bug(
-                        span,
-                        format!(
-                            "projection from non-dyn-compatible trait `{}`",
-                            tcx.def_path_str(def_id)
-                        ),
-                    )
-                } else {
-                    let violations = tcx.dyn_compatibility_violations(def_id);
-                    report_dyn_incompatibility(tcx, span, None, def_id, &violations).emit()
-                };
-                return Ok(Projected::Progress(Progress::error_for_term(
-                    tcx,
-                    obligation.predicate,
-                    guar,
-                )));
-            }
+    if let ty::Dynamic(data, ..) = self_ty.kind()
+        && let Some(def_id) = data.principal_def_id()
+    {
+        let tcx = selcx.tcx();
+        // Delaying a bug is fine here:
+        // - In case of a dymmy span, we are in a canonical query.
+        // - `CheckAssociatedTypeBounds` means that the trait object is part of the trait's item bounds
+        //   or the impl's associated type; both are checked at their own definition
+        //   where the error is already reported with a better span.
+        if !tcx.is_dyn_compatible(def_id) {
+            let span = obligation.cause.span;
+            let guar = if span.is_dummy()
+                || matches!(
+                    obligation.cause.code(),
+                    ObligationCauseCode::CheckAssociatedTypeBounds { .. }
+                ) {
+                tcx.dcx().span_delayed_bug(
+                    span,
+                    format!(
+                        "projection from non-dyn-compatible trait `{}`",
+                        tcx.def_path_str(def_id)
+                    ),
+                )
+            } else {
+                let violations = tcx.dyn_compatibility_violations(def_id);
+                report_dyn_incompatibility(tcx, span, None, def_id, violations).emit()
+            };
+            return Ok(Projected::Progress(Progress::error_for_term(
+                tcx,
+                obligation.predicate,
+                guar,
+            )));
         }
     }
 

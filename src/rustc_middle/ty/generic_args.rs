@@ -3,11 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::marker::PhantomData;
@@ -17,10 +14,10 @@ use core::ptr::NonNull;
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_errors::{DiagArgValue, IntoDiagArg};
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, extension};
 use crate::rustc_serialize::{Decodable, Encodable};
 use crate::rustc_type_ir::WithCachedTypeInfo;
 use crate::rustc_type_ir::walk::TypeWalker;
+use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, extension};
 use smallvec::SmallVec;
 
 use crate::rustc_middle::ty::codec::{TyDecoder, TyEncoder};
@@ -174,17 +171,17 @@ impl<'tcx> GenericArgKind<'tcx> {
         let (tag, ptr) = match self {
             GenericArgKind::Lifetime(lt) => {
                 // Ensure we can use the tag bits.
-                assert_eq!(align_of_val(&*lt.0.0) & TAG_MASK, 0);
+                assert_eq!(align_of_val(lt.0.0) & TAG_MASK, 0);
                 (REGION_TAG, NonNull::from(lt.0.0).cast())
             }
             GenericArgKind::Type(ty) => {
                 // Ensure we can use the tag bits.
-                assert_eq!(align_of_val(&*ty.0.0) & TAG_MASK, 0);
+                assert_eq!(align_of_val(ty.0.0) & TAG_MASK, 0);
                 (TYPE_TAG, NonNull::from(ty.0.0).cast())
             }
             GenericArgKind::Const(ct) => {
                 // Ensure we can use the tag bits.
-                assert_eq!(align_of_val(&*ct.0.0) & TAG_MASK, 0);
+                assert_eq!(align_of_val(ct.0.0) & TAG_MASK, 0);
                 (CONST_TAG, NonNull::from(ct.0.0).cast())
             }
         };
@@ -388,6 +385,10 @@ impl<'tcx> GenericArgs<'tcx> {
     /// # Panics
     ///
     /// If any of the generic arguments are not types.
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "the interner returns a canonical borrowed list"
+    )]
     pub fn into_type_list(&self, tcx: TyCtxt<'tcx>) -> &'tcx List<Ty<'tcx>> {
         tcx.mk_type_list_from_iter(self.iter().map(|arg| match arg.kind() {
             GenericArgKind::Type(ty) => ty,

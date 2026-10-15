@@ -4,12 +4,11 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
-use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_ast::{self as ast, AssignOp, BinOp};
 use crate::rustc_data_structures::packed::Pu128;
 use crate::rustc_data_structures::thin_vec::{ThinVec, thin_vec};
@@ -18,7 +17,6 @@ use crate::rustc_errors::{Applicability, Diag, struct_span_code_err};
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_hir::{self as hir, AssignOpKind, BinOpKind, Expr, ExprKind};
 use crate::rustc_infer::traits::ObligationCauseCode;
-use crate::bug;
 use crate::rustc_middle::ty::adjustment::{
     Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability,
 };
@@ -55,8 +53,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         self.check_lhs_assignable(lhs, E0067, op.span, |err| {
-            if let Some(lhs_deref_ty) = self.deref_once_mutably_for_diagnostic(lhs_ty) {
-                if self
+            if let Some(lhs_deref_ty) = self.deref_once_mutably_for_diagnostic(lhs_ty)
+                && self
                     .lookup_op_method(
                         (lhs, lhs_deref_ty),
                         Some((rhs, rhs_ty)),
@@ -65,29 +63,28 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         expected,
                     )
                     .is_ok()
+            {
+                // If LHS += RHS is an error, but *LHS += RHS is successful, then we will have
+                // emitted a better suggestion during error handling in check_overloaded_binop.
+                if self
+                    .lookup_op_method(
+                        (lhs, lhs_ty),
+                        Some((rhs, rhs_ty)),
+                        lang_item_for_binop(self.tcx, Op::AssignOp(op)),
+                        op.span,
+                        expected,
+                    )
+                    .is_err()
                 {
-                    // If LHS += RHS is an error, but *LHS += RHS is successful, then we will have
-                    // emitted a better suggestion during error handling in check_overloaded_binop.
-                    if self
-                        .lookup_op_method(
-                            (lhs, lhs_ty),
-                            Some((rhs, rhs_ty)),
-                            lang_item_for_binop(self.tcx, Op::AssignOp(op)),
-                            op.span,
-                            expected,
-                        )
-                        .is_err()
-                    {
-                        err.downgrade_to_delayed_bug();
-                    } else {
-                        // Otherwise, it's valid to suggest dereferencing the LHS here.
-                        err.span_suggestion_verbose(
-                            lhs.span.shrink_to_lo(),
-                            "consider dereferencing the left-hand side of this operation",
-                            "*",
-                            Applicability::MaybeIncorrect,
-                        );
-                    }
+                    err.downgrade_to_delayed_bug();
+                } else {
+                    // Otherwise, it's valid to suggest dereferencing the LHS here.
+                    err.span_suggestion_verbose(
+                        lhs.span.shrink_to_lo(),
+                        "consider dereferencing the left-hand side of this operation",
+                        "*",
+                        Applicability::MaybeIncorrect,
+                    );
                 }
             }
         });
@@ -275,6 +272,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         (lhs_ty, rhs_ty, return_ty)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn overloaded_binop_ret_ty(
         &self,
         expr: &'tcx Expr<'tcx>,
@@ -300,26 +301,24 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         self.apply_adjustments(lhs_expr, vec![autoref]);
                     }
 
-                    if by_ref_binop {
-                        if let ty::Ref(_, _, mutbl) = method.sig.inputs()[1].kind() {
-                            // Allow two-phase borrows for binops in initial deployment
-                            // since they desugar to methods
-                            let mutbl = AutoBorrowMutability::new(*mutbl, AllowTwoPhase::Yes);
-                            let autoref = Adjustment {
-                                kind: Adjust::Borrow(AutoBorrow::Ref(mutbl)),
-                                target: method.sig.inputs()[1],
-                            };
-                            // HACK(eddyb) Bypass checks due to reborrows being in
-                            // some cases applied on the RHS, on top of which we need
-                            // to autoref, which is not allowed by apply_adjustments.
-                            // self.apply_adjustments(rhs_expr, vec![autoref]);
-                            self.typeck_results
-                                .borrow_mut()
-                                .adjustments_mut()
-                                .entry(rhs_expr.hir_id)
-                                .or_default()
-                                .push(autoref);
-                        }
+                    if by_ref_binop && let ty::Ref(_, _, mutbl) = method.sig.inputs()[1].kind() {
+                        // Allow two-phase borrows for binops in initial deployment
+                        // since they desugar to methods
+                        let mutbl = AutoBorrowMutability::new(*mutbl, AllowTwoPhase::Yes);
+                        let autoref = Adjustment {
+                            kind: Adjust::Borrow(AutoBorrow::Ref(mutbl)),
+                            target: method.sig.inputs()[1],
+                        };
+                        // HACK(eddyb) Bypass checks due to reborrows being in
+                        // some cases applied on the RHS, on top of which we need
+                        // to autoref, which is not allowed by apply_adjustments.
+                        // self.apply_adjustments(rhs_expr, vec![autoref]);
+                        self.typeck_results
+                            .borrow_mut()
+                            .adjustments_mut()
+                            .entry(rhs_expr.hir_id)
+                            .or_default()
+                            .push(autoref);
                     }
                 }
 
@@ -337,6 +336,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_binop_fulfillment_errors(
         &self,
         expr: &'tcx Expr<'tcx>,
@@ -359,7 +362,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // used instead of `==` in a let-chain
             Op::AssignOp(assign_op) => {
                 if let Err(e) =
-                    diagnostics::maybe_emit_plus_equals_diagnostic(&self, assign_op, lhs_expr)
+                    diagnostics::maybe_emit_plus_equals_diagnostic(self, assign_op, lhs_expr)
                 {
                     (e, None)
                 } else {
@@ -571,6 +574,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         Ty::new_error(self.tcx, err.emit())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_deref_or_call_for_binop_error(
         &self,
         lhs_expr: &'tcx Expr<'tcx>,
@@ -723,6 +730,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_raw_ptr_assign_arithmetic(
         &self,
         lhs_expr: &'tcx Expr<'tcx>,
@@ -762,6 +773,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_different_borrow(
         &self,
         lhs_expr: &'tcx Expr<'tcx>,
@@ -834,6 +849,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             && lhs.hir_id == expr.hir_id
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_deref_binop(
         &self,
         lhs_expr: &'tcx Expr<'tcx>,

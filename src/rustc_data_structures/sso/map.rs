@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 use core::hash::Hash;
@@ -187,10 +181,10 @@ impl<K: Eq + Hash, V> SsoHashMap<K, V> {
     /// Changes underlying storage from array to hashmap
     /// if array is full.
     fn migrate_if_full(&mut self) {
-        if let SsoHashMap::Array(array) = self {
-            if array.is_full() {
-                *self = SsoHashMap::Map(array.drain(..).collect());
-            }
+        if let SsoHashMap::Array(array) = self
+            && array.is_full()
+        {
+            *self = SsoHashMap::Map(array.drain(..).collect());
         }
     }
 
@@ -462,7 +456,7 @@ where
     }
 }
 
-impl<'a, K, V> Index<&'a K> for SsoHashMap<K, V>
+impl<K, V> Index<&K> for SsoHashMap<K, V>
 where
     K: Eq + Hash,
 {

@@ -1,14 +1,14 @@
 //! Automatic migration of Rust 2021 patterns to a form valid in both Editions 2021 and 2024.
 
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_errors::{Applicability, Diag, EmissionGuarantee, MultiSpan, pluralize};
 use crate::rustc_hir::{BindingMode, ByRef, HirId, Mutability};
 use crate::rustc_lint_defs::builtin::RUST_2024_INCOMPATIBLE_PAT;
 use crate::rustc_middle::ty::{self, Rust2024IncompatiblePatInfo, TyCtxt};
 use crate::rustc_span::{Ident, Span};
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// For patterns flagged for migration during HIR typeck, this handles constructing and emitting
 /// a diagnostic suggestion.

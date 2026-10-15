@@ -2,16 +2,16 @@
 //! structures into the THIR. The `builder` is generally ignorant of the tcx,
 //! etc., and instead goes through the `Cx` for most of its work.
 
-use alloc::boxed::Box;
+use crate::bug;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::{self as hir, HirId, find_attr};
-use crate::bug;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::ty::{self, TyCtxt};
+use alloc::boxed::Box;
 
 /// Query implementation for [`TyCtxt::thir_body`].
 pub(crate) fn thir_body<'tcx>(
@@ -30,7 +30,7 @@ pub(crate) fn thir_body<'tcx>(
     let owner_id = tcx.local_def_id_to_hir_id(owner_def);
     if let Some(fn_decl) = tcx.hir_fn_decl_by_hir_id(owner_id) {
         let closure_env_param = cx.closure_env_param(owner_def, owner_id);
-        let explicit_params = cx.explicit_params(owner_id, fn_decl, &body);
+        let explicit_params = cx.explicit_params(owner_id, fn_decl, body);
         cx.thir.params = closure_env_param.into_iter().chain(explicit_params).collect();
 
         // The resume argument may be missing, in that case we need to provide it here.
@@ -78,7 +78,8 @@ impl<'tcx> ThirBuildCx<'tcx> {
                 // types/lifetimes replaced)
                 BodyTy::Fn(typeck_results.liberated_fn_sigs()[hir_id])
             }
-            crate::rustc_hir::BodyOwnerKind::Const { .. } | crate::rustc_hir::BodyOwnerKind::Static(_) => {
+            crate::rustc_hir::BodyOwnerKind::Const { .. }
+            | crate::rustc_hir::BodyOwnerKind::Static(_) => {
                 // Get the revealed type of this const. This is *not* the adjusted
                 // type of its body, which may be a subtype of this type. For
                 // example:
@@ -211,7 +212,11 @@ impl<'tcx> ThirBuildCx<'tcx> {
         &self,
         hir_id: HirId,
     ) -> Option<ty::CanonicalUserType<'tcx>> {
-        crate::rustc_mir_build::thir::util::user_args_applied_to_ty_of_hir_id(self.tcx, self.typeck_results, hir_id)
+        crate::rustc_mir_build::thir::util::user_args_applied_to_ty_of_hir_id(
+            self.tcx,
+            self.typeck_results,
+            hir_id,
+        )
     }
 }
 

@@ -2,15 +2,13 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
+use crate::configure;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::mut_visit::MutVisitor;
 use crate::rustc_ast::visit::{AssocCtxt, Visitor};
@@ -18,7 +16,6 @@ use crate::rustc_ast::{Attribute, HasTokens, NodeId, mut_visit, visit};
 use crate::rustc_errors::PResult;
 use crate::rustc_expand::base::{Annotatable, ExtCtxt};
 use crate::rustc_expand::config::StripUnconfigured;
-use crate::configure;
 use crate::rustc_feature::Features;
 use crate::rustc_parse::parser::{AllowConstBlockItems, ForceCollect, Parser};
 use crate::rustc_session::Session;
@@ -26,7 +23,9 @@ use crate::rustc_span::{Span, sym};
 use smallvec::SmallVec;
 use tracing::instrument;
 
-use crate::rustc_builtin_macros::util::{check_builtin_macro_attribute, warn_on_duplicate_attribute};
+use crate::rustc_builtin_macros::util::{
+    check_builtin_macro_attribute, warn_on_duplicate_attribute,
+};
 
 pub(crate) fn expand(
     ecx: &mut ExtCtxt<'_>,

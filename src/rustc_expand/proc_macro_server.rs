@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 use core::ops::{Bound, Range};
 
 use crate::rustc_ast as ast;
@@ -413,7 +413,6 @@ impl ToInternal<crate::rustc_errors::Level> for Level {
             Level::Warning => crate::rustc_errors::Level::Warning,
             Level::Note => crate::rustc_errors::Level::Note,
             Level::Help => crate::rustc_errors::Level::Help,
-            _ => unreachable!("unknown proc_macro::Level variant: {:?}", self),
         }
     }
 }
@@ -448,7 +447,7 @@ impl<'a, 'b> Rustc<'a, 'b> {
     }
 
     fn sess(&self) -> &Session {
-        &self.ecx.sess
+        self.ecx.sess
     }
 
     fn psess(&self) -> &ParseSess {

@@ -4,11 +4,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use eko::path::Path;
 
@@ -112,15 +108,15 @@ pub fn filename_for_input(
 
     match crate_type {
         CrateType::Rlib => {
-            OutFileName::Real(outputs.out_directory.join(&format!("lib{libname}.rlib")))
+            OutFileName::Real(outputs.out_directory.join(format!("lib{libname}.rlib")))
         }
         CrateType::Cdylib | CrateType::ProcMacro | CrateType::Dylib | CrateType::Sdylib => {
             let (prefix, suffix) = (&sess.target.dll_prefix, &sess.target.dll_suffix);
-            OutFileName::Real(outputs.out_directory.join(&format!("{prefix}{libname}{suffix}")))
+            OutFileName::Real(outputs.out_directory.join(format!("{prefix}{libname}{suffix}")))
         }
         CrateType::StaticLib => {
             let (prefix, suffix) = sess.staticlib_components(false);
-            OutFileName::Real(outputs.out_directory.join(&format!("{prefix}{libname}{suffix}")))
+            OutFileName::Real(outputs.out_directory.join(format!("{prefix}{libname}{suffix}")))
         }
         CrateType::Executable => {
             let suffix = &sess.target.exe_suffix;
@@ -148,12 +144,11 @@ pub fn invalid_output_for_target(sess: &Session, crate_type: CrateType) -> bool 
             return true;
         }
     }
-    if crate_type == CrateType::ProcMacro {
-        if sess.opts.target_triple == sess.wasm_proc_macro_tuple
-            && sess.opts.unstable_opts.wasm_proc_macros
-        {
-            return false;
-        }
+    if crate_type == CrateType::ProcMacro
+        && sess.opts.target_triple == sess.wasm_proc_macro_tuple
+        && sess.opts.unstable_opts.wasm_proc_macros
+    {
+        return false;
     }
     if let CrateType::ProcMacro | CrateType::Dylib = crate_type
         && sess.target.only_cdylib

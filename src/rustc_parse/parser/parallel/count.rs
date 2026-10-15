@@ -77,3 +77,9 @@ pub(super) fn source_tokens(stream: &TokenStream) -> bool {
         }
     })
 }
+
+pub(super) fn cursor_can_parallel_parse(
+    cursor: &crate::rustc_ast::tokenstream::TokenCursor,
+) -> bool {
+    cursor.can_parallel_parse() || cursor.source_stream().is_some_and(source_tokens)
+}

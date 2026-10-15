@@ -25,7 +25,6 @@ use alloc::vec::Vec;
 
 use core::fmt::Write;
 
-use ast::token::TokenKind;
 use crate::rustc_abi::BackendRepr;
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
 use crate::rustc_ast::visit::{FnCtxt, FnKind};
@@ -39,11 +38,14 @@ use crate::rustc_hir::attrs::{AttributeKind, DocAttribute};
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId, LocalDefId};
 use crate::rustc_hir::intravisit::FnKind as HirFnKind;
-use crate::rustc_hir::{self as hir, Body, FnDecl, ImplItemImplKind, PatKind, PredicateOrigin, find_attr};
+use crate::rustc_hir::{
+    self as hir, Body, FnDecl, ImplItemImplKind, PatKind, PredicateOrigin, find_attr,
+};
+use ast::token::TokenKind;
 // Lints from rustc_lint_defs
+use crate::bug;
 pub use crate::rustc_lint_defs::builtin::*;
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass, fcw, impl_lint_pass};
-use crate::bug;
 use crate::rustc_middle::ty::layout::LayoutOf;
 use crate::rustc_middle::ty::print::with_no_trimmed_paths;
 use crate::rustc_middle::ty::{
@@ -179,20 +181,19 @@ impl<'tcx> LateLintPass<'tcx> for NonShorthandFieldPatterns {
                     // (Issue #49588)
                     continue;
                 }
-                if let PatKind::Binding(binding_annot, _, ident, None) = fieldpat.pat.kind {
-                    if cx.tcx.find_field_index(ident, variant)
+                if let PatKind::Binding(binding_annot, _, ident, None) = fieldpat.pat.kind
+                    && cx.tcx.find_field_index(ident, variant)
                         == Some(cx.typeck_results().field_index(fieldpat.hir_id))
-                    {
-                        cx.emit_span_lint(
-                            NON_SHORTHAND_FIELD_PATTERNS,
-                            fieldpat.span,
-                            BuiltinNonShorthandFieldPatterns {
-                                ident,
-                                suggestion: fieldpat.span,
-                                prefix: binding_annot.prefix_str(),
-                            },
-                        );
-                    }
+                {
+                    cx.emit_span_lint(
+                        NON_SHORTHAND_FIELD_PATTERNS,
+                        fieldpat.span,
+                        BuiltinNonShorthandFieldPatterns {
+                            ident,
+                            suggestion: fieldpat.span,
+                            prefix: binding_annot.prefix_str(),
+                        },
+                    );
                 }
             }
         }
@@ -244,10 +245,8 @@ impl EarlyLintPass for UnsafeCode {
                 self.report_unsafe(cx, it.span, BuiltinUnsafe::GlobalAsm);
             }
 
-            ast::ItemKind::ForeignMod(ForeignMod { safety, .. }) => {
-                if let Safety::Unsafe(_) = safety {
-                    self.report_unsafe(cx, it.span, BuiltinUnsafe::UnsafeExternBlock);
-                }
+            ast::ItemKind::ForeignMod(ForeignMod { safety: Safety::Unsafe(_), .. }) => {
+                self.report_unsafe(cx, it.span, BuiltinUnsafe::UnsafeExternBlock);
             }
 
             ast::ItemKind::MacroDef(..) => {
@@ -537,10 +536,10 @@ impl<'tcx> LateLintPass<'tcx> for MissingCopyImplementations {
         // Default value of clippy::trivially_copy_pass_by_ref
         const MAX_SIZE: u64 = 256;
 
-        if let Some(size) = cx.layout_of(ty).ok().map(|l| l.size.bytes()) {
-            if size > MAX_SIZE {
-                return;
-            }
+        if let Some(size) = cx.layout_of(ty).ok().map(|l| l.size.bytes())
+            && size > MAX_SIZE
+        {
+            return;
         }
 
         if type_allowed_to_implement_copy(
@@ -934,15 +933,11 @@ impl<'tcx> LateLintPass<'tcx> for InvalidNoMangleItems {
 
     fn check_impl_item(&mut self, cx: &LateContext<'_>, it: &hir::ImplItem<'_>) {
         let attrs = cx.tcx.hir_attrs(it.hir_id());
-        match it.kind {
-            hir::ImplItemKind::Fn { .. } => {
-                if let Some(attr_span) = find_attr!(attrs, ExportName {span, ..} => *span)
-                    .or_else(|| find_attr!(attrs, NoMangle(span) => *span))
-                {
-                    self.check_no_mangle_on_generic_fn(cx, attr_span, it.owner_id.def_id);
-                }
-            }
-            _ => {}
+        if let hir::ImplItemKind::Fn { .. } = it.kind
+            && let Some(attr_span) = find_attr!(attrs, ExportName {span, ..} => *span)
+                .or_else(|| find_attr!(attrs, NoMangle(span) => *span))
+        {
+            self.check_no_mangle_on_generic_fn(cx, attr_span, it.owner_id.def_id);
         }
     }
 }
@@ -980,10 +975,9 @@ impl<'tcx> LateLintPass<'tcx> for MutableTransmutes {
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &hir::Expr<'_>) {
         if let Some((&ty::Ref(_, _, from_mutbl), &ty::Ref(_, _, to_mutbl))) =
             get_transmute_from_to(cx, expr).map(|(ty1, ty2)| (ty1.kind(), ty2.kind()))
+            && from_mutbl < to_mutbl
         {
-            if from_mutbl < to_mutbl {
-                cx.emit_span_lint(MUTABLE_TRANSMUTES, expr.span, BuiltinMutablesTransmutes);
-            }
+            cx.emit_span_lint(MUTABLE_TRANSMUTES, expr.span, BuiltinMutablesTransmutes);
         }
 
         fn get_transmute_from_to<'tcx>(
@@ -1102,7 +1096,7 @@ impl<'tcx> LateLintPass<'tcx> for UngatedAsyncFnTrackCaller {
             cx.emit_span_lint(
                 UNGATED_ASYNC_FN_TRACK_CALLER,
                 attr_span,
-                BuiltinUngatedAsyncFnTrackCaller { label: span, session: &cx.tcx.sess },
+                BuiltinUngatedAsyncFnTrackCaller { label: span, session: cx.tcx.sess },
             );
         }
     }
@@ -1459,10 +1453,8 @@ declare_lint! {
     /// ### Example
     ///
     /// ```rust
-    /// fn main() {
-    ///     let x = 1;
-    ///     let _b = --x;
-    /// }
+    /// let x = 1;
+    /// let _b = --x;
     /// ```
     ///
     /// {{produces}}
@@ -1650,10 +1642,10 @@ impl EarlyLintPass for EllipsisInclusiveRangePatterns {
     }
 
     fn check_pat_post(&mut self, _cx: &EarlyContext<'_>, pat: &ast::Pat) {
-        if let Some(node_id) = self.node_id {
-            if pat.id == node_id {
-                self.node_id = None
-            }
+        if let Some(node_id) = self.node_id
+            && pat.id == node_id
+        {
+            self.node_id = None
         }
     }
 }
@@ -2334,8 +2326,8 @@ impl<'tcx> LateLintPass<'tcx> for InvalidValue {
 
         /// Test if this constant is all-0.
         fn is_zero(expr: &hir::Expr<'_>) -> bool {
-            use hir::ExprKind::*;
             use crate::rustc_ast::LitKind::*;
+            use hir::ExprKind::*;
             match &expr.kind {
                 Lit(lit) => {
                     if let Int(i, _) = lit.node {
@@ -2411,31 +2403,30 @@ impl<'tcx> LateLintPass<'tcx> for InvalidValue {
             });
 
             // Check if this ADT has a constrained layout (like `NonNull` and friends).
-            if let Ok(layout) = cx.tcx.layout_of(cx.typing_env().as_query_input(ty)) {
-                if let BackendRepr::Scalar(scalar) | BackendRepr::ScalarPair { a: scalar, .. } =
+            if let Ok(layout) = cx.tcx.layout_of(cx.typing_env().as_query_input(ty))
+                && let BackendRepr::Scalar(scalar) | BackendRepr::ScalarPair { a: scalar, .. } =
                     &layout.backend_repr
-                {
-                    let range = scalar.valid_range(cx);
-                    let msg = if !range.contains(0) {
-                        "must be non-null"
-                    } else if init == InitKind::Uninit && !scalar.is_always_valid(cx) {
-                        // Prefer reporting on the fields over the entire struct for uninit,
-                        // as the information bubbles out and it may be unclear why the type can't
-                        // be null from just its outside signature.
+            {
+                let range = scalar.valid_range(cx);
+                let msg = if !range.contains(0) {
+                    "must be non-null"
+                } else if init == InitKind::Uninit && !scalar.is_always_valid(cx) {
+                    // Prefer reporting on the fields over the entire struct for uninit,
+                    // as the information bubbles out and it may be unclear why the type can't
+                    // be null from just its outside signature.
 
-                        "must be initialized inside its custom valid range"
-                    } else {
-                        return field_err;
-                    };
-                    if let Some(field_err) = &mut field_err {
-                        // Most of the time, if the field error is the same as the struct error,
-                        // the struct error only happens because of the field error.
-                        if field_err.message.contains(msg) {
-                            field_err.message = format!("because {}", field_err.message);
-                        }
+                    "must be initialized inside its custom valid range"
+                } else {
+                    return field_err;
+                };
+                if let Some(field_err) = &mut field_err {
+                    // Most of the time, if the field error is the same as the struct error,
+                    // the struct error only happens because of the field error.
+                    if field_err.message.contains(msg) {
+                        field_err.message = format!("because {}", field_err.message);
                     }
-                    return Some(InitError::from(format!("`{ty}` {msg}")).nested(field_err));
                 }
+                return Some(InitError::from(format!("`{ty}` {msg}")).nested(field_err));
             }
             field_err
         }
@@ -2634,10 +2625,10 @@ impl<'tcx> LateLintPass<'tcx> for DerefNullPtr {
             let ty::RawPtr(pointee, _) = pointer_ty.kind() else {
                 return false;
             };
-            if let Ok(layout) = cx.tcx.layout_of(cx.typing_env().as_query_input(*pointee)) {
-                if layout.layout.size() == crate::rustc_abi::Size::ZERO {
-                    return false;
-                }
+            if let Ok(layout) = cx.tcx.layout_of(cx.typing_env().as_query_input(*pointee))
+                && layout.layout.size() == crate::rustc_abi::Size::ZERO
+            {
+                return false;
             }
 
             match &expr.kind {
@@ -2664,13 +2655,10 @@ impl<'tcx> LateLintPass<'tcx> for DerefNullPtr {
 
         /// test if expression is the literal `0`
         fn is_zero(expr: &hir::Expr<'_>) -> bool {
-            match &expr.kind {
-                hir::ExprKind::Lit(lit) => {
-                    if let LitKind::Int(a, _) = lit.node {
-                        return a == 0;
-                    }
-                }
-                _ => {}
+            if let hir::ExprKind::Lit(lit) = &expr.kind
+                && let LitKind::Int(a, _) = lit.node
+            {
+                return a == 0;
             }
             false
         }
@@ -2829,7 +2817,7 @@ fn is_hexagon_register_span_context(
 
 /// Core implementation for checking hexagon register spans.
 fn is_hexagon_register_span_impl(before_colon: &str, after_colon: &str) -> bool {
-    if before_colon.len() < 1 || after_colon.is_empty() {
+    if before_colon.is_empty() || after_colon.is_empty() {
         return false;
     }
 
@@ -2885,10 +2873,8 @@ impl<'tcx> LateLintPass<'tcx> for AsmLabels {
                     if let Some(template_snippet) = template_snippet {
                         let snippet = template_snippet.as_str();
                         if let Some(pos) = snippet.find(needle) {
-                            let end = pos
-                                + snippet[pos..]
-                                    .find(|c| c == ':')
-                                    .unwrap_or(snippet[pos..].len() - 1);
+                            let end =
+                                pos + snippet[pos..].find(':').unwrap_or(snippet[pos..].len() - 1);
                             let inner = InnerSpan::new(pos, end);
                             return Some(template_span.from_inner(inner));
                         }
@@ -2902,7 +2888,7 @@ impl<'tcx> LateLintPass<'tcx> for AsmLabels {
 
                 // A semicolon might not actually be specified as a separator for all targets, but
                 // it seems like LLVM accepts it always.
-                let statements = template_str.split(|c| matches!(c, '\n' | ';'));
+                let statements = template_str.split(['\n', ';']);
                 for statement in statements {
                     // If there's a comment, trim it from the statement
                     let statement = statement.find("//").map_or(statement, |idx| &statement[..idx]);
@@ -3153,7 +3139,11 @@ declare_lint! {
 declare_lint_pass!(InternalEqTraitMethodImpls => [INTERNAL_EQ_TRAIT_METHOD_IMPLS]);
 
 impl<'tcx> LateLintPass<'tcx> for InternalEqTraitMethodImpls {
-    fn check_impl_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx crate::rustc_hir::ImplItem<'tcx>) {
+    fn check_impl_item(
+        &mut self,
+        cx: &LateContext<'tcx>,
+        item: &'tcx crate::rustc_hir::ImplItem<'tcx>,
+    ) {
         if let ImplItemImplKind::Trait { defaultness: _, trait_item_def_id: Ok(trait_item_def_id) } =
             item.impl_kind
             && cx.tcx.is_diagnostic_item(sym::assert_receiver_is_total_eq, trait_item_def_id)

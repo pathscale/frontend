@@ -8,18 +8,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::cell::{Ref, RefCell};
 use core::ops::Deref;
 
-use hir::def::DefKind;
-use hir::pat_util::EnumerateAndAdjustIterator as _;
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
 use crate::rustc_ast::UnsafeBinderCastKind;
 use crate::rustc_data_structures::fx::FxIndexMap;
@@ -28,6 +22,8 @@ use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_hir::{self as hir, HirId, PatExpr, PatExprKind, PatKind};
 use crate::rustc_lint::LateContext;
 use crate::rustc_middle::hir::place::ProjectionKind;
+use hir::def::DefKind;
+use hir::pat_util::EnumerateAndAdjustIterator as _;
 // Export these here so that Clippy can use them.
 pub use crate::rustc_middle::hir::place::{Place, PlaceBase, PlaceWithHirId, Projection};
 use crate::rustc_middle::mir::FakeReadCause;
@@ -677,7 +673,7 @@ impl<'tcx, Cx: TypeInformationCtxt<'tcx>, D: Delegate<'tcx>> ExprUseVisitor<'tcx
         }
 
         let with_expr = match *opt_with {
-            hir::StructTailExpr::Base(w) => &*w,
+            hir::StructTailExpr::Base(w) => w,
             hir::StructTailExpr::DefaultFields(_)
             | hir::StructTailExpr::None
             | hir::StructTailExpr::NoneWithError(_) => {
@@ -815,7 +811,7 @@ impl<'tcx, Cx: TypeInformationCtxt<'tcx>, D: Delegate<'tcx>> ExprUseVisitor<'tcx
     ) -> Result<(), Cx::Error> {
         self.walk_pat(discr_place, arm.pat, arm.guard.is_some())?;
 
-        if let Some(ref e) = arm.guard {
+        if let Some(e) = arm.guard {
             self.consume_expr(e)?;
         }
 

@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -20,9 +17,9 @@ pub(crate) struct ExpandRequires;
 pub(crate) struct ExpandEnsures;
 
 impl AttrProcMacro for ExpandRequires {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        ecx: &'cx mut ExtCtxt<'_>,
+        ecx: &mut ExtCtxt<'_>,
         span: Span,
         annotation: TokenStream,
         annotated: TokenStream,
@@ -32,9 +29,9 @@ impl AttrProcMacro for ExpandRequires {
 }
 
 impl AttrProcMacro for ExpandEnsures {
-    fn expand<'cx>(
+    fn expand(
         &self,
-        ecx: &'cx mut ExtCtxt<'_>,
+        ecx: &mut ExtCtxt<'_>,
         span: Span,
         annotation: TokenStream,
         annotated: TokenStream,

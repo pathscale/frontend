@@ -16,7 +16,9 @@ use crate::rustc_span::Span;
 use tracing::{debug, instrument};
 
 use super::outlives::test_type_match;
-use crate::rustc_infer::infer::lexical_region_resolve::indexed_edges::{EdgeDirection, IndexedConstraintEdges};
+use crate::rustc_infer::infer::lexical_region_resolve::indexed_edges::{
+    EdgeDirection, IndexedConstraintEdges,
+};
 use crate::rustc_infer::infer::region_constraints::{
     ConstraintKind, GenericKind, RegionConstraintData, VarInfos, VerifyBound,
 };
@@ -394,7 +396,7 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
     fn sub_region_values(&self, a: VarValue<'tcx>, b: VarValue<'tcx>) -> bool {
         match (a, b) {
             // Error region is `'static`
-            (VarValue::ErrorValue, _) | (_, VarValue::ErrorValue) => return true,
+            (VarValue::ErrorValue, _) | (_, VarValue::ErrorValue) => true,
             (VarValue::Empty(a_ui), VarValue::Empty(b_ui)) => {
                 // Empty regions are ordered according to the universe
                 // they are associated with.
@@ -462,7 +464,7 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                         // If this empty region is from a universe that can
                         // name the placeholder, then the placeholder is
                         // larger; otherwise, the only ancestor is `'static`.
-                        return a_ui.can_name(placeholder.universe);
+                        a_ui.can_name(placeholder.universe)
                     }
                 }
             }
@@ -774,18 +776,18 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
             .expect("lower_vid_bounds should at least include `node_idx`");
 
         for upper_bound in &upper_bounds {
-            if let ty::RePlaceholder(p) = upper_bound.region.kind() {
-                if min_universe.cannot_name(p.universe) {
-                    let origin = self.var_infos[node_idx].origin;
-                    errors.push(RegionResolutionError::UpperBoundUniverseConflict(
-                        node_idx,
-                        origin,
-                        min_universe,
-                        upper_bound.origin.clone(),
-                        upper_bound.region,
-                    ));
-                    return;
-                }
+            if let ty::RePlaceholder(p) = upper_bound.region.kind()
+                && min_universe.cannot_name(p.universe)
+            {
+                let origin = self.var_infos[node_idx].origin;
+                errors.push(RegionResolutionError::UpperBoundUniverseConflict(
+                    node_idx,
+                    origin,
+                    min_universe,
+                    upper_bound.origin.clone(),
+                    upper_bound.region,
+                ));
+                return;
             }
         }
 

@@ -4,10 +4,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -33,7 +31,6 @@ use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_data_structures::profiling::SelfProfilerRef;
 use crate::rustc_data_structures::sharded::{InternKey, InternSet, IntoPointer};
-use crate::rustc_data_structures::stable_hash::StableHash;
 use crate::rustc_data_structures::steal::Steal;
 use crate::rustc_data_structures::sync::{self, FreezeReadGuard, Lock, RwLock, WorkerLocal};
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, Diagnostic, MultiSpan};
@@ -829,7 +826,17 @@ pub struct CurrentGcx {
 
 // `DynSend`/`DynSync` for `CurrentGcx` come from the blanket impls in `marker.rs`.
 
+impl Default for CurrentGcx {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CurrentGcx {
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the cloneable context handle is confined to the caller thread"
+    )]
     pub fn new() -> Self {
         Self { value: Arc::new(RwLock::new(None)) }
     }
@@ -947,6 +954,10 @@ impl<'tcx> TyCtxt<'tcx> {
     /// By only providing the `TyCtxt` inside of the closure we enforce that the type
     /// context and any interned value (types, args, etc.) can only be used while `ty::tls`
     /// has a valid reference to the context, to allow formatting values that need it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "this constructor wires the context's independent compiler services"
+    )]
     pub fn create_global_ctxt<T>(
         gcx_cell: &'tcx OnceLock<GlobalCtxt<'tcx>>,
         sess: &'tcx Session,
@@ -1274,7 +1285,7 @@ impl<'tcx> TyCtxt<'tcx> {
     ) -> Option<ty::Binder<'tcx, ty::FnSig<'tcx>>> {
         let fun_features = &self.codegen_fn_attrs(fun_def).target_features;
         let caller_features = &self.body_codegen_attrs(caller).target_features;
-        if self.is_target_feature_call_safe(&fun_features, &caller_features) {
+        if self.is_target_feature_call_safe(fun_features, caller_features) {
             return Some(fun_sig.map_bound(|sig| ty::FnSig {
                 fn_sig_kind: fun_sig.fn_sig_kind().set_safety(hir::Safety::Safe),
                 ..sig
@@ -1786,7 +1797,7 @@ impl<'a, 'tcx> Lift<TyCtxt<'tcx>> for Interned<'a, RegionKind<'a>> {
 
     #[track_caller]
     fn lift_to_interner(self, tcx: TyCtxt<'tcx>) -> Self::Lifted {
-        assert!(tcx.interners.region.contains_pointer_to(&InternedInSet(&*self.0)));
+        assert!(tcx.interners.region.contains_pointer_to(&InternedInSet(self.0)));
         // SAFETY: we just checked that `self` is interned in this `TyCtxt`, so
         // its pointee is valid for the entire lifetime of the target `TyCtxt`.
         unsafe { mem::transmute(self) }
@@ -2023,7 +2034,7 @@ impl<'tcx, T: Hash> Hash for InternedInSet<'tcx, ListWithCachedTypeInfo<T>> {
 macro_rules! direct_interners {
     ($($name:ident: $vis:vis $method:ident($ty:ty): $ret_ctor:ident -> $ret_ty:ty,)+) => {
         $(impl<'tcx> Borrow<$ty> for InternedInSet<'tcx, $ty> {
-            fn borrow<'a>(&'a self) -> &'a $ty {
+            fn borrow(&self) -> &$ty {
                 &self.0
             }
         }
@@ -3010,11 +3021,9 @@ pub(crate) mod const_term {
                     ty: Some(ty),
                     neg: false,
                 }) {
-                    Some(value) => ConstTerm::Literal(ty::Const::new_value(
-                        tcx,
-                        value.valtree,
-                        value.ty,
-                    )),
+                    Some(value) => {
+                        ConstTerm::Literal(ty::Const::new_value(tcx, value.valtree, value.ty))
+                    }
                     None => ConstTerm::Opaque,
                 }
             }
@@ -3054,9 +3063,7 @@ pub(crate) mod const_term {
                 };
                 ConstTerm::Call(
                     function_def_id,
-                    args.iter()
-                        .map(|arg| read_expr(tcx, owner, arg, path, depth))
-                        .collect(),
+                    args.iter().map(|arg| read_expr(tcx, owner, arg, path, depth)).collect(),
                 )
             }
             _ => ConstTerm::Opaque,

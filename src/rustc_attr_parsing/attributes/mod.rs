@@ -10,16 +10,16 @@
 //! state machine yourself. In this case you can choose to implement:
 //!
 //! - [`NoArgsAttributeParser`]: used for implementing an attribute that appears only once and
-//! accepts no arguments
+//!   accepts no arguments
 //! - [`SingleAttributeParser`]: makes it easy to implement an attribute which should error if it
-//! appears more than once in a list of attributes
+//!   appears more than once in a list of attributes
 //! - [`CombineAttributeParser`]: makes it easy to implement an attribute which should combine the
-//! contents of attributes, if an attribute appear multiple times in a list
+//!   contents of attributes, if an attribute appear multiple times in a list
 //!
 //! Attributes should be added to `crate::rustc_attr_parsing::context::ATTRIBUTE_PARSERS` to be parsed.
 
-use alloc::vec::Vec;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::rustc_attr_ir::AttributeKind;
@@ -28,7 +28,9 @@ use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{Span, Symbol};
 use thin_vec::ThinVec;
 
-use crate::rustc_attr_parsing::context::{AcceptContext, FinalizeCheckContext, FinalizeCheckFn, FinalizeContext};
+use crate::rustc_attr_parsing::context::{
+    AcceptContext, FinalizeCheckContext, FinalizeCheckFn, FinalizeContext,
+};
 use crate::rustc_attr_parsing::diagnostics::UnusedMultiple;
 use crate::rustc_attr_parsing::parser::ArgParser;
 use crate::rustc_attr_parsing::target_checking::AllowedTargets;

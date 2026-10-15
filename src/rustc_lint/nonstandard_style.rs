@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -156,9 +153,9 @@ fn not_camel_case(s: &str) -> bool {
     s.chars().any(|snd| {
         let fst = core::mem::replace(&mut last, snd);
         match (fst, snd) {
-            ('_', '_') => return true,
-            ('_', _) if char_has_case(snd) => return true,
-            (_, '_') if char_has_case(fst) => return true,
+            ('_', '_') => true,
+            ('_', _) if char_has_case(snd) => true,
+            (_, '_') if char_has_case(fst) => true,
             _ => snd.is_uppercase() && changes_when_titlecased(snd),
         }
     })
@@ -505,10 +502,8 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
 
     fn check_ty(&mut self, cx: &LateContext<'_>, ty: &hir::Ty<'_, hir::AmbigArg>) {
         if let hir::TyKind::FnPtr(hir::FnPtrTy { param_idents, .. }) = &ty.kind {
-            for param_ident in *param_idents {
-                if let Some(param_ident) = param_ident {
-                    self.check_snake_case(cx, "variable", param_ident);
-                }
+            for param_ident in (*param_idents).iter().flatten() {
+                self.check_snake_case(cx, "variable", param_ident);
             }
         }
     }
@@ -516,10 +511,8 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
     fn check_trait_item(&mut self, cx: &LateContext<'_>, item: &hir::TraitItem<'_>) {
         if let hir::TraitItemKind::Fn(_, hir::TraitFn::Required(param_idents)) = item.kind {
             self.check_snake_case(cx, "trait method", &item.ident);
-            for param_ident in param_idents {
-                if let Some(param_ident) = param_ident {
-                    self.check_snake_case(cx, "variable", param_ident);
-                }
+            for param_ident in param_idents.iter().flatten() {
+                self.check_snake_case(cx, "variable", param_ident);
             }
         }
     }
@@ -712,17 +705,10 @@ impl<'tcx> LateLintPass<'tcx> for NonUpperCaseGlobals {
             kind: PatExprKind::Path(hir::QPath::Resolved(None, path)),
             ..
         }) = p.kind
+            && let Res::Def(DefKind::Const { .. }, _) = path.res
+            && let [segment] = path.segments
         {
-            if let Res::Def(DefKind::Const { .. }, _) = path.res
-                && let [segment] = path.segments
-            {
-                NonUpperCaseGlobals::check_upper_case(
-                    cx,
-                    "constant in pattern",
-                    None,
-                    &segment.ident,
-                );
-            }
+            NonUpperCaseGlobals::check_upper_case(cx, "constant in pattern", None, &segment.ident);
         }
     }
 

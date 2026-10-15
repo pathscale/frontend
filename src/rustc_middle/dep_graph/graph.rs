@@ -1,18 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::assert_matches;
+use alloc::sync::Arc;
 use core::cell::Cell;
 use core::fmt::Debug;
 use core::hash::Hash;
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::rustc_data_structures::fingerprint::{Fingerprint, PackedFingerprint};
@@ -24,10 +21,10 @@ use crate::rustc_data_structures::sync::{AtomicU64, Lock, WorkerLocal};
 use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_errors::DiagInner;
 use crate::rustc_index::IndexVec;
-use rustc_macros::{Decodable, Encodable};
 use crate::rustc_serialize::opaque::{FileEncodeResult, FileEncoder};
 use crate::rustc_session::Session;
 use crate::rustc_span::Symbol;
+use rustc_macros::{Decodable, Encodable};
 use smallvec::SmallVec;
 use tracing::instrument;
 #[cfg(debug_assertions)]
@@ -51,6 +48,10 @@ use crate::rustc_middle::verify_ich::incremental_verify_ich;
 /// Each side effect gets an unique dep node index which is added
 /// as a dependency of the query which had the effect.
 #[derive(Debug, Encodable, Decodable)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the variants retain the existing query side effect representation"
+)]
 pub enum QuerySideEffect {
     /// Stores a diagnostic emitted during query execution.
     /// This diagnostic will be re-emitted if we mark
@@ -183,6 +184,10 @@ where
 }
 
 impl DepGraph {
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "the graph handle is shared only within its caller-thread compiler session"
+    )]
     pub fn new(
         session: &Session,
         prev_graph: Arc<SerializedDepGraph>,
@@ -258,7 +263,7 @@ impl DepGraph {
     }
 
     pub fn assert_ignored(&self) {
-        if let Some(..) = self.data {
+        if self.data.is_some() {
             read_deps(|task_deps| {
                 assert_matches!(
                     task_deps,
@@ -563,7 +568,7 @@ impl DepGraph {
     pub fn record_diagnostic<'tcx>(&self, tcx: TyCtxt<'tcx>, diagnostic: &DiagInner) {
         if let Some(ref data) = self.data {
             read_deps(|task_deps| match task_deps {
-                TaskDepsRef::EvalAlways | TaskDepsRef::Ignore => return,
+                TaskDepsRef::EvalAlways | TaskDepsRef::Ignore => (),
                 TaskDepsRef::Forbid | TaskDepsRef::Allow(..) => {
                     let dep_node_index = data
                         .encode_side_effect(tcx, QuerySideEffect::Diagnostic(diagnostic.clone()));
@@ -1345,10 +1350,10 @@ pub(super) struct DepNodeColorMap {
 // All values below `COMPRESSED_RED` are green.
 const COMPRESSED_RED: u32 = u32::MAX - 1;
 const COMPRESSED_UNKNOWN: u32 = u32::MAX;
+const _: () = assert!(COMPRESSED_RED > DepNodeIndex::MAX_AS_U32);
 
 impl DepNodeColorMap {
     fn new(size: usize) -> DepNodeColorMap {
-        debug_assert!(COMPRESSED_RED > DepNodeIndex::MAX_AS_U32);
         DepNodeColorMap { values: (0..size).map(|_| AtomicU32::new(COMPRESSED_UNKNOWN)).collect() }
     }
 

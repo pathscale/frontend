@@ -70,12 +70,12 @@ pub(crate) fn extension(
 /// Only keep `#[doc]` attrs.
 fn scrub_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
     attrs
-        .into_iter()
-        .cloned()
+        .iter()
         .filter(|attr| {
             let ident = &attr.path().segments[0].ident;
             ident == "doc" || ident == "must_use"
         })
+        .cloned()
         .collect()
 }
 
@@ -98,16 +98,14 @@ fn scrub_header(mut sig: Signature) -> Signature {
                 }
                 _ => {
                     // `pat` -> `__arg0`
-                    arg.pat = Box::new(
-                        PatIdent {
-                            attrs: vec![],
-                            by_ref: None,
-                            mutability: None,
-                            ident: Ident::new(&format!("__arg{idx}"), arg.pat.span()),
-                            subpat: None,
-                        }
-                        .into(),
-                    )
+                    *arg.pat = PatIdent {
+                        attrs: vec![],
+                        by_ref: None,
+                        mutability: None,
+                        ident: Ident::new(&format!("__arg{idx}"), arg.pat.span()),
+                        subpat: None,
+                    }
+                    .into()
                 }
             },
         }

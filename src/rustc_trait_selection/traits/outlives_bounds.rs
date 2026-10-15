@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -12,11 +8,11 @@ use crate::rustc_infer::infer::InferOk;
 use crate::rustc_infer::infer::canonical::QueryRegionConstraint;
 use crate::rustc_infer::infer::resolve::OpportunisticRegionResolver;
 use crate::rustc_infer::traits::query::type_op::ImpliedOutlivesBounds;
-use rustc_macros::extension;
 use crate::rustc_middle::infer::canonical::{OriginalQueryValues, QueryRegionConstraints};
 pub use crate::rustc_middle::traits::query::OutlivesBound;
 use crate::rustc_middle::ty::{self, ParamEnv, Ty, TypeFolder, TypeVisitableExt};
 use crate::rustc_span::def_id::LocalDefId;
+use rustc_macros::extension;
 use tracing::instrument;
 
 use crate::rustc_trait_selection::infer::InferCtxt;

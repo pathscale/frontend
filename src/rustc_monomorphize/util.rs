@@ -10,10 +10,7 @@ use crate::rustc_middle::ty::{self, ClosureSizeProfileData, Instance, TyCtxt};
 /// During the same compile all closures dump the information in the same file
 /// "closure_profile_XXXXX.csv", which is created in the directory where the compiler is invoked.
 pub(crate) fn dump_closure_profile<'tcx>(tcx: TyCtxt<'tcx>, closure_instance: Instance<'tcx>) {
-    let Ok(mut file) = File::append(&format!(
-        "closure_profile_{}.csv",
-        eko::proc::id()
-    )) else {
+    let Ok(mut file) = File::append(format!("closure_profile_{}.csv", eko::proc::id())) else {
         eko::eprintln!("Couldn't open file for writing closure profile");
         return;
     };

@@ -12,8 +12,8 @@
 
 use alloc::format;
 
-use crate::odht::swisstable_group_query::{GroupQuery, GROUP_SIZE, REFERENCE_GROUP_SIZE};
-use crate::odht::{error::Error, HashFn};
+use crate::odht::swisstable_group_query::{GROUP_SIZE, GroupQuery, REFERENCE_GROUP_SIZE};
+use crate::odht::{HashFn, error::Error};
 use core::convert::TryInto;
 use core::{fmt, marker::PhantomData, mem::size_of};
 
@@ -42,10 +42,7 @@ impl<K: ByteArray, V: ByteArray> Entry<K, V> {
 impl<K: ByteArray, V: ByteArray> Default for Entry<K, V> {
     #[inline]
     fn default() -> Entry<K, V> {
-        Entry {
-            key: K::zeroed(),
-            value: V::zeroed(),
-        }
+        Entry { key: K::zeroed(), value: V::zeroed() }
     }
 }
 
@@ -83,7 +80,7 @@ fn h1(h: HashValue) -> usize {
 
 #[inline]
 fn h2(h: HashValue) -> u8 {
-    const SHIFT: usize = size_of::<HashValue>() * 8 - 7;
+    const SHIFT: usize = HashValue::BITS as usize - 7;
     (h >> SHIFT) as u8
 }
 
@@ -107,18 +104,13 @@ impl<const GROUP_SIZE: usize> ProbeSeq<GROUP_SIZE> {
     fn new(h1: usize, mask: usize) -> Self {
         let initial_index = h1 & mask;
 
-        ProbeSeq {
-            index: initial_index,
-            base: initial_index,
-            chunk_index: 0,
-            stride: 0,
-        }
+        ProbeSeq { index: initial_index, base: initial_index, chunk_index: 0, stride: 0 }
     }
 
     #[inline]
     fn advance(&mut self, mask: usize) {
         debug_assert!(GROUP_SIZE <= REFERENCE_GROUP_SIZE);
-        debug_assert!(REFERENCE_GROUP_SIZE % GROUP_SIZE == 0);
+        debug_assert!(REFERENCE_GROUP_SIZE.is_multiple_of(GROUP_SIZE));
 
         // The effect of the code in the two branches is
         // identical if GROUP_SIZE==REFERENCE_GROUP_SIZE
@@ -145,10 +137,10 @@ impl<const GROUP_SIZE: usize> ProbeSeq<GROUP_SIZE> {
 }
 
 #[inline]
-fn group_starting_at<'a>(control_bytes: &'a [u8], index: usize) -> &'a [u8; GROUP_SIZE] {
+fn group_starting_at(control_bytes: &[u8], index: usize) -> &[u8; GROUP_SIZE] {
     debug_assert!(index < control_bytes.len() - GROUP_SIZE);
     unsafe {
-        core::slice::from_raw_parts(control_bytes.as_ptr().offset(index as isize), GROUP_SIZE)
+        core::slice::from_raw_parts(control_bytes.as_ptr().add(index), GROUP_SIZE)
             .try_into()
             .unwrap()
     }
@@ -190,11 +182,7 @@ where
         debug_assert!(data.len().is_power_of_two());
         debug_assert!(metadata.len() == data.len() + REFERENCE_GROUP_SIZE);
 
-        Self {
-            metadata,
-            data,
-            _hash_fn: PhantomData::default(),
-        }
+        Self { metadata, data, _hash_fn: PhantomData }
     }
 
     #[inline]
@@ -202,17 +190,20 @@ where
         debug_assert!(self.data.len().is_power_of_two());
         debug_assert!(self.metadata.len() == self.data.len() + REFERENCE_GROUP_SIZE);
 
+        if self.data.is_empty() {
+            return None;
+        }
+
         let mask = self.data.len() - 1;
         let hash = H::hash(key.as_slice());
         let mut ps = ProbeSeq::<GROUP_SIZE>::new(h1(hash), mask);
         let h2 = h2(hash);
 
-        loop {
+        for _ in 0..self.data.len() {
             let mut group_query = GroupQuery::from(group_starting_at(self.metadata, ps.index), h2);
 
             for m in &mut group_query {
                 let index = (ps.index + m) & mask;
-
                 let entry = entry_at(self.data, index);
 
                 if likely!(entry.key.equals(key)) {
@@ -226,6 +217,8 @@ where
 
             ps.advance(mask);
         }
+
+        None
     }
 
     #[inline]
@@ -312,11 +305,7 @@ where
         debug_assert!(data.len().is_power_of_two());
         debug_assert_eq!(metadata.len(), data.len() + REFERENCE_GROUP_SIZE);
 
-        Self {
-            metadata,
-            data,
-            _hash_fn: PhantomData::default(),
-        }
+        Self { metadata, data, _hash_fn: PhantomData }
     }
 
     /// Inserts the given key value pair into the hash table.
@@ -412,11 +401,7 @@ where
         debug_assert!(data.len().is_power_of_two());
         debug_assert!(metadata.len() == data.len() + REFERENCE_GROUP_SIZE);
 
-        RawIter {
-            metadata,
-            data,
-            current_index: 0,
-        }
+        RawIter { metadata, data, current_index: 0 }
     }
 }
 
@@ -501,16 +486,12 @@ impl<const LEN: usize> ByteArray for [u8; LEN] {
         }
 
         // fallback
-        return &self[..] == &other[..];
+        return self[..] == other[..];
 
         #[inline(always)]
         fn read_usize(bytes: &[u8], index: usize) -> usize {
             const STRIDE: usize = size_of::<usize>();
-            usize::from_le_bytes(
-                bytes[STRIDE * index..STRIDE * (index + 1)]
-                    .try_into()
-                    .unwrap(),
-            )
+            usize::from_le_bytes(bytes[STRIDE * index..STRIDE * (index + 1)].try_into().unwrap())
         }
     }
 }
@@ -562,7 +543,7 @@ mod tests {
             let table: RawTable<_, _, FxHashFn> = RawTable {
                 metadata: &metadata[..],
                 data: &data[..],
-                _hash_fn: PhantomData::default(),
+                _hash_fn: PhantomData,
             };
 
             for x in xs.iter() {
@@ -575,7 +556,7 @@ mod tests {
             let mut table: RawTableMut<_, _, FxHashFn> = RawTableMut {
                 metadata: &mut metadata[..],
                 data: &mut data[..],
-                _hash_fn: PhantomData::default(),
+                _hash_fn: PhantomData,
             };
 
             for (i, x) in xs.iter().enumerate() {
@@ -588,7 +569,7 @@ mod tests {
             let table: RawTable<_, _, FxHashFn> = RawTable {
                 metadata: &metadata[..],
                 data: &data[..],
-                _hash_fn: PhantomData::default(),
+                _hash_fn: PhantomData,
             };
 
             for (i, x) in xs.iter().enumerate() {
@@ -622,7 +603,7 @@ mod tests {
         }
 
         fn test_with_group_size<const GROUP_SIZE: usize>() {
-            assert!(REFERENCE_GROUP_SIZE % GROUP_SIZE == 0);
+            assert!(REFERENCE_GROUP_SIZE.is_multiple_of(GROUP_SIZE));
             assert!(REFERENCE_GROUP_SIZE >= GROUP_SIZE);
 
             for i in 4 .. 17 {

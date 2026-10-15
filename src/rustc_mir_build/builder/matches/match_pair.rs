@@ -1,14 +1,13 @@
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_middle::mir::{Pinnedness, Place, PlaceElem, ProjectionElem};
-use crate::span_bug;
 use crate::rustc_middle::thir::{Ascription, DerefPatBorrowMode, FieldPat, Pat, PatKind};
 use crate::rustc_middle::ty::{self, Ty, TypeVisitableExt};
 use crate::rustc_span::Span;
+use crate::span_bug;
 
 use crate::rustc_mir_build::builder::Builder;
 use crate::rustc_mir_build::builder::expr::as_place::{PlaceBase, PlaceBuilder};
@@ -131,10 +130,7 @@ fn squash_inter_pat<'tcx>(
         assert!(subpats.is_empty());
         assert!(binding.is_none());
 
-        let or_subpats = or_subpats
-            .into_iter()
-            .map(|subpat| FlatPat::from_inter_pat(subpat))
-            .collect::<Box<[_]>>();
+        let or_subpats = or_subpats.into_iter().map(FlatPat::from_inter_pat).collect::<Box<[_]>>();
 
         if !or_subpats[0].extra_data.bindings.is_empty() {
             // Hold a place for any bindings established in (possibly-nested) or-patterns.

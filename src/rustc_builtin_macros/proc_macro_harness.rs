@@ -2,10 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -25,7 +22,7 @@ use crate::rustc_span::hygiene::AstPass;
 use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, kw, sym};
 use smallvec::smallvec;
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::thin_vec;
 
 use crate::rustc_builtin_macros::diagnostics;
 
@@ -57,6 +54,10 @@ struct CollectProcMacros<'a> {
     is_test_crate: bool,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub fn inject(
     krate: &mut ast::Crate,
     sess: &Session,
@@ -179,12 +180,13 @@ impl<'a> Visitor<'a> for CollectProcMacros<'a> {
     type Result = ();
 
     fn visit_item(&mut self, item: &'a ast::Item) {
-        if let ast::ItemKind::MacroDef(..) = item.kind {
-            if self.is_proc_macro_crate && attr::contains_name(&item.attrs, sym::macro_export) {
-                self.dcx.emit_err(diagnostics::ExportMacroRules {
-                    span: self.source_map.guess_head_span(item.span),
-                });
-            }
+        if let ast::ItemKind::MacroDef(..) = item.kind
+            && self.is_proc_macro_crate
+            && attr::contains_name(&item.attrs, sym::macro_export)
+        {
+            self.dcx.emit_err(diagnostics::ExportMacroRules {
+                span: self.source_map.guess_head_span(item.span),
+            });
         }
 
         let mut found_attr: Option<&'a ast::Attribute> = None;

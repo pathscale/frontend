@@ -6,18 +6,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
-use hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_middle::ty::{self, GenericArgKind, GenericArgsRef, Ty, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
+use hir::def_id::{DefId, LocalDefId};
 use tracing::{debug, instrument};
 
 use super::terms::VarianceTerm::*;
@@ -417,11 +412,8 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
     ) {
         debug!("add_constraints_from_const(c={:?}, variance={:?})", c, variance);
 
-        match &c.kind() {
-            ty::ConstKind::Alias(_, alias_const) => {
-                self.add_constraints_from_invariant_args(current, alias_const.args, variance);
-            }
-            _ => {}
+        if let ty::ConstKind::Alias(_, alias_const) = &c.kind() {
+            self.add_constraints_from_invariant_args(current, alias_const.args, variance);
         }
     }
 

@@ -1,8 +1,8 @@
 use core::mem;
 
+use crate::bug;
 use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::rustc_hir::def_id::DefId;
-use crate::bug;
 use crate::rustc_middle::ty::error::TypeError;
 use crate::rustc_middle::ty::{self, InferConst, Term, Ty, TyCtxt, TypeVisitableExt};
 use crate::rustc_span::Span;

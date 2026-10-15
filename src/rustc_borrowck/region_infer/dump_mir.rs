@@ -3,20 +3,15 @@
 //! state of region inference. This code handles emitting the region
 //! context internal state.
 
-
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
-use core::fmt::Write;
 use crate::rustc_infer::infer::NllRegionVariableOrigin;
 use crate::rustc_middle::ty::TyCtxt;
+use core::fmt::Write;
 
 use super::{OutlivesConstraint, RegionInferenceContext};
 use crate::rustc_borrowck::type_check::Locations;

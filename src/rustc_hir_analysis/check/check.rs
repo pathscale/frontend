@@ -1,10 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -22,8 +20,9 @@ use crate::rustc_hir::def::{CtorKind, DefKind};
 use crate::rustc_hir::{Node, find_attr, intravisit};
 use crate::rustc_infer::infer::{RegionVariableOrigin, TyCtxtInferExt};
 use crate::rustc_infer::traits::{Obligation, ObligationCauseCode, TraitErrors, WellFormedLoc};
-use crate::rustc_lint_defs::builtin::{DEAD_CODE, UNINHABITED_STATIC, UNSUPPORTED_CALLING_CONVENTIONS};
-use rustc_macros::Diagnostic;
+use crate::rustc_lint_defs::builtin::{
+    DEAD_CODE, UNINHABITED_STATIC, UNSUPPORTED_CALLING_CONVENTIONS,
+};
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::middle::resolve_bound_vars::ResolvedArg;
 use crate::rustc_middle::middle::stability::EvalResult;
@@ -39,6 +38,7 @@ use crate::rustc_target::spec::{AbiMap, AbiMapping};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::traits;
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
+use rustc_macros::Diagnostic;
 use tracing::{debug, instrument};
 use ty::TypingMode;
 
@@ -539,12 +539,13 @@ fn sanity_check_found_hidden_type<'tcx>(
         // Nothing was actually constrained.
         return Ok(());
     }
-    if let &ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, args, .. }) = ty.ty.kind() {
-        if def_id == key.def_id.to_def_id() && args == key.args {
-            // Nothing was actually constrained, this is an opaque usage that was
-            // only discovered to be opaque after inference vars resolved.
-            return Ok(());
-        }
+    if let &ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, args, .. }) = ty.ty.kind()
+        && def_id == key.def_id.to_def_id()
+        && args == key.args
+    {
+        // Nothing was actually constrained, this is an opaque usage that was
+        // only discovered to be opaque after inference vars resolved.
+        return Ok(());
     }
     let erase_re_vars = |ty: Ty<'tcx>| {
         fold_regions(tcx, ty, |r, _| match r.kind() {
@@ -755,14 +756,14 @@ fn is_enum_of_nonnullable_ptr<'tcx>(
 }
 
 fn check_static_linkage(tcx: TyCtxt<'_>, def_id: LocalDefId) {
-    if tcx.codegen_fn_attrs(def_id).import_linkage.is_some() {
-        if match tcx.type_of(def_id).instantiate_identity().skip_norm_wip().kind() {
+    if tcx.codegen_fn_attrs(def_id).import_linkage.is_some()
+        && match tcx.type_of(def_id).instantiate_identity().skip_norm_wip().kind() {
             ty::RawPtr(_, _) => false,
-            ty::Adt(adt_def, args) => !is_enum_of_nonnullable_ptr(tcx, *adt_def, *args),
+            ty::Adt(adt_def, args) => !is_enum_of_nonnullable_ptr(tcx, *adt_def, args),
             _ => true,
-        } {
-            tcx.dcx().emit_err(diagnostics::LinkageType { span: tcx.def_span(def_id) });
         }
+    {
+        tcx.dcx().emit_err(diagnostics::LinkageType { span: tcx.def_span(def_id) });
     }
 }
 
@@ -772,7 +773,7 @@ pub(crate) fn check_item_type(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Result<(),
 
     for param in &generics.own_params {
         match param.kind {
-            ty::GenericParamDefKind::Lifetime { .. } => {}
+            ty::GenericParamDefKind::Lifetime => {}
             ty::GenericParamDefKind::Type { has_default, .. } => {
                 if has_default {
                     tcx.ensure_ok().type_of(param.def_id);
@@ -1414,12 +1415,12 @@ fn check_impl_items_against_trait<'tcx>(
                 }
             }
 
-            if let Some(required_items) = &must_implement_one_of {
-                if is_implemented_here {
-                    let trait_item = tcx.associated_item(trait_item_id);
-                    if required_items.contains(&trait_item.ident(tcx)) {
-                        must_implement_one_of = None;
-                    }
+            if let Some(required_items) = &must_implement_one_of
+                && is_implemented_here
+            {
+                let trait_item = tcx.associated_item(trait_item_id);
+                if required_items.contains(&trait_item.ident(tcx)) {
+                    must_implement_one_of = None;
                 }
             }
 
@@ -1459,7 +1460,7 @@ fn check_impl_items_against_trait<'tcx>(
 
         if let Some(missing_items) = must_implement_one_of {
             let attr_span = find_attr!(tcx, trait_ref.def_id, RustcMustImplementOneOf {attr_span, ..} => *attr_span);
-            let missing_items = missing_items.into_iter().map(|i| i.name);
+            let missing_items = missing_items.iter().map(|i| i.name);
             missing_items_must_implement_one_of_err(tcx, impl_id, missing_items, attr_span);
         }
     }
@@ -1533,7 +1534,6 @@ fn check_simd(tcx: TyCtxt<'_>, sp: Span, def_id: LocalDefId) {
                         primitive scalar (integer/float/pointer) type"
                 )
                 .emit();
-                return;
             }
         }
     }
@@ -1722,24 +1722,24 @@ pub(super) fn check_packed_inner(
     def_id: DefId,
     stack: &mut Vec<DefId>,
 ) -> Option<Vec<(DefId, Span)>> {
-    if let ty::Adt(def, args) = tcx.type_of(def_id).instantiate_identity().skip_norm_wip().kind() {
-        if def.is_struct() || def.is_union() {
-            if def.repr().align.is_some() {
-                return Some(vec![(def.did(), DUMMY_SP)]);
-            }
-
-            stack.push(def_id);
-            for field in &def.non_enum_variant().fields {
-                if let ty::Adt(def, _) = field.ty(tcx, args).skip_norm_wip().kind()
-                    && !stack.contains(&def.did())
-                    && let Some(mut defs) = check_packed_inner(tcx, def.did(), stack)
-                {
-                    defs.push((def.did(), field.ident(tcx).span));
-                    return Some(defs);
-                }
-            }
-            stack.pop();
+    if let ty::Adt(def, args) = tcx.type_of(def_id).instantiate_identity().skip_norm_wip().kind()
+        && (def.is_struct() || def.is_union())
+    {
+        if def.repr().align.is_some() {
+            return Some(vec![(def.did(), DUMMY_SP)]);
         }
+
+        stack.push(def_id);
+        for field in &def.non_enum_variant().fields {
+            if let ty::Adt(def, _) = field.ty(tcx, args).skip_norm_wip().kind()
+                && !stack.contains(&def.did())
+                && let Some(mut defs) = check_packed_inner(tcx, def.did(), stack)
+            {
+                defs.push((def.did(), field.ident(tcx).span));
+                return Some(defs);
+            }
+        }
+        stack.pop();
     }
 
     None
@@ -1752,7 +1752,7 @@ pub(super) fn check_transparent<'tcx>(tcx: TyCtxt<'tcx>, adt: ty::AdtDef<'tcx>) 
 
     if adt.is_union() && !tcx.features().transparent_unions() {
         feature_err(
-            &tcx.sess,
+            tcx.sess,
             sym::transparent_unions,
             tcx.def_span(adt.did()),
             "transparent unions are unstable",
@@ -1877,10 +1877,12 @@ pub(super) fn check_transparent<'tcx>(tcx: TyCtxt<'tcx>, adt: ty::AdtDef<'tcx>) 
         for field in non_trivial_fields {
             let msg = match field.reason {
                 NonTrivialReason::UnknownLayout => {
-                    format!("this field is generic and hence may have non-zero size")
+                    "this field is generic and hence may have non-zero size".to_string()
                 }
-                NonTrivialReason::NonZeroSized => format!("this field has non-zero size"),
-                NonTrivialReason::NonTrivialAlignment => format!("this field requires alignment"),
+                NonTrivialReason::NonZeroSized => "this field has non-zero size".to_string(),
+                NonTrivialReason::NonTrivialAlignment => {
+                    "this field requires alignment".to_string()
+                }
                 NonTrivialReason::PrivateField { inside } => format!(
                     "this field contains `{inside}`, which has private fields, so it could become non-zero-sized in the future"
                 ),
@@ -1895,7 +1897,6 @@ pub(super) fn check_transparent<'tcx>(tcx: TyCtxt<'tcx>, adt: ty::AdtDef<'tcx>) 
         }
 
         diag.emit();
-        return;
     }
 }
 
@@ -1931,10 +1932,8 @@ fn check_enum(tcx: TyCtxt<'_>, def_id: LocalDefId) {
         };
 
         let non_unit = def.variants().iter().find(|var| !is_unit(var));
-        let disr_unit =
-            def.variants().iter().filter(|var| is_unit(var)).find_map(|var| get_disr(var));
-        let disr_non_unit =
-            def.variants().iter().filter(|var| !is_unit(var)).find_map(|var| get_disr(var));
+        let disr_unit = def.variants().iter().filter(|var| is_unit(var)).find_map(&get_disr);
+        let disr_non_unit = def.variants().iter().filter(|var| !is_unit(var)).find_map(get_disr);
 
         if disr_non_unit.is_some() || (disr_unit.is_some() && non_unit.is_some()) {
             let mut err = struct_span_code_err!(

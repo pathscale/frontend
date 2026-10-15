@@ -1,9 +1,9 @@
 //! Routines for manipulating the control-flow graph.
 
-use alloc::boxed::Box;
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::TyCtxt;
+use alloc::boxed::Box;
 use tracing::debug;
 
 use crate::rustc_mir_build::builder::CFG;

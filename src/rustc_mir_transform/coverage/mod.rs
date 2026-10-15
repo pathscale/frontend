@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_middle::mir::coverage::{CoverageKind, CoverageMirInfo};
 use crate::rustc_middle::mir::{self, BasicBlock, Statement, StatementKind, TerminatorKind};
@@ -55,12 +50,9 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for InstrumentCoverage {
 
         // An otherwise-eligible function is still skipped if its start block
         // is known to be unreachable.
-        match mir_body.basic_blocks[mir::START_BLOCK].terminator().kind {
-            TerminatorKind::Unreachable => {
-                trace!("InstrumentCoverage skipped for unreachable `START_BLOCK`");
-                return;
-            }
-            _ => {}
+        if mir_body.basic_blocks[mir::START_BLOCK].terminator().kind == TerminatorKind::Unreachable {
+            trace!("InstrumentCoverage skipped for unreachable `START_BLOCK`");
+            return;
         }
 
         instrument_function_for_coverage(tcx, mir_body);

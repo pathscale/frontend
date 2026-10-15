@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_lint_defs::builtin::UNREACHABLE_CODE;
@@ -138,7 +133,7 @@ fn find_unreachable_code_from<'tcx>(
         // The user does not care for `goto` and compiler-generated drops. If the target block is
         // only reachable through those terminators, continue searching there.
         TerminatorKind::Goto { target } | TerminatorKind::Drop { target, .. } => {
-            if &body.basic_blocks.predecessors()[target][..] == &[bb] {
+            if body.basic_blocks.predecessors()[target][..] == [bb] {
                 find_unreachable_code_from(target, body)
             } else {
                 None

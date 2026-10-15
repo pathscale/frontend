@@ -29,11 +29,11 @@ pub(crate) fn join_into<'me, Key: Ord, Val1: Ord, Val2: Ord, Result: Ord>(
         let mut closure = |k: &Key, v1: &Val1, v2: &Val2| results.push(logic(k, v1, v2));
 
         for batch2 in input2.stable().iter() {
-            join_helper(&recent1, &batch2, &mut closure);
+            join_helper(&recent1, batch2, &mut closure);
         }
 
         for batch1 in input1.stable().iter() {
-            join_helper(&batch1, &recent2, &mut closure);
+            join_helper(batch1, &recent2, &mut closure);
         }
 
         join_helper(&recent1, &recent2, &mut closure);
@@ -43,7 +43,7 @@ pub(crate) fn join_into<'me, Key: Ord, Val1: Ord, Val2: Ord, Result: Ord>(
 }
 
 /// Join, but for two relations.
-pub(crate) fn join_into_relation<'me, Key: Ord, Val1: Ord, Val2: Ord, Result: Ord>(
+pub(crate) fn join_into_relation<Key: Ord, Val1: Ord, Val2: Ord, Result: Ord>(
     input1: &Relation<(Key, Val1)>,
     input2: &Relation<(Key, Val2)>,
     mut logic: impl FnMut(&Key, &Val1, &Val2) -> Result,

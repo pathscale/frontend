@@ -90,7 +90,7 @@ impl<X: Cx> GlobalCache<X> {
             && candidate_is_applicable(nested_goals)
         {
             return Some(CacheData {
-                result: cx.get_tracked(&result),
+                result: cx.get_tracked(result),
                 required_depth,
                 encountered_overflow: false,
                 nested_goals,

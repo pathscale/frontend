@@ -3,22 +3,18 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::iter;
 
-use itertools::Itertools;
 use crate::rustc_hir_analysis::autoderef::{Autoderef, AutoderefKind};
 use crate::rustc_infer::infer::InferOk;
 use crate::rustc_infer::traits::PredicateObligations;
 use crate::rustc_middle::ty::adjustment::{Adjust, Adjustment, DerefAdjustKind, OverloadedDeref};
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::Span;
+use itertools::Itertools;
 
 use super::method::MethodCallee;
 use super::{FnCtxt, PlaceOp};

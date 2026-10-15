@@ -1,21 +1,18 @@
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
+use crate::find_attr;
 use crate::rustc_abi::{FieldIdx, VariantIdx};
-use rustc_apfloat::Float;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::{Diag, msg};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use crate::find_attr;
 use crate::rustc_index::Idx;
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::traits::Obligation;
 use crate::rustc_middle::mir::interpret::ErrorHandled;
-use crate::span_bug;
 use crate::rustc_middle::thir::{FieldPat, Pat, PatKind};
 use crate::rustc_middle::ty::{
     self, Ty, TyCtxt, TypeSuperVisitable, TypeVisitableExt, TypeVisitor, Unnormalized,
@@ -27,6 +24,8 @@ use crate::rustc_trait_selection::error_reporting::traits::ambiguity::{
 };
 use crate::rustc_trait_selection::traits::ObligationCause;
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
+use crate::span_bug;
+use rustc_apfloat::Float;
 use tracing::{debug, instrument, trace};
 
 use super::PatCtxt;
@@ -135,7 +134,7 @@ impl<'tcx> ConstToPat<'tcx> {
                     }
                 }
             }
-            return self.mk_err(err, ty);
+            self.mk_err(err, ty)
         };
 
         // FIXME(gca): This will become insufficient once associated constants can be
@@ -510,11 +509,11 @@ fn extend_type_not_partial_eq<'tcx>(
         type Result = ControlFlow<()>;
         fn visit_ty(&mut self, ty: Ty<'tcx>) -> Self::Result {
             match ty.kind() {
-                ty::Dynamic(..) => return ControlFlow::Break(()),
+                ty::Dynamic(..) => ControlFlow::Break(()),
                 // Unsafe binders never implement `PartialEq`, so avoid walking into them
                 // which would require instantiating its binder with placeholders too.
-                ty::UnsafeBinder(..) => return ControlFlow::Break(()),
-                ty::FnPtr(..) => return ControlFlow::Continue(()),
+                ty::UnsafeBinder(..) => ControlFlow::Break(()),
+                ty::FnPtr(..) => ControlFlow::Continue(()),
                 ty::Adt(def, _args) => {
                     let ty_def_id = def.did();
                     let ty_def_span = self.tcx.def_span(ty_def_id);
@@ -560,20 +559,24 @@ fn extend_type_not_partial_eq<'tcx>(
     };
     if v.visit_ty(ty).is_break() {
         return;
-    }    for span in v.adts_with_manual_partialeq {
+    }
+    for span in v.adts_with_manual_partialeq {
         err.span_note(span, "the `PartialEq` trait must be derived, manual `impl`s are not sufficient; see https://doc.rust-lang.org/stable/std/marker/trait.StructuralPartialEq.html for details");
-    }    for span in v.adts_without_partialeq {
+    }
+    for span in v.adts_without_partialeq {
         err.span_label(
             span,
             "must be annotated with `#[derive(PartialEq)]` to be usable in patterns",
         );
-    }    let mut manual: Vec<_> = v.manual.into_iter().map(|t| t.to_string()).collect();
+    }
+    let mut manual: Vec<_> = v.manual.into_iter().map(|t| t.to_string()).collect();
     manual.sort();
     for ty in manual {
         err.note(format!(
             "`{ty}` must be annotated with `#[derive(PartialEq)]` to be usable in patterns, manual `impl`s are not sufficient; see https://doc.rust-lang.org/stable/std/marker/trait.StructuralPartialEq.html for details"
         ));
-    }    let mut without: Vec<_> = v.without.into_iter().map(|t| t.to_string()).collect();
+    }
+    let mut without: Vec<_> = v.without.into_iter().map(|t| t.to_string()).collect();
     without.sort();
     for ty in without {
         err.note(format!(

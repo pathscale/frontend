@@ -3,11 +3,9 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use eko::path::{Path, PathBuf};
 use rustc_macros::{BlobDecodable, Encodable};
 
 use crate::rustc_lexer::{self, FrontmatterAllowed, TokenKind};
-use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::FileName;
 
@@ -227,7 +225,11 @@ fn inside_quote(index: usize, quotes: &[(usize, usize, usize)]) -> bool {
     quotes.iter().any(|(open, close, _)| *open < index && index < *close)
 }
 
-fn loop_bounds(lexemes: &[Lexeme], quote_open: usize, quote_close: usize) -> Option<(usize, usize)> {
+fn loop_bounds(
+    lexemes: &[Lexeme],
+    quote_open: usize,
+    quote_close: usize,
+) -> Option<(usize, usize)> {
     let mut found = None;
     for index in 0..lexemes.len() {
         if lexemes[index].text != "for" || index >= quote_open {
@@ -249,14 +251,6 @@ fn loop_bounds(lexemes: &[Lexeme], quote_open: usize, quote_close: usize) -> Opt
     found
 }
 
-fn has_token_sequence(source: &str, expected: &[&str]) -> bool {
-    let lexemes = lex(source);
-    lexemes.windows(expected.len()).any(|window| {
-        window.iter().zip(expected).all(|(lexeme, expected)| lexeme.text == *expected)
-    })
-}
-
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProjectionBase {
     Item,
@@ -271,11 +265,7 @@ struct ProjectionBinding {
 }
 
 fn binding(bindings: &[(String, ProjectionBinding)], name: &str) -> Option<ProjectionBinding> {
-    bindings
-        .iter()
-        .rev()
-        .find(|(bound, _)| bound == name)
-        .map(|(_, value)| value.clone())
+    bindings.iter().rev().find(|(bound, _)| bound == name).map(|(_, value)| value.clone())
 }
 
 fn projection_base(
@@ -322,7 +312,9 @@ fn projection_why(
 ) -> Option<&'static str> {
     let expression = projection_expression(expression);
     let [base, dot, member] = expression else { return None };
-    if dot.text != "." || projection_base(&base.text, item_parameter, field_parameters, bindings).is_none() {
+    if dot.text != "."
+        || projection_base(&base.text, item_parameter, field_parameters, bindings).is_none()
+    {
         return None;
     }
     match member.text.as_str() {
@@ -335,7 +327,7 @@ fn projection_why(
 fn split_for_impl_on_generics(
     expression: &[Lexeme],
     item_parameter: Option<&str>,
-    field_parameters: &[String],
+    _field_parameters: &[String],
     bindings: &[(String, ProjectionBinding)],
 ) -> bool {
     let expression = projection_expression(expression);
@@ -346,12 +338,18 @@ fn split_for_impl_on_generics(
                 && second_dot.text == "."
                 && method.text == "split_for_impl"
                 && open.text == "("
-                && close.text == ")" => Some(base.text.as_str()),
+                && close.text == ")" =>
+        {
+            Some(base.text.as_str())
+        }
         [base, dot, method, open, close]
             if dot.text == "."
                 && method.text == "split_for_impl"
                 && open.text == "("
-                && close.text == ")" => Some(base.text.as_str()),
+                && close.text == ")" =>
+        {
+            Some(base.text.as_str())
+        }
         _ => None,
     };
     let Some(base) = base else { return false };
@@ -425,7 +423,9 @@ fn template_parts(literal: &str) -> Option<(String, String, bool)> {
     let Some(open) = value.find('{') else {
         return (!value.contains('}')).then(|| (value.to_string(), String::new(), false));
     };
-    if value.get(open..open + 2) != Some("{}") || value[open + 2..].chars().any(|ch| matches!(ch, '{' | '}')) {
+    if value.get(open..open + 2) != Some("{}")
+        || value[open + 2..].chars().any(|ch| matches!(ch, '{' | '}'))
+    {
         return None;
     }
     Some((value[..open].to_string(), value[open + 2..].to_string(), true))
@@ -440,10 +440,12 @@ fn format_ident_projection(
     bindings: &[(String, ProjectionBinding)],
     syn_source: bool,
 ) -> Result<(ExactPart, Option<ProjectionBase>), String> {
-    let Some(macro_index) = (start..end).find(|index| lexemes[*index].text == "format_ident") else {
+    let Some(macro_index) = (start..end).find(|index| lexemes[*index].text == "format_ident")
+    else {
         return Err("format_ident! name template is not classified".to_string());
     };
-    let Some(_) = lexemes.get(macro_index + 2).filter(|open| open.kind == TokenKind::OpenParen) else {
+    let Some(_) = lexemes.get(macro_index + 2).filter(|open| open.kind == TokenKind::OpenParen)
+    else {
         return Err("format_ident! invocation is not classified".to_string());
     };
     let open_index = macro_index + 2;
@@ -454,7 +456,9 @@ fn format_ident_projection(
         return Err("format_ident! invocation is not classified".to_string());
     }
     let arguments = &lexemes[open_index + 1..close_index];
-    let Some(literal) = arguments.first().filter(|argument| matches!(argument.kind, TokenKind::Literal { .. })) else {
+    let Some(literal) =
+        arguments.first().filter(|argument| matches!(argument.kind, TokenKind::Literal { .. }))
+    else {
         return Err("format_ident! requires a bare literal template".to_string());
     };
     let Some((prefix, suffix, has_hole)) = template_parts(&literal.text) else {
@@ -476,17 +480,14 @@ fn format_ident_projection(
     let argument_is_ident = if let Some(expression) = ident_argument {
         if expression.len() == 1 {
             binding(bindings, &expression[0].text).is_some_and(|binding| {
-                matches!(binding.hole, SchemaHole::Exact(ExactPart::ItemIdent | ExactPart::FieldIdent))
+                matches!(
+                    binding.hole,
+                    SchemaHole::Exact(ExactPart::ItemIdent | ExactPart::FieldIdent)
+                )
             })
         } else {
-            direct_projection(
-                expression,
-                item_parameter,
-                field_parameters,
-                bindings,
-                syn_source,
-            )
-            .is_some_and(|part| matches!(part, ExactPart::ItemIdent | ExactPart::FieldIdent))
+            direct_projection(expression, item_parameter, field_parameters, bindings, syn_source)
+                .is_some_and(|part| matches!(part, ExactPart::ItemIdent | ExactPart::FieldIdent))
         }
     } else {
         false
@@ -563,10 +564,7 @@ fn add_binding(
     base: Option<ProjectionBase>,
     why: &str,
 ) {
-    let hole = part.map_or_else(
-        || SchemaHole::Opaque { why: why.to_string() },
-        SchemaHole::Exact,
-    );
+    let hole = part.map_or_else(|| SchemaHole::Opaque { why: why.to_string() }, SchemaHole::Exact);
     bindings.push((name, ProjectionBinding { hole, base, parameter: None }));
 }
 
@@ -588,7 +586,8 @@ fn collect_bindings(
             continue;
         }
         let Some(end) = statement_end(lexemes, index + 1, quote_open) else { continue };
-        let Some(equals) = (index + 1..end).find(|candidate| lexemes[*candidate].text == "=") else {
+        let Some(equals) = (index + 1..end).find(|candidate| lexemes[*candidate].text == "=")
+        else {
             continue;
         };
         let Some(names) = pattern_names(lexemes, index + 1, equals) else { continue };
@@ -600,9 +599,8 @@ fn collect_bindings(
                     bindings.push((name, previous));
                     continue;
                 }
-                if let Some(parameter) = parameters
-                    .iter()
-                    .position(|parameter| parameter == &expression[0].text)
+                if let Some(parameter) =
+                    parameters.iter().position(|parameter| parameter == &expression[0].text)
                 {
                     bindings.push((
                         name,
@@ -618,9 +616,9 @@ fn collect_bindings(
             if syn_source
                 && expression.iter().any(|lexeme| lexeme.text == "parse_macro_input")
                 && expression.iter().any(|lexeme| lexeme.text == "DeriveInput")
-                && expression.iter().any(|lexeme| {
-                    parameters.iter().any(|parameter| parameter == &lexeme.text)
-                })
+                && expression
+                    .iter()
+                    .any(|lexeme| parameters.iter().any(|parameter| parameter == &lexeme.text))
             {
                 bindings.push((
                     name,
@@ -649,16 +647,19 @@ fn collect_bindings(
                 add_binding(&mut bindings, name, Some(part), base, "projection is not classified");
                 continue;
             }
-            if let Some(why) = projection_why(
-                expression,
-                item_parameter,
-                field_parameters,
-                &bindings,
-                syn_source,
-            ) {
+            if let Some(why) =
+                projection_why(expression, item_parameter, field_parameters, &bindings, syn_source)
+            {
                 let projection = projection_expression(expression);
                 let base = (projection.len() == 3)
-                    .then(|| projection_base(&projection[0].text, item_parameter, field_parameters, &bindings))
+                    .then(|| {
+                        projection_base(
+                            &projection[0].text,
+                            item_parameter,
+                            field_parameters,
+                            &bindings,
+                        )
+                    })
                     .flatten();
                 add_binding(&mut bindings, name, None, base, why);
                 continue;
@@ -720,10 +721,9 @@ fn collect_bindings(
 fn simple_ident_literal(literal: &str) -> Option<String> {
     let value = source_literal(literal)?;
     if value.is_empty()
-        || !value
-            .bytes()
-            .enumerate()
-            .all(|(index, byte)| byte == b'_' || byte.is_ascii_alphanumeric() && (index != 0 || !byte.is_ascii_digit()))
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_' || byte.is_ascii_alphanumeric() && (index != 0 || !byte.is_ascii_digit())
+        })
     {
         return None;
     }
@@ -735,8 +735,8 @@ fn attribute_absent_guard(
     if_index: usize,
     loop_close: usize,
 ) -> Option<(SchemaGuard, usize)> {
-    let open = (if_index + 1..loop_close)
-        .find(|index| lexemes[*index].kind == TokenKind::OpenBrace)?;
+    let open =
+        (if_index + 1..loop_close).find(|index| lexemes[*index].kind == TokenKind::OpenBrace)?;
     let condition = &lexemes[if_index + 1..open];
     if condition.len() != 10
         || condition[0].kind != TokenKind::Ident
@@ -772,7 +772,8 @@ fn field_loop_variables(lexemes: &[Lexeme], open: usize) -> Vec<String> {
         {
             continue;
         }
-        let Some(in_index) = (index + 2..open).find(|candidate| lexemes[*candidate].text == "in") else {
+        let Some(in_index) = (index + 2..open).find(|candidate| lexemes[*candidate].text == "in")
+        else {
             continue;
         };
         if lexemes[in_index + 1..open].iter().any(|lexeme| lexeme.text == "fields") {
@@ -812,13 +813,7 @@ pub fn analyze_source(
             why: "proc macro loop source is not classified".to_string(),
         };
     }
-    let bindings = collect_bindings(
-        &lexemes,
-        open,
-        parameters,
-        &field_parameters,
-        syn_source,
-    );
+    let bindings = collect_bindings(&lexemes, open, parameters, &field_parameters, syn_source);
     let mut holes = Vec::new();
     let mut hole_sources = Vec::new();
     let mut guard = None;
@@ -828,7 +823,9 @@ pub fn analyze_source(
             if lexemes[index].text != "if" {
                 continue;
             }
-            if let Some((candidate, guard_close)) = attribute_absent_guard(&lexemes, index, loop_close) {
+            if let Some((candidate, guard_close)) =
+                attribute_absent_guard(&lexemes, index, loop_close)
+            {
                 if guard.is_some() {
                     guard = None;
                     guard_ranges.clear();
@@ -885,7 +882,10 @@ pub fn analyze_source(
         let (hole, source) = if control_flow.is_some() {
             (
                 SchemaHole::Opaque {
-                    why: format!("loop body contains `{}`", control_flow.as_deref().unwrap_or("control flow")),
+                    why: format!(
+                        "loop body contains `{}`",
+                        control_flow.as_deref().unwrap_or("control flow")
+                    ),
                 },
                 None,
             )
@@ -899,11 +899,18 @@ pub fn analyze_source(
                     })
                 }),
             )
-        } else if let Some(parameter) = parameters.iter().position(|parameter| parameter == &name.text) {
-            (SchemaHole::Exact(ExactPart::InputTokens), Some(SchemaBindingSource::Parameter(parameter)))
+        } else if let Some(parameter) =
+            parameters.iter().position(|parameter| parameter == &name.text)
+        {
+            (
+                SchemaHole::Exact(ExactPart::InputTokens),
+                Some(SchemaBindingSource::Parameter(parameter)),
+            )
         } else {
             (
-                SchemaHole::Opaque { why: format!("projection for `{}` is not classified", name.text) },
+                SchemaHole::Opaque {
+                    why: format!("projection for `{}` is not classified", name.text),
+                },
                 None,
             )
         };
@@ -911,10 +918,10 @@ pub fn analyze_source(
         hole_sources.push(source);
     }
 
-    if let Some(branch) = control_flow {
-        if holes.is_empty() {
-            holes.push(SchemaHole::Opaque { why: format!("loop body contains `{branch}`") });
-        }
+    if let Some(branch) = control_flow
+        && holes.is_empty()
+    {
+        holes.push(SchemaHole::Opaque { why: format!("loop body contains `{branch}`") });
     }
 
     let source_start = lexemes[open].end;
@@ -1009,7 +1016,7 @@ pub(crate) fn rewrite_template(rule: &SchemaRule) -> Option<RewrittenSchemaTempl
         if lexemes[index].kind != TokenKind::Pound {
             continue;
         }
-        let Some(next) = lexemes.get(index + 1) else { return None };
+        let next = lexemes.get(index + 1)?;
         if next.kind == TokenKind::OpenParen {
             let close = matching_delimiter(&lexemes, index + 1)?;
             if lexemes.get(close + 1).is_none_or(|op| op.text != "*") {
@@ -1026,12 +1033,10 @@ pub(crate) fn rewrite_template(rule: &SchemaRule) -> Option<RewrittenSchemaTempl
         let hole = rule.holes.get(hole_index)?.clone();
         let source = *rule.hole_sources.get(hole_index)?;
         hole_index += 1;
-        let repeated = repetition_ranges
-            .iter()
-            .any(|(open, close)| *open < index && index < *close);
-        let in_function_body = body_ranges
-            .iter()
-            .any(|(open, close)| *open < index && index < *close);
+        let repeated =
+            repetition_ranges.iter().any(|(open, close)| *open < index && index < *close);
+        let in_function_body =
+            body_ranges.iter().any(|(open, close)| *open < index && index < *close);
         let replacement = match &hole {
             SchemaHole::Exact(_) => format!("${}", next.text),
             SchemaHole::Opaque { why } if in_function_body => {
@@ -1040,12 +1045,7 @@ pub(crate) fn rewrite_template(rule: &SchemaRule) -> Option<RewrittenSchemaTempl
             SchemaHole::Opaque { .. } => return None,
         };
         replacements.push((lexemes[index].start, next.end, replacement));
-        variables.push(SchemaVariable {
-            name: next.text.clone(),
-            hole,
-            source,
-            repeated,
-        });
+        variables.push(SchemaVariable { name: next.text.clone(), hole, source, repeated });
     }
 
     if hole_index != rule.holes.len() || rule.loop_repetition && has_sequence {

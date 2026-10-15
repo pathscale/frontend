@@ -1,9 +1,9 @@
 //! See docs in build/expr/mod.rs
 
-use alloc::boxed::Box;
 use crate::rustc_middle::middle::region::TempLifetime;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::thir::*;
+use alloc::boxed::Box;
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_build::builder::expr::category::Category;

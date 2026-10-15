@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::mem;
 
@@ -20,9 +14,9 @@ use crate::rustc_hir::Target;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def::Namespace::{TypeNS, ValueNS};
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::span_bug;
 use crate::rustc_middle::ty::{PerOwnerResolverData, TyCtxtFeed};
 use crate::rustc_span::{Span, Symbol, sym};
+use crate::span_bug;
 use tracing::{debug, instrument};
 
 use crate::rustc_resolve::macros::MacroRulesScopeRef;
@@ -190,7 +184,7 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
                 // FIXME(jdonszelmann) don't care about tools here maybe? Just parse what we can.
                 // Does that prevents errors from happening? maybe
                 let mut parser = AttributeParser::new(
-                    &self.r.tcx.sess,
+                    self.r.tcx.sess,
                     self.r.features,
                     self.r.tcx().registered_attr_tools(()),
                     ShouldEmit::Nothing,
@@ -382,7 +376,7 @@ impl<'a, 'ra, 'tcx> visit::Visitor<'a> for DefCollector<'a, 'ra, 'tcx> {
             return;
         }
         let def_kind = match param.kind {
-            GenericParamKind::Lifetime { .. } => DefKind::LifetimeParam,
+            GenericParamKind::Lifetime => DefKind::LifetimeParam,
             GenericParamKind::Type { .. } => DefKind::TyParam,
             GenericParamKind::Const { .. } => DefKind::ConstParam,
         };

@@ -2,7 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -24,7 +23,9 @@ use crate::rustc_target::spec::{Arch, SanitizerSet};
 use crate::rustc_target::target_features::{RUSTC_SPECIFIC_FEATURES, Stability};
 use smallvec::SmallVec;
 
-use crate::frontend_semantics::diagnostics::{CrossArchFeatureNote, FeatureNotValid, FeatureNotValidHint};
+use crate::frontend_semantics::diagnostics::{
+    CrossArchFeatureNote, FeatureNotValid, FeatureNotValidHint,
+};
 use crate::frontend_semantics::{diagnostics, target_features};
 
 /// Compute the enabled target features from the `#[target_feature]` function attribute.
@@ -65,7 +66,8 @@ pub(crate) fn from_target_feature_attr(
                 span: feature_span,
                 hint,
                 cross_arch: {
-                    let arches = crate::rustc_target::target_features::feature_to_arch_names(feature_str);
+                    let arches =
+                        crate::rustc_target::target_features::feature_to_arch_names(feature_str);
                     match arches.as_slice() {
                         [] => None,
                         [arch] => Some(CrossArchFeatureNote::Single { feature: feature_str, arch }),
@@ -95,7 +97,7 @@ pub(crate) fn from_target_feature_attr(
             } else {
                 format!("the target feature `{feature}` is currently unstable")
             };
-            feature_err(&tcx.sess, nightly_feature, feature_span, explain).emit();
+            feature_err(tcx.sess, nightly_feature, feature_span, explain).emit();
         } else {
             // Add this and the implied features.
             for &name in tcx.implied_target_features(feature) {
@@ -105,35 +107,35 @@ pub(crate) fn from_target_feature_attr(
                 // We skip this logic in rustdoc, where we want to allow all target features of
                 // all targets, so we can't check their ABI compatibility and anyway we are not
                 // generating code so "it's fine".
-                if !tcx.sess.opts.actually_rustdoc {
-                    if abi_feature_constraints.incompatible.contains(&name.as_str()) {
-                        // For "neon" specifically, we emit an FCW instead of a hard error.
-                        // See <https://github.com/rust-lang/rust/issues/134375>.
-                        // Similar for "sse" on x86.
-                        // See <https://github.com/rust-lang/rust/issues/117938>.
-                        if tcx.sess.target.arch == Arch::AArch64 && name.as_str() == "neon" {
-                            tcx.emit_node_span_lint(
-                                AARCH64_SOFTFLOAT_NEON,
-                                tcx.local_def_id_to_hir_id(did),
-                                feature_span,
-                                diagnostics::Aarch64SoftfloatNeon,
-                            );
-                        } else if matches!(tcx.sess.target.arch, Arch::X86 | Arch::X86_64)
-                            && name.as_str() == "sse"
-                        {
-                            tcx.emit_node_span_lint(
-                                X86_SOFTFLOAT_SSE,
-                                tcx.local_def_id_to_hir_id(did),
-                                feature_span,
-                                diagnostics::X86SoftfloatSse,
-                            );
-                        } else {
-                            tcx.dcx().emit_err(diagnostics::InternalOnlyTargetFeatureAttr {
-                                span: feature_span,
-                                feature: name.as_str(),
-                                reason: "this feature is incompatible with the target ABI",
-                            });
-                        }
+                if !tcx.sess.opts.actually_rustdoc
+                    && abi_feature_constraints.incompatible.contains(&name.as_str())
+                {
+                    // For "neon" specifically, we emit an FCW instead of a hard error.
+                    // See <https://github.com/rust-lang/rust/issues/134375>.
+                    // Similar for "sse" on x86.
+                    // See <https://github.com/rust-lang/rust/issues/117938>.
+                    if tcx.sess.target.arch == Arch::AArch64 && name.as_str() == "neon" {
+                        tcx.emit_node_span_lint(
+                            AARCH64_SOFTFLOAT_NEON,
+                            tcx.local_def_id_to_hir_id(did),
+                            feature_span,
+                            diagnostics::Aarch64SoftfloatNeon,
+                        );
+                    } else if matches!(tcx.sess.target.arch, Arch::X86 | Arch::X86_64)
+                        && name.as_str() == "sse"
+                    {
+                        tcx.emit_node_span_lint(
+                            X86_SOFTFLOAT_SSE,
+                            tcx.local_def_id_to_hir_id(did),
+                            feature_span,
+                            diagnostics::X86SoftfloatSse,
+                        );
+                    } else {
+                        tcx.dcx().emit_err(diagnostics::InternalOnlyTargetFeatureAttr {
+                            span: feature_span,
+                            feature: name.as_str(),
+                            reason: "this feature is incompatible with the target ABI",
+                        });
                     }
                 }
                 let kind = if name != feature {
@@ -228,7 +230,7 @@ fn parse_rust_feature_list<'a>(
                 continue;
             }
 
-            let implied_features = sess.target.implied_target_features(base_feature, &features_map);
+            let implied_features = sess.target.implied_target_features(base_feature, features_map);
             callback(base_feature, Some(implied_features), true)
         } else if let Some(base_feature) = feature.strip_prefix('-') {
             // Skip features that are not target features, but rustc features.
@@ -263,9 +265,10 @@ fn parse_rust_feature_list<'a>(
             let mut implied_features = FxHashSet::default();
             let mut new_features = vec![base_feature];
             while let Some(new_feature) = new_features.pop() {
-                if implied_features.insert(new_feature) {
-                    if let Some(implied_features) = inverse_implied_features.get(&new_feature) {                        new_features.extend(implied_features)
-                    }
+                if implied_features.insert(new_feature)
+                    && let Some(implied_features) = inverse_implied_features.get(&new_feature)
+                {
+                    new_features.extend(implied_features)
                 }
             }
 
@@ -312,7 +315,7 @@ pub fn internal_target_features<'a, const N: usize>(
             sess.target
                 .implied_target_features(base_feature, &features_map)
                 .into_iter()
-                .map(|f| Symbol::intern(f))
+                .map(Symbol::intern)
         })
         .collect();
 
@@ -366,7 +369,7 @@ pub fn internal_target_features<'a, const N: usize>(
 
                     // Iteration order is irrelevant since this only influences an `UnordSet`.
                     if enable {
-                        features.extend(new_features.into_iter().map(|f| Symbol::intern(f)));
+                        features.extend(new_features.into_iter().map(Symbol::intern));
                     } else {
                         // Remove `new_features` from `features`.
                         for new in new_features {
@@ -467,8 +470,8 @@ pub fn target_spec_to_backend_features<'a>(
         |base_feature, new_features, enable| {
             // FIXME emit an error for unknown features in the target spec like
             // internal_target_features would for -Ctarget-feature.
-            let new_features =
-                new_features.unwrap_or_else(|| FxHashSet::from_iter(core::iter::once(base_feature)));
+            let new_features = new_features
+                .unwrap_or_else(|| FxHashSet::from_iter(core::iter::once(base_feature)));
             for new_feature in UnordSet::from(new_features).to_sorted_stable_ord().iter() {
                 extend_backend_features(new_feature, enable);
             }
@@ -493,8 +496,8 @@ pub fn flag_to_backend_features<'a>(
         },
         |base_feature, new_features, enable| {
             // Forward unknown features to the backend as that's what we have always done.
-            let new_features =
-                new_features.unwrap_or_else(|| FxHashSet::from_iter(core::iter::once(base_feature)));
+            let new_features = new_features
+                .unwrap_or_else(|| FxHashSet::from_iter(core::iter::once(base_feature)));
             for new_feature in UnordSet::from(new_features).to_sorted_stable_ord().iter() {
                 extend_backend_features(new_feature, enable);
             }
@@ -591,7 +594,7 @@ pub(crate) fn provide(providers: &mut Providers) {
             UnordSet::from(tcx.sess.target.implied_target_features(feature, &features_map))
                 .into_sorted_stable_ord()
                 .into_iter()
-                .map(|s| Symbol::intern(s))
+                .map(Symbol::intern)
                 .collect()
         },
         asm_target_features,

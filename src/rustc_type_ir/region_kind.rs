@@ -1,14 +1,16 @@
 use core::fmt;
 
-use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
+use derive_where::derive_where;
+use rustc_macros::GenericTypeVisitable;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext};
-use rustc_macros::GenericTypeVisitable;
 
 use self::RegionKind::*;
-use crate::rustc_type_ir::{BoundRegion, BoundVarIndexKind, Interner, LateParamRegion, PlaceholderRegion};
+use crate::rustc_type_ir::{
+    BoundRegion, BoundVarIndexKind, Interner, LateParamRegion, PlaceholderRegion,
+};
 
 crate::rustc_index::newtype_index! {
     /// A **region** **v**ariable **ID**.

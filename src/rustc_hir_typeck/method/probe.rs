@@ -1,16 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::debug_assert_matches;
 use core::cell::{Cell, RefCell};
 use core::cmp::max;
-use crate::debug_assert_matches;
 use core::ops::Deref;
 
 use crate::rustc_data_structures::fx::FxHashSet;
@@ -21,12 +18,13 @@ use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::{self as hir, ExprKind, HirId, Node, find_attr};
 use crate::rustc_hir_analysis::autoderef::{self, Autoderef};
 use crate::rustc_infer::infer::canonical::{Canonical, OriginalQueryValues, QueryResponse};
-use crate::rustc_infer::infer::{BoundRegionConversionTime, DefineOpaqueTypes, InferOk, TyCtxtInferExt};
+use crate::rustc_infer::infer::{
+    BoundRegionConversionTime, DefineOpaqueTypes, InferOk, TyCtxtInferExt,
+};
 use crate::rustc_infer::traits::{ObligationCauseCode, PredicateObligation, query};
 use crate::rustc_lint_defs::builtin::{
     METHOD_CALL_ON_DIVERGING_INFER_VAR, TYVAR_BEHIND_RAW_POINTER, UNSTABLE_NAME_COLLISIONS,
 };
-use rustc_macros::Diagnostic;
 use crate::rustc_middle::middle::stability;
 use crate::rustc_middle::ty::elaborate::supertrait_def_ids;
 use crate::rustc_middle::ty::fast_reject::{DeepRejectCtxt, TreatParams, simplify_type};
@@ -49,6 +47,7 @@ use crate::rustc_trait_selection::traits::query::method_autoderef::{
     CandidateStep, MethodAutoderefBadTy, MethodAutoderefStepsResult,
 };
 use crate::rustc_trait_selection::traits::{self, ObligationCause, ObligationCtxt};
+use rustc_macros::Diagnostic;
 use smallvec::SmallVec;
 use tracing::{debug, instrument};
 
@@ -125,6 +124,10 @@ pub(crate) struct Candidate<'tcx> {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Candidate` suffix distinguishes method lookup candidate sources."
+)]
 pub(crate) enum CandidateKind<'tcx> {
     InherentImplCandidate { impl_def_id: DefId, receiver_steps: usize },
     ObjectCandidate(ty::PolyTraitRef<'tcx>),
@@ -254,6 +257,10 @@ pub(crate) struct Pick<'tcx> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Pick` suffix distinguishes resolved method lookup outcomes."
+)]
 pub(crate) enum PickKind<'tcx> {
     InherentImplPick,
     ObjectPick,
@@ -344,6 +351,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     #[instrument(level = "debug", skip(self))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(crate) fn probe_for_name(
         &self,
         mode: Mode,
@@ -368,6 +379,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     #[instrument(level = "debug", skip(self))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(crate) fn probe_for_name_many(
         &self,
         mode: Mode,
@@ -397,6 +412,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(crate) fn probe_op<OP, R>(
         &'a self,
         span: Span,
@@ -802,6 +821,10 @@ pub(crate) fn method_autoderef_steps<'tcx>(
 }
 
 impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn new(
         fcx: &'a FnCtxt<'a, 'tcx>,
         span: Span,
@@ -967,13 +990,13 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         let Some(simp) = simplify_type(self.tcx, self_ty, TreatParams::InstantiateWithInfer) else {
             bug!("unexpected incoherent type: {:?}", self_ty)
         };
-        for &impl_def_id in self.tcx.incoherent_impls(simp).into_iter() {
+        for &impl_def_id in self.tcx.incoherent_impls(simp).iter() {
             self.assemble_inherent_impl_probe(impl_def_id, receiver_steps);
         }
     }
 
     fn assemble_inherent_impl_candidates_for_type(&mut self, def_id: DefId, receiver_steps: usize) {
-        let impl_def_ids = self.tcx.at(self.span).inherent_impls(def_id).into_iter();
+        let impl_def_ids = self.tcx.at(self.span).inherent_impls(def_id).iter();
         for &impl_def_id in impl_def_ids {
             self.assemble_inherent_impl_probe(impl_def_id, receiver_steps);
         }
@@ -1101,7 +1124,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 // is not, we should treat them differently and then handle them later on.
                 if duplicates.insert((trait_did, trait_candidate.lint_ambiguous)) {
                     self.assemble_extension_candidates_for_trait(
-                        &trait_candidate.import_ids,
+                        trait_candidate.import_ids,
                         trait_did,
                         trait_candidate.lint_ambiguous,
                     );
@@ -1362,19 +1385,19 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
                 // Check for shadowing of a by-reference method by a by-value method (see comments on check_for_shadowing)
                 if let Some(by_value_pick) = by_value_pick {
-                    if let Ok(by_value_pick) = by_value_pick.as_ref() {
-                        if by_value_pick.kind == PickKind::InherentImplPick {
-                            for mutbl in [hir::Mutability::Not, hir::Mutability::Mut] {
-                                if let Err(e) = self.check_for_shadowed_autorefd_method(
-                                    by_value_pick,
-                                    step,
-                                    self_ty,
-                                    &instantiate_self_ty_obligations,
-                                    mutbl,
-                                    track_unstable_candidates,
-                                ) {
-                                    return Some(Err(e));
-                                }
+                    if let Ok(by_value_pick) = by_value_pick.as_ref()
+                        && by_value_pick.kind == PickKind::InherentImplPick
+                    {
+                        for mutbl in [hir::Mutability::Not, hir::Mutability::Mut] {
+                            if let Err(e) = self.check_for_shadowed_autorefd_method(
+                                by_value_pick,
+                                step,
+                                self_ty,
+                                &instantiate_self_ty_obligations,
+                                mutbl,
+                                track_unstable_candidates,
+                            ) {
+                                return Some(Err(e));
                             }
                         }
                     }
@@ -1393,17 +1416,17 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 if let Some(autoref_pick) = autoref_pick {
                     if let Ok(autoref_pick) = autoref_pick.as_ref() {
                         // Check we're not shadowing others
-                        if autoref_pick.kind == PickKind::InherentImplPick {
-                            if let Err(e) = self.check_for_shadowed_autorefd_method(
+                        if autoref_pick.kind == PickKind::InherentImplPick
+                            && let Err(e) = self.check_for_shadowed_autorefd_method(
                                 autoref_pick,
                                 step,
                                 self_ty,
                                 &instantiate_self_ty_obligations,
                                 hir::Mutability::Mut,
                                 track_unstable_candidates,
-                            ) {
-                                return Some(Err(e));
-                            }
+                            )
+                        {
+                            return Some(Err(e));
                         }
                     }
                     return Some(autoref_pick);
@@ -1622,10 +1645,10 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     ) -> Option<PickResult<'tcx>> {
         let tcx = self.tcx;
 
-        if let Some(pick_constraints) = pick_constraints {
-            if !pick_constraints.may_shadow_based_on_autoderefs(step.autoderefs) {
-                return None;
-            }
+        if let Some(pick_constraints) = pick_constraints
+            && !pick_constraints.may_shadow_based_on_autoderefs(step.autoderefs)
+        {
+            return None;
         }
 
         // In general, during probing we erase regions.
@@ -1744,8 +1767,8 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             }
         }
 
-        if self.private_candidate.get().is_none() {
-            if let Some(Ok(pick)) = self.consider_candidates(
+        if self.private_candidate.get().is_none()
+            && let Some(Ok(pick)) = self.consider_candidates(
                 self_ty,
                 instantiate_self_ty_obligations,
                 &self.private_candidates,
@@ -1754,9 +1777,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     unsatisfied_predicates: &mut vec![],
                 },
                 None,
-            ) {
-                self.private_candidate.set(Some((pick.item.as_def_kind(), pick.item.def_id)));
-            }
+            )
+        {
+            self.private_candidate.set(Some((pick.item.as_def_kind(), pick.item.def_id)));
         }
         None
     }
@@ -1773,7 +1796,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             .iter()
             .filter(|candidate| {
                 pick_constraints
-                    .map(|pick_constraints| pick_constraints.candidate_may_shadow(&candidate))
+                    .map(|pick_constraints| pick_constraints.candidate_may_shadow(candidate))
                     .unwrap_or(true)
             })
             .map(|probe| {
@@ -1783,7 +1806,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         self_ty,
                         instantiate_self_ty_obligations,
                         probe,
-                        &mut pick_diag_hints.unsatisfied_predicates,
+                        pick_diag_hints.unsatisfied_predicates,
                     ),
                 )
             })
@@ -1792,12 +1815,11 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
         debug!("applicable_candidates: {:?}", applicable_candidates);
 
-        if applicable_candidates.len() > 1 {
-            if let Some(pick) =
+        if applicable_candidates.len() > 1
+            && let Some(pick) =
                 self.collapse_candidates_to_trait_pick(self_ty, &applicable_candidates)
-            {
-                return Some(Ok(pick));
-            }
+        {
+            return Some(Ok(pick));
         }
 
         if let Some(uc) = &mut pick_diag_hints.unstable_candidates {
@@ -1816,12 +1838,11 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             // We collapse to a subtrait pick *after* filtering unstable candidates
             // to make sure we don't prefer a unstable subtrait method over a stable
             // supertrait method.
-            if self.tcx.features().supertrait_item_shadowing() {
-                if let Some(pick) =
+            if self.tcx.features().supertrait_item_shadowing()
+                && let Some(pick) =
                     self.collapse_candidates_to_subtrait_pick(self_ty, &applicable_candidates)
-                {
-                    return Some(Ok(pick));
-                }
+            {
+                return Some(Ok(pick));
             }
 
             let sources =
@@ -2246,7 +2267,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 // should be okay doing it here.
                 if !matches!(probe.kind, InherentImplCandidate { .. }) {
                     xform_ret_ty =
-                        ocx.normalize(&cause, self.param_env, Unnormalized::new_wip(xform_ret_ty));
+                        ocx.normalize(cause, self.param_env, Unnormalized::new_wip(xform_ret_ty));
                 }
 
                 debug!("comparing return_ty {:?} with xform ret ty {:?}", return_ty, xform_ret_ty);
@@ -2269,10 +2290,10 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 }
             }
 
-            if self.infcx.next_trait_solver() {
-                if self.should_reject_candidate_due_to_opaque_treated_as_rigid(trait_predicate) {
-                    result = ProbeResult::NoMatch;
-                }
+            if self.infcx.next_trait_solver()
+                && self.should_reject_candidate_due_to_opaque_treated_as_rigid(trait_predicate)
+            {
+                result = ProbeResult::NoMatch;
             }
 
             // Previously, method probe used `evaluate_predicate` to determine if a predicate
@@ -2280,7 +2301,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             // check here to prevent backwards-incompatible ambiguity being introduced. See
             // `tests/ui/methods/leak-check-disquality.rs` for a simple example of when this
             // may happen.
-            if let Err(_) = self.leak_check(outer_universe, Some(snapshot)) {
+            if self.leak_check(outer_universe, Some(snapshot)).is_err() {
                 result = ProbeResult::NoMatch;
             }
 
@@ -2649,11 +2670,11 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
     /// Determine if the given associated item type is relevant in the current context.
     fn is_relevant_kind_for_mode(&self, kind: ty::AssocKind) -> bool {
-        match (self.mode, kind) {
-            (Mode::MethodCall, ty::AssocKind::Fn { .. }) => true,
-            (Mode::Path, ty::AssocKind::Const { .. } | ty::AssocKind::Fn { .. }) => true,
-            _ => false,
-        }
+        matches!(
+            (self.mode, kind),
+            (Mode::MethodCall, ty::AssocKind::Fn { .. })
+                | (Mode::Path, ty::AssocKind::Const { .. } | ty::AssocKind::Fn { .. })
+        )
     }
 
     /// Determine if the associated item with the given DefId matches

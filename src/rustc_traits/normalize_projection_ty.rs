@@ -7,7 +7,9 @@ use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::infer::InferCtxtBuilderExt;
 use crate::rustc_trait_selection::traits::query::normalize::NormalizationResult;
 use crate::rustc_trait_selection::traits::query::{CanonicalAliasGoal, NoSolution};
-use crate::rustc_trait_selection::traits::{self, ObligationCause, ScrubbedTraitError, SelectionContext};
+use crate::rustc_trait_selection::traits::{
+    self, ObligationCause, ScrubbedTraitError, SelectionContext,
+};
 use tracing::debug;
 
 pub(crate) fn provide(p: &mut Providers) {
@@ -136,7 +138,7 @@ fn normalize_canonicalized_inherent_projection<'tcx>(
             let normalized_term = traits::normalize_inherent_projection(
                 selcx,
                 param_env,
-                goal.into(),
+                goal,
                 cause,
                 0,
                 &mut obligations,

@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_errors::ErrorGuaranteed;
@@ -435,6 +430,10 @@ fn validate_reborrow_field_access(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+)]
 fn validate_coerce_shared_fields<'tcx>(
     infcx: &InferCtxt<'tcx>,
     impl_did: LocalDefId,
@@ -520,6 +519,10 @@ fn validate_coerce_shared_fields<'tcx>(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+)]
 fn validate_coerce_shared_fields_are_memcpy_compatible<'tcx>(
     infcx: &InferCtxt<'tcx>,
     impl_did: LocalDefId,
@@ -612,6 +615,10 @@ fn non_zst_reborrow_data_fields<'tcx>(
         .collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+)]
 fn validate_coerce_shared_field<'tcx>(
     infcx: &InferCtxt<'tcx>,
     impl_did: LocalDefId,
@@ -707,6 +714,10 @@ fn validate_coerce_shared_unpaired_source_field<'tcx>(
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+)]
 fn validate_field_tys_satisfy_coerce_shared_relation<'tcx>(
     infcx: &InferCtxt<'tcx>,
     impl_did: LocalDefId,

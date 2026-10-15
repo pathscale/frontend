@@ -16,8 +16,8 @@ pub(crate) fn leapjoin<'leap, Tuple: Ord, Val: Ord + 'leap, Result: Ord>(
 
     for tuple in source {
         // Determine which leaper would propose the fewest values.
-        let mut min_index = usize::max_value();
-        let mut min_count = usize::max_value();
+        let mut min_index = usize::MAX;
+        let mut min_count = usize::MAX;
         leapers.for_each_count(tuple, |index, count| {
             if min_count > count {
                 min_count = count;
@@ -26,7 +26,7 @@ pub(crate) fn leapjoin<'leap, Tuple: Ord, Val: Ord + 'leap, Result: Ord>(
         });
 
         // We had best have at least one relation restricting values.
-        assert!(min_count < usize::max_value());
+        assert!(min_count < usize::MAX);
 
         // If there are values to propose:
         if min_count > 0 {
@@ -137,16 +137,13 @@ pub(crate) mod filters {
         predicate: Func,
     }
 
-    impl<'leap, Tuple, Func> PrefixFilter<Tuple, Func>
+    impl<Tuple, Func> PrefixFilter<Tuple, Func>
     where
         Func: Fn(&Tuple) -> bool,
     {
         /// Creates a new filter based on the prefix
         pub fn from(predicate: Func) -> Self {
-            PrefixFilter {
-                phantom: core::marker::PhantomData,
-                predicate,
-            }
+            PrefixFilter { phantom: core::marker::PhantomData, predicate }
         }
     }
 
@@ -156,11 +153,7 @@ pub(crate) mod filters {
     {
         /// Estimates the number of proposed values.
         fn count(&mut self, prefix: &Tuple) -> usize {
-            if (self.predicate)(prefix) {
-                usize::max_value()
-            } else {
-                0
-            }
+            if (self.predicate)(prefix) { usize::MAX } else { 0 }
         }
         /// Populates `values` with proposed values.
         fn propose(&mut self, _prefix: &Tuple, _values: &mut Vec<&'leap Val>) {
@@ -168,7 +161,7 @@ pub(crate) mod filters {
         }
         /// Restricts `values` to proposed values.
         fn intersect(&mut self, _prefix: &Tuple, _values: &mut Vec<&'leap Val>) {
-            // We can only be here if we returned max_value() above.
+            // We can only be here if we returned usize::MAX above.
         }
     }
 
@@ -209,16 +202,13 @@ pub(crate) mod filters {
         predicate: Func,
     }
 
-    impl<'leap, Tuple, Val, Func> ValueFilter<Tuple, Val, Func>
+    impl<Tuple, Val, Func> ValueFilter<Tuple, Val, Func>
     where
         Func: Fn(&Tuple, &Val) -> bool,
     {
         /// Creates a new filter based on the prefix
         pub fn from(predicate: Func) -> Self {
-            ValueFilter {
-                phantom: core::marker::PhantomData,
-                predicate,
-            }
+            ValueFilter { phantom: core::marker::PhantomData, predicate }
         }
     }
 
@@ -228,7 +218,7 @@ pub(crate) mod filters {
     {
         /// Estimates the number of proposed values.
         fn count(&mut self, _prefix: &Tuple) -> usize {
-            usize::max_value()
+            usize::MAX
         }
         /// Populates `values` with proposed values.
         fn propose(&mut self, _prefix: &Tuple, _values: &mut Vec<&'leap Val>) {
@@ -239,7 +229,6 @@ pub(crate) mod filters {
             values.retain(|val| (self.predicate)(prefix, val));
         }
     }
-
 }
 
 /// Extension method for relations.
@@ -325,7 +314,7 @@ pub(crate) mod extend_with {
     // `#![no_std]`: a nested `mod` does not inherit the parent module`s imports.
     use alloc::vec::Vec;
 
-    use super::{binary_search, Leaper, Leapers, Relation};
+    use super::{Leaper, Leapers, Relation, binary_search};
     use crate::datafrog::join::gallop;
 
     /// Wraps a Relation<Tuple> as a leaper.
@@ -352,13 +341,7 @@ pub(crate) mod extend_with {
     {
         /// Constructs a ExtendWith from a relation and key and value function.
         pub fn from(relation: &'leap Relation<(Key, Val)>, key_func: Func) -> Self {
-            ExtendWith {
-                relation,
-                start: 0,
-                end: 0,
-                key_func,
-                phantom: core::marker::PhantomData,
-            }
+            ExtendWith { relation, start: 0, end: 0, key_func, phantom: core::marker::PhantomData }
         }
     }
 
@@ -372,21 +355,21 @@ pub(crate) mod extend_with {
     {
         fn count(&mut self, prefix: &Tuple) -> usize {
             let key = (self.key_func)(prefix);
-            self.start = binary_search(&self.relation[..], |x| &x.0 < &key);
+            self.start = binary_search(&self.relation[..], |x| x.0 < key);
             let slice1 = &self.relation[self.start..];
-            let slice2 = gallop(slice1, |x| &x.0 <= &key);
+            let slice2 = gallop(slice1, |x| x.0 <= key);
             self.end = self.relation.len() - slice2.len();
             slice1.len() - slice2.len()
         }
         fn propose(&mut self, _prefix: &Tuple, values: &mut Vec<&'leap Val>) {
             let slice = &self.relation[self.start..self.end];
-            values.extend(slice.iter().map(|&(_, ref val)| val));
+            values.extend(slice.iter().map(|(_, val)| val));
         }
         fn intersect(&mut self, _prefix: &Tuple, values: &mut Vec<&'leap Val>) {
             let mut slice = &self.relation[self.start..self.end];
             values.retain(|v| {
                 slice = gallop(slice, |kv| &kv.1 < v);
-                slice.get(0).map(|kv| &kv.1) == Some(v)
+                slice.first().map(|kv| &kv.1) == Some(v)
             });
         }
     }
@@ -418,7 +401,7 @@ pub(crate) mod extend_anti {
     // `#![no_std]`: a nested `mod` does not inherit the parent module`s imports.
     use alloc::vec::Vec;
 
-    use super::{binary_search, Leaper, Relation};
+    use super::{Leaper, Relation, binary_search};
     use crate::datafrog::join::gallop;
 
     /// Wraps a Relation<Tuple> as a leaper.
@@ -443,11 +426,7 @@ pub(crate) mod extend_anti {
     {
         /// Constructs a ExtendAnti from a relation and key and value function.
         pub fn from(relation: &'leap Relation<(Key, Val)>, key_func: Func) -> Self {
-            ExtendAnti {
-                relation,
-                key_func,
-                phantom: core::marker::PhantomData,
-            }
+            ExtendAnti { relation, key_func, phantom: core::marker::PhantomData }
         }
     }
 
@@ -460,21 +439,21 @@ pub(crate) mod extend_anti {
         Func: Fn(&Tuple) -> Key,
     {
         fn count(&mut self, _prefix: &Tuple) -> usize {
-            usize::max_value()
+            usize::MAX
         }
         fn propose(&mut self, _prefix: &Tuple, _values: &mut Vec<&'leap Val>) {
             panic!("ExtendAnti::propose(): variable apparently unbound.");
         }
         fn intersect(&mut self, prefix: &Tuple, values: &mut Vec<&'leap Val>) {
             let key = (self.key_func)(prefix);
-            let start = binary_search(&self.relation[..], |x| &x.0 < &key);
+            let start = binary_search(&self.relation[..], |x| x.0 < key);
             let slice1 = &self.relation[start..];
-            let slice2 = gallop(slice1, |x| &x.0 <= &key);
+            let slice2 = gallop(slice1, |x| x.0 <= key);
             let mut slice = &slice1[..(slice1.len() - slice2.len())];
             if !slice.is_empty() {
                 values.retain(|v| {
                     slice = gallop(slice, |kv| &kv.1 < v);
-                    slice.get(0).map(|kv| &kv.1) != Some(v)
+                    slice.first().map(|kv| &kv.1) != Some(v)
                 });
             }
         }
@@ -484,7 +463,6 @@ pub(crate) mod extend_anti {
 pub(crate) mod filter_with {
     // `#![no_std]`: a nested `mod` does not inherit the parent module`s imports.
     use alloc::vec::Vec;
-
 
     use super::{Leaper, Leapers, Relation};
 
@@ -510,11 +488,7 @@ pub(crate) mod filter_with {
     {
         /// Constructs a FilterWith from a relation and key and value function.
         pub fn from(relation: &'leap Relation<(Key, Val)>, key_func: Func) -> Self {
-            FilterWith {
-                relation,
-                key_func,
-                phantom: core::marker::PhantomData,
-            }
+            FilterWith { relation, key_func, phantom: core::marker::PhantomData }
         }
     }
 
@@ -528,11 +502,7 @@ pub(crate) mod filter_with {
     {
         fn count(&mut self, prefix: &Tuple) -> usize {
             let key_val = (self.key_func)(prefix);
-            if self.relation.binary_search(&key_val).is_ok() {
-                usize::max_value()
-            } else {
-                0
-            }
+            if self.relation.binary_search(&key_val).is_ok() { usize::MAX } else { 0 }
         }
         fn propose(&mut self, _prefix: &Tuple, _values: &mut Vec<&'leap Val2>) {
             panic!("FilterWith::propose(): variable apparently unbound.");
@@ -551,11 +521,7 @@ pub(crate) mod filter_with {
         Func: Fn(&Tuple) -> (Key, Val),
     {
         fn for_each_count(&mut self, tuple: &Tuple, mut op: impl FnMut(usize, usize)) {
-            if <Self as Leaper<Tuple, ()>>::count(self, tuple) == 0 {
-                op(0, 0)
-            } else {
-                op(0, 1)
-            }
+            if <Self as Leaper<Tuple, ()>>::count(self, tuple) == 0 { op(0, 0) } else { op(0, 1) }
         }
 
         fn propose(&mut self, _: &Tuple, min_index: usize, values: &mut Vec<&'leap ()>) {
@@ -573,7 +539,6 @@ pub(crate) mod filter_with {
 pub(crate) mod filter_anti {
     // `#![no_std]`: a nested `mod` does not inherit the parent module`s imports.
     use alloc::vec::Vec;
-
 
     use super::{Leaper, Leapers, Relation};
 
@@ -599,11 +564,7 @@ pub(crate) mod filter_anti {
     {
         /// Constructs a FilterAnti from a relation and key and value function.
         pub fn from(relation: &'leap Relation<(Key, Val)>, key_func: Func) -> Self {
-            FilterAnti {
-                relation,
-                key_func,
-                phantom: core::marker::PhantomData,
-            }
+            FilterAnti { relation, key_func, phantom: core::marker::PhantomData }
         }
     }
 
@@ -617,11 +578,7 @@ pub(crate) mod filter_anti {
     {
         fn count(&mut self, prefix: &Tuple) -> usize {
             let key_val = (self.key_func)(prefix);
-            if self.relation.binary_search(&key_val).is_ok() {
-                0
-            } else {
-                usize::max_value()
-            }
+            if self.relation.binary_search(&key_val).is_ok() { 0 } else { usize::MAX }
         }
         fn propose(&mut self, _prefix: &Tuple, _values: &mut Vec<&'leap Val2>) {
             panic!("FilterAnti::propose(): variable apparently unbound.");
@@ -640,11 +597,7 @@ pub(crate) mod filter_anti {
         Func: Fn(&Tuple) -> (Key, Val),
     {
         fn for_each_count(&mut self, tuple: &Tuple, mut op: impl FnMut(usize, usize)) {
-            if <Self as Leaper<Tuple, ()>>::count(self, tuple) == 0 {
-                op(0, 0)
-            } else {
-                op(0, 1)
-            }
+            if <Self as Leaper<Tuple, ()>>::count(self, tuple) == 0 { op(0, 0) } else { op(0, 1) }
         }
 
         fn propose(&mut self, _: &Tuple, min_index: usize, values: &mut Vec<&'leap ()>) {

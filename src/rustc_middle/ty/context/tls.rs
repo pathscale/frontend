@@ -1,20 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use eko::thread::ThreadLocal;
 use crate::rustc_data_structures::sync;
+use eko::thread::ThreadLocal;
 
 use super::{GlobalCtxt, TyCtxt};
 use crate::rustc_middle::dep_graph::TaskDepsRef;
 use crate::rustc_middle::query::QueryJobId;
-
 
 /// This is the implicit state of rustc. It contains the current
 /// `TyCtxt` and query. It is updated when creating a local interner or
@@ -137,9 +130,5 @@ where
     F: for<'tcx> FnOnce(Option<TyCtxt<'tcx>>) -> R,
 {
     // No `#[track_caller]` on this closure: that is `closure_track_caller`, unstable.
-    with_context_opt(
-        |opt_context| f(opt_context.map(|context| context.tcx)),
-    )
+    with_context_opt(|opt_context| f(opt_context.map(|context| context.tcx)))
 }
-
-

@@ -22,7 +22,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 pub use attr::*;
 pub use data_structures::*;
 pub use encode_cross_crate::EncodeCrossCrate;

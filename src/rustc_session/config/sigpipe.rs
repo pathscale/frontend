@@ -1,20 +1,5 @@
 //! NOTE: Keep these constants in sync with `library/std/src/sys/pal/unix/mod.rs`!
 
-/// The default value if `-Zon-broken-pipe=...` is not specified. This resolves
-/// to `SIG_IGN` in `library/std/src/sys/pal/unix/mod.rs`.
-///
-/// Note that `SIG_IGN` has been the Rust default since 2014. See
-/// <https://github.com/rust-lang/rust/issues/62569>.
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
-// search cannot see them - and a `#[derive]` can use them without the name appearing
-// in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-
 pub const DEFAULT: u8 = 0;
 
 /// Do not touch `SIGPIPE`. Use whatever the parent process uses.

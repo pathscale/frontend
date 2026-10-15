@@ -17,18 +17,17 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use collector::MonoItemCollectionStrategy;
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use alloc::vec::Vec;
 use crate::rustc_middle::mono::MonoItem;
-use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_middle::query::TyCtxtAt;
+use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_middle::ty::adjustment::CustomCoerceUnsized;
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_middle::util::Providers;
 use crate::rustc_middle::{bug, traits};
 use crate::rustc_span::ErrorGuaranteed;
+use alloc::vec::Vec;
+use collector::MonoItemCollectionStrategy;
 
 pub mod collector;
 mod diagnostics;
@@ -94,10 +93,7 @@ pub fn provide(providers: &mut Providers) {
 /// The `UsageMap` is deliberately not returned. It is the collector's internal graph and
 /// exposing it would make an implementation detail part of this crate's interface.
 pub fn collect_mono_items(tcx: TyCtxt<'_>, eager: bool) -> Vec<MonoItem<'_>> {
-    let strategy = if eager {
-        MonoItemCollectionStrategy::Eager
-    } else {
-        MonoItemCollectionStrategy::Lazy
-    };
+    let strategy =
+        if eager { MonoItemCollectionStrategy::Eager } else { MonoItemCollectionStrategy::Lazy };
     collector::collect_crate_mono_items(tcx, strategy).0
 }

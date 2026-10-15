@@ -12,10 +12,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -81,7 +77,7 @@ fn distance<T: PartialEq>(a: &[T], b: &[T], limit: usize) -> Option<usize> {
 
     // If either string is empty, the distance is the length of the other.
     // We know that `b` is the shorter string, so we don't need to check `a`.
-    if b.len() == 0 {
+    if b.is_empty() {
         return Some(min_dist);
     }
 
@@ -385,14 +381,16 @@ fn find_best_match_for_name_impl(
     find_match_by_sorted_words(candidates, &texts, lookup)
 }
 
-fn find_match_by_sorted_words(iter_names: &[Symbol], texts: &[&str], lookup: &str) -> Option<Symbol> {
+fn find_match_by_sorted_words(
+    iter_names: &[Symbol],
+    texts: &[&str],
+    lookup: &str,
+) -> Option<Symbol> {
     let lookup_sorted_by_words = sort_by_words(lookup);
     iter_names.iter().zip(texts).fold(None, |result, (candidate, text)| {
         // Equal sorted words means the same words with the same separators, so the same length.
         // Checked first, so a candidate that cannot match is not split and sorted.
-        if text.len() == lookup.len()
-            && sort_by_words(text) == lookup_sorted_by_words
-        {
+        if text.len() == lookup.len() && sort_by_words(text) == lookup_sorted_by_words {
             Some(*candidate)
         } else {
             result

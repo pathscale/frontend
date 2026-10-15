@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 macro_rules! maybe_into_query_key {
     (DefId) => { impl $crate::rustc_middle::query::IntoQueryKey<DefId> };
@@ -42,6 +36,7 @@ macro_rules! define_query_api {
         non_queries { $($_:tt)* }
     ) => {
         $(
+            $(#[$attr])*
             pub mod $name {
                 use super::*;
                 use $crate::rustc_middle::query::erase::{self, Erased};
@@ -282,7 +277,7 @@ macro_rules! define_query_api {
             $(
                 $(#[$attr])*
                 #[inline(always)]
-                #[must_use]
+
                 pub fn $name(self, key: maybe_into_query_key!($($K)*)) -> $V {
                     self.at(DUMMY_SP).$name(key)
                 }

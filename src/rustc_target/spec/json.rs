@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -271,7 +269,8 @@ impl ToJson for Target {
         macro_rules! target_option_val {
             ($attr:ident) => {{ target_option_val!($attr, (stringify!($attr)).replace("_", "-")) }};
             ($attr:ident, $json_name:expr) => {{
-                let name = $json_name;                if default.$attr != target.$attr {
+                let name = $json_name;
+                if default.$attr != target.$attr {
                     d.insert(name.to_string(), target.$attr.to_json());
                 }
             }};

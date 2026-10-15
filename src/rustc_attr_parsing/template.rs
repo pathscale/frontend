@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_ast::ast::Safety;
 use crate::rustc_span::Symbol;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::rustc_attr_parsing::ParsedDescription;
 

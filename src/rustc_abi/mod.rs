@@ -32,7 +32,7 @@ even other Rust compilers, such as rust-analyzer!
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![cfg_attr(feature = "nightly", allow(internal_features))]#![cfg_attr(feature = "nightly", feature(step_trait))]
+#![cfg_attr(feature = "nightly", allow(internal_features))]
 
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
@@ -47,10 +47,9 @@ even other Rust compilers, such as rust-analyzer!
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use core::cmp::min;
 use core::fmt;
@@ -59,7 +58,6 @@ use core::ops::{Add, AddAssign, Deref, Mul, Sub};
 use core::range::RangeInclusive;
 use core::str::FromStr;
 
-use bitflags::bitflags;
 #[cfg(feature = "nightly")]
 use crate::rustc_data_structures::stable_hash::StableOrd;
 #[cfg(feature = "nightly")]
@@ -69,9 +67,10 @@ use crate::rustc_errors::{Diag, DiagCtxtHandle, Diagnostic, EmissionGuarantee, L
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 #[cfg(feature = "nightly")]
-use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
-#[cfg(feature = "nightly")]
 use crate::rustc_span::{Symbol, sym};
+use bitflags::bitflags;
+#[cfg(feature = "nightly")]
+use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
 
 mod callconv;
 mod canon_abi;
@@ -485,7 +484,7 @@ impl TargetDataLayout {
                     .map_err(|err| TargetDataLayoutError::InvalidAlignment { cause, err })
             };
             let abi = parse_bits(s, "alignment", cause)?;
-            Ok(align_from_bits(abi)?)
+            align_from_bits(abi)
         };
 
         // Parse an alignment sequence, possibly in the form `<align>[:<preferred_alignment>]`,
@@ -497,8 +496,7 @@ impl TargetDataLayout {
             parse_align_str(s[0], cause)
         };
 
-        let mut dl = TargetDataLayout::default();
-        dl.default_address_space = default_address_space;
+        let mut dl = TargetDataLayout { default_address_space, ..TargetDataLayout::default() };
 
         let mut i128_align_src = 64;
         for spec in input.split('-') {
@@ -649,10 +647,8 @@ impl TargetDataLayout {
                 .find(|(a, _)| *a == dl.instruction_address_space)
                 .is_none()
         {
-            dl.address_space_info.push((
-                dl.instruction_address_space,
-                dl.default_address_space_pointer_spec.clone(),
-            ));
+            dl.address_space_info
+                .push((dl.instruction_address_space, dl.default_address_space_pointer_spec));
         }
 
         Ok(dl)
@@ -1326,9 +1322,9 @@ impl Integer {
         use Integer::*;
         match x {
             0..=0x0000_0000_0000_00ff => I8,
-            0..=0x0000_0000_0000_ffff => I16,
-            0..=0x0000_0000_ffff_ffff => I32,
-            0..=0xffff_ffff_ffff_ffff => I64,
+            0x0000_0000_0000_0100..=0x0000_0000_0000_ffff => I16,
+            0x0000_0000_0001_0000..=0x0000_0000_ffff_ffff => I32,
+            0x0000_0001_0000_0000..=0xffff_ffff_ffff_ffff => I64,
             _ => I128,
         }
     }
@@ -2388,6 +2384,6 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
     }
 
     pub fn has_fields(&self) -> bool {
-        self.field_offsets.len() > 0
+        !self.field_offsets.is_empty()
     }
 }

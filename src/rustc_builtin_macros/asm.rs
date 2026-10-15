@@ -347,15 +347,15 @@ fn expand_preparsed_asm(
 
         if let Some(InlineAsmArch::X86 | InlineAsmArch::X86_64) = ecx.sess.asm_arch {
             let find_span = |needle: &str| -> Span {
-                if let Some(snippet) = &template_snippet {
-                    if let Some(pos) = snippet.find(needle) {
-                        let end = pos
-                            + snippet[pos..]
-                                .find(['\n', ';', '\\', '"'])
-                                .unwrap_or(snippet[pos..].len() - 1);
-                        let inner = InnerSpan::new(pos, end);
-                        return template_sp.from_inner(inner);
-                    }
+                if let Some(snippet) = &template_snippet
+                    && let Some(pos) = snippet.find(needle)
+                {
+                    let end = pos
+                        + snippet[pos..]
+                            .find(['\n', ';', '\\', '"'])
+                            .unwrap_or(snippet[pos..].len() - 1);
+                    let inner = InnerSpan::new(pos, end);
+                    return template_sp.from_inner(inner);
                 }
                 template_sp
             };

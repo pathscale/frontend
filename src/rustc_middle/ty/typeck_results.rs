@@ -1,16 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
-use hashbrown::hash_map::Entry;
 use core::hash::Hash;
 use core::iter;
+use hashbrown::hash_map::Entry;
 
 use crate::rustc_abi::{FieldIdx, VariantIdx};
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
@@ -23,9 +20,9 @@ use crate::rustc_hir::{
     OwnerId,
 };
 use crate::rustc_index::IndexVec;
-use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_session::Session;
 use crate::rustc_span::Span;
+use rustc_macros::{Lift, StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 
 use crate::rustc_middle::hir::place::Place as HirPlace;
 use crate::rustc_middle::infer::canonical::Canonical;
@@ -751,7 +748,10 @@ impl<'a, V> LocalTableInContextMut<'a, V> {
         self.data.get(&id.local_id)
     }
 
-    pub fn entry(&mut self, id: HirId) -> Entry<'_, hir::ItemLocalId, V, crate::rustc_data_structures::fx::FxBuildHasher> {
+    pub fn entry(
+        &mut self,
+        id: HirId,
+    ) -> Entry<'_, hir::ItemLocalId, V, crate::rustc_data_structures::fx::FxBuildHasher> {
         validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.entry(id.local_id)
     }
@@ -893,36 +893,38 @@ impl<'tcx> IsIdentity for CanonicalUserType<'tcx> {
                     return false;
                 }
 
-                iter::zip(user_args.args, (BoundVar::ZERO.index()..).map(BoundVar::from_usize)).all(|(arg, cvar)| {
-                    match arg.kind() {
-                        GenericArgKind::Type(ty) => match ty.kind() {
-                            ty::Bound(debruijn, b) => {
-                                // We only allow a `ty::BoundVarIndexKind::Canonical` index in generic parameters.
-                                assert_eq!(*debruijn, ty::BoundVarIndexKind::Canonical);
-                                cvar == b.var
-                            }
-                            _ => false,
-                        },
+                iter::zip(user_args.args, (BoundVar::ZERO.index()..).map(BoundVar::from_usize)).all(
+                    |(arg, cvar)| {
+                        match arg.kind() {
+                            GenericArgKind::Type(ty) => match ty.kind() {
+                                ty::Bound(debruijn, b) => {
+                                    // We only allow a `ty::BoundVarIndexKind::Canonical` index in generic parameters.
+                                    assert_eq!(*debruijn, ty::BoundVarIndexKind::Canonical);
+                                    cvar == b.var
+                                }
+                                _ => false,
+                            },
 
-                        GenericArgKind::Lifetime(r) => match r.kind() {
-                            ty::ReBound(debruijn, b) => {
-                                // We only allow a `ty::BoundVarIndexKind::Canonical` index in generic parameters.
-                                assert_eq!(debruijn, ty::BoundVarIndexKind::Canonical);
-                                cvar == b.var
-                            }
-                            _ => false,
-                        },
+                            GenericArgKind::Lifetime(r) => match r.kind() {
+                                ty::ReBound(debruijn, b) => {
+                                    // We only allow a `ty::BoundVarIndexKind::Canonical` index in generic parameters.
+                                    assert_eq!(debruijn, ty::BoundVarIndexKind::Canonical);
+                                    cvar == b.var
+                                }
+                                _ => false,
+                            },
 
-                        GenericArgKind::Const(ct) => match ct.kind() {
-                            ty::ConstKind::Bound(debruijn, b) => {
-                                // We only allow a `ty::BoundVarIndexKind::Canonical` index in generic parameters.
-                                assert_eq!(debruijn, ty::BoundVarIndexKind::Canonical);
-                                cvar == b.var
-                            }
-                            _ => false,
-                        },
-                    }
-                })
+                            GenericArgKind::Const(ct) => match ct.kind() {
+                                ty::ConstKind::Bound(debruijn, b) => {
+                                    // We only allow a `ty::BoundVarIndexKind::Canonical` index in generic parameters.
+                                    assert_eq!(debruijn, ty::BoundVarIndexKind::Canonical);
+                                    cvar == b.var
+                                }
+                                _ => false,
+                            },
+                        }
+                    },
+                )
             }
         }
     }

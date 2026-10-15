@@ -89,8 +89,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![expect(internal_features, reason = "rustc_attrs")]
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -105,7 +103,6 @@
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
 #[macro_use]
-#[macro_use]
 mod attributes;
 mod check_cfg;
 mod context;
@@ -119,17 +116,17 @@ mod target_checking;
 mod template;
 pub mod validate_attr;
 
+pub use crate::rustc_parse::parser::Recovery;
+pub use crate::template;
+pub use crate::unstable;
 pub use attributes::AttributeSafety;
-pub use attributes::repr::REPR_OPTIONS;
 pub use attributes::cfg::{
     CFG_TEMPLATE, EvalConfigResult, eval_config_entry, parse_cfg, parse_cfg_attr, parse_cfg_entry,
 };
 pub use attributes::cfg_select::*;
+pub use attributes::repr::REPR_OPTIONS;
 pub use attributes::util::{is_builtin_attr, parse_version};
 pub use context::ShouldEmit;
 pub use diagnostics::ParsedDescription;
 pub use interface::{AttributeParser, EmitAttribute};
-pub use crate::rustc_parse::parser::Recovery;
 pub use template::AttributeTemplate;
-pub use crate::template;
-pub use crate::unstable;

@@ -1,9 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -149,8 +146,9 @@ fn vector_matches_scalar_on_lengths() {
         assert_matches_scalar(&plain);
         let newlines: String = "\n".repeat(len);
         assert_matches_scalar(&newlines);
-        let mixed: String =
-            (0..len).map(|i| if i % 3 == 2 { '\n' } else { (b'0' + (i % 10) as u8) as char }).collect();
+        let mixed: String = (0..len)
+            .map(|i| if i % 3 == 2 { '\n' } else { (b'0' + (i % 10) as u8) as char })
+            .collect();
         assert_matches_scalar(&mixed);
     }
     for text in ["", "\n", "a", "0123456789abcde", "0123456789abcdef", "0123456789abcdef0"] {

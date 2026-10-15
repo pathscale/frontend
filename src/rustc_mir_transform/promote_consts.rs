@@ -13,10 +13,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -58,7 +55,7 @@ impl<'tcx> crate::rustc_mir_transform::MirPass<'tcx> for PromoteTemps<'tcx> {
         // There's not really any point in promoting errorful MIR.
         //
         // This does not include MIR that failed const-checking, which we still try to promote.
-        if let Err(_) = body.return_ty().error_reported() {
+        if body.return_ty().error_reported().is_err() {
             debug!("PromoteTemps: MIR had errors");
             return;
         }
@@ -667,11 +664,10 @@ impl<'tcx> Validator<'_, 'tcx> {
         // Functions marked `#[rustc_promotable]` are explicitly allowed to be promoted, so we can
         // accept them at this point.
         let fn_ty = callee.ty(self.body, self.tcx);
-        if let ty::FnDef(def_id, _) = *fn_ty.kind() {
-            if self.tcx.is_promotable_const_fn(def_id) {
+        if let ty::FnDef(def_id, _) = *fn_ty.kind()
+            && self.tcx.is_promotable_const_fn(def_id) {
                 return Ok(());
             }
-        }
 
         // Ideally, we'd stop here and reject the rest.
         // But for backward compatibility, we have to accept some promotion in const/static
@@ -1042,12 +1038,10 @@ fn promote_candidates<'tcx>(
         if let StatementKind::Assign(assign) = &body[block].statements[statement_index].kind
             && let (place, _) = &**assign
             && let Some(local) = place.as_local()
-        {
-            if temps[local] == TempState::PromotedOut {
+            && temps[local] == TempState::PromotedOut {
                 // Already promoted.
                 continue;
             }
-        }
 
         // Declare return place local so that `mir::Body::new` doesn't complain.
         let initial_locals = iter::once(LocalDecl::new(tcx.types.never, body.span)).collect();
@@ -1112,11 +1106,9 @@ fn promote_candidates<'tcx>(
         let terminator = block.terminator_mut();
         if let TerminatorKind::Drop { place, target, .. } = &terminator.kind
             && let Some(index) = place.as_local()
-        {
-            if promoted(index) {
+            && promoted(index) {
                 terminator.kind = TerminatorKind::Goto { target: *target };
             }
-        }
     }
 
     promotions

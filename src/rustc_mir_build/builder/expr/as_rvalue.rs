@@ -1,9 +1,8 @@
 //! See docs in `build/expr/mod.rs`.
 
-use alloc::boxed::Box;
+use crate::bug;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_index::{Idx, IndexVec};
-use crate::bug;
 use crate::rustc_middle::middle::region::{self, TempLifetime};
 use crate::rustc_middle::mir::interpret::Scalar;
 use crate::rustc_middle::mir::*;
@@ -13,6 +12,7 @@ use crate::rustc_middle::ty::cast::{CastTy, mir_cast_kind};
 use crate::rustc_middle::ty::util::IntTypeExt;
 use crate::rustc_middle::ty::{self, Ty, UpvarArgs};
 use crate::rustc_span::{DUMMY_SP, Span, Spanned};
+use alloc::boxed::Box;
 use tracing::debug;
 
 use crate::rustc_mir_build::builder::expr::as_place::PlaceBase;
@@ -260,7 +260,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // };
                 // ```
                 //
-                for (thir_place, cause, hir_id) in fake_reads.into_iter() {
+                for (thir_place, cause, hir_id) in fake_reads.iter() {
                     let place_builder = unpack!(block = this.as_place_builder(block, *thir_place));
 
                     if let Some(mir_place) = place_builder.try_to_place(this) {
@@ -606,7 +606,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 | &ExprKind::Scope { region_scope: _, hir_id: _, value: eid } => {
                     kind = &self.thir[eid].kind
                 }
-                _ => return matches!(Category::of(&kind), Some(Category::Constant)),
+                _ => return matches!(Category::of(kind), Some(Category::Constant)),
             }
         }
     }

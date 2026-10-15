@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::ops::Range;
 
 use crate::rustc_ast::PathSegment;
@@ -26,7 +26,9 @@ use crate::rustc_attr_parsing::diagnostics::{
     FormatWarning, IgnoredDiagnosticOption, InvalidOnClause, MalFormedDiagnosticAttributeLint,
     MissingOptionsForDiagnosticAttribute, NonMetaItemDiagnosticAttribute, WrappedParserError,
 };
-use crate::rustc_attr_parsing::parser::{ArgParser, MetaItemListParser, MetaItemOrLitParser, MetaItemParser};
+use crate::rustc_attr_parsing::parser::{
+    ArgParser, MetaItemListParser, MetaItemOrLitParser, MetaItemParser,
+};
 use crate::rustc_attr_parsing::{EmitAttribute, diagnostics};
 
 pub(crate) mod do_not_recommend;
@@ -244,7 +246,7 @@ fn parse_list<'p>(
 ) -> Option<&'p MetaItemListParser> {
     let span = cx.attr_span;
     match args {
-        ArgParser::List(items) if items.len() != 0 => return Some(items),
+        ArgParser::List(items) if !items.is_empty() => return Some(items),
         ArgParser::List(list) => {
             // We're dealing with `#[diagnostic::attr()]`.
             // This can be because that is what the user typed, but that's also what we'd see
@@ -434,41 +436,37 @@ fn parse_directive_items<'p>(
                     parent_label = Some((format.span, format));
                 }
             }
-            (Mode::RustcOnUnimplemented, sym::on) => {
-                if is_root {
-                    let items = or_malformed!(item.args().as_list()?);
-                    let mut iter = items.mixed();
-                    let filter = if let Some(c) = iter.next() {
-                        c
-                    } else {
-                        cx.emit_lint(
-                            MALFORMED_DIAGNOSTIC_FILTERS,
-                            InvalidOnClause::Empty { span },
-                            span,
-                        );
-                        continue;
-                    };
-
-                    let filter = parse_filter(filter);
-
-                    if items.len() < 2 {
-                        // Something like `#[rustc_on_unimplemented(on(.., /* nothing */))]`
-                        // There's a filter but no directive behind it, this is a mistake.
-                        malformed!();
-                    }
-
-                    match filter {
-                        Ok(filter) => {
-                            let directive =
-                                or_malformed!(parse_directive_items(cx, mode, iter, false)?);
-                            filters.push((filter, directive));
-                        }
-                        Err(e) => {
-                            cx.emit_lint(MALFORMED_DIAGNOSTIC_FILTERS, e, span);
-                        }
-                    }
+            (Mode::RustcOnUnimplemented, sym::on) if is_root => {
+                let items = or_malformed!(item.args().as_list()?);
+                let mut iter = items.mixed();
+                let filter = if let Some(c) = iter.next() {
+                    c
                 } else {
+                    cx.emit_lint(
+                        MALFORMED_DIAGNOSTIC_FILTERS,
+                        InvalidOnClause::Empty { span },
+                        span,
+                    );
+                    continue;
+                };
+
+                let filter = parse_filter(filter);
+
+                if items.len() < 2 {
+                    // Something like `#[rustc_on_unimplemented(on(.., /* nothing */))]`
+                    // There's a filter but no directive behind it, this is a mistake.
                     malformed!();
+                }
+
+                match filter {
+                    Ok(filter) => {
+                        let directive =
+                            or_malformed!(parse_directive_items(cx, mode, iter, false)?);
+                        filters.push((filter, directive));
+                    }
+                    Err(e) => {
+                        cx.emit_lint(MALFORMED_DIAGNOSTIC_FILTERS, e, span);
+                    }
                 }
             }
             _other => {
@@ -487,6 +485,7 @@ fn parse_directive_items<'p>(
     })
 }
 
+#[expect(clippy::result_large_err, reason = "keeps format parse diagnostics inline without boxing")]
 pub(crate) fn parse_format_string(
     input: Symbol,
     snippet: Option<String>,

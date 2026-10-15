@@ -7,24 +7,22 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{ErrorGuaranteed, struct_span_code_err};
 use crate::rustc_infer::infer::{RegionResolutionError, TyCtxtInferExt};
 use crate::rustc_infer::traits::{ObligationCause, ObligationCauseCode};
-use crate::span_bug;
 use crate::rustc_middle::ty::util::CheckRegions;
-use crate::rustc_middle::ty::{self, GenericArgsRef, RegionExt, Ty, TyCtxt, TypeVisitableExt, TypingMode};
+use crate::rustc_middle::ty::{
+    self, GenericArgsRef, RegionExt, Ty, TyCtxt, TypeVisitableExt, TypingMode,
+};
 use crate::rustc_span::sym;
 use crate::rustc_trait_selection::regions::InferCtxtRegionExt;
 use crate::rustc_trait_selection::traits::{self, ObligationCtxt};
+use crate::span_bug;
 
 use crate::rustc_hir_analysis::check::missing_items_must_implement_one_of_err;
 use crate::rustc_hir_analysis::diagnostics;
@@ -220,39 +218,36 @@ fn ensure_all_fields_are_const_destruct<'tcx>(
             }),
         ));
     }
-    ocx.evaluate_obligations_error_on_ambiguity()
-        .into_iter()
-        .map(|error| {
-            let ty::ClauseKind::HostEffect(eff) =
-                error.root_obligation.predicate.expect_clause().kind().no_bound_vars().unwrap()
-            else {
-                unreachable!()
-            };
-            let field_ty = eff.trait_ref.self_ty();
-            let mut diag = struct_span_code_err!(
-                tcx.dcx(),
-                error.root_obligation.cause.span,
-                E0367,
-                "`{field_ty}` does not implement `[const] Destruct`",
-            )
-            .with_span_note(impl_span, "required for this `Drop` impl");
-            if field_ty.has_param()
-                && let Some(generics) = tcx.hir_node_by_def_id(impl_def_id).generics()
-            {
-                let destruct_def_id = tcx.lang_items().destruct_trait();
-                ty::suggest_constraining_type_param(
-                    tcx,
-                    generics,
-                    &mut diag,
-                    &field_ty.to_string(),
-                    "[const] Destruct",
-                    destruct_def_id,
-                    None,
-                );
-            }
-            Err(diag.emit())
-        })
-        .collect()
+    ocx.evaluate_obligations_error_on_ambiguity().into_iter().try_for_each(|error| {
+        let ty::ClauseKind::HostEffect(eff) =
+            error.root_obligation.predicate.expect_clause().kind().no_bound_vars().unwrap()
+        else {
+            unreachable!()
+        };
+        let field_ty = eff.trait_ref.self_ty();
+        let mut diag = struct_span_code_err!(
+            tcx.dcx(),
+            error.root_obligation.cause.span,
+            E0367,
+            "`{field_ty}` does not implement `[const] Destruct`",
+        )
+        .with_span_note(impl_span, "required for this `Drop` impl");
+        if field_ty.has_param()
+            && let Some(generics) = tcx.hir_node_by_def_id(impl_def_id).generics()
+        {
+            let destruct_def_id = tcx.lang_items().destruct_trait();
+            ty::suggest_constraining_type_param(
+                tcx,
+                generics,
+                &mut diag,
+                &field_ty.to_string(),
+                "[const] Destruct",
+                destruct_def_id,
+                None,
+            );
+        }
+        Err(diag.emit())
+    })
 }
 
 /// Confirms that all predicates defined on the `Drop` impl (`drop_impl_def_id`) are able to be
@@ -416,11 +411,13 @@ fn check_drop_xor_pin_drop<'tcx>(
             if tcx.adt_def(adt_def_id).is_pin_project() {
                 let pin_v2_span = crate::find_attr!(tcx, adt_def_id, PinV2(attr) => *attr);
                 let adt_name = tcx.item_name(adt_def_id);
-                return Err(tcx.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::PinV2WithoutPinDrop {
-                    span,
-                    pin_v2_span,
-                    adt_name,
-                }));
+                return Err(tcx.dcx().emit_err(
+                    crate::rustc_hir_analysis::diagnostics::PinV2WithoutPinDrop {
+                        span,
+                        pin_v2_span,
+                        adt_name,
+                    },
+                ));
             }
         }
         (None, Some(span)) => {
@@ -432,11 +429,13 @@ fn check_drop_xor_pin_drop<'tcx>(
             }
         }
         (Some(drop_span), Some(pin_drop_span)) => {
-            return Err(tcx.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::ConflictImplDropAndPinDrop {
-                span: tcx.def_span(drop_impl_did),
-                drop_span,
-                pin_drop_span,
-            }));
+            return Err(tcx.dcx().emit_err(
+                crate::rustc_hir_analysis::diagnostics::ConflictImplDropAndPinDrop {
+                    span: tcx.def_span(drop_impl_did),
+                    drop_span,
+                    pin_drop_span,
+                },
+            ));
         }
     }
     Ok(())

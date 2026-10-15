@@ -11,7 +11,8 @@
 
 #![deny(missing_docs)]
 #![allow(internal_features)]
-#![deny(ffi_unwind_calls)]// `no_std`. This crate is linked into the final binary, so it is subject to the ban like everything else.
+#![deny(ffi_unwind_calls)]
+// `no_std`. This crate is linked into the final binary, so it is subject to the ban like everything else.
 // It was the last crate reaching `std`, and it did so without ever spelling `std::` more than ten
 // times: omitting `#![no_std]` is enough, because then the std prelude supplies `Vec`, `String`,
 // `Box` and `format!` with no path to match. `scripts/no-std-ban.sh` could not see it either -
@@ -21,7 +22,6 @@
 #![warn(rustdoc::unescaped_backticks)]
 #![warn(unreachable_pub)]
 #![deny(unsafe_op_in_unsafe_fn)]
-
 
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
@@ -34,10 +34,10 @@ mod diagnostic;
 mod escape;
 mod to_tokens;
 
+use alloc::borrow::Cow;
 use core::convert::From;
 use core::marker::PhantomData;
 use core::ops::BitOr;
-use alloc::borrow::Cow;
 // `CStr` borrows and so is `core::ffi`; only `CString`, which owns, needs `alloc`.
 use core::ffi::CStr;
 use core::ops::{Range, RangeBounds};
@@ -308,7 +308,9 @@ impl FromStr for TokenStream {
     type Err = LexError;
 
     fn from_str(src: &str) -> Result<TokenStream, LexError> {
-        Ok(TokenStream(Some(BridgeMethods::ts_from_str(src).map_err(|msg| LexError(msg, PhantomData))?)))
+        Ok(TokenStream(Some(
+            BridgeMethods::ts_from_str(src).map_err(|msg| LexError(msg, PhantomData))?,
+        )))
     }
 }
 
@@ -496,7 +498,9 @@ extend_items!(Group Literal Punct Ident);
 
 /// Public implementation details for the `TokenStream` type, such as iterators.
 pub mod token_stream {
-    use crate::rustc_proc_macro::{BridgeMethods, Group, Ident, Literal, Punct, TokenStream, TokenTree, bridge};
+    use crate::rustc_proc_macro::{
+        BridgeMethods, Group, Ident, Literal, Punct, TokenStream, TokenTree, bridge,
+    };
 
     /// An iterator over `TokenStream`'s `TokenTree`s.
     /// The iteration is "shallow", e.g., the iterator doesn't recurse into delimited groups,
@@ -668,6 +672,10 @@ impl Span {
     }
 
     /// Compares two spans to see if they're equal.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "span equality retains the explicit compatibility accessor"
+    )]
     pub fn eq(&self, other: &Span) -> bool {
         self.0 == other.0
     }

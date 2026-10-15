@@ -11,7 +11,6 @@
 
 use core::iter;
 
-use canonicalizer::Canonicalizer;
 use crate::rustc_index::IndexVec;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::relate::{
@@ -21,6 +20,7 @@ use crate::rustc_type_ir::{
     self as ty, Canonical, CanonicalVarKind, CanonicalVarValues, InferCtxtLike, Interner, Region,
     TypeFoldable, TypingMode, TypingModeEqWrapper, eager_resolve_vars,
 };
+use canonicalizer::Canonicalizer;
 use thin_vec::ThinVec;
 use tracing::instrument;
 
@@ -109,12 +109,12 @@ where
     I: Interner,
 {
     let instantiation =
-        compute_query_response_instantiation_values(delegate, &original_values, &response, span);
+        compute_query_response_instantiation_values(delegate, original_values, &response, span);
 
     let Response { var_values, external_constraints, certainty } =
         delegate.instantiate_canonical(response, instantiation);
 
-    unify_query_var_values(delegate, param_env, &original_values, var_values, span);
+    unify_query_var_values(delegate, param_env, original_values, var_values, span);
 
     let ExternalConstraintsData { region_constraints, opaque_types, normalization_nested_goals } =
         &*external_constraints;
@@ -246,7 +246,7 @@ where
             // A variable from inside a binder of the query. While ideally these shouldn't
             // exist at all (see the FIXME at the start of this method), we have to deal with
             // them for now.
-            delegate.instantiate_canonical_var(kind, span, &var_values, |idx| {
+            delegate.instantiate_canonical_var(kind, span, var_values, |idx| {
                 prev_universe + idx.index()
             })
         } else if kind.is_existential() {
@@ -260,7 +260,7 @@ where
             if let Some(v) = opt_values[ty::BoundVar::from_usize(var_values.len())] {
                 v
             } else {
-                delegate.instantiate_canonical_var(kind, span, &var_values, |_| prev_universe)
+                delegate.instantiate_canonical_var(kind, span, var_values, |_| prev_universe)
             }
         } else {
             // For placeholders which were already part of the input, we simply map this

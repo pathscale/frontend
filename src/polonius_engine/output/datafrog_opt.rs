@@ -13,14 +13,14 @@ use crate::datafrog::{Iteration, Relation, RelationLeaper};
 use crate::polonius_engine::facts::FactTypes;
 use crate::polonius_engine::output::{Context, Output};
 
+#[expect(
+    clippy::type_complexity,
+    reason = "the two output relations retain their fact-domain column types"
+)]
 pub(super) fn compute<T: FactTypes>(
     ctx: &Context<'_, T>,
     result: &mut Output<T>,
-) -> (
-    Relation<(T::Loan, T::Point)>,
-    Relation<(T::Origin, T::Origin, T::Point)>,
-) {
-
+) -> (Relation<(T::Loan, T::Point)>, Relation<(T::Origin, T::Origin, T::Point)>) {
     let (errors, subset_errors) = {
         // Static inputs
         let origin_live_on_entry_rel = &ctx.origin_live_on_entry;
@@ -138,35 +138,23 @@ pub(super) fn compute<T: FactTypes>(
 
         // Make "variable" versions of the relations, needed for joins.
         loan_issued_at_op.extend(
-            ctx.loan_issued_at
-                .iter()
-                .map(|&(origin, loan, point)| ((origin, point), loan)),
+            ctx.loan_issued_at.iter().map(|&(origin, loan, point)| ((origin, point), loan)),
         );
-        loan_invalidated_at.extend(
-            ctx.loan_invalidated_at
-                .iter()
-                .map(|&(loan, point)| ((loan, point), ())),
-        );
-        origin_live_on_entry_var.extend(
-            origin_live_on_entry_rel
-                .iter()
-                .map(|&(origin, point)| ((origin, point), ())),
-        );
+        loan_invalidated_at
+            .extend(ctx.loan_invalidated_at.iter().map(|&(loan, point)| ((loan, point), ())));
+        origin_live_on_entry_var
+            .extend(origin_live_on_entry_rel.iter().map(|&(origin, point)| ((origin, point), ())));
 
         // subset(origin1, origin2, point) :-
         //   subset_base(origin1, origin2, point).
         subset_o1p.extend(
-            ctx.subset_base
-                .iter()
-                .map(|&(origin1, origin2, point)| ((origin1, point), origin2)),
+            ctx.subset_base.iter().map(|&(origin1, origin2, point)| ((origin1, point), origin2)),
         );
 
         // origin_contains_loan_on_entry(origin, loan, point) :-
         //   loan_issued_at(origin, loan, point).
         origin_contains_loan_on_entry_op.extend(
-            ctx.loan_issued_at
-                .iter()
-                .map(|&(origin, loan, point)| ((origin, point), loan)),
+            ctx.loan_issued_at.iter().map(|&(origin, loan, point)| ((origin, point), loan)),
         );
 
         // .. and then start iterating rules!
@@ -226,17 +214,17 @@ pub(super) fn compute<T: FactTypes>(
 
             // dying_can_reach_origins(origin2, point1, point2) :-
             //   live_to_dying_regions(_, origin2, point1, point2).
-            dying_can_reach_origins.from_map(
-                &live_to_dying_regions_o2pq,
-                |&((origin2, point1, point2), _origin1)| ((origin2, point1), point2),
-            );
+            dying_can_reach_origins
+                .from_map(&live_to_dying_regions_o2pq, |&((origin2, point1, point2), _origin1)| {
+                    ((origin2, point1), point2)
+                });
 
             // dying_can_reach_origins(origin, point1, point2) :-
             //   dying_region_requires(origin, point1, point2, _loan).
-            dying_can_reach_origins.from_map(
-                &dying_region_requires,
-                |&((origin, point1, point2), _loan)| ((origin, point1), point2),
-            );
+            dying_can_reach_origins
+                .from_map(&dying_region_requires, |&((origin, point1, point2), _loan)| {
+                    ((origin, point1), point2)
+                });
 
             // dying_can_reach(origin1, origin2, point1, point2) :-
             //   dying_can_reach_origins(origin1, point1, point2),
@@ -257,7 +245,7 @@ pub(super) fn compute<T: FactTypes>(
             // "intermediate" `origin2` is dead at `point2`.
             dying_can_reach_1.from_antijoin(
                 &dying_can_reach_o2q,
-                &origin_live_on_entry_rel,
+                origin_live_on_entry_rel,
                 |&(origin2, point2), &(origin1, point1)| ((origin2, point1), (origin1, point2)),
             );
             dying_can_reach_o2q.from_join(
@@ -339,7 +327,7 @@ pub(super) fn compute<T: FactTypes>(
             //   !origin_live_on_entry(origin, point).
             dead_borrow_region_can_reach_root.from_antijoin(
                 &loan_issued_at_op,
-                &origin_live_on_entry_rel,
+                origin_live_on_entry_rel,
                 |&(origin, point), &loan| ((origin, point), loan),
             );
 
@@ -359,7 +347,7 @@ pub(super) fn compute<T: FactTypes>(
             );
             dead_borrow_region_can_reach_dead.from_antijoin(
                 &dead_borrow_region_can_reach_dead_1,
-                &origin_live_on_entry_rel,
+                origin_live_on_entry_rel,
                 |&(origin2, point), &loan| ((origin2, point), loan),
             );
 
@@ -390,11 +378,9 @@ pub(super) fn compute<T: FactTypes>(
             // errors(loan, point) :-
             //   loan_invalidated_at(loan, point),
             //   loan_live_at(loan, point).
-            errors.from_join(
-                &loan_invalidated_at,
-                &loan_live_at,
-                |&(loan, point), _, _| (loan, point),
-            );
+            errors.from_join(&loan_invalidated_at, &loan_live_at, |&(loan, point), _, _| {
+                (loan, point)
+            });
 
             // subset_placeholder(Origin1, Origin2, Point) :-
             //     subset(Origin1, Origin2, Point),
@@ -445,10 +431,7 @@ pub(super) fn compute<T: FactTypes>(
         if result.dump_enabled {
             let subset_o1p = subset_o1p.complete();
             assert!(
-                subset_o1p
-                    .iter()
-                    .filter(|&((origin1, _), origin2)| origin1 == origin2)
-                    .count()
+                subset_o1p.iter().filter(|&((origin1, _), origin2)| origin1 == origin2).count()
                     == 0,
                 "unwanted subset symmetries"
             );

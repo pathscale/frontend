@@ -1,20 +1,11 @@
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::fmt;
 
-pub use at::DefineOpaqueTypes;
-use free_regions::RegionRelations;
-pub use freshen::TypeFreshener;
-use lexical_region_resolve::LexicalRegionResolutions;
-pub use lexical_region_resolve::RegionResolutionError;
-pub use opaque_types::{OpaqueTypeStorage, OpaqueTypeStorageEntries, OpaqueTypeTable};
-use region_constraints::{
-    GenericKind, RegionConstraintCollector, RegionConstraintStorage, VarInfos, VerifyBound,
-};
-pub use relate::combine::PredicateEmittingRelation;
+use crate::bug;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use crate::rustc_data_structures::snapshot_vec as sv;
 use crate::rustc_data_structures::undo_log::{Rollback, UndoLogs};
@@ -23,9 +14,6 @@ use crate::rustc_errors::{DiagCtxtHandle, ErrorGuaranteed};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::{self as hir, HirId};
 use crate::rustc_index::IndexVec;
-use rustc_macros::extension;
-pub use rustc_macros::{TypeFoldable, TypeVisitable};
-use crate::bug;
 use crate::rustc_middle::infer::canonical::{CanonicalQueryInput, CanonicalVarValues};
 use crate::rustc_middle::mir::ConstraintCategory;
 use crate::rustc_middle::traits::select;
@@ -39,6 +27,18 @@ use crate::rustc_middle::ty::{
 };
 use crate::rustc_span::{DUMMY_SP, Span, Symbol};
 use crate::rustc_type_ir::{CanonicalizerState, MayBeErased};
+pub use at::DefineOpaqueTypes;
+use free_regions::RegionRelations;
+pub use freshen::TypeFreshener;
+use lexical_region_resolve::LexicalRegionResolutions;
+pub use lexical_region_resolve::RegionResolutionError;
+pub use opaque_types::{OpaqueTypeStorage, OpaqueTypeStorageEntries, OpaqueTypeTable};
+use region_constraints::{
+    GenericKind, RegionConstraintCollector, RegionConstraintStorage, VarInfos, VerifyBound,
+};
+pub use relate::combine::PredicateEmittingRelation;
+use rustc_macros::extension;
+pub use rustc_macros::{TypeFoldable, TypeVisitable};
 use snapshot::undo_log::InferCtxtUndoLogs;
 use tracing::{debug, instrument};
 use ty::solve::TyOrConstInferVar;
@@ -304,6 +304,10 @@ pub struct InferCtxt<'tcx> {
 
     /// The set of predicates on which errors have been reported, to
     /// avoid reporting the same error twice.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the cache groups all reported goals and their diagnostic guarantee by span"
+    )]
     pub reported_trait_errors:
         RefCell<FxIndexMap<Span, (Vec<Goal<'tcx, ty::Predicate<'tcx>>>, ErrorGuaranteed)>>,
 
@@ -874,12 +878,11 @@ impl<'tcx> InferCtxt<'tcx> {
         // effects as well.
         let r_a = self.shallow_resolve(predicate.skip_binder().a);
         let r_b = self.shallow_resolve(predicate.skip_binder().b);
-        match (r_a.kind(), r_b.kind()) {
-            (&ty::Infer(ty::TyVar(a_vid)), &ty::Infer(ty::TyVar(b_vid))) => {
-                self.sub_unify_ty_vids_raw(a_vid, b_vid);
-                return Err((a_vid, b_vid));
-            }
-            _ => {}
+        if let (&ty::Infer(ty::TyVar(a_vid)), &ty::Infer(ty::TyVar(b_vid))) =
+            (r_a.kind(), r_b.kind())
+        {
+            self.sub_unify_ty_vids_raw(a_vid, b_vid);
+            return Err((a_vid, b_vid));
         }
 
         self.enter_forall(predicate, |ty::SubtypePredicate { a_is_expected, a, b }| {
@@ -1481,7 +1484,7 @@ impl<'tcx> InferCtxt<'tcx> {
     where
         T: TypeFoldable<TyCtxt<'tcx>>,
     {
-        if let Some(_) = value.as_ref().no_bound_vars() {
+        if value.as_ref().no_bound_vars().is_some() {
             return value.skip_binder();
         }
 
@@ -1872,12 +1875,12 @@ impl<'tcx> InferCtxt<'tcx> {
 }
 
 /// Returns unresolved root variables from `table`, according to `is_unresolved`.
-fn unresolved_root_variables_of<V: UnifyKey>(
+fn unresolved_root_variables_of<V>(
     mut table: UnificationTable<'_, '_, V>,
     is_unresolved: impl Fn(V::Value) -> bool,
 ) -> Vec<V>
 where
-    V: Eq,
+    V: UnifyKey + Eq,
     V::Value: UnifyValue,
     for<'a> UndoLog<'a>: From<sv::UndoLog<ut::Delegate<V>>>,
 {

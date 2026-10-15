@@ -1,6 +1,6 @@
+use crate::bug;
 use crate::rustc_data_structures::fingerprint::{Fingerprint, PackedFingerprint};
 use crate::rustc_data_structures::unord::UnordMap;
-use crate::bug;
 #[expect(unused_imports, reason = "used by doc comments")]
 use crate::rustc_middle::dep_graph::DepKindVTable;
 use crate::rustc_middle::dep_graph::{

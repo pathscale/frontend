@@ -66,7 +66,7 @@ fn with_error_checking_parse<'a, T, F>(s: String, psess: &'a ParseSess, f: F) ->
 where
     F: FnOnce(&mut Parser<'a>) -> PResult<'a, T>,
 {
-    let mut p = string_to_parser(&psess, s);
+    let mut p = string_to_parser(psess, s);
     let x = f(&mut p).unwrap();
     p.dcx().abort_if_errors();
     x
@@ -191,10 +191,10 @@ fn test_harness(
             let (dcx, source_map, output) = create_test_handler(theme);
             source_map.new_source_file(filename(&source_map, "test.rs"), file_text.to_owned());
 
-            let primary_span = make_span(&file_text, &span_labels[0].start, &span_labels[0].end);
+            let primary_span = make_span(file_text, &span_labels[0].start, &span_labels[0].end);
             let mut msp = MultiSpan::from_span(primary_span);
             for span_label in &span_labels {
-                let span = make_span(&file_text, &span_label.start, &span_label.end);
+                let span = make_span(file_text, &span_label.start, &span_label.end);
                 msp.push_span_label(span, span_label.label);
                 eko::println!("span: {:?} label: {:?}", span, span_label.label);
                 eko::println!("text: {:?}", source_map.span_to_snippet(span));
@@ -203,7 +203,7 @@ fn test_harness(
             let mut err = dcx.handle().struct_span_err(msp, "foo");
             for (position, note) in &notes {
                 if let Some((start, end)) = position {
-                    let span = make_span(&file_text, &start, &end);
+                    let span = make_span(file_text, start, end);
                     err.span_note(span, *note);
                 } else {
                     err.note(*note);
@@ -211,10 +211,7 @@ fn test_harness(
             }
             err.emit();
 
-            assert!(
-                expected_output.chars().next() == Some('\n'),
-                "expected output should begin with newline"
-            );
+            assert!(expected_output.starts_with('\n'), "expected output should begin with newline");
             let expected_output = &expected_output[1..];
 
             let bytes = output.lock();
@@ -236,12 +233,10 @@ fn test_harness(
                 .expect("an expected location line");
             assert!(actual_output.starts_with(message), "{actual_output:?}");
             assert!(
-                actual_output
-                    .lines()
-                    .any(|line| line.trim_start().strip_prefix("--> ").is_some_and(|at| at
-                        .split(": ")
-                        .next()
-                        == Some(location))),
+                actual_output.lines().any(|line| line
+                    .trim_start()
+                    .strip_prefix("--> ")
+                    .is_some_and(|at| at.split(": ").next() == Some(location))),
                 "the primary span should start at {location}: {actual_output:?}"
             );
         }
@@ -259,7 +254,7 @@ fn make_pos(file_text: &str, pos: &Position) -> usize {
     let mut remainder = file_text;
     let mut offset = 0;
     for _ in 0..pos.count {
-        if let Some(n) = remainder.find(&pos.string) {
+        if let Some(n) = remainder.find(pos.string) {
             offset += n;
             remainder = &remainder[n + 1..];
         } else {
@@ -2447,7 +2442,7 @@ fn get_spans_of_pat_idents(src: &str) -> Vec<Span> {
     }
     let mut v = PatIdentVisitor { spans: Vec::new() };
     visit::walk_item(&mut v, &item);
-    return v.spans;
+    v.spans
 }
 
 #[test]
@@ -2922,31 +2917,161 @@ fn out_of_line_mod() {
 
 #[test]
 fn eqmodws() {
-    assert_eq!(matches_codepattern("", ""), true);
-    assert_eq!(matches_codepattern("", "a"), false);
-    assert_eq!(matches_codepattern("a", ""), false);
-    assert_eq!(matches_codepattern("a", "a"), true);
-    assert_eq!(matches_codepattern("a b", "a   \n\t\r  b"), true);
-    assert_eq!(matches_codepattern("a b ", "a   \n\t\r  b"), true);
-    assert_eq!(matches_codepattern("a b", "a   \n\t\r  b "), false);
-    assert_eq!(matches_codepattern("a   b", "a b"), true);
-    assert_eq!(matches_codepattern("ab", "a b"), false);
-    assert_eq!(matches_codepattern("a   b", "ab"), true);
-    assert_eq!(matches_codepattern(" a   b", "ab"), true);
+    assert!(matches_codepattern("", ""));
+    assert!(!matches_codepattern("", "a"));
+    assert!(!matches_codepattern("a", ""));
+    assert!(matches_codepattern("a", "a"));
+    assert!(matches_codepattern("a b", "a   \n\t\r  b"));
+    assert!(matches_codepattern("a b ", "a   \n\t\r  b"));
+    assert!(!matches_codepattern("a b", "a   \n\t\r  b "));
+    assert!(matches_codepattern("a   b", "a b"));
+    assert!(!matches_codepattern("ab", "a b"));
+    assert!(matches_codepattern("a   b", "ab"));
+    assert!(matches_codepattern(" a   b", "ab"));
 }
 
 #[test]
 fn pattern_whitespace() {
-    assert_eq!(matches_codepattern("", "\x0C"), false);
-    assert_eq!(matches_codepattern("a b ", "a   \u{0085}\n\t\r  b"), true);
-    assert_eq!(matches_codepattern("a b", "a   \u{0085}\n\t\r  b "), false);
+    assert!(!matches_codepattern("", "\x0C"));
+    assert!(matches_codepattern("a b ", "a   \u{0085}\n\t\r  b"));
+    assert!(!matches_codepattern("a b", "a   \u{0085}\n\t\r  b "));
 }
 
 #[test]
 fn non_pattern_whitespace() {
     // These have the property 'White_Space' but not 'Pattern_White_Space'
-    assert_eq!(matches_codepattern("a b", "a\u{2002}b"), false);
-    assert_eq!(matches_codepattern("a   b", "a\u{2002}b"), false);
-    assert_eq!(matches_codepattern("\u{205F}a   b", "ab"), false);
-    assert_eq!(matches_codepattern("a  \u{3000}b", "ab"), false);
+    assert!(!matches_codepattern("a b", "a\u{2002}b"));
+    assert!(!matches_codepattern("a   b", "a\u{2002}b"));
+    assert!(!matches_codepattern("\u{205F}a   b", "ab"));
+    assert!(!matches_codepattern("a  \u{3000}b", "ab"));
+}
+
+#[test]
+fn wave3_indexed_raw_identifiers_are_published_once() {
+    create_default_session_globals_then(|| {
+        let psess = ParseSess::new();
+        let parser = string_to_parser(&psess, "fn r#first() {} fn r#second() {}".to_string());
+        assert!(parser.token_cursor.indexed_tape().is_some());
+        let expected = parser.token_cursor.raw_identifier_spans();
+        let actual: Vec<Span> = psess.raw_identifier_spans.iter().collect();
+        assert_eq!(actual.as_slice(), expected);
+        assert_eq!(actual.len(), 2);
+        psess.dcx().abort_if_errors();
+    });
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn r24_on_demand_parallel_bodies_match_serial_ast() {
+    use crate::rustc_ast::tokenstream::TokenCursor;
+    use crate::rustc_data_structures::sync::enter_session_width;
+    use crate::rustc_lexer::FrontmatterAllowed;
+    use crate::rustc_span::edition::Edition;
+
+    // Set the width before creating globals or sessions so all shared parse
+    // state is synchronized. Owned body jobs use the existing pool boundary.
+    let _mode = enter_session_width(2);
+    create_default_session_globals_then(|| {
+        for source in [
+            "fn empty() {} fn attrs() { #![allow(unused)] } fn after() {}",
+            "//! crate docs\nmod nested {\n/// first docs\nfn first() {\n#![allow(unused)]\nlet x = crate::nested::value(); x;\n}\nfn second() { self::value(); }\nfn value() {}\n}\nfn last() {}",
+            "fn first() { macro_rules! m { () => { #[hidden] fn ignored() {} } } m!(); } fn second() { let _ = path::to::value(); }",
+        ] {
+            let make_session = || {
+                let mut psess = ParseSess::new();
+                psess.edition = Edition::Edition2024;
+                psess
+            };
+            let serial_session = make_session();
+            let parallel_session = make_session();
+            let mut serial = r24_source_parser(&serial_session, source);
+            assert!(serial.token_cursor.can_parallel_parse());
+            assert!(serial.token_cursor.indexed_tape().is_some());
+            // parse_mod bypasses the speculative parse_crate_mod entry point.
+            let (attrs, items, spans) = serial.parse_mod(crate::exp!(Eof)).unwrap();
+            let expected =
+                ast::Crate { attrs, items, spans, id: ast::DUMMY_NODE_ID, is_placeholder: false };
+            let mut parallel = r24_source_parser(&parallel_session, source);
+            assert!(parallel.token_cursor.can_parallel_parse());
+            let actual = parallel
+                .parse_parallel_bodies()
+                .expect("admitted indexed source must commit parallel body parsing");
+            assert_eq!(format!("{actual:#?}"), format!("{expected:#?}"), "{source}");
+            assert_eq!(parallel.token, serial.token);
+            assert_eq!(parallel.num_bump_calls, serial.num_bump_calls);
+            assert_eq!(
+                parallel_session.attr_id_generator.position(),
+                serial_session.attr_id_generator.position()
+            );
+            serial_session.dcx().abort_if_errors();
+            parallel_session.dcx().abort_if_errors();
+        }
+
+        fn r24_source_parser<'a>(psess: &'a ParseSess, source: &str) -> Parser<'a> {
+            let file = psess
+                .source_map()
+                .new_source_file(FileName::Custom("r24.rs".to_string()), source.to_string());
+            let cursor = TokenCursor::from_source(
+                file.src.as_ref().unwrap().clone(),
+                file.start_pos,
+                0,
+                FrontmatterAllowed::No,
+                psess.edition,
+            )
+            .expect("fixture must select OnDemandCursor");
+            Parser::new_with_cursor(psess, cursor, None)
+        }
+    });
+}
+
+#[test]
+fn w4_fast_path_metrics_and_deferred_newlines() {
+    indexed_admission_preserves_gallery_and_deferred_lines();
+    create_default_session_globals_then(|| {
+        crate::rustc_parse::reset_fast_path_metrics();
+        let source = "fn alpha() {}\nfn beta() {}";
+        let psess = ParseSess::new();
+        let mut parser = string_to_parser(&psess, source.to_string());
+        parser.parse_mod(crate::exp!(Eof)).unwrap();
+        let file = psess.source_map().files().last().unwrap().clone();
+        assert!(crate::rustc_parse::fast_path_metrics().tape_admissions >= 1);
+        assert_eq!(file.lines().iter().map(|pos| pos.0).collect::<Vec<_>>(), [0, 14]);
+        let multi_line = psess
+            .source_map()
+            .new_source_file(FileName::Custom("gaps.rs".to_string()), "a\nb\nc\nd\ne".to_string());
+        multi_line.supply_precomputed_newlines(&[1, 3, 7]);
+        assert_eq!(multi_line.lines().iter().map(|pos| pos.0).collect::<Vec<_>>(), [0, 2, 4, 6, 8]);
+        psess.dcx().abort_if_errors();
+    });
+}
+
+fn indexed_admission_preserves_gallery_and_deferred_lines() {
+    create_default_session_globals_then(|| {
+        let source = "fn r#alpha() { ignored!(inside_macro inside_macro); }\nfn beta() {}";
+        let psess = ParseSess::new();
+        let parser = string_to_parser(&psess, source.to_string());
+        assert!(parser.token_cursor.indexed_tape().is_some());
+        let file = psess.source_map().files().last().unwrap().clone();
+        assert!(!file.lines.is_frozen());
+        let source_map = psess.clone_source_map();
+        let emitter = PlainEmitter::new().sm(Some(Arc::clone(&source_map)));
+        let eager = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), source_map);
+        crate::rustc_parse::lexer::lex_token_trees(
+            &eager,
+            source,
+            file.src.as_ref(),
+            file.start_pos,
+            None,
+            StripTokens::Nothing,
+        )
+        .unwrap();
+        let actual: Vec<_> =
+            psess.symbol_gallery.symbols.lock().iter().map(|(&s, &p)| (s, p)).collect();
+        let expected: Vec<_> =
+            eager.symbol_gallery.symbols.lock().iter().map(|(&s, &p)| (s, p)).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(file.lines().len(), 2);
+        psess.dcx().abort_if_errors();
+        eager.dcx().abort_if_errors();
+    });
 }

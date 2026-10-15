@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
 use super::*;
 use crate::rustc_serialize::Decoder;
 use crate::rustc_serialize::opaque::{MAGIC_END_BYTES, MemDecoder};
+use alloc::vec::Vec;
 
 macro_rules! impl_test_unsigned_leb128 {
     ($test_name:ident, $write_fn_name:ident, $read_fn_name:ident, $int_ty:ident) => {
@@ -17,7 +17,8 @@ macro_rules! impl_test_unsigned_leb128 {
             values.push($int_ty::MAX);
 
             values.extend(
-                (-500..500).map(|i| (i as $int_ty).wrapping_mul(0x12345789ABCDEFu64 as $int_ty)),
+                (-500_i64..500_i64)
+                    .map(|i| (i as $int_ty).wrapping_mul(0x12345789ABCDEFu64 as $int_ty)),
             );
 
             let mut stream = Vec::new();

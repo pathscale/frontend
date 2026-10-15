@@ -1,17 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
-use either::Either;
-use itertools::Itertools as _;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_errors::{Diag, Subdiagnostic};
 use crate::rustc_hir as hir;
@@ -24,6 +19,8 @@ use crate::rustc_middle::ty::{
 use crate::rustc_span::Span;
 use crate::rustc_trait_selection::diagnostics::impl_trait_overcapture_suggestion;
 use crate::rustc_trait_selection::error_reporting::infer::region::unexpected_hidden_region_diagnostic;
+use either::Either;
+use itertools::Itertools as _;
 
 use crate::rustc_borrowck::MirBorrowckCtxt;
 use crate::rustc_borrowck::borrow_set::BorrowData;
@@ -115,7 +112,7 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             let tcx = self.infcx.tcx;
             let ControlFlow::Break((opaque_def_id, offending_region_idx, location)) = ty
                 .visit_with(&mut FindOpaqueRegion {
-                    regioncx: &self.regioncx,
+                    regioncx: self.regioncx,
                     tcx,
                     borrow_region: borrow.region,
                 })

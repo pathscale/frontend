@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use {alloc::string::String};
+use alloc::string::String;
 #[cfg(test)]
 mod tests;
 

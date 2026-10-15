@@ -1,8 +1,8 @@
-use alloc::boxed::Box;
 use crate::rustc_hir as hir;
 use crate::rustc_index::Idx;
 use crate::rustc_middle::middle::region;
 use crate::rustc_middle::thir::*;
+use alloc::boxed::Box;
 use tracing::debug;
 
 use crate::rustc_mir_build::thir::cx::ThirBuildCx;

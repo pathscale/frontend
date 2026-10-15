@@ -1,19 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use arrayvec::ArrayVec;
 use crate::rustc_abi::{
     BackendRepr, FieldsShape, Float, HasDataLayout, Primitive, Reg, Size, TyAbiInterface,
 };
+use arrayvec::ArrayVec;
 
-use crate::rustc_target::callconv::{ArgAbi, ArgAttribute, ArgExtension, CastTarget, FnAbi, PassMode, Uniform};
+use crate::rustc_target::callconv::{
+    ArgAbi, ArgAttribute, ArgExtension, CastTarget, FnAbi, PassMode, Uniform,
+};
 
 fn extend_integer_width_mips<Ty>(arg: &mut ArgAbi<'_, Ty>, bits: u64) {
     // Always sign extend u32 values on 64-bit mips
@@ -132,23 +128,22 @@ where
                     let offset = arg.layout.fields.offset(i);
 
                     // We only care about aligned doubles
-                    if let BackendRepr::Scalar(scalar) = field.backend_repr {
-                        if scalar.primitive() == Primitive::Float(Float::F64) {
-                            if offset.is_aligned(dl.f64_align) {
-                                // Insert enough integers to cover [last_offset, offset)
-                                assert!(last_offset.is_aligned(dl.f64_align));
-                                for _ in 0..((offset - last_offset).bits() / 64) {
-                                    if prefix.try_push(Reg::i64()).is_err() {
-                                        break 'outer;
-                                    }
-                                }
-
-                                if prefix.try_push(Reg::f64()).is_err() {
-                                    break;
-                                }
-                                last_offset = offset + Reg::f64().size;
+                    if let BackendRepr::Scalar(scalar) = field.backend_repr
+                        && scalar.primitive() == Primitive::Float(Float::F64)
+                        && offset.is_aligned(dl.f64_align)
+                    {
+                        // Insert enough integers to cover [last_offset, offset)
+                        assert!(last_offset.is_aligned(dl.f64_align));
+                        for _ in 0..((offset - last_offset).bits() / 64) {
+                            if prefix.try_push(Reg::i64()).is_err() {
+                                break 'outer;
                             }
                         }
+
+                        if prefix.try_push(Reg::f64()).is_err() {
+                            break;
+                        }
+                        last_offset = offset + Reg::f64().size;
                     }
                 }
             }
