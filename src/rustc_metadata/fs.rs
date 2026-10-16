@@ -129,7 +129,7 @@ pub fn non_durable_rename(src: &Path, dst: &Path) -> eko::file::Result<()> {
 /// The cost of an extra syscall is much lower than getting descheduled for the sync IO.
 #[cfg(target_os = "linux")]
 pub fn non_durable_rename(src: &Path, dst: &Path) -> eko::file::Result<()> {
-    let _ = eko::file::remove_file(dst);
+    eko::file::remove_file(dst);
     eko::file::rename(src, dst)
 }
 
