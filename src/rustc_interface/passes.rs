@@ -69,6 +69,9 @@ pub fn parse(sess: &Session) -> ast::Crate {
     let mark = sess.parse_mark();
     let mut krate = sess
         .time("parse_crate", || {
+            let _stage = crate::rustc_data_structures::stage_timing::enter(
+                crate::rustc_data_structures::stage_timing::Marker::Parse,
+            );
             let mut parser = unwrap_or_emit_fatal(match &sess.io.input {
                 Input::File(file) => new_parser_from_file(
                     &sess.psess,
@@ -167,6 +170,11 @@ fn configure_and_expand(
     );
     crate::rustc_builtin_macros::register_builtin_macros(resolver);
 
+    // Injection and expansion, with the early resolution expansion interleaves. Late resolution
+    // after it stays in the `resolver_for_lowering_raw` query this runs inside.
+    let expand_stage = crate::rustc_data_structures::stage_timing::enter(
+        crate::rustc_data_structures::stage_timing::Marker::Expand,
+    );
     let num_standard_library_imports = sess.time("crate_injection", || {
         crate::rustc_builtin_macros::standard_library_imports::inject(
             &mut krate,
@@ -281,6 +289,7 @@ fn configure_and_expand(
     sess.time("maybe_building_test_harness", || {
         crate::rustc_builtin_macros::test_harness::inject(&mut krate, sess, features, resolver)
     });
+    drop(expand_stage);
 
     let has_proc_macro_decls = sess.time("AST_validation", || {
         crate::rustc_ast_passes::ast_validation::check_crate(

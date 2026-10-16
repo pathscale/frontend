@@ -94,6 +94,9 @@ impl IndexedSourceTape {
         frontmatter: FrontmatterAllowed,
         edition: Edition,
     ) -> Option<Arc<Self>> {
+        let _stage = crate::rustc_data_structures::stage_timing::enter(
+            crate::rustc_data_structures::stage_timing::Marker::Lex,
+        );
         let end = u32::try_from(src.len()).ok()?;
         base.0.checked_add(end)?;
         let input = src.get(begin as usize..)?;

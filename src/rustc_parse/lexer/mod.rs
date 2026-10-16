@@ -133,6 +133,9 @@ fn lex_with_sink<'psess, 'src, S: tree_sink::TokenTreeSink>(
     strip_tokens: StripTokens,
     sink: &mut S,
 ) -> Result<S::Stream, Vec<Diag<'psess>>> {
+    let _stage = crate::rustc_data_structures::stage_timing::enter(
+        crate::rustc_data_structures::stage_timing::Marker::Lex,
+    );
     match strip_tokens {
         StripTokens::Shebang | StripTokens::ShebangAndFrontmatter => {
             if let Some(shebang_len) = crate::rustc_lexer::strip_shebang(src) {

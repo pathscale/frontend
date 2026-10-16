@@ -324,6 +324,9 @@ fn body_weight(input: &Input, index: usize) -> u32 {
 
 fn parse_body(input: &Input, index: usize) -> Option<Body> {
     let job = &input.jobs[index];
+    let _stage = crate::rustc_data_structures::stage_timing::enter(
+        crate::rustc_data_structures::stage_timing::Marker::Parse,
+    );
     input.globals.enter(|| {
         sync::speculate_parse(|| {
             parse_transaction::body_pass(|| {
