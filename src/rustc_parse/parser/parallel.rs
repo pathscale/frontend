@@ -11,7 +11,7 @@ use crate::exp;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::attr::AttrIdGenerator;
 use crate::rustc_ast::mut_visit::{self, FnKind, MutVisitor};
-use crate::rustc_ast::ptr::{P, ParseArena};
+use crate::rustc_ast::ptr::P;
 use crate::rustc_ast::token::{self, Delimiter, Token};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
 use crate::rustc_data_structures::fx::FxHashMap;
@@ -327,7 +327,9 @@ fn parse_body(input: &Input, index: usize) -> Option<Body> {
     input.globals.enter(|| {
         sync::speculate_parse(|| {
             parse_transaction::body_pass(|| {
-                let _arena = ParseArena::enter();
+                // No `ParseArena` epoch per body: a body writes a KiB or two of nodes, and a
+                // fresh 64 KiB chunk for each was most of the parse's allocated bytes. The
+                // body's nodes share the thread's current chunk; each holds its own count.
                 let (psess, diagnostic) =
                     session(Arc::clone(&input.source_map), job.attr_start, input.edition);
                 let mut parser = job.state.clone_body().parser(&psess);
