@@ -499,6 +499,7 @@ cfg_select! {
     }
     unix => {
         pub fn get_resident_set_size() -> Option<usize> {
+            use eko::file as fs;
             use libc::{_SC_PAGESIZE, sysconf};
             let field = 1;
             let contents = fs::read("/proc/self/statm").ok()?;
