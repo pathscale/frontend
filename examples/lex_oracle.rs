@@ -1,6 +1,7 @@
-//! Holds `frontend_lex` to the token tape it replaces: over every file given, both lex it, and
-//! where both accept it the parser must see the same tokens, spans, spacing, groups, item cuts,
-//! raw identifiers and symbol gallery. Prints the counts and the first differences.
+//! Holds `frontend_lex` to the eager diagnostic lexer: over every file given, both lex it, and
+//! where both accept it the parser must read the same tokens, spans and spacing through its own
+//! cursor, and the session must record the same raw identifiers and symbol gallery. Prints the
+//! counts and the first differences, and every file only one of them accepts.
 //!
 //! Run: `cargo run --release --example lex_oracle -- [DIR...]`. The generated corpora are always
 //! included; each file is compared in the 2015 and the 2021 edition. `SHOW=N` prints up to N
@@ -11,7 +12,7 @@ mod corpus;
 
 use std::sync::Arc;
 
-use frontend::rustc_ast::tokenstream::lex_hooks::{self, Compared};
+use frontend::rustc_parse::lex_hooks::{self, Compared};
 use frontend::rustc_span::create_session_globals_then;
 use frontend::rustc_span::edition::Edition;
 
@@ -20,8 +21,8 @@ struct Tally {
     same: usize,
     tokens: usize,
     both_refuse: usize,
-    only_new: usize,
-    only_old: Vec<String>,
+    only_new: Vec<String>,
+    only_eager: Vec<String>,
     differ: Vec<String>,
 }
 
@@ -52,28 +53,31 @@ fn main() {
                     tally.tokens += n;
                 }
                 Compared::BothRefuse => tally.both_refuse += 1,
-                Compared::OnlyNewAccepts => tally.only_new += 1,
-                Compared::OnlyOldAccepts(error) => {
-                    tally.only_old.push(format!("{name}: {error:?}"))
+                Compared::OnlyNewAccepts => tally.only_new.push(name.clone()),
+                Compared::OnlyEagerAccepts(error) => {
+                    tally.only_eager.push(format!("{name}: {error:?}"))
                 }
                 Compared::Differ(what) => tally.differ.push(format!("{name}: {what}")),
             }
         }
         println!(
-            "{edition:?}: {} files: {} same ({} tokens), {} both refuse, {} only the new lexer accepts, {} only the tape accepts, {} differ",
+            "{edition:?}: {} files: {} same ({} tokens), {} both refuse, {} only the new lexer accepts, {} only the eager lexer accepts, {} differ",
             files.len(),
             tally.same,
             tally.tokens,
             tally.both_refuse,
-            tally.only_new,
-            tally.only_old.len(),
+            tally.only_new.len(),
+            tally.only_eager.len(),
             tally.differ.len()
         );
         for line in tally.differ.iter().take(show) {
             println!("  differ: {line}");
         }
-        for line in tally.only_old.iter().take(show) {
-            println!("  only the tape accepts: {line}");
+        for line in tally.only_eager.iter().take(show) {
+            println!("  only the eager lexer accepts: {line}");
+        }
+        for line in tally.only_new.iter().take(show) {
+            println!("  only the new lexer accepts: {line}");
         }
     }
 }
