@@ -77,9 +77,15 @@ impl LexedTape {
             strip_shebang: begin != 0,
             frontmatter: matches!(frontmatter, FrontmatterAllowed::Yes),
         };
-        let file = crate::rustc_span::with_session_interner(|interner| {
-            frontend_lex::lex(text, options, interner)
-        });
+        let file = {
+            // Charge the tokenizing to the lex row, not to whichever stage called us.
+            let _stage = crate::rustc_data_structures::stage_timing::enter(
+                crate::rustc_data_structures::stage_timing::Marker::Lex,
+            );
+            crate::rustc_span::with_session_interner(|interner| {
+                frontend_lex::lex(text, options, interner)
+            })
+        };
         if !file.is_clean() || file.begin != begin {
             return None;
         }
