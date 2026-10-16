@@ -1,11 +1,15 @@
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::rustc_abi::Size;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def::DefKind;
-use crate::rustc_middle::mir::interpret::{GlobalId, Scalar};
+use crate::rustc_middle::mir::interpret::{
+    AllocId, Allocation, GlobalId, Pointer, Scalar, alloc_range,
+};
 use crate::rustc_middle::mir::{self, ConstValue, Local, Operand, Rvalue};
+use crate::rustc_middle::ty::layout::LayoutCx;
 use crate::rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeVisitableExt};
 use crate::rustc_span::{Spanned, sym};
 
@@ -16,7 +20,9 @@ const MAX_FOLD_STEPS: usize = 4096;
 enum FoldValue<'tcx> {
     Scalar { bits: u128, ty: Ty<'tcx> },
     ZeroSized { ty: Ty<'tcx> },
-    Reference { ty: Ty<'tcx>, pointee_ty: Ty<'tcx> },
+    Reference { ty: Ty<'tcx>, pointee_ty: Ty<'tcx>, alloc_id: AllocId },
+    Aggregate { ty: Ty<'tcx>, fields: &'tcx [FoldValue<'tcx>] },
+    Slice { ty: Ty<'tcx>, alloc_id: AllocId, len: u64 },
 }
 
 impl<'tcx> FoldValue<'tcx> {
@@ -24,7 +30,9 @@ impl<'tcx> FoldValue<'tcx> {
         match self {
             FoldValue::Scalar { ty, .. }
             | FoldValue::ZeroSized { ty }
-            | FoldValue::Reference { ty, .. } => ty,
+            | FoldValue::Reference { ty, .. }
+            | FoldValue::Aggregate { ty, .. }
+            | FoldValue::Slice { ty, .. } => ty,
         }
     }
 }
@@ -41,8 +49,8 @@ struct ScalarInfo<'tcx> {
 struct Folder<'tcx> {
     tcx: TyCtxt<'tcx>,
     typing_env: ty::TypingEnv<'tcx>,
-    active: Vec<Instance<'tcx>>,
-    cache: FxHashMap<Instance<'tcx>, Result<FoldValue<'tcx>, &'static str>>,
+    active: Vec<GlobalId<'tcx>>,
+    cache: FxHashMap<GlobalId<'tcx>, Result<FoldValue<'tcx>, &'static str>>,
     remaining_steps: usize,
 }
 
@@ -51,6 +59,17 @@ pub(super) fn fold_scalar<'tcx>(
     typing_env: ty::TypingEnv<'tcx>,
     id: GlobalId<'tcx>,
 ) -> Result<Scalar, &'static str> {
+    match fold_const(tcx, typing_env, id)? {
+        ConstValue::Scalar(value) => Ok(value),
+        _ => Err("constant requires an aggregate query result"),
+    }
+}
+
+pub(super) fn fold_const<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: ty::TypingEnv<'tcx>,
+    id: GlobalId<'tcx>,
+) -> Result<ConstValue, &'static str> {
     let mut folder = Folder {
         tcx,
         typing_env,
@@ -59,11 +78,195 @@ pub(super) fn fold_scalar<'tcx>(
         remaining_steps: MAX_FOLD_STEPS,
     };
     let value = folder.eval_instance(id, 0)?;
-    folder.to_scalar(value)
+    folder.to_const(value)
 }
 
 impl<'tcx> Folder<'tcx> {
+    // Pattern endpoints can themselves need folding. Asking layout_of for a
+    // transparent pattern wrapper would send those endpoints through valtrees,
+    // which this scalar folder does not require. Its storage is the base type;
+    // its extra validity restriction is checked separately below.
+    fn scalar_storage_ty(&self, mut ty: Ty<'tcx>) -> Result<Ty<'tcx>, &'static str> {
+        for _ in 0..MAX_FOLD_DEPTH {
+            match *ty.kind() {
+                ty::Pat(base, _) => ty = base,
+                ty::Adt(def, args)
+                    if def.is_struct()
+                        && def.repr().transparent()
+                        && def.non_enum_variant().fields.len() == 1 =>
+                {
+                    ty = def.non_enum_variant().fields[crate::rustc_abi::FieldIdx::from_usize(0)]
+                        .ty(self.tcx, args)
+                        .skip_norm_wip();
+                }
+                _ => return Ok(ty),
+            }
+        }
+        Err("scalar wrapper exceeded its depth bound")
+    }
+
+    fn validate_scalar_type(
+        &self,
+        ty: Ty<'tcx>,
+        bits: u128,
+        depth: usize,
+    ) -> Result<(), &'static str> {
+        if depth >= MAX_FOLD_DEPTH {
+            return Err("scalar validity exceeded its depth bound");
+        }
+        match *ty.kind() {
+            ty::Adt(def, args)
+                if def.is_struct()
+                    && def.repr().transparent()
+                    && def.non_enum_variant().fields.len() == 1 =>
+            {
+                self.validate_scalar_type(
+                    def.non_enum_variant().fields[crate::rustc_abi::FieldIdx::from_usize(0)]
+                        .ty(self.tcx, args)
+                        .skip_norm_wip(),
+                    bits,
+                    depth + 1,
+                )
+            }
+            ty::Pat(base, pattern) => {
+                let ty::PatternKind::Range { start, end } = *pattern else {
+                    return Err("unsupported scalar validity pattern");
+                };
+                let mut bounds = Folder {
+                    tcx: self.tcx,
+                    typing_env: self.typing_env,
+                    active: Vec::new(),
+                    cache: FxHashMap::default(),
+                    remaining_steps: MAX_FOLD_STEPS,
+                };
+                let start = bounds.eval_const(
+                    mir::Const::Ty(base, start),
+                    crate::rustc_span::DUMMY_SP,
+                    depth + 1,
+                )?;
+                let start = bounds.scalar_info(start)?.bits;
+                let end = bounds.eval_const(
+                    mir::Const::Ty(base, end),
+                    crate::rustc_span::DUMMY_SP,
+                    depth + 1,
+                )?;
+                let end = bounds.scalar_info(end)?.bits;
+                let size = self.layout(base)?.0;
+                let valid = if base.is_signed() {
+                    let bits = size.sign_extend(bits);
+                    size.sign_extend(start) <= bits && bits <= size.sign_extend(end)
+                } else {
+                    start <= bits && bits <= end
+                };
+                if !valid {
+                    return Err("constant scalar violates its pattern range");
+                }
+                self.validate_scalar_type(base, bits, depth + 1)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn to_const(&self, value: FoldValue<'tcx>) -> Result<ConstValue, &'static str> {
+        match value {
+            FoldValue::Scalar { .. } => Ok(ConstValue::Scalar(self.to_scalar(value)?)),
+            FoldValue::ZeroSized { .. } => Ok(ConstValue::ZeroSized),
+            FoldValue::Reference { alloc_id, .. } => Ok(ConstValue::Scalar(Scalar::from_pointer(
+                Pointer::new(alloc_id.into(), Size::ZERO),
+                &self.tcx,
+            ))),
+            FoldValue::Slice { alloc_id, len, .. } => Ok(ConstValue::Slice { alloc_id, meta: len }),
+            FoldValue::Aggregate { ty, fields } => {
+                let layout = self
+                    .tcx
+                    .layout_of(self.typing_env.as_query_input(ty))
+                    .map_err(|_| "aggregate layout could not be computed")?;
+                if layout.is_zst() {
+                    return Ok(ConstValue::ZeroSized);
+                }
+                if layout.backend_repr.is_scalar() {
+                    for field in fields {
+                        if self.layout(field.ty())?.0.bytes() != 0 {
+                            return self.to_const(*field);
+                        }
+                    }
+                }
+                Ok(ConstValue::Indirect { alloc_id: self.allocate(value)?, offset: Size::ZERO })
+            }
+        }
+    }
+
+    fn allocate(&self, value: FoldValue<'tcx>) -> Result<AllocId, &'static str> {
+        let layout = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(value.ty()))
+            .map_err(|_| "allocation layout could not be computed")?;
+        let len = usize::try_from(layout.size.bytes()).map_err(|_| "allocation is too large")?;
+        if len > MAX_FOLD_STEPS * 16 {
+            return Err("constant allocation exceeded its size bound");
+        }
+        let mut allocation =
+            Allocation::from_bytes(vec![0; len], layout.align.abi, mir::Mutability::Mut, ());
+        self.write_value(&mut allocation, Size::ZERO, value)?;
+        allocation.mutability = mir::Mutability::Not;
+        Ok(self.tcx.reserve_and_set_memory_alloc(self.tcx.mk_const_alloc(allocation)))
+    }
+
+    fn write_value(
+        &self,
+        allocation: &mut Allocation,
+        offset: Size,
+        value: FoldValue<'tcx>,
+    ) -> Result<(), &'static str> {
+        if let FoldValue::Aggregate { ty, fields } = value {
+            let layout = self
+                .tcx
+                .layout_of(self.typing_env.as_query_input(ty))
+                .map_err(|_| "aggregate layout could not be computed")?;
+            for (index, field) in fields.iter().enumerate() {
+                self.write_value(allocation, offset + layout.fields.offset(index), *field)?;
+            }
+            return Ok(());
+        }
+        let size = self.layout(value.ty())?.0;
+        if size.bytes() == 0 {
+            return Ok(());
+        }
+        let scalar = match value {
+            FoldValue::Reference { alloc_id, .. } => {
+                Scalar::from_pointer(Pointer::new(alloc_id.into(), Size::ZERO), &self.tcx)
+            }
+            FoldValue::Slice { alloc_id, len, .. } => {
+                let pointer_size = self.tcx.data_layout.pointer_size();
+                allocation
+                    .write_scalar(
+                        &self.tcx,
+                        alloc_range(offset, pointer_size),
+                        Scalar::from_pointer(Pointer::new(alloc_id.into(), Size::ZERO), &self.tcx),
+                    )
+                    .map_err(|_| "constant pointer write failed")?;
+                allocation
+                    .write_scalar(
+                        &self.tcx,
+                        alloc_range(offset + pointer_size, pointer_size),
+                        Scalar::from_target_usize(len, &self.tcx),
+                    )
+                    .map_err(|_| "constant metadata write failed")?;
+                return Ok(());
+            }
+            _ => self.to_scalar(value)?,
+        };
+        allocation
+            .write_scalar(&self.tcx, alloc_range(offset, size), scalar)
+            .map_err(|_| "constant scalar write failed")
+    }
+
+    fn aggregate(&self, ty: Ty<'tcx>, fields: &[FoldValue<'tcx>]) -> FoldValue<'tcx> {
+        FoldValue::Aggregate { ty, fields: self.tcx.arena.dropless.alloc_slice(fields) }
+    }
+
     fn layout(&self, ty: Ty<'tcx>) -> Result<(Size, u64), &'static str> {
+        let ty = self.scalar_storage_ty(ty)?;
         let layout = self
             .tcx
             .layout_of(self.typing_env.as_query_input(ty))
@@ -72,13 +275,23 @@ impl<'tcx> Folder<'tcx> {
     }
 
     fn scalar_value(&self, bits: u128, ty: Ty<'tcx>) -> Result<FoldValue<'tcx>, &'static str> {
-        if !ty.is_bool() && !is_integer_ty(ty) {
-            return Err("constant is not an integer or boolean scalar");
-        }
+        let layout = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(self.scalar_storage_ty(ty)?))
+            .map_err(|_| "scalar layout could not be computed")?;
+        let crate::rustc_abi::BackendRepr::Scalar(scalar) = layout.backend_repr else {
+            return Err("constant does not have a scalar layout");
+        };
 
         let (size, _) = self.layout(ty)?;
         let width = bit_width(size)?;
         let bits = bits & bit_mask(width);
+        self.validate_scalar_type(ty, bits, 0)?;
+        if matches!(scalar.primitive(), crate::rustc_abi::Primitive::Pointer(_))
+            || !scalar.valid_range(&self.tcx).contains(bits)
+        {
+            return Err("constant scalar violates its type's validity range");
+        }
         if ty.is_bool() && bits > 1 {
             return Err("boolean scalar has an invalid value");
         }
@@ -117,7 +330,13 @@ impl<'tcx> Folder<'tcx> {
                 return Err("boolean result has an invalid value");
             }
             Ok(Scalar::from_bool(bits == 1))
-        } else if is_integer_ty(ty) {
+        } else if self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(self.scalar_storage_ty(ty)?))
+            .map_err(|_| "scalar layout could not be computed")?
+            .backend_repr
+            .is_scalar()
+        {
             Ok(Scalar::from_uint(bits, size))
         } else {
             Err("constant result is not an integer or boolean scalar")
@@ -133,22 +352,28 @@ impl<'tcx> Folder<'tcx> {
         if depth >= MAX_FOLD_DEPTH {
             return Err("nested constant fold exceeded its depth bound");
         }
-        if id.promoted.is_some() {
-            return Err("promoted constant body is unsupported");
-        }
-
         let instance = id.instance;
-        if let Some(result) = self.cache.get(&instance) {
+        if let Some(result) = self.cache.get(&id) {
             return *result;
         }
-        if self.active.contains(&instance) {
+        if self.active.contains(&id) {
             return Err("cyclic constant reference");
         }
 
-        self.active.push(instance);
-        let result = self.eval_instance_uncached(instance, depth);
+        self.active.push(id);
+        let result = if let Some(promoted) = id.promoted {
+            let body = &self.tcx.promoted_mir(instance.def_id())[promoted];
+            let body = instance.instantiate_mir_and_normalize_erasing_regions(
+                self.tcx,
+                self.typing_env,
+                ty::EarlyBinder::bind(self.tcx, body.clone()),
+            );
+            self.eval_body(&body, depth)
+        } else {
+            self.eval_instance_uncached(instance, depth)
+        };
         self.active.pop();
-        self.cache.insert(instance, result);
+        self.cache.insert(id, result);
         result
     }
 
@@ -213,8 +438,8 @@ impl<'tcx> Folder<'tcx> {
         match constant {
             mir::Const::Val(ConstValue::ZeroSized, ty) => self.zero_sized(ty),
             mir::Const::Val(ConstValue::Scalar(_), _) => Err("raw pointer constant is unsupported"),
-            mir::Const::Val(ConstValue::Slice { .. }, _) => {
-                Err("slice allocation constant is unsupported")
+            mir::Const::Val(ConstValue::Slice { alloc_id, meta }, ty) => {
+                Ok(FoldValue::Slice { ty, alloc_id, len: meta })
             }
             mir::Const::Val(ConstValue::Indirect { .. }, _) => {
                 Err("allocation-backed constant is unsupported")
@@ -283,7 +508,19 @@ impl<'tcx> Folder<'tcx> {
         body: &mir::Body<'tcx>,
         depth: usize,
     ) -> Result<FoldValue<'tcx>, &'static str> {
+        self.eval_body_with_args(body, depth, &[])
+    }
+
+    fn eval_body_with_args(
+        &mut self,
+        body: &mir::Body<'tcx>,
+        depth: usize,
+        args: &[FoldValue<'tcx>],
+    ) -> Result<FoldValue<'tcx>, &'static str> {
         let mut locals: FxHashMap<Local, FoldValue<'tcx>> = FxHashMap::default();
+        for (index, value) in args.iter().enumerate() {
+            locals.insert(Local::from_usize(index + 1), *value);
+        }
         let mut visited = Vec::new();
         let mut block = mir::START_BLOCK;
 
@@ -405,21 +642,36 @@ impl<'tcx> Folder<'tcx> {
 
     fn eval_operand(
         &mut self,
-        _body: &mir::Body<'tcx>,
+        body: &mir::Body<'tcx>,
         locals: &FxHashMap<Local, FoldValue<'tcx>>,
         operand: &Operand<'tcx>,
         depth: usize,
     ) -> Result<FoldValue<'tcx>, &'static str> {
         match operand {
-            Operand::Copy(place) | Operand::Move(place) => {
-                if !place.projection.is_empty() {
-                    return Err("projected place read is unsupported");
-                }
-                locals.get(&place.local).copied().ok_or("MIR reads a local without a folded value")
-            }
+            Operand::Copy(place) | Operand::Move(place) => self.eval_place(body, locals, place),
             Operand::Constant(constant) => self.eval_const(constant.const_, constant.span, depth),
             Operand::RuntimeChecks(_) => Err("runtime-check operand is unsupported"),
         }
+    }
+
+    fn eval_place(
+        &self,
+        _body: &mir::Body<'tcx>,
+        locals: &FxHashMap<Local, FoldValue<'tcx>>,
+        place: &mir::Place<'tcx>,
+    ) -> Result<FoldValue<'tcx>, &'static str> {
+        let mut value =
+            *locals.get(&place.local).ok_or("MIR reads a local without a folded value")?;
+        for projection in place.projection {
+            match (projection, value) {
+                (mir::ProjectionElem::Field(index, _), FoldValue::Aggregate { fields, .. }) => {
+                    value =
+                        *fields.get(index.as_usize()).ok_or("constant field is out of bounds")?;
+                }
+                _ => return Err("unsupported constant place projection"),
+            }
+        }
+        Ok(value)
     }
 
     fn eval_rvalue(
@@ -453,12 +705,9 @@ impl<'tcx> Folder<'tcx> {
                 if target_pointee != pointee_ty {
                     return Err("reference rvalue has a mismatched pointee type");
                 }
-                match locals.get(&place.local).copied() {
-                    Some(FoldValue::Scalar { ty, .. }) if ty == pointee_ty => {}
-                    Some(FoldValue::ZeroSized { ty }) if ty == pointee_ty => {}
-                    _ => return Err("reference does not point to a folded literal"),
-                }
-                Ok(FoldValue::Reference { ty: destination_ty, pointee_ty })
+                let value = self.eval_place(body, locals, place)?;
+                let alloc_id = self.allocate(value)?;
+                Ok(FoldValue::Reference { ty: destination_ty, pointee_ty, alloc_id })
             }
             Rvalue::Cast(mir::CastKind::IntToInt, operand, cast_ty)
                 if *cast_ty == destination_ty =>
@@ -472,12 +721,64 @@ impl<'tcx> Folder<'tcx> {
                 let value = self.eval_operand(body, locals, operand, depth)?;
                 self.retype(value, destination_ty)
             }
-            Rvalue::Repeat(..) => Err("array repeat construction is unsupported"),
+            Rvalue::Repeat(operand, count) => {
+                let count = count
+                    .try_to_target_usize(self.tcx)
+                    .ok_or("array repeat length is unresolved")?;
+                if count > MAX_FOLD_STEPS as u64 {
+                    return Err("array repeat exceeded its size bound");
+                }
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                Ok(self.aggregate(destination_ty, &vec![value; count as usize]))
+            }
             Rvalue::ThreadLocalRef(..) => Err("thread-local static access is unsupported"),
             Rvalue::RawPtr(..) => Err("raw pointer construction is unsupported"),
+            Rvalue::Cast(
+                mir::CastKind::PointerCoercion(ty::adjustment::PointerCoercion::Unsize, _),
+                operand,
+                _,
+            ) => {
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                let FoldValue::Reference { pointee_ty, alloc_id, .. } = value else {
+                    return Err("unsizing requires a folded reference");
+                };
+                let ty::Array(element, count) = *pointee_ty.kind() else {
+                    return Err("only array-to-slice unsizing is supported");
+                };
+                let ty::Ref(_, target, _) = *destination_ty.kind() else {
+                    return Err("unsizing target is not a reference");
+                };
+                if !matches!(*target.kind(), ty::Slice(ty) if ty == element) {
+                    return Err("unsizing changed the element type");
+                }
+                let len =
+                    count.try_to_target_usize(self.tcx).ok_or("unsizing length is unresolved")?;
+                Ok(FoldValue::Slice { ty: destination_ty, alloc_id, len })
+            }
+            Rvalue::Cast(mir::CastKind::Transmute, operand, _) => {
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                self.retype(value, destination_ty)
+            }
             Rvalue::Cast(..) => Err("non-integer cast is unsupported"),
             Rvalue::Discriminant(..) => Err("discriminant read is unsupported"),
-            Rvalue::Aggregate(..) => Err("aggregate construction is unsupported"),
+            Rvalue::Aggregate(kind, operands) => {
+                if operands.len() > MAX_FOLD_STEPS {
+                    return Err("aggregate exceeded its field bound");
+                }
+                let supported = match &**kind {
+                    mir::AggregateKind::Array(_) | mir::AggregateKind::Tuple => true,
+                    mir::AggregateKind::Adt(def, _, _, _, _) => self.tcx.adt_def(*def).is_struct(),
+                    _ => false,
+                };
+                if !supported {
+                    return Err("unsupported aggregate construction");
+                }
+                let fields = operands
+                    .iter()
+                    .map(|operand| self.eval_operand(body, locals, operand, depth))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.aggregate(destination_ty, &fields))
+            }
             Rvalue::CopyForDeref(..) => Err("deref copy is unsupported"),
             Rvalue::WrapUnsafeBinder(..) => Err("unsafe binder wrapping is unsupported"),
             Rvalue::Reborrow(..) => Err("reborrow is unsupported"),
@@ -503,9 +804,67 @@ impl<'tcx> Folder<'tcx> {
         let is_align_val = self.tcx.is_intrinsic(def_id, sym::align_of_val);
         let is_needs_drop = self.tcx.is_intrinsic(def_id, sym::needs_drop);
         if !is_size && !is_align && !is_size_val && !is_align_val && !is_needs_drop {
-            return Err(
-                "call to a function other than size_of, align_of, size_of_val, or align_of_val",
+            if depth + 1 >= MAX_FOLD_DEPTH {
+                return Err("constant call exceeded its depth bound");
+            }
+            let values = args
+                .iter()
+                .map(|arg| self.eval_operand(body, locals, &arg.node, depth))
+                .collect::<Result<Vec<_>, _>>()?;
+            if self.tcx.is_intrinsic(def_id, sym::transmute) {
+                let [value] = values.as_slice() else {
+                    return Err("transmute requires one argument");
+                };
+                return self.retype(*value, destination_ty);
+            }
+            if destination_ty
+                .ty_adt_def()
+                .is_some_and(|def| self.tcx.lang_items().alloc_layout() == Some(def.did()))
+                && self.tcx.item_name(def_id).as_str() == "from_size_align_unchecked"
+                && self.tcx.associated_item(def_id).impl_container(self.tcx).is_some_and(|owner| {
+                    self.tcx.type_of(owner).instantiate_identity().skip_norm_wip() == destination_ty
+                })
+            {
+                let [size, align] = values.as_slice() else {
+                    return Err("Layout constructor requires two arguments");
+                };
+                let size = self.scalar_info(*size)?.bits;
+                let align = self.scalar_info(*align)?.bits;
+                let pointer_bits = self.tcx.data_layout.pointer_size().bits();
+                let max = (1u128 << (pointer_bits - 1)) - 1;
+                if !align.is_power_of_two()
+                    || size.checked_add(align - 1).is_none_or(|rounded| rounded > max)
+                {
+                    return Err("Layout constructor precondition failed");
+                }
+                let layout = self
+                    .tcx
+                    .layout_of(self.typing_env.as_query_input(destination_ty))
+                    .map_err(|_| "Layout constructor result layout is unavailable")?;
+                let cx = LayoutCx::new(self.tcx, self.typing_env);
+                let size = self.scalar_value(size, layout.field(&cx, 0).ty)?;
+                let align = self.scalar_value(align, layout.field(&cx, 1).ty)?;
+                return Ok(self.aggregate(destination_ty, &[size, align]));
+            }
+            if !self.tcx.is_const_fn(def_id) {
+                return Err("call to a non-const function");
+            }
+            let instance = Instance::try_resolve(self.tcx, self.typing_env, def_id, generic_args)
+                .map_err(|_| "constant call resolution failed")?
+                .ok_or("constant call is unresolved")?;
+            if instance.args.has_non_region_param() {
+                return Err("constant call still has generic parameters");
+            }
+            let uninstantiated = self.tcx.mir_for_ctfe(instance.def_id());
+            let body = instance.instantiate_mir_and_normalize_erasing_regions(
+                self.tcx,
+                self.typing_env,
+                ty::EarlyBinder::bind(self.tcx, uninstantiated.clone()),
             );
+            if body.arg_count != values.len() {
+                return Err("constant call argument count differs");
+            }
+            return self.eval_body_with_args(&body, depth + 1, &values);
         }
 
         let Some(ty) =
@@ -878,15 +1237,16 @@ impl<'tcx> Folder<'tcx> {
                 self.scalar_value(bits, destination_ty)
             }
             FoldValue::ZeroSized { .. } => self.zero_sized(destination_ty),
-            FoldValue::Reference { pointee_ty, .. } => {
+            FoldValue::Reference { pointee_ty, alloc_id, .. } => {
                 let ty::Ref(_, destination_pointee, _) = *destination_ty.kind() else {
                     return Err("subtype cast changed a reference into a non-reference");
                 };
                 if pointee_ty != destination_pointee {
                     return Err("subtype cast changed a reference pointee");
                 }
-                Ok(FoldValue::Reference { ty: destination_ty, pointee_ty })
+                Ok(FoldValue::Reference { ty: destination_ty, pointee_ty, alloc_id })
             }
+            _ => Err("aggregate reinterpretation is unsupported"),
         }
     }
 
