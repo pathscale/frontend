@@ -44,9 +44,10 @@ fn tag_of(hash: u64) -> u32 {
 }
 
 impl Table {
-    /// Sized for `source_len` bytes of source: about one distinct spelling per 64 bytes.
+    /// Sized for `source_len` bytes of source: about one distinct spelling per 128 bytes before
+    /// it grows (sizing it for twice that measured no faster, and is twice the memory).
     pub(crate) fn for_source(source_len: usize) -> Table {
-        let slots = (source_len / 32).clamp(256, 1 << 24).next_power_of_two();
+        let slots = (source_len / 64).clamp(256, 1 << 24).next_power_of_two();
         Table { entries: vec![EMPTY; slots].into_boxed_slice(), mask: slots - 1, len: 0 }
     }
 
@@ -70,7 +71,7 @@ impl Table {
             }
             if entry.tag == tag
                 && entry.len as usize == len
-                && &src[entry.lo as usize..entry.lo as usize + len] == bytes
+                && same(&src[entry.lo as usize..entry.lo as usize + len], bytes)
             {
                 return Probe::Hit(entry.atom);
             }
@@ -91,7 +92,7 @@ impl Table {
             }
             if entry.tag == tag
                 && entry.len as usize == len
-                && &src[entry.lo as usize..entry.lo as usize + len] == bytes
+                && same(&src[entry.lo as usize..entry.lo as usize + len], bytes)
             {
                 return Some(entry.atom);
             }
@@ -137,4 +138,21 @@ impl Table {
 #[inline]
 fn slot_of(tag: u32, mask: usize) -> usize {
     (u64::from(tag).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as usize & mask
+}
+
+/// Whether `a == b` for spellings of equal length, inline: identifiers are short, and a call to
+/// `memcmp` costs more than comparing them. Up to 16 bytes, two overlapping word loads per side.
+#[inline(always)]
+fn same(a: &[u8], b: &[u8]) -> bool {
+    debug_assert_eq!(a.len(), b.len());
+    let len = a.len();
+    let word = |s: &[u8], at: usize| u64::from_le_bytes(s[at..at + 8].try_into().unwrap());
+    let half = |s: &[u8], at: usize| u32::from_le_bytes(s[at..at + 4].try_into().unwrap());
+    match len {
+        8..=16 => word(a, 0) == word(b, 0) && word(a, len - 8) == word(b, len - 8),
+        4..=7 => half(a, 0) == half(b, 0) && half(a, len - 4) == half(b, len - 4),
+        1..=3 => a[0] == b[0] && a[len / 2] == b[len / 2] && a[len - 1] == b[len - 1],
+        0 => true,
+        _ => a == b,
+    }
 }
