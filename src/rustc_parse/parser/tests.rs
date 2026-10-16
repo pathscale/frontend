@@ -2951,7 +2951,7 @@ fn wave3_indexed_raw_identifiers_are_published_once() {
     create_default_session_globals_then(|| {
         let psess = ParseSess::new();
         let parser = string_to_parser(&psess, "fn r#first() {} fn r#second() {}".to_string());
-        assert!(parser.token_cursor.indexed_tape().is_some());
+        assert!(parser.token_cursor.lexed_tape().is_some());
         let expected = parser.token_cursor.raw_identifier_spans();
         let actual: Vec<Span> = psess.raw_identifier_spans.iter().collect();
         assert_eq!(actual.as_slice(), expected);
@@ -2986,7 +2986,7 @@ fn r24_on_demand_parallel_bodies_match_serial_ast() {
             let parallel_session = make_session();
             let mut serial = r24_source_parser(&serial_session, source);
             assert!(serial.token_cursor.can_parallel_parse());
-            assert!(serial.token_cursor.indexed_tape().is_some());
+            assert!(serial.token_cursor.lexed_tape().is_some());
             // parse_mod bypasses the speculative parse_crate_mod entry point.
             let (attrs, items, spans) = serial.parse_mod(crate::exp!(Eof)).unwrap();
             let expected =
@@ -3026,7 +3026,7 @@ fn r24_on_demand_parallel_bodies_match_serial_ast() {
 
 #[test]
 fn w4_fast_path_metrics_and_deferred_newlines() {
-    indexed_admission_preserves_gallery_and_deferred_lines();
+    indexed_admission_preserves_gallery_and_lexed_lines();
     create_default_session_globals_then(|| {
         crate::rustc_parse::reset_fast_path_metrics();
         let source = "fn alpha() {}\nfn beta() {}";
@@ -3045,14 +3045,16 @@ fn w4_fast_path_metrics_and_deferred_newlines() {
     });
 }
 
-fn indexed_admission_preserves_gallery_and_deferred_lines() {
+fn indexed_admission_preserves_gallery_and_lexed_lines() {
     create_default_session_globals_then(|| {
         let source = "fn r#alpha() { ignored!(inside_macro inside_macro); }\nfn beta() {}";
         let psess = ParseSess::new();
         let parser = string_to_parser(&psess, source.to_string());
-        assert!(parser.token_cursor.indexed_tape().is_some());
+        assert!(parser.token_cursor.lexed_tape().is_some());
         let file = psess.source_map().files().last().unwrap().clone();
-        assert!(!file.lines.is_frozen());
+        // The lexer's newlines fill the line table at admission: no second scan of the text.
+        assert!(file.lines.is_frozen());
+        assert_eq!(file.lines().iter().map(|pos| pos.0).collect::<Vec<_>>(), [0, 54]);
         let source_map = psess.clone_source_map();
         let emitter = PlainEmitter::new().sm(Some(Arc::clone(&source_map)));
         let eager = ParseSess::with_dcx(DiagCtxt::new(Box::new(emitter)), source_map);

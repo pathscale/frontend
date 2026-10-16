@@ -106,7 +106,7 @@ pub(crate) fn try_source_cursor(
         psess.edition,
     )?;
     if psess.collects_symbol_gallery() {
-        cursor.indexed_tape()?.record_symbol_gallery(&psess.symbol_gallery);
+        cursor.lexed_tape()?.record_symbol_gallery(&psess.symbol_gallery);
     }
     Some(cursor)
 }
