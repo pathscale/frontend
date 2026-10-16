@@ -241,7 +241,6 @@ symbols! {
         Bool,
         Borrow,
         BorrowMut,
-        Box,
         Break,
         BuildHasher,
         CStr,
@@ -270,7 +269,6 @@ symbols! {
         Deref,
         DispatchFromDyn,
         Display,
-        Drop,
         Dual,
         DualOnly,
         Dualv,
@@ -2495,6 +2493,10 @@ symbols! {
         zmm_reg,
         ztso,
         // tidy-alphabetical-end
+        // Appended after the sorted list, not inserted into it, so every symbol above keeps
+        // the index rustc and existing `.rmeta` files assign it.
+        Box,
+        Drop,
     }
 }
 
