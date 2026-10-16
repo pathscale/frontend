@@ -23,8 +23,8 @@ pub fn eval_to_const_value_raw_provider<'tcx>(
         return Err(ErrorHandled::TooGeneric(tcx.def_span(def_id)));
     }
 
-    match super::static_fold::fold_scalar(tcx, key.typing_env, key.value) {
-        Ok(value) => Ok(ConstValue::Scalar(value)),
+    match super::static_fold::fold_const(tcx, key.typing_env, key.value) {
+        Ok(value) => Ok(value),
         Err(reason) => {
             let span = tcx.def_span(def_id);
             let error = tcx.dcx().span_err(
