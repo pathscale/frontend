@@ -189,6 +189,57 @@ const BYTE_ONES: u64 = 0x0101_0101_0101_0101;
 const BYTE_HIGH: u64 = 0x8080_8080_8080_8080;
 const BYTE_LOW: u64 = 0x7f7f_7f7f_7f7f_7f7f;
 
+/// Bytes worth scanning one word at a time before a whole block: most identifiers and
+/// whitespace runs end inside them, and classifying a complete 64-byte block costs far more
+/// than two words where there is no vector unit (x86_64 without AVX2 uses `SwarBlock`).
+pub const LEADING_WORD_BYTES: usize = 16;
+
+/// The byte lanes of a little-endian `word` equal to `byte`, as each lane's high bit.
+#[inline]
+fn word_eq(word: u64, byte: u8) -> u64 {
+    let different = word ^ (u64::from(byte) * BYTE_ONES);
+    // Low-seven-bit addition cannot carry between bytes. Unlike subtract-one zero detection,
+    // this marks each lane exactly, without a borrow contaminating the next lane.
+    !(((different & BYTE_LOW) + BYTE_LOW) | different | BYTE_LOW)
+}
+
+/// The byte lanes of a little-endian `word` in `lo..=hi`, as each lane's high bit. ASCII
+/// ranges only: `lo <= hi <= 0x7f`.
+#[inline]
+fn word_ascii_range(word: u64, lo: u8, hi: u8) -> u64 {
+    debug_assert!(lo <= hi && hi <= 0x7f);
+    let low = word & BYTE_LOW;
+    // Each addition is at most 255; each subtraction is nonnegative within its byte. Neither
+    // propagates between lanes. Original high bits exclude non-ASCII bytes from both bounds.
+    (low + u64::from(0x80 - lo) * BYTE_ONES)
+        & (u64::from(0x80 + hi) * BYTE_ONES - low)
+        & !word
+        & BYTE_HIGH
+}
+
+/// The first byte lane of a little-endian `word` that `accepted` (one high bit per accepted
+/// lane) leaves out, if any.
+#[inline]
+pub fn first_rejected_lane(accepted: u64) -> Option<usize> {
+    let rejected = !accepted & BYTE_HIGH;
+    (rejected != 0).then(|| rejected.trailing_zeros() as usize / 8)
+}
+
+/// The ASCII whitespace lanes of a little-endian `word`, as each lane's high bit.
+#[inline]
+pub fn word_whitespace(word: u64) -> u64 {
+    word_ascii_range(word, b'\t', b'\r') | word_eq(word, b' ')
+}
+
+/// The ASCII identifier continuation lanes of a little-endian `word`, as each lane's high bit.
+#[inline]
+pub fn word_ident_cont(word: u64) -> u64 {
+    word_ascii_range(word, b'a', b'z')
+        | word_ascii_range(word, b'A', b'Z')
+        | word_ascii_range(word, b'0', b'9')
+        | word_eq(word, b'_')
+}
+
 struct SwarBlock([u64; 8]);
 
 impl SwarBlock {
@@ -217,28 +268,12 @@ impl SwarBlock {
 impl ByteBlock for SwarBlock {
     #[inline]
     fn eq(&self, byte: u8) -> u64 {
-        let repeated = u64::from(byte) * BYTE_ONES;
-        self.collect(|word| {
-            let different = word ^ repeated;
-            // Low-seven-bit addition cannot carry between bytes. Unlike
-            // subtract-one zero detection, this marks each lane exactly,
-            // without a borrow contaminating the next lane.
-            !(((different & BYTE_LOW) + BYTE_LOW) | different | BYTE_LOW)
-        })
+        self.collect(|word| word_eq(word, byte))
     }
 
     #[inline]
     fn ascii_range(&self, lo: u8, hi: u8) -> u64 {
-        debug_assert!(lo <= hi && hi <= 0x7f);
-        let lower_bias = u64::from(0x80 - lo) * BYTE_ONES;
-        let upper_bias = u64::from(0x80 + hi) * BYTE_ONES;
-        self.collect(|word| {
-            let low = word & BYTE_LOW;
-            // Each addition is at most 255; each subtraction is nonnegative
-            // within its byte. Neither propagates between lanes. Original
-            // high bits exclude non-ASCII bytes from both bounds.
-            (low + lower_bias) & (upper_bias - low) & !word
-        })
+        self.collect(|word| word_ascii_range(word, lo, hi))
     }
 
     #[inline]

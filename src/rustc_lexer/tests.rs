@@ -672,6 +672,46 @@ fn r24_scanners_cross_63_64_65_bytes() {
     }
 }
 
+/// The leading-word paths of the whitespace and identifier scanners stop exactly where a byte
+/// at a time would: every stop byte at every position through the words, the first blocks and
+/// the tail, with and without input after the stop.
+#[test]
+fn leading_word_scans_match_bytewise() {
+    use super::simd_ident_num::*;
+    use super::simd_scan::*;
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let space = |b: u8| matches!(b, 9..=13 | 32);
+    for at in 0..=80 {
+        for stop in 0..=u8::MAX {
+            for trailing in [0, 1, 7, 70] {
+                let mut text = alloc::vec![b'x'; at];
+                text.push(stop);
+                text.extend(core::iter::repeat_n(b'y', trailing));
+                let want = text.iter().position(|&b| !ident(b)).unwrap_or(text.len());
+                let got = match scan_ascii_ident_tail(&text) {
+                    IdentScan::AsciiOnly(len) => {
+                        assert!(text.get(len).is_none_or(u8::is_ascii));
+                        len
+                    }
+                    IdentScan::NeedsUnicodeAt(len) => {
+                        assert!(!text[len].is_ascii());
+                        len
+                    }
+                };
+                assert_eq!(got, want, "identifier, stop {stop:#x} at {at}, {trailing} after");
+                text[..at].fill(b' ');
+                text[at + 1..].fill(b'\t');
+                let want = text.iter().position(|&b| !space(b)).unwrap_or(text.len());
+                assert_eq!(
+                    scan_ascii_whitespace(&text),
+                    want,
+                    "whitespace, stop {stop:#x} at {at}, {trailing} after"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn w4_advance_token_with_meta_tracks_newlines_and_raw_strings() {
     let source = " \r\n// comment\n/* block\r\n*/ \"str\\\"ing\" r#\"raw\r\ntext\"# 'a";
