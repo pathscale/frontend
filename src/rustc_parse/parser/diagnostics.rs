@@ -1,3 +1,4 @@
+use crate::rustc_span::symbol::SymbolExt as _;
 use crate::rustc_ast::ptr::P;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;

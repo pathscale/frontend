@@ -1,0 +1,22 @@
+# Symbols and the editions they are keywords in, below every other part of the frontend.
+#
+# A crate of its own, not a module of `frontend`, so that the lexer (`frontend_lex`) can sit under
+# the main crate and still hand it finished `Symbol`s: the lexer interns while it scans, through
+# an explicit `&Interner`, with no session globals and no thread-local lookup. The main crate
+# re-exports everything here from `rustc_span`, so `rustc_span::Symbol` names this `Symbol`.
+[package]
+name = "frontend_symbol"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "the frontend's symbol interner, predefined symbols and editions"
+repository = "https://github.com/pathscale/frontend"
+publish = true
+
+[dependencies]
+# `rustc_macros` is the historical name the main crate uses for `frontend_macros`; `symbols!`
+# generates the predefined symbol table.
+rustc_macros = { package = "frontend_macros", path = "../frontend_macros", version = "0.3.0" }
+frontend_arena = { path = "../frontend_arena", version = "0.2.0" }
+ekostd = "0.2.2"
+itoa = "^1.0.18"
