@@ -61,6 +61,10 @@ force_pinned_sysroot = []
 # default: nothing else in the crate calls them, and a caller who does not want them does not
 # compile them.
 diagnostics = []
+# Temporary stage timing for the front-to-back throughput table (`examples/stage_throughput.rs`):
+# exclusive time per query and per hand-placed stage. Off by default; with it off every marker
+# compiles to nothing.
+stage-timing = []
 # Make ps-rusty_alloc the global allocator of the `frontend-facts` binary. Off by default: the
 # library never sets a global allocator, and a binary that links it picks its own.
 rusty_alloc = ["dep:rusty_alloc"]

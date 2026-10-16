@@ -2275,6 +2275,9 @@ impl SourceFile {
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
         newlines: Option<&[u32]>,
     ) -> Result<Self, OffsetOverflowError> {
+        let _stage = crate::rustc_data_structures::stage_timing::enter(
+            crate::rustc_data_structures::stage_timing::Marker::Source,
+        );
         let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
         let src_hash = hash_kind.map(|kind| SourceFileHash::new_in_memory(kind, src.as_bytes()));
