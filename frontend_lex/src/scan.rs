@@ -102,30 +102,38 @@ fn comment_at(rest: &[u8]) -> Option<bool> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Leaf {
-    kind: Kind,
-    macro_rules: bool,
-    decl_macro: bool,
-}
+/// What attribute counting needs of a token tree, as bits of one byte: whether it is `#`, `!`,
+/// the identifier `macro_rules`, or the identifier `macro` (not raw). Any other tree, a nested
+/// group included, is 0.
+type Role = u8;
+const POUND: Role = 1;
+const BANG: Role = 2;
+const MACRO_RULES: Role = 4;
+const DECL_MACRO: Role = 8;
 
 /// The tokens of one group being scanned, for attribute counting.
 struct Frame {
     group: u32,
     attributes: u32,
-    /// The latest three token trees of this group, newest first; `None` is a nested group.
-    previous: [Option<Leaf>; 3],
+    /// The roles of the latest three token trees of this group, newest in the low byte.
+    previous: u32,
     contributes: bool,
 }
 
 impl Frame {
     fn new(group: u32, contributes: bool) -> Frame {
-        Frame { group, attributes: 0, previous: [None; 3], contributes }
+        Frame { group, attributes: 0, previous: 0, contributes }
     }
 
-    #[inline]
-    fn remember(&mut self, leaf: Option<Leaf>) {
-        self.previous = [leaf, self.previous[0], self.previous[1]];
+    #[inline(always)]
+    fn remember(&mut self, role: Role) {
+        self.previous = (self.previous << 8 | u32::from(role)) & 0x00FF_FFFF;
+    }
+
+    /// The role of the tree `back` trees before the next (0 is the newest).
+    #[inline(always)]
+    fn role(&self, back: u32) -> Role {
+        (self.previous >> (8 * back)) as u8
     }
 }
 
@@ -326,16 +334,14 @@ impl<'a> Scanner<'a> {
         if pos != self.end || self.frames.len() != 1 {
             return false;
         }
-        let [newest, second, third] = self.frames[0].previous;
-        let has = |leaf: Option<Leaf>, f: fn(Leaf) -> bool| leaf.is_some_and(f);
+        let root = &self.frames[0];
+        let (newest, second, third) = (root.role(0), root.role(1), root.role(2));
         // The newest is read as `prev` by an opener first in the chunk, as `prev2` by one
         // second, and as `prev3` by one third; the older two only by openers before any three
         // new trees, and only as `prev2`/`prev3`.
-        !has(newest, |l| {
-            matches!(l.kind, Kind::Pound | Kind::Bang) || l.macro_rules || l.decl_macro
-        }) && !has(second, |l| l.decl_macro)
-            && !has(third, |l| l.decl_macro)
-            && !(has(second, |l| l.kind == Kind::Bang) && has(third, |l| l.macro_rules))
+        newest == 0
+            && (second | third) & DECL_MACRO == 0
+            && !(second & BANG != 0 && third & MACRO_RULES != 0)
     }
 
     /// Moves the chunk's end to the next boundary in `ahead` past `pos`, if there is one.
@@ -416,16 +422,23 @@ impl<'a> Scanner<'a> {
         });
         let frame = self.frames.last_mut().expect("the root frame is never popped");
         // An identifier's payload is still its atom here.
-        let (macro_rules, decl_macro) = if kind == Kind::Ident {
-            let atom = self.atoms[data as usize].flags;
-            (atom & ATOM_MACRO_RULES != 0, flags & FLAG_RAW == 0 && atom & ATOM_MACRO != 0)
-        } else {
-            (false, false)
+        let role = match kind {
+            Kind::Ident => {
+                let atom = self.atoms[data as usize].flags;
+                let macro_rules = if atom & ATOM_MACRO_RULES != 0 { MACRO_RULES } else { 0 };
+                let decl_macro =
+                    if flags & FLAG_RAW == 0 && atom & ATOM_MACRO != 0 { DECL_MACRO } else { 0 };
+                macro_rules | decl_macro
+            }
+            Kind::Pound => POUND,
+            Kind::Bang => BANG,
+            Kind::LineDoc | Kind::BlockDoc => {
+                frame.attributes += 1;
+                0
+            }
+            _ => 0,
         };
-        if matches!(kind, Kind::LineDoc | Kind::BlockDoc) {
-            frame.attributes += 1;
-        }
-        frame.remember(Some(Leaf { kind, macro_rules, decl_macro }));
+        frame.remember(role);
         if kind == Kind::Semi && frame.group == NO_GROUP {
             self.item_cuts.push(hi as u32);
         }
@@ -437,16 +450,14 @@ impl<'a> Scanner<'a> {
         let group = self.groups.len() as u32;
         let frame = self.frames.last_mut().expect("the root frame is never popped");
         let parent = frame.group;
-        let [prev, prev2, prev3] = frame.previous;
-        let is = |leaf: Option<Leaf>, kind| leaf.is_some_and(|leaf| leaf.kind == kind);
+        let (prev, prev2, prev3) = (frame.role(0), frame.role(1), frame.role(2));
         let attribute = delim == Delimiter::Bracket
-            && (is(prev, Kind::Pound) || is(prev, Kind::Bang) && is(prev2, Kind::Pound));
-        let invocation = is(prev, Kind::Bang);
-        let macro_rules = is(prev2, Kind::Bang) && prev3.is_some_and(|leaf| leaf.macro_rules);
-        let decl_macro =
-            prev2.is_some_and(|leaf| leaf.decl_macro) || prev3.is_some_and(|leaf| leaf.decl_macro);
+            && (prev & POUND != 0 || prev & BANG != 0 && prev2 & POUND != 0);
+        let invocation = prev & BANG != 0;
+        let macro_rules = prev2 & BANG != 0 && prev3 & MACRO_RULES != 0;
+        let decl_macro = (prev2 | prev3) & DECL_MACRO != 0;
         frame.attributes += u32::from(attribute);
-        frame.remember(None);
+        frame.remember(0);
         let depth = if parent == NO_GROUP { 1 } else { self.groups[parent as usize].depth + 1 };
         self.groups.push(Group { delim, open: index, close: 0, parent, depth, attr_count: 0 });
         self.frames
