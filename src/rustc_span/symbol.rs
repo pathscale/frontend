@@ -184,7 +184,6 @@ symbols! {
         Bool,
         Borrow,
         BorrowMut,
-        Box,
         Break,
         BuildHasher,
         CStr,
@@ -213,7 +212,6 @@ symbols! {
         Deref,
         DispatchFromDyn,
         Display,
-        Drop,
         Dual,
         DualOnly,
         Dualv,
@@ -2438,6 +2436,9 @@ symbols! {
         zmm_reg,
         ztso,
         // tidy-alphabetical-end
+        // Append frontend additions after the upstream sequence to preserve metadata IDs.
+        Box,
+        Drop,
     }
 }
 
