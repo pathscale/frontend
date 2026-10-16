@@ -341,21 +341,8 @@ impl IndexedSourceTape {
         (Token::new(expanded, self.span(lo, hi)), spacing)
     }
 
-    pub(crate) fn group(&self, group_idx: u32) -> Option<&Group> {
-        self.groups.get(group_idx as usize)
-    }
-
     pub(crate) fn depth_zero_cuts(&self) -> &[u32] {
         &self.depth_zero_cuts
-    }
-
-    /// Line offsets are only materialized for explicit consumers, never during parsing.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retains explicit line offset access for tape consumers")
-    )]
-    pub(crate) fn newlines(&self) -> Vec<u32> {
-        memchr::memchr_iter(b'\n', self.src.as_bytes()).map(|i| i as u32).collect()
     }
 
     #[inline]
@@ -398,18 +385,6 @@ impl IndexedSourceTape {
                     (self.intern(lo, token.lo() + self.token_len(idx), false), self.token_span(idx))
                 }),
         );
-    }
-
-    #[cfg(feature = "parallel")]
-    pub(crate) fn prepare_parallel_symbols(&self) {
-        // Speculative item/body transactions must not insert shared identities.
-        // Only a caller attempting parallel bodies pays this pass; serial tape
-        // admission and materialization retain lazy interning and no side arrays.
-        for (idx, token) in self.tokens.iter().enumerate() {
-            if token.kind().needs_symbol_lookup() || token.kind().is_literal() {
-                self.materialize_token(idx);
-            }
-        }
     }
 
     fn span(&self, lo: u32, hi: u32) -> Span {

@@ -101,7 +101,7 @@ impl<'a> Parser<'a> {
         {
             return None;
         }
-        if let Some(tape) = self.token_cursor.indexed_tape() {
+        if let Some(tape) = self.token_cursor.lexed_tape() {
             tape.prepare_parallel_symbols();
         }
         let attr_start = self.psess.attr_id_generator.position();

@@ -181,11 +181,6 @@ impl SourceKind {
         )
     }
 
-    #[cfg(feature = "parallel")]
-    pub(crate) const fn needs_symbol_lookup(self) -> bool {
-        matches!(self, Self::Ident | Self::Lifetime | Self::LineDoc | Self::BlockDoc)
-    }
-
     pub(super) const fn open_delim(self) -> Option<Delimiter> {
         match self {
             Self::OpenParen => Some(Delimiter::Parenthesis),

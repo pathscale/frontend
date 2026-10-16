@@ -308,6 +308,11 @@ fn new_parser_from_source_file(
         lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
     {
         record_tape_admission();
+        // The lexer met every newline: hand them to the line table, which otherwise scans the
+        // text again the first time a span is looked up (it checks them before taking them).
+        if let Some(tape) = cursor.lexed_tape() {
+            source_file.supply_precomputed_newlines(tape.newlines());
+        }
         Parser::new_with_cursor(psess, cursor, None)
     } else {
         record_tape_fallback();
