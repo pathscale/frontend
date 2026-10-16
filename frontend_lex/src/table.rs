@@ -1,0 +1,113 @@
+//! A pass's own spelling-to-symbol table.
+//!
+//! Every identifier, lifetime, literal and doc comment spelling a pass meets is looked up here
+//! first. The table is plain memory owned by the pass: no atomics, no lock, no sharing. A miss
+//! interns the spelling in the shared interner (with the hash computed here, so the interner
+//! does not hash it again) and remembers the answer, so the shared interner is consulted once
+//! per distinct spelling per file.
+//!
+//! Open addressing with linear probing, at most half full. An entry keeps the spelling's offset
+//! and length in the source, the high half of its hash as a tag (so a probe rarely reads a
+//! spelling that does not match), and its symbol.
+
+use alloc::boxed::Box;
+use alloc::vec;
+
+use frontend_symbol::{Symbol, symbol_hash};
+
+#[derive(Clone, Copy)]
+struct Entry {
+    /// High half of the hash; 0 marks an empty entry (a real tag of 0 is stored as 1).
+    tag: u32,
+    lo: u32,
+    len: u32,
+    symbol: u32,
+}
+
+const EMPTY: Entry = Entry { tag: 0, lo: 0, len: 0, symbol: 0 };
+
+pub(crate) struct Table {
+    entries: Box<[Entry]>,
+    mask: usize,
+    len: usize,
+}
+
+/// A lookup's result: found, or the hash to insert with.
+pub(crate) enum Probe {
+    Hit(Symbol),
+    Miss { hash: u64 },
+}
+
+#[inline]
+fn tag_of(hash: u64) -> u32 {
+    ((hash >> 32) as u32).max(1)
+}
+
+impl Table {
+    /// Sized for `source_len` bytes of source: about one distinct spelling per 64 bytes.
+    pub(crate) fn for_source(source_len: usize) -> Table {
+        let slots = (source_len / 32).clamp(256, 1 << 24).next_power_of_two();
+        Table { entries: vec![EMPTY; slots].into_boxed_slice(), mask: slots - 1, len: 0 }
+    }
+
+    /// The symbol of `src[lo..lo + len]`, if this pass has interned that spelling.
+    #[inline]
+    pub(crate) fn find(&self, src: &[u8], lo: usize, len: usize) -> Probe {
+        let bytes = &src[lo..lo + len];
+        let hash = symbol_hash(bytes);
+        let tag = tag_of(hash);
+        let mut slot = slot_of(tag, self.mask);
+        loop {
+            let entry = &self.entries[slot];
+            if entry.tag == 0 {
+                return Probe::Miss { hash };
+            }
+            if entry.tag == tag
+                && entry.len as usize == len
+                && &src[entry.lo as usize..entry.lo as usize + len] == bytes
+            {
+                return Probe::Hit(Symbol::new(entry.symbol));
+            }
+            slot = (slot + 1) & self.mask;
+        }
+    }
+
+    /// Records `symbol` for `src[lo..lo + len]`, which [`Table::find`] just missed with `hash`.
+    #[inline]
+    pub(crate) fn insert(&mut self, hash: u64, lo: usize, len: usize, symbol: Symbol) {
+        if (self.len + 1) * 2 > self.entries.len() {
+            self.grow();
+        }
+        let tag = tag_of(hash);
+        let mut slot = slot_of(tag, self.mask);
+        while self.entries[slot].tag != 0 {
+            slot = (slot + 1) & self.mask;
+        }
+        self.entries[slot] = Entry { tag, lo: lo as u32, len: len as u32, symbol: symbol.as_u32() };
+        self.len += 1;
+    }
+
+    #[cold]
+    fn grow(&mut self) {
+        // Slots come from tags alone (`slot_of`), so entries move without their spellings.
+        let slots = self.entries.len() * 2;
+        let mut fresh = vec![EMPTY; slots].into_boxed_slice();
+        let mask = slots - 1;
+        for entry in self.entries.iter().filter(|e| e.tag != 0) {
+            let mut slot = slot_of(entry.tag, mask);
+            while fresh[slot].tag != 0 {
+                slot = (slot + 1) & mask;
+            }
+            fresh[slot] = *entry;
+        }
+        self.entries = fresh;
+        self.mask = mask;
+    }
+}
+
+/// The slot a tag's probe starts at. Every table operation derives it from the tag alone, so
+/// growth (which keeps no full hash) places an entry where a later lookup starts.
+#[inline]
+fn slot_of(tag: u32, mask: usize) -> usize {
+    (u64::from(tag).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as usize & mask
+}

@@ -29,6 +29,7 @@ use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 pub(crate) mod compact_token;
 mod flat;
 pub(crate) mod indexed_tape;
+mod lexed;
 mod on_demand;
 mod source_cursor;
 mod source_token;
@@ -44,8 +45,10 @@ mod tests;
 pub mod lex_hooks {
     use alloc::string::String;
     use alloc::sync::Arc;
+    use alloc::vec::Vec;
 
     use super::indexed_tape::IndexedSourceTape;
+    use crate::rustc_ast::token::Delimiter;
     use crate::rustc_lexer::FrontmatterAllowed;
     use crate::rustc_span::BytePos;
     use crate::rustc_span::edition::Edition;
@@ -55,6 +58,148 @@ pub mod lex_hooks {
     pub fn build(src: &Arc<String>, edition: Edition) -> Option<usize> {
         IndexedSourceTape::build(Arc::clone(src), BytePos(0), 0, FrontmatterAllowed::No, edition)
             .map(|tape| tape.token_count())
+    }
+
+    /// `frontend_lex` over `src`: its token count, or the error it stopped at.
+    pub fn lex(src: &Arc<String>, edition: Edition) -> Result<usize, frontend_lex::LexError> {
+        let file = lex_file(src, edition);
+        match file.error {
+            Some(error) => Err(error),
+            None => Ok(file.tokens.len()),
+        }
+    }
+
+    fn lex_file(src: &Arc<String>, edition: Edition) -> Arc<frontend_lex::LexedFile> {
+        let options = frontend_lex::Options { edition, strip_shebang: false, frontmatter: false };
+        crate::rustc_span::with_session_interner(|interner| {
+            frontend_lex::lex(Arc::clone(src), options, interner)
+        })
+    }
+
+    /// How the old token tape and `frontend_lex` compare on one source.
+    #[derive(Debug)]
+    pub enum Compared {
+        /// Both accept it and the parser would see the same thing: this many tokens.
+        Same(usize),
+        /// Both refuse it (the eager lexer reports it).
+        BothRefuse,
+        /// The tape refuses it and `frontend_lex` accepts it.
+        OnlyNewAccepts,
+        /// The tape accepts it and `frontend_lex` stops at this error.
+        OnlyOldAccepts(frontend_lex::LexError),
+        /// Both accept it and differ: the first difference.
+        Differ(String),
+    }
+
+    /// Lexes `src` both ways and compares what the parser would see: every token with its
+    /// spacing and span, the delimiter groups, the item cuts, the raw identifiers and the
+    /// symbol gallery.
+    pub fn compare(src: &Arc<String>, edition: Edition) -> Compared {
+        use alloc::format;
+
+        let old = IndexedSourceTape::build(
+            Arc::clone(src),
+            BytePos(0),
+            0,
+            FrontmatterAllowed::No,
+            edition,
+        );
+        let new = lex_file(src, edition);
+        let old = match (old, new.error) {
+            (None, Some(_)) => return Compared::BothRefuse,
+            (None, None) => return Compared::OnlyNewAccepts,
+            (Some(_), Some(error)) => return Compared::OnlyOldAccepts(error),
+            (Some(old), None) => old,
+        };
+        if old.token_count() != new.tokens.len() {
+            let at = (0..old.token_count().min(new.tokens.len()))
+                .find(|&i| old.materialize_token(i) != super::lexed::token(&new, BytePos(0), i))
+                .unwrap_or(0);
+            return Compared::Differ(format!(
+                "token count {} vs {}; first difference at {at}: {:?} vs {:?}",
+                old.token_count(),
+                new.tokens.len(),
+                old.materialize_token(at),
+                super::lexed::token(&new, BytePos(0), at)
+            ));
+        }
+        // The last token is EOF in both, built by the cursor rather than read.
+        for i in 0..old.token_count() - 1 {
+            let (a, b) = (old.materialize_token(i), super::lexed::token(&new, BytePos(0), i));
+            if a != b {
+                return Compared::Differ(format!("token {i}: {a:?} vs {b:?}"));
+            }
+            let old_group = old.token_group(i);
+            let new_group =
+                if new.tokens[i].kind.is_open_delim() || new.tokens[i].kind.is_close_delim() {
+                    new.tokens[i].data
+                } else {
+                    super::indexed_tape::NO_GROUP
+                };
+            if old_group != new_group {
+                return Compared::Differ(format!("token {i} group {old_group} vs {new_group}"));
+            }
+        }
+        if old.groups.len() != new.groups.len() {
+            return Compared::Differ(format!(
+                "group count {} vs {}",
+                old.groups.len(),
+                new.groups.len()
+            ));
+        }
+        for (i, (a, b)) in old.groups.iter().zip(new.groups.iter()).enumerate() {
+            let delim = match b.delim {
+                frontend_lex::Delimiter::Parenthesis => Delimiter::Parenthesis,
+                frontend_lex::Delimiter::Brace => Delimiter::Brace,
+                frontend_lex::Delimiter::Bracket => Delimiter::Bracket,
+            };
+            if (a.delim, a.open_idx, a.close_idx, a.parent, a.depth, a.attr_count)
+                != (delim, b.open, b.close, b.parent, b.depth, b.attr_count)
+            {
+                return Compared::Differ(format!("group {i}: {a:?} vs {b:?}"));
+            }
+        }
+        if old.depth_zero_cuts() != &*new.item_cuts {
+            return Compared::Differ(format!(
+                "item cuts {:?} vs {:?}",
+                old.depth_zero_cuts(),
+                new.item_cuts
+            ));
+        }
+        let new_raw: Vec<_> = new
+            .raw_idents
+            .iter()
+            .map(|&i| {
+                super::lexed::span(BytePos(0), new.tokens[i as usize].lo, new.tokens[i as usize].hi)
+            })
+            .collect();
+        if old.raw_identifier_spans != new_raw {
+            return Compared::Differ(format!(
+                "raw identifiers {:?} vs {:?}",
+                old.raw_identifier_spans, new_raw
+            ));
+        }
+        let gallery = crate::rustc_session::parse::SymbolGallery::default();
+        old.record_symbol_gallery(&gallery);
+        let old_gallery: Vec<_> =
+            gallery.symbols.lock().iter().map(|(&symbol, &span)| (symbol, span)).collect();
+        let new_gallery: Vec<_> = new
+            .gallery
+            .iter()
+            .map(|&(symbol, i)| {
+                let t = &new.tokens[i as usize];
+                (symbol, super::lexed::span(BytePos(0), t.lo, t.hi))
+            })
+            .collect();
+        if old_gallery != new_gallery {
+            let at = old_gallery.iter().zip(&new_gallery).position(|(a, b)| a != b);
+            return Compared::Differ(format!(
+                "gallery ({} vs {} entries) differs at {at:?}",
+                old_gallery.len(),
+                new_gallery.len()
+            ));
+        }
+        Compared::Same(new.tokens.len())
     }
 }
 

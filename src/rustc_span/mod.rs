@@ -205,6 +205,12 @@ fn current_interner() -> &'static symbol::Interner {
     })
 }
 
+/// The calling session's interner, handed to a component that interns through an explicit
+/// handle (the lexer) instead of `Symbol::intern`.
+pub fn with_session_interner<R>(f: impl FnOnce(&symbol::Interner) -> R) -> R {
+    with_session_globals(|globals| f(&globals.symbol_interner))
+}
+
 /// Tells `frontend_symbol` how to find this thread's session interner, and (with `parallel`) to
 /// abandon a speculative parse that would add a symbol. Idempotent; done per session because it
 /// is two relaxed stores, cheaper than a once-cell.
