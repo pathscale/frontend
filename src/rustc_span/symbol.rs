@@ -6,8 +6,8 @@
 // Explicit allocation imports keep this module compatible with the crate's no_std prelude.
 use alloc::string::{String, ToString};
 
-use core::hash::{Hash, Hasher};
 use core::fmt;
+use core::hash::{Hash, Hasher};
 
 use crate::rustc_data_structures::stable_hash::{
     StableCompare, StableHash, StableHashCtxt, StableHasher,
@@ -312,7 +312,6 @@ impl fmt::Display for MacroRulesNormalizedIdent {
     }
 }
 
-
 impl Ident {
     /// Returns `true` for reserved identifiers used internally for elided lifetimes,
     /// unnamed method parameters, crate root module, error recovery etc.
@@ -386,4 +385,3 @@ impl Ident {
         self.as_str().bytes().all(|b| b.is_ascii_digit())
     }
 }
-

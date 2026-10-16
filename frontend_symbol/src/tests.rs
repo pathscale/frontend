@@ -61,7 +61,6 @@ fn interner_from_source() {
     assert_eq!(alloc::sync::Arc::strong_count(&src), 1);
 }
 
-
 /// Many distinct strings: indices in interning order, stable on re-interning, through several
 /// growths of `SymbolIndices`.
 #[test]

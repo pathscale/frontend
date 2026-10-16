@@ -3325,7 +3325,10 @@ impl Interner {
 
         Interner {
             predefined,
-            inner: eko::thread::Mutex::new(InternerInner { arena: Default::default(), sources: Vec::new() }),
+            inner: eko::thread::Mutex::new(InternerInner {
+                arena: Default::default(),
+                sources: Vec::new(),
+            }),
             strs,
             indices,
         }
@@ -3622,7 +3625,6 @@ impl Symbol {
         index < PREDEFINED_SYMBOLS_COUNT
     }
 }
-
 
 /// Collect all the keywords in a given edition into a vector.
 ///
