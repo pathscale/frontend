@@ -31,12 +31,16 @@
 
 extern crate alloc;
 
+mod output;
+mod prescan;
 mod scan;
+mod skip;
 mod table;
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 pub use frontend_symbol::{Edition, Interner, Symbol};
 
@@ -331,9 +335,308 @@ pub struct Options {
     pub frontmatter: bool,
 }
 
-/// Lexes `src` in one forward pass, interning through `interner`.
+/// Lexes `src` in one forward pass, interning through `interner`: [`plan`] with one chunk,
+/// [`lex_chunk`], [`assemble`].
 pub fn lex(src: Arc<String>, options: Options, interner: &Interner) -> Arc<LexedFile> {
-    Arc::new(scan::Scanner::run(src, options, interner))
+    let plan = Plan::single(&src, options);
+    let chunk = lex_chunk(&src, &plan, 0);
+    assemble(src, &plan, alloc::vec![chunk], interner)
+}
+
+/// Where a file is cut into chunks that lex independently (see [`plan`]).
+#[derive(Clone, Debug)]
+pub struct Plan {
+    options: Options,
+    /// Where lexing begins: after a shebang line, if any.
+    begin: usize,
+    /// Chunk boundaries: chunk `i` is `bounds[i]..bounds[i + 1]`.
+    bounds: Vec<usize>,
+}
+
+impl Plan {
+    fn single(src: &str, options: Options) -> Plan {
+        let begin = if options.strip_shebang { shebang_len(src).unwrap_or(0) } else { 0 };
+        Plan { options, begin, bounds: alloc::vec![begin, src.len()] }
+    }
+
+    /// The number of chunks.
+    pub fn len(&self) -> usize {
+        self.bounds.len() - 1
+    }
+
+    /// Chunk boundaries: chunk `i` is `bounds()[i]..bounds()[i + 1]`.
+    pub fn bounds(&self) -> &[usize] {
+        &self.bounds
+    }
+
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+/// Plans chunks of about `chunk_bytes` each over `src`: a prescan finds where the lexer is
+/// between tokens, outside every literal and comment, at the start of a top-level item. A file
+/// shorter than two chunks, or one the prescan cannot settle, is one chunk.
+pub fn plan(src: &str, options: Options, chunk_bytes: usize) -> Plan {
+    let mut plan = Plan::single(src, options);
+    let cuts = prescan::plan(src.as_bytes(), plan.begin, chunk_bytes.max(1));
+    if !cuts.is_empty() {
+        plan.bounds =
+            core::iter::once(plan.begin).chain(cuts).chain(core::iter::once(src.len())).collect();
+    }
+    plan
+}
+
+/// Plans chunks of about `chunk_bytes` each over `src` without a prescan: each cut is the first
+/// line at or after a grid point that starts, in its first column, with an ASCII letter or `#`,
+/// which in Rust source is almost always a top-level item. A guess, checked in [`assemble`]: a
+/// chunk that does not leave the lexer fresh (see [`Chunk::continues`]) is lexed again, serially,
+/// on to the next boundary where it does. Costs nothing up front; a wrong guess costs about one
+/// chunk of serial work, never the result.
+pub fn speculate(src: &str, options: Options, chunk_bytes: usize) -> Plan {
+    let mut plan = Plan::single(src, options);
+    let chunk_bytes = chunk_bytes.max(1);
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    if len - plan.begin < 2 * chunk_bytes {
+        return plan;
+    }
+    let mut bounds = alloc::vec![plan.begin];
+    let mut at = plan.begin + chunk_bytes;
+    while at + chunk_bytes / 2 <= len {
+        let window = &bytes[at..(at + chunk_bytes).min(len)];
+        let found = memchr::memchr_iter(b'\n', window)
+            .map(|i| at + i + 1)
+            .find(|&line| line < len && (bytes[line].is_ascii_alphabetic() || bytes[line] == b'#'));
+        match found {
+            Some(line) if len - line >= chunk_bytes / 2 => {
+                bounds.push(line);
+                at = line + chunk_bytes;
+            }
+            Some(_) => break,
+            None => at += chunk_bytes,
+        }
+    }
+    bounds.push(len);
+    plan.bounds = bounds;
+    plan
+}
+
+/// The segments a parallel prescan of a file is split into (see [`prescan_segment`]).
+#[derive(Clone, Debug)]
+pub struct Segments {
+    options: Options,
+    begin: usize,
+    /// Segment `i` is `bounds[i]..bounds[i + 1]`.
+    bounds: Vec<usize>,
+}
+
+impl Segments {
+    /// Splits `src` into prescan segments of about `segment_bytes`, at arbitrary bytes: a
+    /// segment that turns out to start inside a literal or comment is scanned again when the
+    /// segments are composed.
+    pub fn new(src: &str, options: Options, segment_bytes: usize) -> Segments {
+        let begin = if options.strip_shebang { shebang_len(src).unwrap_or(0) } else { 0 };
+        let step = segment_bytes.max(1);
+        let mut bounds: Vec<usize> = (begin..src.len()).step_by(step).collect();
+        bounds.push(src.len());
+        if bounds.len() < 2 {
+            bounds = alloc::vec![begin, src.len()];
+        }
+        Segments { options, begin, bounds }
+    }
+
+    pub fn len(&self) -> usize {
+        self.bounds.len() - 1
+    }
+
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+/// One prescanned segment. Owned and `Send`: each is scanned by one task.
+pub struct PrescanSegment(prescan::Segment);
+
+/// Prescans segment `index`, assuming it starts between tokens. Touches nothing shared.
+pub fn prescan_segment(src: &str, segments: &Segments, index: usize) -> PrescanSegment {
+    let (start, end) = (segments.bounds[index], segments.bounds[index + 1]);
+    PrescanSegment(prescan::segment(src.as_bytes(), start, end))
+}
+
+/// The chunk plan from every prescanned segment, in order: cuts of about `chunk_bytes`.
+pub fn plan_from_segments(
+    src: &str,
+    segments: &Segments,
+    scanned: Vec<PrescanSegment>,
+    chunk_bytes: usize,
+) -> Plan {
+    let mut plan = Plan::single(src, segments.options);
+    if src.len() - segments.begin < 2 * chunk_bytes.max(1) {
+        return plan;
+    }
+    let scanned = scanned.into_iter().map(|PrescanSegment(s)| s).collect();
+    let cuts =
+        prescan::compose(src.as_bytes(), segments.begin, scanned, &segments.bounds, chunk_bytes);
+    if !cuts.is_empty() {
+        plan.bounds =
+            core::iter::once(plan.begin).chain(cuts).chain(core::iter::once(src.len())).collect();
+    }
+    plan
+}
+
+/// One chunk of a planned file, lexed: tokens and spellings with chunk-local numbering and no
+/// symbols. Owned and `Send`; lex each chunk on its own task, then [`assemble`] them in order.
+pub struct Chunk(scan::Chunk);
+
+impl Chunk {
+    /// Whether the lexer left this chunk fresh: exactly at its end, every group closed, and
+    /// none of its last top-level tokens one that changes how a group opened next counts its
+    /// attributes. The next chunk of the plan is then valid as lexed. Always true of a
+    /// prescanned plan's chunks, but for errors.
+    pub fn continues(&self) -> bool {
+        self.0.continues
+    }
+
+    /// Finds the symbols `interner` already has for this chunk's spellings, adding none: the
+    /// part of resolving spellings that runs on the chunk's own task. Optional; [`assemble`]
+    /// then interns only the spellings left, in order of first occurrence.
+    pub fn look_up(&mut self, src: &str, interner: &Interner) {
+        self.0.look_up(src, interner);
+    }
+}
+
+/// Lexes chunk `index` of `plan`. Touches nothing shared: no interner, no globals.
+pub fn lex_chunk(src: &str, plan: &Plan, index: usize) -> Chunk {
+    let (start, end) = (plan.bounds[index], plan.bounds[index + 1]);
+    let frontmatter = index == 0 && plan.options.frontmatter;
+    Chunk(scan::Scanner::lex_range(src, plan.options.edition, start, end, &[], frontmatter))
+}
+
+/// Merges `chunks`, every chunk of `plan` in order, into the file, all on the caller's task:
+/// [`Assembly::new`], every [`Part::patch`], then [`Assembly::finish`]. To patch on a pool,
+/// call those three yourself.
+pub fn assemble(
+    src: Arc<String>,
+    plan: &Plan,
+    chunks: Vec<Chunk>,
+    interner: &Interner,
+) -> Arc<LexedFile> {
+    let mut assembly = Assembly::new(src, plan, chunks, interner);
+    assembly.parts().into_iter().for_each(Part::patch);
+    assembly.finish()
+}
+
+/// A file's chunks on their way to a [`LexedFile`], in three phases: [`Assembly::new`] (on one
+/// task, in proportion to the distinct spellings), [`Part::patch`] (one owned task per chunk,
+/// in proportion to its tokens, writing straight into the file's buffers), and
+/// [`Assembly::finish`] (on one task, in proportion to the distinct spellings again).
+pub struct Assembly {
+    src: Arc<String>,
+    begin: usize,
+    error: Option<LexError>,
+    chunks: Vec<scan::Chunk>,
+    symbols: Vec<Vec<u32>>,
+    output: Option<Arc<output::Output>>,
+}
+
+/// One chunk with what it needs to be rewritten to file numbering and copied into the file.
+/// Owned and `Send`.
+pub struct Part {
+    chunk: scan::Chunk,
+    symbols: Vec<u32>,
+    at: output::Offsets,
+    output: Arc<output::Output>,
+}
+
+impl Part {
+    /// Rewrites the chunk to file numbering (payloads to symbols, token and group numbers
+    /// offset) and copies it to its place in the file's buffers. Touches nothing else shared.
+    pub fn patch(mut self) {
+        let (tokens, groups) = (self.at.tokens as u32, self.at.groups as u32);
+        scan::patch(&mut self.chunk, &self.symbols, tokens, groups);
+        // SAFETY: `at` is this chunk's offsets among the chunks `output` was sized for
+        // (`Assembly::parts`), and a part is consumed by its one write.
+        unsafe { self.output.write(self.at, &self.chunk) };
+    }
+}
+
+impl Assembly {
+    /// Checks `chunks`, every chunk of `plan` in order, and interns each distinct spelling once,
+    /// in order of first occurrence, through `interner`.
+    ///
+    /// Chunk 0 starts where the serial pass does, and each later chunk is valid if the lexer
+    /// was fresh where it starts (see [`Chunk::continues`]). A chunk that does not leave it
+    /// fresh is lexed again here, from its own start, past its end to the next boundary where
+    /// the lexer is fresh; the chunks it covers are dropped. An error in a chunk with a valid
+    /// start is the file's. A prescanned plan never needs the second pass; a speculative one
+    /// pays for each wrong guess with one serial chunk or so, not with the rest of the file.
+    pub fn new(src: Arc<String>, plan: &Plan, chunks: Vec<Chunk>, interner: &Interner) -> Self {
+        assert_eq!(chunks.len(), plan.len(), "assemble takes every chunk of the plan");
+        let bounds = &plan.bounds;
+        let mut lexed: Vec<Option<scan::Chunk>> =
+            chunks.into_iter().map(|Chunk(c)| Some(c)).collect();
+        let mut valid = Vec::with_capacity(lexed.len());
+        let mut i = 0;
+        while i < lexed.len() {
+            let mut chunk = lexed[i].take().expect("each chunk is visited once");
+            if chunk.error.is_none() && !chunk.continues && i + 1 < lexed.len() {
+                chunk = scan::Scanner::lex_range(
+                    &src,
+                    plan.options.edition,
+                    bounds[i],
+                    bounds[i + 1],
+                    &bounds[i + 2..],
+                    i == 0 && plan.options.frontmatter,
+                );
+            }
+            let (reached, failed) = (chunk.end, chunk.error.is_some());
+            valid.push(chunk);
+            if failed {
+                break;
+            }
+            i = bounds.binary_search(&reached).expect("a chunk ends at a boundary");
+        }
+        drop(lexed);
+        let error = scan::first_error(&valid);
+        let symbols =
+            if error.is_some() { Vec::new() } else { scan::resolve(&src, &mut valid, interner) };
+        Assembly { src, begin: plan.begin, error, chunks: valid, symbols, output: None }
+    }
+
+    /// The chunks to patch, in order, each on its own task if the caller likes. Empty for a
+    /// file with an error, and for a file of one chunk, which [`Assembly::finish`] patches in
+    /// place, without a copy.
+    pub fn parts(&mut self) -> Vec<Part> {
+        if self.error.is_some() || self.chunks.len() < 2 || self.output.is_some() {
+            return Vec::new();
+        }
+        let (offsets, totals) = output::Offsets::of(&self.chunks);
+        let output = Arc::new(output::Output::new(totals, self.chunks.len()));
+        self.output = Some(Arc::clone(&output));
+        core::mem::take(&mut self.chunks)
+            .into_iter()
+            .zip(core::mem::take(&mut self.symbols))
+            .zip(offsets)
+            .map(|((chunk, symbols), at)| Part { chunk, symbols, at, output: Arc::clone(&output) })
+            .collect()
+    }
+
+    /// The file. Panics if [`Assembly::parts`] gave parts and any was not patched.
+    pub fn finish(self) -> Arc<LexedFile> {
+        if let Some(error) = self.error {
+            return Arc::new(scan::failed(self.src, self.begin, error));
+        }
+        if let Some(output) = self.output {
+            let output = Arc::try_unwrap(output)
+                .unwrap_or_else(|_| panic!("every part is patched before the file is finished"));
+            return Arc::new(scan::from_filled(self.src, self.begin, output.finish()));
+        }
+        let mut chunks = self.chunks;
+        let mut chunk = chunks.pop().expect("a file has one chunk at least");
+        scan::patch(&mut chunk, &self.symbols[0], 0, 0);
+        Arc::new(scan::single(self.src, self.begin, chunk))
+    }
 }
 
 /// The length of a shebang line at the start of `input`, if it has one: `#!` not followed

@@ -32,6 +32,20 @@ fn interner_get() {
     assert_eq!(i.get_str(dog_idx), "dog");
 }
 
+/// `find_hashed` sees predefined and interned strings and adds nothing on a miss.
+#[test]
+fn interner_find_hashed() {
+    let i = Interner::prefill(&["chicken"], &["cow"]);
+    let dog = i.intern_str("dog");
+    let find = |s: &str| i.find_hashed(s, symbol_hash(s.as_bytes()));
+    assert_eq!(find("chicken"), Some(Symbol::new(0)));
+    assert_eq!(find("cow"), Some(Symbol::new(1)));
+    assert_eq!(find("dog"), Some(dog));
+    assert_eq!(find("cat"), None);
+    assert_eq!(find("cat"), None);
+    assert_eq!(i.intern_str("cat"), Symbol::new(3));
+}
+
 /// A string interned from a source text keeps its bytes in that text, one held clone per text;
 /// a copy made elsewhere or a string outside the text gets the same symbols as `intern`.
 #[test]

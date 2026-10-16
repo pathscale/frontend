@@ -3261,6 +3261,23 @@ impl Interner {
         Symbol::new(self.intern_hashed(str.as_bytes(), hash, Some(owner)))
     }
 
+    /// `str`'s symbol if this interner already has it, without a lock and without adding it;
+    /// `hash` must be [`symbol_hash`] of `str`'s bytes. Lets many tasks resolve the spellings
+    /// they met at once and leave only the new ones to be interned, in an order of the
+    /// caller's choosing.
+    #[inline]
+    pub fn find_hashed(&self, str: &str, hash: u64) -> Option<Symbol> {
+        debug_assert_eq!(hash, symbol_hash(str.as_bytes()));
+        let bytes = str.as_bytes();
+        if let Some(index) = self.predefined.find(bytes, hash) {
+            return Some(Symbol::new(index));
+        }
+        match self.indices.find(bytes, hash, &self.strs) {
+            Ok(local) => Some(Symbol::new(predefined_base(self.predefined) + local)),
+            Err(_) => None,
+        }
+    }
+
     /// The string of a symbol of this interner, without a lock.
     #[inline]
     pub fn get(&self, symbol: Symbol) -> &str {

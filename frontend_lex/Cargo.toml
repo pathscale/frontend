@@ -21,3 +21,8 @@ rustc-literal-escaper = "0.0.8"
 unicode-ident = ">=1.0.22, <1.0.25"
 unicode-normalization = { version = "0.1.25", default-features = false }
 unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"] }
+
+[dev-dependencies]
+# The chunk benchmark's pool: chunks and prescan segments as `par_for` pieces.
+nagoya = "^0.1.14"
+ps-st3 = { version = "^0.6", default-features = false, features = ["fanout"] }

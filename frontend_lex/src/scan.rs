@@ -12,15 +12,16 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use frontend_symbol::{Edition, Interner, Symbol, kw};
+use frontend_symbol::{Edition, Interner, Symbol};
 use rustc_literal_escaper::{Mode, check_for_errors};
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 use unicode_properties::UnicodeEmoji;
 
+use crate::output::Filled;
 use crate::table::{Probe, Table};
 use crate::{
     Delimiter, ErrorKind, FLAG_JOINT, FLAG_JOINT_HIDDEN, FLAG_RAW, FLAG_SUFFIX, Group, Kind,
-    LexError, LexedFile, NO_GROUP, Options, Token,
+    LexError, LexedFile, NO_GROUP, Token,
 };
 
 /// ASCII identifier start: letters and `_`.
@@ -128,6 +129,24 @@ impl Frame {
     }
 }
 
+/// A distinct spelling of the file: its first occurrence and its hash, kept so resolving it
+/// does not hash it again.
+struct Atom {
+    lo: u32,
+    len: u32,
+    hash: u64,
+    flags: u8,
+}
+
+/// The atom is a non-ASCII identifier or lifetime: its symbol is its NFC normalization.
+const ATOM_NFC: u8 = 1;
+/// The atom has been an identifier token (gallery bookkeeping).
+const ATOM_IDENT_SEEN: u8 = 2;
+/// The atom spells `macro_rules`.
+const ATOM_MACRO_RULES: u8 = 4;
+/// The atom spells `macro`.
+const ATOM_MACRO: u8 = 8;
+
 /// Stop the pass: the input needs a diagnostic at a position already recorded.
 struct Stop;
 
@@ -136,77 +155,116 @@ type Step = Result<usize, Stop>;
 pub(crate) struct Scanner<'a> {
     text: &'a str,
     src: &'a [u8],
-    owner: &'a Arc<String>,
-    interner: &'a Interner,
     edition: Edition,
+    /// One past the last byte this scanner owns: its chunk's end.
+    end: usize,
+    /// Later boundaries the chunk may extend to (see [`Scanner::lex_range`]).
+    ahead: &'a [usize],
+    /// Whether the chunk ends the file, and so ends in an EOF token.
+    last: bool,
     table: Table,
     tokens: Vec<Token>,
     groups: Vec<Group>,
     frames: Vec<Frame>,
     item_cuts: Vec<u32>,
     raw_idents: Vec<u32>,
-    suffixes: Vec<(u32, Symbol)>,
+    /// Literal suffixes as (token, atom).
+    suffixes: Vec<(u32, u32)>,
     newlines: Vec<u32>,
     multibyte: Vec<(u32, u8)>,
-    gallery: Vec<(Symbol, u32)>,
-    gallery_seen: Vec<u64>,
+    /// Spellings by atom, in order of first occurrence.
+    atoms: Vec<Atom>,
+    /// Each atom's first identifier token, in token order.
+    gallery_candidates: Vec<(u32, u32)>,
     error: Option<LexError>,
+    /// Where the loop stopped: at or past `end`, once the last token is done.
+    stop: usize,
+}
+
+/// One chunk, lexed: everything a [`LexedFile`] holds, with chunk-local token, group and atom
+/// numbers, and no symbols. Owned and `Send`: a chunk is lexed by one task and handed to
+/// [`assemble`].
+pub(crate) struct Chunk {
+    /// Each atom's symbol if the interner had it when looked up, else `UNKNOWN`; empty if not
+    /// looked up (see [`Chunk::look_up`]).
+    pub(crate) known: Vec<u32>,
+    /// One past the last byte lexed: the chunk's end, or a later boundary it extended to.
+    pub(crate) end: usize,
+    pub(crate) tokens: Vec<Token>,
+    pub(crate) groups: Vec<Group>,
+    pub(crate) item_cuts: Vec<u32>,
+    pub(crate) raw_idents: Vec<u32>,
+    pub(crate) suffixes: Vec<(u32, u32)>,
+    pub(crate) newlines: Vec<u32>,
+    pub(crate) multibyte: Vec<(u32, u8)>,
+    atoms: Vec<Atom>,
+    pub(crate) gallery_candidates: Vec<(u32, u32)>,
+    pub(crate) error: Option<LexError>,
+    /// Whether the lexer leaves this chunk in the state a chunk starts in: between tokens at
+    /// exactly its end, every group closed, and no token at its end that changes how a
+    /// group opened just after it counts attributes. A chunk that follows one that does lexes
+    /// exactly as the serial pass would.
+    pub(crate) continues: bool,
 }
 
 impl<'a> Scanner<'a> {
-    pub(crate) fn run(src: Arc<String>, options: Options, interner: &Interner) -> LexedFile {
-        let begin = if options.strip_shebang { shebang_len(&src).unwrap_or(0) } else { 0 };
-        let (tokens, groups, item_cuts, raw_idents, suffixes, newlines, multibyte, gallery, error) = {
-            let text = src.as_str();
-            let len = text.len();
-            let mut s = Scanner {
-                text,
-                src: text.as_bytes(),
-                owner: &src,
-                interner,
-                edition: options.edition,
-                table: Table::for_source(len),
-                tokens: Vec::with_capacity(len / 4 + 16),
-                groups: Vec::with_capacity(len / 32 + 8),
-                frames: alloc::vec![Frame::new(NO_GROUP, false)],
-                item_cuts: Vec::new(),
-                raw_idents: Vec::new(),
-                suffixes: Vec::new(),
-                newlines: Vec::with_capacity(len / 32 + 8),
-                multibyte: Vec::new(),
-                gallery: Vec::new(),
-                gallery_seen: Vec::new(),
-                error: None,
-            };
-            if options.frontmatter && s.frontmatter_at(begin) {
-                let _ = s.fail::<()>(begin, ErrorKind::Frontmatter);
-            } else {
-                let _ = s.lex(begin);
-            }
-            (
-                s.tokens.into_boxed_slice(),
-                s.groups.into_boxed_slice(),
-                s.item_cuts.into_boxed_slice(),
-                s.raw_idents.into_boxed_slice(),
-                s.suffixes.into_boxed_slice(),
-                s.newlines.into_boxed_slice(),
-                s.multibyte.into_boxed_slice(),
-                s.gallery.into_boxed_slice(),
-                s.error,
-            )
+    /// Lexes `text[start..end]`, which begins between tokens outside any literal or comment.
+    /// `last` when the range ends the file. Touches nothing shared: no interner, no globals.
+    ///
+    /// `ahead` are later chunk boundaries, ascending, the last of them the end of the file: if
+    /// the lexer does not reach `end` in a chunk's starting state, it carries on to the next
+    /// of them, until it does or the file ends. [`Chunk::end`] says where it stopped.
+    pub(crate) fn lex_range(
+        text: &'a str,
+        edition: Edition,
+        start: usize,
+        end: usize,
+        ahead: &'a [usize],
+        frontmatter: bool,
+    ) -> Chunk {
+        let len = end - start;
+        let last = end == text.len();
+        let mut s = Scanner {
+            text,
+            src: text.as_bytes(),
+            edition,
+            end,
+            ahead,
+            last,
+            table: Table::for_source(len),
+            tokens: Vec::with_capacity(len / 4 + 16),
+            groups: Vec::with_capacity(len / 32 + 8),
+            frames: alloc::vec![Frame::new(NO_GROUP, false)],
+            item_cuts: Vec::new(),
+            raw_idents: Vec::new(),
+            suffixes: Vec::new(),
+            newlines: Vec::with_capacity(len / 32 + 8),
+            multibyte: Vec::new(),
+            atoms: Vec::with_capacity(len / 64 + 16),
+            gallery_candidates: Vec::new(),
+            error: None,
+            stop: usize::MAX,
         };
-        LexedFile {
-            src,
-            begin: begin as u32,
-            tokens,
-            groups,
-            item_cuts,
-            raw_idents,
-            suffixes,
-            newlines,
-            multibyte,
-            gallery,
-            error,
+        if frontmatter && s.frontmatter_at(start) {
+            let _ = s.fail::<()>(start, ErrorKind::Frontmatter);
+        } else {
+            let _ = s.lex(start);
+        }
+        let continues = s.error.is_none() && s.fresh_at(s.stop);
+        Chunk {
+            end: s.end,
+            known: Vec::new(),
+            tokens: s.tokens,
+            groups: s.groups,
+            item_cuts: s.item_cuts,
+            raw_idents: s.raw_idents,
+            suffixes: s.suffixes,
+            newlines: s.newlines,
+            multibyte: s.multibyte,
+            atoms: s.atoms,
+            gallery_candidates: s.gallery_candidates,
+            error: s.error,
+            continues,
         }
     }
 
@@ -214,10 +272,18 @@ impl<'a> Scanner<'a> {
 
     fn lex(&mut self, mut pos: usize) -> Result<(), Stop> {
         let src = self.src;
+        let mut end = self.end;
         loop {
-            let Some(&b) = src.get(pos) else {
+            if pos >= end {
+                if !self.fresh_at(pos)
+                    && let Some(next) = self.extend(pos)
+                {
+                    end = next;
+                    continue;
+                }
                 return self.finish(pos);
-            };
+            }
+            let b = src[pos];
             pos = match b {
                 b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r' => self.whitespace(pos),
                 b'r' => self.r_prefixed(pos)?,
@@ -250,7 +316,47 @@ impl<'a> Scanner<'a> {
         }
     }
 
+    /// Whether the lexer at `pos` is in the state a chunk starts in: exactly at the chunk's end,
+    /// every group closed, and the latest three top-level token trees such that a group opened
+    /// in the next chunk counts attributes as it would after none (see `open`, which reads
+    /// back three trees). A chunk that starts where its predecessor is fresh lexes exactly as
+    /// the serial pass would.
+    #[cold]
+    fn fresh_at(&self, pos: usize) -> bool {
+        if pos != self.end || self.frames.len() != 1 {
+            return false;
+        }
+        let [newest, second, third] = self.frames[0].previous;
+        let has = |leaf: Option<Leaf>, f: fn(Leaf) -> bool| leaf.is_some_and(f);
+        // The newest is read as `prev` by an opener first in the chunk, as `prev2` by one
+        // second, and as `prev3` by one third; the older two only by openers before any three
+        // new trees, and only as `prev2`/`prev3`.
+        !has(newest, |l| {
+            matches!(l.kind, Kind::Pound | Kind::Bang) || l.macro_rules || l.decl_macro
+        }) && !has(second, |l| l.decl_macro)
+            && !has(third, |l| l.decl_macro)
+            && !(has(second, |l| l.kind == Kind::Bang) && has(third, |l| l.macro_rules))
+    }
+
+    /// Moves the chunk's end to the next boundary in `ahead` past `pos`, if there is one.
+    #[cold]
+    fn extend(&mut self, pos: usize) -> Option<usize> {
+        let skip = self.ahead.iter().position(|&bound| bound > pos)?;
+        let next = self.ahead[skip];
+        self.ahead = &self.ahead[skip + 1..];
+        self.end = next;
+        self.last = next == self.src.len();
+        Some(next)
+    }
+
     fn finish(&mut self, end: usize) -> Result<(), Stop> {
+        self.stop = end;
+        if !self.last {
+            // Unbalanced or not, a chunk that does not end the file is not judged here: if it
+            // is not fresh at its end, the next chunk is not valid and this one is lexed again
+            // past its end (see `continues`).
+            return Ok(());
+        }
         if self.frames.len() != 1 {
             return self.fail(end, ErrorKind::Delimiter);
         }
@@ -309,8 +415,10 @@ impl<'a> Scanner<'a> {
             _reserved: 0,
         });
         let frame = self.frames.last_mut().expect("the root frame is never popped");
+        // An identifier's payload is still its atom here.
         let (macro_rules, decl_macro) = if kind == Kind::Ident {
-            (data == kw::MacroRules.as_u32(), flags & FLAG_RAW == 0 && data == kw::Macro.as_u32())
+            let atom = self.atoms[data as usize].flags;
+            (atom & ATOM_MACRO_RULES != 0, flags & FLAG_RAW == 0 && atom & ATOM_MACRO != 0)
         } else {
             (false, false)
         };
@@ -390,55 +498,47 @@ impl<'a> Scanner<'a> {
         Ok(lo + 1)
     }
 
-    // ---- Symbols. ----
+    // ---- Atoms. ----
 
-    /// The symbol of `text[lo..hi]`, as spelled.
+    /// The atom of `text[lo..hi]`, as spelled: an index into `atoms`, made on first sight.
     #[inline(always)]
-    fn intern(&mut self, lo: usize, hi: usize) -> Symbol {
+    fn atom(&mut self, lo: usize, hi: usize) -> u32 {
         match self.table.find(self.src, lo, hi - lo) {
-            Probe::Hit(symbol) => symbol,
-            Probe::Miss { hash } => {
-                let symbol =
-                    self.interner.intern_hashed_from_source(&self.text[lo..hi], hash, self.owner);
-                self.table.insert(hash, lo, hi - lo, symbol);
-                symbol
-            }
+            Probe::Hit(atom) => atom,
+            Probe::Miss { hash } => self.new_atom(hash, lo, hi, 0),
         }
     }
 
-    /// The symbol of `text[lo..hi]` normalized to NFC, for identifiers and lifetimes that are
-    /// not ASCII. ASCII text is NFC and takes [`Scanner::intern`].
-    fn intern_nfc(&mut self, lo: usize, hi: usize) -> Symbol {
+    /// [`Scanner::atom`] for an identifier or lifetime that is not ASCII, whose symbol is its
+    /// spelling normalized to NFC.
+    fn atom_nfc(&mut self, lo: usize, hi: usize) -> u32 {
         match self.table.find(self.src, lo, hi - lo) {
-            Probe::Hit(symbol) => symbol,
-            Probe::Miss { hash } => {
-                let text = &self.text[lo..hi];
-                let symbol = match is_nfc_quick(text.chars()) {
-                    IsNormalized::Yes => {
-                        self.interner.intern_hashed_from_source(text, hash, self.owner)
-                    }
-                    _ => {
-                        let normalized: String = text.chars().nfc().collect();
-                        self.interner.intern(&normalized)
-                    }
-                };
-                self.table.insert(hash, lo, hi - lo, symbol);
-                symbol
-            }
+            Probe::Hit(atom) => atom,
+            Probe::Miss { hash } => self.new_atom(hash, lo, hi, ATOM_NFC),
         }
     }
 
-    /// Records an identifier token's symbol in the gallery the first time the file uses it.
     #[inline(always)]
-    fn record_gallery(&mut self, symbol: Symbol, token: u32) {
-        let index = symbol.as_u32() as usize;
-        let (word, bit) = (index / 64, 1u64 << (index % 64));
-        if word >= self.gallery_seen.len() {
-            self.gallery_seen.resize(word + 1, 0);
+    fn new_atom(&mut self, hash: u64, lo: usize, hi: usize, mut flags: u8) -> u32 {
+        let atom = self.atoms.len() as u32;
+        match &self.src[lo..hi] {
+            b"macro_rules" => flags |= ATOM_MACRO_RULES,
+            b"macro" => flags |= ATOM_MACRO,
+            _ => {}
         }
-        if self.gallery_seen[word] & bit == 0 {
-            self.gallery_seen[word] |= bit;
-            self.gallery.push((symbol, token));
+        self.atoms.push(Atom { lo: lo as u32, len: (hi - lo) as u32, hash, flags });
+        self.table.insert(hash, lo, hi - lo, atom);
+        atom
+    }
+
+    /// Notes an identifier token as a gallery candidate if its atom has not been seen as an
+    /// identifier before. Candidates are filtered by symbol once atoms are resolved.
+    #[inline(always)]
+    fn record_gallery(&mut self, atom: u32, token: u32) {
+        let entry = &mut self.atoms[atom as usize];
+        if entry.flags & ATOM_IDENT_SEEN == 0 {
+            entry.flags |= ATOM_IDENT_SEEN;
+            self.gallery_candidates.push((atom, token));
         }
     }
 
@@ -446,7 +546,8 @@ impl<'a> Scanner<'a> {
 
     #[inline(always)]
     fn whitespace(&mut self, mut pos: usize) -> usize {
-        let src = self.src;
+        // Bounded by the chunk: the bytes past its end are the next chunk's.
+        let src = &self.src[..self.end];
         while let Some(&b) = src.get(pos) {
             match b {
                 b'\n' => {
@@ -494,8 +595,8 @@ impl<'a> Scanner<'a> {
             if has_cr && memchr::memchr(b'\r', &src[lo + 3..hi]).is_some() {
                 return self.fail(lo, ErrorKind::CrInDocComment);
             }
-            let symbol = self.intern(lo + 3, hi);
-            self.leaf(Kind::LineDoc, lo, hi, symbol.as_u32(), 0, inner);
+            let atom = self.atom(lo + 3, hi);
+            self.leaf(Kind::LineDoc, lo, hi, atom, 0, inner);
         }
         Ok(hi)
     }
@@ -536,8 +637,8 @@ impl<'a> Scanner<'a> {
             if has_cr && memchr::memchr(b'\r', &src[lo + 3..hi - 2]).is_some() {
                 return self.fail(lo, ErrorKind::CrInDocComment);
             }
-            let symbol = self.intern(lo + 3, hi - 2);
-            self.leaf(Kind::BlockDoc, lo, hi, symbol.as_u32(), 0, inner);
+            let atom = self.atom(lo + 3, hi - 2);
+            self.leaf(Kind::BlockDoc, lo, hi, atom, 0, inner);
         }
         Ok(hi)
     }
@@ -588,14 +689,14 @@ impl<'a> Scanner<'a> {
             }
             _ => {}
         }
-        let symbol = if ascii {
-            self.intern(lo, hi)
+        let atom = if ascii {
+            self.atom(lo, hi)
         } else {
             self.segment(lo, hi)?;
-            self.intern_nfc(lo, hi)
+            self.atom_nfc(lo, hi)
         };
-        let index = self.leaf(Kind::Ident, lo, hi, symbol.as_u32(), 0, 0);
-        self.record_gallery(symbol, index);
+        let index = self.leaf(Kind::Ident, lo, hi, atom, 0, 0);
+        self.record_gallery(atom, index);
         Ok(hi)
     }
 
@@ -632,9 +733,9 @@ impl<'a> Scanner<'a> {
             _ => {}
         }
         self.segment(first_end, hi)?;
-        let symbol = self.intern_nfc(lo, hi);
-        let index = self.leaf(Kind::Ident, lo, hi, symbol.as_u32(), 0, 0);
-        self.record_gallery(symbol, index);
+        let atom = self.atom_nfc(lo, hi);
+        let index = self.leaf(Kind::Ident, lo, hi, atom, 0, 0);
+        self.record_gallery(atom, index);
         Ok(hi)
     }
 
@@ -670,15 +771,15 @@ impl<'a> Scanner<'a> {
         if matches!(spelling, "_" | "super" | "self" | "Self" | "crate") {
             return self.fail(lo, ErrorKind::Reserved);
         }
-        let symbol = if ascii {
-            self.intern(name, hi)
+        let atom = if ascii {
+            self.atom(name, hi)
         } else {
             self.segment(name, hi)?;
-            self.intern_nfc(name, hi)
+            self.atom_nfc(name, hi)
         };
-        let index = self.leaf(Kind::Ident, lo, hi, symbol.as_u32(), FLAG_RAW, 1);
+        let index = self.leaf(Kind::Ident, lo, hi, atom, FLAG_RAW, 1);
         self.raw_idents.push(index);
-        self.record_gallery(symbol, index);
+        self.record_gallery(atom, index);
         Ok(hi)
     }
 
@@ -746,11 +847,11 @@ impl<'a> Scanner<'a> {
         suffix: Option<(usize, usize)>,
         aux: u8,
     ) {
-        let symbol = self.intern(content.0, content.1);
+        let atom = self.atom(content.0, content.1);
         let flags = if suffix.is_some() { FLAG_SUFFIX } else { 0 };
-        let index = self.leaf(kind, lo, hi, symbol.as_u32(), flags, aux);
+        let index = self.leaf(kind, lo, hi, atom, flags, aux);
         if let Some((slo, shi)) = suffix {
-            let suffix = self.intern(slo, shi);
+            let suffix = self.atom(slo, shi);
             self.suffixes.push((index, suffix));
         }
     }
@@ -997,13 +1098,13 @@ impl<'a> Scanner<'a> {
             Some(b'#') if !starts_with_number => self.fail(lo, ErrorKind::Reserved),
             _ if starts_with_number => self.fail(lo, ErrorKind::Reserved),
             _ => {
-                let symbol = if ascii && first.is_ascii() {
-                    self.intern(lo, hi)
+                let atom = if ascii && first.is_ascii() {
+                    self.atom(lo, hi)
                 } else {
                     self.segment(lo, hi)?;
-                    self.intern_nfc(lo, hi)
+                    self.atom_nfc(lo, hi)
                 };
-                self.leaf(Kind::Lifetime, lo, hi, symbol.as_u32(), 0, 0);
+                self.leaf(Kind::Lifetime, lo, hi, atom, 0, 0);
                 Ok(hi)
             }
         }
@@ -1128,4 +1229,205 @@ where
     LexedFile: Send + Sync,
     Box<[Token]>: Send + Sync,
 {
+}
+
+/// The file's error, if a chunk has one: the first, since chunks come in order.
+pub(crate) fn first_error(chunks: &[Chunk]) -> Option<LexError> {
+    chunks.iter().find_map(|chunk| chunk.error)
+}
+
+/// The empty file that carries a lexing error.
+pub(crate) fn failed(src: Arc<String>, begin: usize, error: LexError) -> LexedFile {
+    LexedFile {
+        src,
+        begin: begin as u32,
+        tokens: Box::new([]),
+        groups: Box::new([]),
+        item_cuts: Box::new([]),
+        raw_idents: Box::new([]),
+        suffixes: Box::new([]),
+        newlines: Box::new([]),
+        multibyte: Box::new([]),
+        gallery: Box::new([]),
+        error: Some(error),
+    }
+}
+
+/// No symbol found for an atom (yet): see [`Chunk::look_up`].
+const UNKNOWN: u32 = u32::MAX;
+
+impl Chunk {
+    /// Finds the symbol of each of this chunk's atoms that `interner` already has, without
+    /// adding any: the part of resolving that many chunks can do at once, each on its own task.
+    /// [`resolve`] then interns only the rest, in order.
+    pub(crate) fn look_up(&mut self, text: &str, interner: &Interner) {
+        self.known = self
+            .atoms
+            .iter()
+            .map(|atom| {
+                if atom.flags & ATOM_NFC != 0 {
+                    return UNKNOWN;
+                }
+                let spelling = &text[atom.lo as usize..(atom.lo + atom.len) as usize];
+                interner.find_hashed(spelling, atom.hash).map_or(UNKNOWN, Symbol::as_u32)
+            })
+            .collect();
+    }
+}
+
+/// Each chunk's atoms as symbols: atoms are deduplicated across chunks in order of first
+/// occurrence, and each distinct spelling is interned once (the one place lexing adds to the
+/// shared interner, in an order that does not depend on how chunks were scheduled). Atoms a
+/// chunk already found ([`Chunk::look_up`]) are taken as found; the work here is in proportion
+/// to the spellings the interner did not have.
+pub(crate) fn resolve(
+    text: &Arc<String>,
+    chunks: &mut [Chunk],
+    interner: &Interner,
+) -> Vec<Vec<u32>> {
+    let bytes = text.as_bytes();
+    let intern = |atom: &Atom| {
+        let (lo, hi) = (atom.lo as usize, (atom.lo + atom.len) as usize);
+        let spelling = &text[lo..hi];
+        let symbol =
+            if atom.flags & ATOM_NFC != 0 && is_nfc_quick(spelling.chars()) != IsNormalized::Yes {
+                let normalized: String = spelling.chars().nfc().collect();
+                interner.intern(&normalized)
+            } else {
+                interner.intern_hashed_from_source(spelling, atom.hash, text)
+            };
+        symbol.as_u32()
+    };
+    if let [chunk] = chunks {
+        return alloc::vec![chunk.atoms.iter().map(intern).collect()];
+    }
+    // The table holds each distinct spelling not yet found once: size it by those.
+    let unknown: usize = chunks
+        .iter()
+        .map(|chunk| {
+            if chunk.known.is_empty() {
+                chunk.atoms.len()
+            } else {
+                chunk.known.iter().filter(|&&s| s == UNKNOWN).count()
+            }
+        })
+        .sum();
+    let mut table = Table::with_capacity(unknown);
+    let mut symbols: Vec<u32> = Vec::with_capacity(unknown);
+    chunks
+        .iter_mut()
+        .map(|chunk| {
+            let mut out = core::mem::take(&mut chunk.known);
+            if out.is_empty() {
+                out = alloc::vec![UNKNOWN; chunk.atoms.len()];
+            }
+            for (atom, symbol) in chunk.atoms.iter().zip(&mut out) {
+                if *symbol != UNKNOWN {
+                    continue;
+                }
+                let (lo, len) = (atom.lo as usize, atom.len as usize);
+                *symbol = match table.find_hashed(bytes, lo, len, atom.hash) {
+                    Some(id) => symbols[id as usize],
+                    None => {
+                        let new = intern(atom);
+                        table.insert(atom.hash, lo, len, symbols.len() as u32);
+                        symbols.push(new);
+                        new
+                    }
+                };
+            }
+            out
+        })
+        .collect()
+}
+
+/// Rewrites one chunk to file numbering: identifier and literal payloads, suffixes and gallery
+/// candidates from atoms to `symbols`; token numbers offset by `token_base`, group numbers by
+/// `group_base`. Pure and owned: one task per chunk.
+pub(crate) fn patch(chunk: &mut Chunk, symbols: &[u32], token_base: u32, group_base: u32) {
+    for token in &mut chunk.tokens {
+        if token.kind >= Kind::Ident {
+            if token.kind != Kind::Eof {
+                token.data = symbols[token.data as usize];
+            }
+        } else if token.kind.is_open_delim() || token.kind.is_close_delim() {
+            token.data += group_base;
+        }
+    }
+    if token_base != 0 || group_base != 0 {
+        for g in &mut chunk.groups {
+            g.open += token_base;
+            g.close += token_base;
+            if g.parent != NO_GROUP {
+                g.parent += group_base;
+            }
+        }
+        for t in &mut chunk.raw_idents {
+            *t += token_base;
+        }
+    }
+    for (token, atom) in &mut chunk.suffixes {
+        *token += token_base;
+        *atom = symbols[*atom as usize];
+    }
+    for (atom, token) in &mut chunk.gallery_candidates {
+        *atom = symbols[*atom as usize];
+        *token += token_base;
+    }
+}
+
+/// A file of one patched chunk: its buffers are moved, not copied.
+pub(crate) fn single(src: Arc<String>, begin: usize, chunk: Chunk) -> LexedFile {
+    LexedFile {
+        src,
+        begin: begin as u32,
+        gallery: gallery(chunk.gallery_candidates.iter().copied()),
+        suffixes: chunk
+            .suffixes
+            .iter()
+            .map(|&(token, symbol)| (token, Symbol::new(symbol)))
+            .collect(),
+        tokens: chunk.tokens.into_boxed_slice(),
+        groups: chunk.groups.into_boxed_slice(),
+        item_cuts: chunk.item_cuts.into_boxed_slice(),
+        raw_idents: chunk.raw_idents.into_boxed_slice(),
+        newlines: chunk.newlines.into_boxed_slice(),
+        multibyte: chunk.multibyte.into_boxed_slice(),
+        error: None,
+    }
+}
+
+/// The file from buffers its parts filled.
+pub(crate) fn from_filled(src: Arc<String>, begin: usize, filled: Filled) -> LexedFile {
+    LexedFile {
+        src,
+        begin: begin as u32,
+        gallery: gallery(filled.gallery.iter().copied()),
+        tokens: filled.tokens,
+        groups: filled.groups,
+        item_cuts: filled.item_cuts,
+        raw_idents: filled.raw_idents,
+        suffixes: filled.suffixes,
+        newlines: filled.newlines,
+        multibyte: filled.multibyte,
+        error: None,
+    }
+}
+
+/// Each symbol's first identifier occurrence, from patched candidates in token order;
+/// spellings that normalize alike share one.
+fn gallery(candidates: impl Iterator<Item = (u32, u32)>) -> Box<[(Symbol, u32)]> {
+    let mut gallery = Vec::new();
+    let mut seen: Vec<u64> = Vec::new();
+    for (symbol, token) in candidates {
+        let (word, bit) = (symbol as usize / 64, 1u64 << (symbol % 64));
+        if word >= seen.len() {
+            seen.resize(word + 1, 0);
+        }
+        if seen[word] & bit == 0 {
+            seen[word] |= bit;
+            gallery.push((Symbol::new(symbol), token));
+        }
+    }
+    gallery.into_boxed_slice()
 }

@@ -1,19 +1,19 @@
-//! A pass's own spelling-to-symbol table.
+//! A pass's own spelling-to-atom table.
 //!
-//! Every identifier, lifetime, literal and doc comment spelling a pass meets is looked up here
-//! first. The table is plain memory owned by the pass: no atomics, no lock, no sharing. A miss
-//! interns the spelling in the shared interner (with the hash computed here, so the interner
-//! does not hash it again) and remembers the answer, so the shared interner is consulted once
-//! per distinct spelling per file.
+//! Every identifier, lifetime, literal and doc comment spelling a pass meets is looked up here.
+//! The first sight of a spelling makes it an atom, numbered in order of first occurrence; every
+//! later sight finds that atom. The table is plain memory owned by the pass: no atomics, no
+//! lock, no sharing, and nothing reaches the shared interner until the pass resolves its atoms,
+//! once each, in order.
 //!
 //! Open addressing with linear probing, at most half full. An entry keeps the spelling's offset
 //! and length in the source, the high half of its hash as a tag (so a probe rarely reads a
-//! spelling that does not match), and its symbol.
+//! spelling that does not match), and its atom.
 
 use alloc::boxed::Box;
 use alloc::vec;
 
-use frontend_symbol::{Symbol, symbol_hash};
+use frontend_symbol::symbol_hash;
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -21,10 +21,10 @@ struct Entry {
     tag: u32,
     lo: u32,
     len: u32,
-    symbol: u32,
+    atom: u32,
 }
 
-const EMPTY: Entry = Entry { tag: 0, lo: 0, len: 0, symbol: 0 };
+const EMPTY: Entry = Entry { tag: 0, lo: 0, len: 0, atom: 0 };
 
 pub(crate) struct Table {
     entries: Box<[Entry]>,
@@ -34,7 +34,7 @@ pub(crate) struct Table {
 
 /// A lookup's result: found, or the hash to insert with.
 pub(crate) enum Probe {
-    Hit(Symbol),
+    Hit(u32),
     Miss { hash: u64 },
 }
 
@@ -50,7 +50,13 @@ impl Table {
         Table { entries: vec![EMPTY; slots].into_boxed_slice(), mask: slots - 1, len: 0 }
     }
 
-    /// The symbol of `src[lo..lo + len]`, if this pass has interned that spelling.
+    /// Sized for `atoms` distinct spellings, at most half full.
+    pub(crate) fn with_capacity(atoms: usize) -> Table {
+        let slots = (atoms * 2).max(256).next_power_of_two();
+        Table { entries: vec![EMPTY; slots].into_boxed_slice(), mask: slots - 1, len: 0 }
+    }
+
+    /// The atom of `src[lo..lo + len]`, if this pass has met that spelling.
     #[inline]
     pub(crate) fn find(&self, src: &[u8], lo: usize, len: usize) -> Probe {
         let bytes = &src[lo..lo + len];
@@ -66,15 +72,36 @@ impl Table {
                 && entry.len as usize == len
                 && &src[entry.lo as usize..entry.lo as usize + len] == bytes
             {
-                return Probe::Hit(Symbol::new(entry.symbol));
+                return Probe::Hit(entry.atom);
             }
             slot = (slot + 1) & self.mask;
         }
     }
 
-    /// Records `symbol` for `src[lo..lo + len]`, which [`Table::find`] just missed with `hash`.
+    /// [`Table::find`] given the spelling's hash, which the caller kept.
     #[inline]
-    pub(crate) fn insert(&mut self, hash: u64, lo: usize, len: usize, symbol: Symbol) {
+    pub(crate) fn find_hashed(&self, src: &[u8], lo: usize, len: usize, hash: u64) -> Option<u32> {
+        let bytes = &src[lo..lo + len];
+        let tag = tag_of(hash);
+        let mut slot = slot_of(tag, self.mask);
+        loop {
+            let entry = &self.entries[slot];
+            if entry.tag == 0 {
+                return None;
+            }
+            if entry.tag == tag
+                && entry.len as usize == len
+                && &src[entry.lo as usize..entry.lo as usize + len] == bytes
+            {
+                return Some(entry.atom);
+            }
+            slot = (slot + 1) & self.mask;
+        }
+    }
+
+    /// Records `atom` for `src[lo..lo + len]`, which [`Table::find`] just missed with `hash`.
+    #[inline]
+    pub(crate) fn insert(&mut self, hash: u64, lo: usize, len: usize, atom: u32) {
         if (self.len + 1) * 2 > self.entries.len() {
             self.grow();
         }
@@ -83,7 +110,7 @@ impl Table {
         while self.entries[slot].tag != 0 {
             slot = (slot + 1) & self.mask;
         }
-        self.entries[slot] = Entry { tag, lo: lo as u32, len: len as u32, symbol: symbol.as_u32() };
+        self.entries[slot] = Entry { tag, lo: lo as u32, len: len as u32, atom };
         self.len += 1;
     }
 
