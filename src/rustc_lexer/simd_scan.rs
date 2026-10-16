@@ -100,6 +100,16 @@ pub fn contains_text_flow_control_char(bytes: &[u8]) -> bool {
 
 pub fn scan_ascii_whitespace(bytes: &[u8]) -> usize {
     let mut offset = 0;
+    while offset < simd_classify::LEADING_WORD_BYTES
+        && let Some(word) = bytes.get(offset..offset + 8)
+    {
+        let word = u64::from_le_bytes(word.try_into().expect("eight-byte whitespace word"));
+        if let Some(lane) = simd_classify::first_rejected_lane(simd_classify::word_whitespace(word))
+        {
+            return offset + lane;
+        }
+        offset += 8;
+    }
     while offset < bytes.len() {
         let len = (bytes.len() - offset).min(BLOCK_LEN);
         let block = &bytes[offset..offset + len];
