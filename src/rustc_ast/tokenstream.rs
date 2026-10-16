@@ -38,6 +38,26 @@ pub use source_cursor::TokenCursor;
 #[cfg(test)]
 mod tests;
 
+/// Temporary hooks for the lexer benchmark (`examples/lex_bench.rs`): the token tape alone,
+/// outside a parser and a session.
+#[doc(hidden)]
+pub mod lex_hooks {
+    use alloc::string::String;
+    use alloc::sync::Arc;
+
+    use super::indexed_tape::IndexedSourceTape;
+    use crate::rustc_lexer::FrontmatterAllowed;
+    use crate::rustc_span::BytePos;
+    use crate::rustc_span::edition::Edition;
+
+    /// The tape's token count for `src`, or `None` when the tape refuses it (the parser then
+    /// lexes it eagerly, with diagnostics). Needs session globals: the tape interns.
+    pub fn build(src: &Arc<String>, edition: Edition) -> Option<usize> {
+        IndexedSourceTape::build(Arc::clone(src), BytePos(0), 0, FrontmatterAllowed::No, edition)
+            .map(|tape| tape.token_count())
+    }
+}
+
 /// Part of a `TokenStream`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Encodable, Decodable, StableHash)]
 pub enum TokenTree {
