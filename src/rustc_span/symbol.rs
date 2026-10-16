@@ -2436,7 +2436,9 @@ symbols! {
         zmm_reg,
         ztso,
         // tidy-alphabetical-end
-        // Append frontend additions after the upstream sequence to preserve metadata IDs.
+    }
+    // Append after the upstream list and its generated digit, letter and release symbols.
+    ExtraSymbols {
         Box,
         Drop,
     }
