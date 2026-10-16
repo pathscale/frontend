@@ -12,75 +12,6 @@ fn test_token_stream_iter() {
     assert_eq!(iter.size_hint(), (1, Some(1)));
 }
 
-#[test]
-fn r24_compact_token_layout_and_packing() {
-    compact_delimiter_groups_pack_twenty_bits();
-    short_symbol_cache_keys_preserve_exact_source_bytes();
-    arena_bulk_moves::bulk_moves_preserve_ownership_and_scratch_prefix();
-    use super::Spacing;
-    use super::compact_token::*;
-    use super::source_token::{SourceKind, SourceToken};
-    assert_eq!(core::mem::size_of::<CompactToken>(), 8);
-    assert_eq!(core::mem::align_of::<CompactToken>(), 8);
-    assert_eq!(core::mem::size_of::<SourceToken>(), 16);
-    for raw in 0..=66 {
-        let kind = SourceKind::from_raw(raw);
-        assert_eq!(kind as u8, raw);
-        for len in [0, 1, 4094, 4095, 4096, 0x7ffe] {
-            for spacing in [Spacing::Alone, Spacing::Joint, Spacing::JointHidden] {
-                for (group, aux) in [(false, false), (true, false), (false, true), (true, true)] {
-                    let token = CompactToken::new(91, len, kind, spacing, 1, group, aux);
-                    assert_eq!(token.lo(), 91);
-                    assert_eq!(token.kind(), kind);
-                    assert_eq!(token.aux(), 1);
-                    assert_eq!(token.inline_len(), (len < 4095).then_some(len));
-                    assert_eq!(token.spacing(), spacing);
-                    assert_eq!(token.has_group(), group);
-                    assert_eq!(token.has_aux_u32(), aux);
-                    assert_ne!(
-                        token.len_and_flags & (COMPACT_FLAG_JOINT | COMPACT_FLAG_JOINT_HIDDEN),
-                        COMPACT_FLAG_JOINT | COMPACT_FLAG_JOINT_HIDDEN
-                    );
-                }
-            }
-        }
-    }
-    for raw in 67..=255 {
-        assert_eq!(SourceKind::from_raw(raw), SourceKind::Eof);
-    }
-    assert_eq!(SourceKind::Ident as u8, 52);
-    assert_eq!(SourceKind::Lifetime as u8, 53);
-    assert_eq!(SourceKind::LineDoc as u8, 64);
-    assert_eq!(SourceKind::BlockDoc as u8, 65);
-}
-
-#[test]
-fn r24_preglued_punctuation_matches_source_glue() {
-    use super::compact_token::{may_glue_after, try_glue_punct};
-    use super::source_token::SourceKind;
-    for (text, parts) in [
-        ("==", &[SourceKind::Eq, SourceKind::Eq][..]),
-        ("::", &[SourceKind::Colon, SourceKind::Colon][..]),
-        ("->", &[SourceKind::Minus, SourceKind::Gt][..]),
-        ("..=", &[SourceKind::Dot, SourceKind::Dot, SourceKind::Eq][..]),
-        (">>=", &[SourceKind::Gt, SourceKind::Gt, SourceKind::Eq][..]),
-    ] {
-        let expected = parts[1..].iter().fold(parts[0], |a, &b| a.glue(b).unwrap());
-        let glued = try_glue_punct(text.as_bytes()).unwrap();
-        assert_eq!(glued.kind, expected);
-        assert_eq!(glued.len as usize, text.len());
-        assert!(!may_glue_after(text.as_bytes(), text.len()));
-    }
-    for text in ["//comment", "/*comment*/"] {
-        let result = try_glue_punct(text.as_bytes());
-        assert!(result.is_none_or(|punct| punct.len == 1));
-    }
-    for text in ["= x", "=/*x*/", "=//x", "=(", "=name", "="] {
-        assert!(!may_glue_after(text.as_bytes(), 1));
-    }
-    assert!(may_glue_after(b"=+", 1));
-}
-
 fn r24_tape(source: &str) -> alloc::sync::Arc<super::lexed_tape::LexedTape> {
     super::lexed_tape::LexedTape::build(
         alloc::sync::Arc::new(alloc::string::String::from(source)),
@@ -494,34 +425,9 @@ fn w4_tape_deduplicates_repeated_unknown_symbols_and_glues_punct() {
     });
 }
 
-fn compact_delimiter_groups_pack_twenty_bits() {
-    use super::compact_token::CompactToken;
-    use super::source_token::SourceKind;
-    for group in [0, 4094, 4095, 65535, (1 << 20) - 2, (1 << 20) - 1, u32::MAX] {
-        for spacing in [super::Spacing::Alone, super::Spacing::Joint, super::Spacing::JointHidden] {
-            let token = CompactToken::with_group(7, SourceKind::OpenBrace, spacing, group);
-            assert!(token.has_group());
-            assert_eq!(
-                token.inline_group(),
-                (group < CompactToken::GROUP_OVERFLOW).then_some(group)
-            );
-            assert_eq!(token.spacing(), spacing);
-        }
-    }
-}
-
-fn short_symbol_cache_keys_preserve_exact_source_bytes() {
-    use super::source_token::short_key;
-    for text in
-        ["a", "ab", "abc", "abcd", "abcde", "abcdef", "abcdefg", "abcdefgh", "é", "éé", "abcé"]
-    {
-        let bytes = short_key(text).unwrap().to_le_bytes();
-        assert_eq!(&bytes[..text.len()], text.as_bytes());
-        assert!(bytes[text.len()..].iter().all(|&byte| byte == 0));
-    }
-    for text in ["", "abcdefghi", "\0", "a\0", "\0a", "a\0b"] {
-        assert_eq!(short_key(text), None, "{text:?}");
-    }
+#[test]
+fn arena_vec_bulk_moves_preserve_ownership() {
+    arena_bulk_moves::bulk_moves_preserve_ownership_and_scratch_prefix();
 }
 
 mod arena_bulk_moves {

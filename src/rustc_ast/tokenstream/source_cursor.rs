@@ -48,10 +48,6 @@ impl TokenCursor {
         Some(Self { inner: Cursor::Source(cursor) })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retains construction from a prebuilt indexed source tape")
-    )]
     pub(crate) fn from_lexed_tape(tape: Arc<LexedTape>) -> Self {
         Self { inner: Cursor::Source(OnDemandCursor::from_tape(tape)) }
     }

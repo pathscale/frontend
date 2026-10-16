@@ -128,6 +128,8 @@ use parser::Parser;
 
 use crate::rustc_parse::lexer::StripTokens;
 
+#[doc(hidden)]
+pub mod lex_hooks;
 pub mod lexer;
 #[cfg(feature = "parallel")]
 pub mod owned;
