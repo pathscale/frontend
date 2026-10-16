@@ -21,23 +21,9 @@ use frontend::rustc_ast::tokenstream::lex_hooks;
 use frontend::rustc_span::create_session_globals_then;
 use frontend::rustc_span::edition::Edition;
 
-fn bench(label: &str, files: &[Arc<String>], rounds: usize) {
-    let bytes: usize = files.iter().map(|f| f.len()).sum();
-    let mb = bytes as f64 / 1e6;
-    let pass = || {
-        create_session_globals_then(Edition::Edition2021, &[], None, || {
-            let mut tokens = 0;
-            let mut refused = 0;
-            for f in files {
-                match lex_hooks::build(f, Edition::Edition2021) {
-                    Some(n) => tokens += n,
-                    None => refused += 1,
-                }
-            }
-            (tokens, refused)
-        })
-    };
-    let (tokens, refused) = pass();
+/// Median and best ms of `rounds` timed passes of `pass`, after one untimed one.
+fn time<R>(rounds: usize, mut pass: impl FnMut() -> R) -> (f64, f64) {
+    std::hint::black_box(pass());
     let mut ms: Vec<f64> = (0..rounds)
         .map(|_| {
             let start = Instant::now();
@@ -46,26 +32,43 @@ fn bench(label: &str, files: &[Arc<String>], rounds: usize) {
         })
         .collect();
     ms.sort_by(f64::total_cmp);
-    let raw = (0..rounds.min(5))
-        .map(|_| {
-            let start = Instant::now();
-            for f in files {
-                let toks = frontend::rustc_lexer::tokenize(
-                    f,
-                    frontend::rustc_lexer::FrontmatterAllowed::No,
-                );
-                std::hint::black_box(toks.count());
-            }
-            start.elapsed().as_secs_f64() * 1e3
+    (ms[ms.len() / 2], ms[0])
+}
+
+fn bench(label: &str, files: &[Arc<String>], rounds: usize) {
+    let bytes: usize = files.iter().map(|f| f.len()).sum();
+    let mb = bytes as f64 / 1e6;
+    let edition = Edition::Edition2021;
+    // Each pass in fresh session globals: a check starts each file with a fresh interner.
+    let tape = || {
+        create_session_globals_then(edition, &[], None, || {
+            files.iter().filter(|f| lex_hooks::build(f, edition).is_none()).count()
         })
-        .fold(f64::MAX, f64::min);
-    let median = ms[ms.len() / 2];
+    };
+    let lexer = || {
+        create_session_globals_then(edition, &[], None, || {
+            files.iter().filter(|f| lex_hooks::lex(f, edition).is_err()).count()
+        })
+    };
+    let (tape_refused, lex_refused) = (tape(), lexer());
+    let (tape_median, tape_best) = time(rounds, tape);
+    let (lex_median, lex_best) = time(rounds, lexer);
+    let (_, raw) = time(rounds.min(5), || {
+        for f in files {
+            let tokens =
+                frontend::rustc_lexer::tokenize(f, frontend::rustc_lexer::FrontmatterAllowed::No);
+            std::hint::black_box(tokens.count());
+        }
+    });
+    let rate = |ms: f64| mb * 1e3 / ms;
     println!(
-        "{label:<10} {:>5} files {mb:>7.2} MB {tokens:>9} tokens {refused:>4} refused | tape median {median:>8.2} ms {:>7.1} MB/s  best {:>7.1} MB/s | bare lexer {:>7.1} MB/s",
+        "{label:<10} {:>5} files {mb:>7.2} MB | old tape {:>7.1} MB/s (best {:>7.1}, {tape_refused} refused) | frontend_lex {:>7.1} MB/s (best {:>7.1}, {lex_refused} stopped) | bare rustc_lexer {:>7.1} MB/s",
         files.len(),
-        mb * 1e3 / median,
-        mb * 1e3 / ms[0],
-        mb * 1e3 / raw,
+        rate(tape_median),
+        rate(tape_best),
+        rate(lex_median),
+        rate(lex_best),
+        rate(raw),
     );
 }
 

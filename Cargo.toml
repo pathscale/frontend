@@ -39,7 +39,7 @@ name = "parallel_timing"
 # indexmap depends on) in a `no_std` binary, whose own `#[panic_handler]` collides with std's. A
 # resolver of 2 or later keeps the two graphs apart.
 resolver = "3"
-members = ["frontend_macros", "frontend_diag_template", "frontend_arena", "frontend_symbol"]
+members = ["frontend_macros", "frontend_diag_template", "frontend_arena", "frontend_symbol", "frontend_lex"]
 exclude = ["link-probe"]
 
 [features]
@@ -99,6 +99,8 @@ frontend_diag_template = { path = "frontend_diag_template", version = "0.1.1" }
 frontend_arena = { path = "frontend_arena", version = "0.2.0" }
 # Symbols and editions, below the lexer. See `frontend_symbol/Cargo.toml`.
 frontend_symbol = { path = "frontend_symbol", version = "0.1.0" }
+# The lexer. See `frontend_lex/Cargo.toml`.
+frontend_lex = { path = "frontend_lex", version = "0.1.0" }
 
 arrayvec = { version = "^0.7.8", default-features = false }
 bitflags = "2.9.1"
