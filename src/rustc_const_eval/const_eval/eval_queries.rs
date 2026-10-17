@@ -43,7 +43,14 @@ pub fn eval_static_initializer_provider<'tcx>(
 ) -> EvalStaticInitializerRawResult<'tcx> {
     assert!(tcx.is_static(def_id.to_def_id()));
 
-    Err(ErrorHandled::TooGeneric(tcx.def_span(def_id)))
+    super::static_fold::fold_static_initializer(tcx, def_id).map_err(|reason| {
+        let span = tcx.def_span(def_id);
+        let error = tcx.dcx().span_err(
+            span,
+            format!("cannot statically fold initializer `{}`: {reason}", tcx.def_path_str(def_id)),
+        );
+        ErrorHandled::Reported(ReportedErrorInfo::const_eval_error(error), span)
+    })
 }
 
 #[instrument(skip(tcx), level = "debug")]

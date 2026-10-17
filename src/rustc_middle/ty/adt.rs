@@ -642,7 +642,12 @@ impl<'tcx> AdtDef<'tcx> {
         expr_did: DefId,
     ) -> Result<Discr<'tcx>, ErrorHandled> {
         assert!(self.is_enum());
-        Err(ErrorHandled::TooGeneric(tcx.def_span(expr_did)))
+        let ty = self.repr().discr_type().to_ty(tcx);
+        let value = tcx.const_eval_poly(expr_did)?;
+        let val = value
+            .try_to_bits_for_ty(tcx, ty::TypingEnv::fully_monomorphized(), ty)
+            .ok_or_else(|| ErrorHandled::TooGeneric(tcx.def_span(expr_did)))?;
+        Ok(Discr { val, ty })
     }
 
     #[inline]

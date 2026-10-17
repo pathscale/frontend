@@ -8,8 +8,8 @@ use crate::rustc_abi::{Size, TagEncoding, VariantIdx, Variants};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_middle::mir::interpret::{
-    AllocId, Allocation, GlobalAlloc, GlobalId, Pointer, Scalar, alloc_range, read_target_uint,
-    write_target_uint,
+    AllocId, Allocation, ConstAllocation, GlobalAlloc, GlobalId, Pointer, Scalar, alloc_range,
+    read_target_uint, write_target_uint,
 };
 use crate::rustc_middle::mir::{self, ConstValue, Local, Operand, Rvalue};
 use crate::rustc_middle::ty::layout::LayoutCx;
@@ -25,7 +25,7 @@ enum FoldValue<'tcx> {
     ZeroSized { ty: Ty<'tcx> },
     // Thin references and raw pointers share allocation provenance and a pointee.
     Reference { ty: Ty<'tcx>, pointee: &'tcx FoldValue<'tcx>, alloc_id: AllocId, offset: Size },
-    // Thin pointers with deferred pointee reads, including symbolic TypeId fragments.
+    // Thin pointers with deferred pointee reads, including statics and TypeId fragments.
     Pointer { ty: Ty<'tcx>, alloc_id: AllocId, offset: Size },
     Aggregate { ty: Ty<'tcx>, fields: &'tcx [FoldValue<'tcx>], variant: Option<VariantIdx> },
     // A slice/string pointer, or its unsized pointee during place projection.
@@ -97,6 +97,25 @@ pub(super) fn fold_const<'tcx>(
     };
     let value = folder.eval_instance(id, 0)?;
     folder.to_const(value)
+}
+
+pub(super) fn fold_static_initializer<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: crate::rustc_hir::def_id::LocalDefId,
+) -> Result<ConstAllocation<'tcx>, &'static str> {
+    let typing_env = ty::TypingEnv::post_analysis(tcx, def_id);
+    let mut folder = Folder {
+        tcx,
+        typing_env,
+        active: Vec::new(),
+        cache: FxHashMap::default(),
+        remaining_steps: MAX_FOLD_STEPS,
+    };
+    let id = GlobalId { instance: Instance::mono(tcx, def_id.to_def_id()), promoted: None };
+    let value = folder.eval_instance(id, 0)?;
+    let mutable =
+        tcx.is_mutable_static(def_id.to_def_id()) || !value.ty().is_freeze(tcx, typing_env);
+    folder.allocation(value, if mutable { mir::Mutability::Mut } else { mir::Mutability::Not })
 }
 
 impl<'tcx> Folder<'tcx> {
@@ -239,6 +258,14 @@ impl<'tcx> Folder<'tcx> {
     }
 
     fn allocate(&self, value: FoldValue<'tcx>) -> Result<AllocId, &'static str> {
+        Ok(self.tcx.reserve_and_set_memory_alloc(self.allocation(value, mir::Mutability::Not)?))
+    }
+
+    fn allocation(
+        &self,
+        value: FoldValue<'tcx>,
+        mutability: mir::Mutability,
+    ) -> Result<ConstAllocation<'tcx>, &'static str> {
         let layout = self
             .tcx
             .layout_of(self.typing_env.as_query_input(value.ty()))
@@ -250,8 +277,8 @@ impl<'tcx> Folder<'tcx> {
         let mut allocation =
             Allocation::from_bytes(vec![0; len], layout.align.abi, mir::Mutability::Mut, ());
         self.write_value(&mut allocation, Size::ZERO, value)?;
-        allocation.mutability = mir::Mutability::Not;
-        Ok(self.tcx.reserve_and_set_memory_alloc(self.tcx.mk_const_alloc(allocation)))
+        allocation.mutability = mutability;
+        Ok(self.tcx.mk_const_alloc(allocation))
     }
 
     fn write_value(
@@ -484,6 +511,7 @@ impl<'tcx> Folder<'tcx> {
             DefKind::Const { is_type_const: false }
                 | DefKind::AssocConst { is_type_const: false }
                 | DefKind::AnonConst
+                | DefKind::Static { .. }
         ) {
             return Err("unevaluated item is not a constant body");
         }
@@ -618,6 +646,13 @@ impl<'tcx> Folder<'tcx> {
             if !matches!(ty.kind(), ty::RawPtr(..)) || !target.is_unit() || len.is_some() {
                 return Err("type id provenance requires a thin raw unit pointer");
             }
+            return Ok(FoldValue::Pointer { ty, alloc_id, offset });
+        }
+        // Taking a static's address does not read its initializer or current contents.
+        // Preserve its identity even for mutable, foreign or self-referential statics.
+        if len.is_none()
+            && matches!(self.tcx.try_get_global_alloc(alloc_id), Some(GlobalAlloc::Static(_)))
+        {
             return Ok(FoldValue::Pointer { ty, alloc_id, offset });
         }
         if let Some(len) = len {
@@ -1106,6 +1141,23 @@ impl<'tcx> Folder<'tcx> {
                     pointer_target(destination_ty).ok_or("borrow rvalue has a non-pointer type")?;
                 if target_pointee != pointee_ty {
                     return Err("reference rvalue has a mismatched pointee type");
+                }
+                // A reborrow of a deferred pointer needs only its address. In
+                // particular, &STATIC and &raw mut STATIC must not load static memory.
+                if let Some((mir::ProjectionElem::Deref, prefix)) = place.projection.split_last() {
+                    let base = mir::Place {
+                        local: place.local,
+                        projection: self.tcx.mk_place_elems(prefix),
+                    };
+                    if let FoldValue::Pointer { alloc_id, offset, .. } =
+                        self.eval_place(body, locals, &base)?
+                        && matches!(
+                            self.tcx.try_get_global_alloc(alloc_id),
+                            Some(GlobalAlloc::Static(_))
+                        )
+                    {
+                        return Ok(FoldValue::Pointer { ty: destination_ty, alloc_id, offset });
+                    }
                 }
                 let place = self.project_place(body, locals, place)?;
                 if place.value.ty() != pointee_ty {
@@ -1982,8 +2034,13 @@ impl<'tcx> Folder<'tcx> {
                 Ok(FoldValue::Slice { ty: destination_ty, alloc_id, offset, len })
             }
             FoldValue::Pointer { ty, alloc_id, offset } => {
+                let static_reference = matches!(destination_ty.kind(), ty::Ref(..))
+                    && matches!(
+                        self.tcx.try_get_global_alloc(alloc_id),
+                        Some(GlobalAlloc::Static(_))
+                    );
                 if pointer_target(ty) != pointer_target(destination_ty)
-                    || !matches!(destination_ty.kind(), ty::RawPtr(..))
+                    || !(matches!(destination_ty.kind(), ty::RawPtr(..)) || static_reference)
                 {
                     return Err("symbolic pointer cast changed its pointee");
                 }

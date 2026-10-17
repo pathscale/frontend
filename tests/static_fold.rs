@@ -10,7 +10,7 @@ use frontend::rustc_abi::Size;
 use frontend::rustc_hir::def::DefKind;
 use frontend::rustc_hir::def_id::{CRATE_DEF_INDEX, DefId};
 use frontend::rustc_interface::{Config, create_and_enter_global_ctxt, parse, run_compiler};
-use frontend::rustc_middle::mir::interpret::{AllocId, alloc_range};
+use frontend::rustc_middle::mir::interpret::{AllocId, GlobalAlloc, GlobalId, alloc_range};
 use frontend::rustc_middle::mir::visit::Visitor;
 use frontend::rustc_middle::mir::{self, ConstValue};
 use frontend::rustc_middle::ty::{self, TyCtxt};
@@ -22,7 +22,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const SOURCE: &str = r#"
 #![feature(no_core, lang_items, auto_traits)]
-#![allow(internal_features, dead_code, unconditional_panic)]
+#![allow(internal_features, dead_code, unconditional_panic, static_mut_refs)]
 #![no_core]
 #[lang = "pointee_sized"] pub trait PointeeSized {}
 #[lang = "meta_sized"] pub trait MetaSized: PointeeSized {}
@@ -66,6 +66,12 @@ impl Rem for usize { type Output = usize; fn rem(self, _: usize) -> usize { 0 } 
     fn not(self) -> Self::Output;
 }
 impl Not for usize { type Output = usize; fn not(self) -> usize { 0 } }
+#[lang = "neg"] pub trait Neg {
+    type Output;
+    fn neg(self) -> Self::Output;
+}
+impl Neg for i8 { type Output = i8; fn neg(self) -> i8 { loop {} } }
+impl Neg for i32 { type Output = i32; fn neg(self) -> i32 { loop {} } }
 
 #[repr(C)]
 pub struct Pair { byte: u8, word: usize }
@@ -224,6 +230,211 @@ impl<'tcx> Visitor<'tcx> for Constants<'tcx> {
     fn visit_const_operand(&mut self, constant: &mir::ConstOperand<'tcx>, _: mir::Location) {
         self.0.push(constant.const_);
     }
+}
+
+fn check_ordering_discriminants<'tcx>(tcx: TyCtxt<'tcx>, def: ty::AdtDef<'tcx>) {
+    assert_eq!(def.variants().len(), 3);
+    for ((index, discr), expected) in def.discriminants(tcx).zip([-1i128, 0, 1]) {
+        let ty::VariantDiscr::Explicit(expr) = def.variant(index).discr else {
+            panic!("explicit discriminant expected");
+        };
+        let explicit = def.eval_explicit_discr(tcx, expr).expect("explicit discriminant folds");
+        assert_eq!((explicit.val, explicit.ty), (discr.val, discr.ty));
+        let size = tcx
+            .layout_of(ty::TypingEnv::fully_monomorphized().as_query_input(discr.ty))
+            .expect("discriminant layout")
+            .size;
+        assert_eq!(size.sign_extend(discr.val), expected);
+        let direct = def.discriminant_for_variant(tcx, index);
+        assert_eq!((direct.val, direct.ty), (discr.val, discr.ty));
+    }
+}
+
+#[test]
+fn explicit_signed_discriminants_fold_without_a_library() {
+    let source = alloc::format!(
+        r#"{SOURCE}
+        #[repr(i8)] pub enum Ordering {{ Less = -1, Equal = 0, Greater = 1 }}
+        pub const LESS: Ordering = Ordering::Less;
+        pub const EQUAL: Ordering = Ordering::Equal;
+        pub const GREATER: Ordering = Ordering::Greater;
+        "#
+    );
+    with_source_tcx(&source, None, |tcx| {
+        let owner = tcx
+            .hir_body_owners()
+            .find(|&owner| {
+                matches!(tcx.def_kind(owner), DefKind::Const { .. })
+                    && tcx.item_name(owner.to_def_id()).as_str() == "LESS"
+            })
+            .expect("ordering constant");
+        let ty::Adt(def, _) = *tcx.type_of(owner).instantiate_identity().skip_norm_wip().kind()
+        else {
+            panic!("ordering type expected");
+        };
+        check_ordering_discriminants(tcx, def);
+        for (name, bits) in [("LESS", 255), ("EQUAL", 0), ("GREATER", 1)] {
+            assert_eq!(constant(tcx, name).try_to_bits(Size::from_bytes(1)), Some(bits), "{name}");
+        }
+    });
+}
+
+#[test]
+#[ignore = "requires FRONTEND_FOLD_SYSROOT naming the caller's compiled library"]
+fn core_ordering_explicit_discriminants_against_a_named_library() {
+    let sysroot = eko::env::var("FRONTEND_FOLD_SYSROOT").expect("explicit test sysroot");
+    let source = r#"
+        pub const LESS: core::cmp::Ordering = core::cmp::Ordering::Less;
+        pub const EQUAL: core::cmp::Ordering = core::cmp::Ordering::Equal;
+        pub const GREATER: core::cmp::Ordering = core::cmp::Ordering::Greater;
+    "#;
+    with_source_tcx(source, Some(&sysroot), |tcx| {
+        let owner = tcx
+            .hir_body_owners()
+            .find(|&owner| {
+                matches!(tcx.def_kind(owner), DefKind::Const { .. })
+                    && tcx.item_name(owner.to_def_id()).as_str() == "LESS"
+            })
+            .expect("ordering constant");
+        let ty::Adt(def, _) = *tcx.type_of(owner).instantiate_identity().skip_norm_wip().kind()
+        else {
+            panic!("core ordering type expected");
+        };
+        assert!(!def.did().is_local());
+        check_ordering_discriminants(tcx, def);
+        for (name, bits) in [("LESS", 255), ("EQUAL", 0), ("GREATER", 1)] {
+            assert_eq!(constant(tcx, name).try_to_bits(Size::from_bytes(1)), Some(bits), "{name}");
+        }
+    });
+}
+
+fn static_pointer_target(tcx: TyCtxt<'_>, mut value: ConstValue) -> DefId {
+    for _ in 0..4 {
+        let pointer = value.try_to_scalar().expect("pointer scalar").to_pointer(&tcx);
+        let (provenance, offset) = pointer.into_raw_parts();
+        assert_eq!(offset, Size::ZERO);
+        match tcx.global_alloc(provenance.expect("static pointer provenance").alloc_id()) {
+            GlobalAlloc::Static(def) => return def,
+            GlobalAlloc::Memory(memory) => {
+                value = ConstValue::Scalar(
+                    memory
+                        .inner()
+                        .read_scalar(
+                            &tcx,
+                            alloc_range(offset, tcx.data_layout.pointer_size()),
+                            true,
+                        )
+                        .expect("nested pointer"),
+                );
+            }
+            _ => panic!("static or promoted pointer storage expected"),
+        }
+    }
+    panic!("static pointer was not reached");
+}
+
+#[test]
+fn static_addresses_and_initializers_preserve_identity_and_mutability() {
+    let source = alloc::format!(
+        r#"{SOURCE}
+        pub static VALUE: i32 = -1;
+        pub static OTHER: i32 = -1;
+        pub static mut WRITE_END: i32 = -1;
+        pub const STATIC_REF: &i32 = &VALUE;
+        pub const OTHER_REF: &i32 = &OTHER;
+        pub const STATIC_RAW: *const i32 = &raw const VALUE;
+        pub const MUT_STATIC_RAW: *mut i32 = &raw mut WRITE_END;
+        pub const MUT_STATIC_CONST_RAW: *const i32 = &raw const WRITE_END;
+        pub const MUT_STATIC_REF: &i32 = unsafe {{ &WRITE_END }};
+        pub const REBORROW_STATIC: &i32 = &*STATIC_REF;
+        pub static mut SAVED_ADDRESS: *mut i32 = &raw mut WRITE_END;
+        pub static mut SELF_ADDRESS: *mut *mut () = &raw mut SELF_ADDRESS as *mut *mut ();
+        fn accept<T>(_: T) {{}}
+        pub fn promoted_statics() {{
+            accept(&STATIC_REF);
+            accept(&STATIC_RAW);
+            accept(&MUT_STATIC_RAW);
+            accept(&MUT_STATIC_REF);
+        }}
+        "#
+    );
+    with_source_tcx(&source, None, |tcx| {
+        let static_def = |name: &str| {
+            tcx.hir_body_owners()
+                .find(|&owner| {
+                    matches!(tcx.def_kind(owner), DefKind::Static { .. })
+                        && tcx.item_name(owner.to_def_id()).as_str() == name
+                })
+                .expect("fixture static")
+                .to_def_id()
+        };
+        let value = static_def("VALUE");
+        let write_end = static_def("WRITE_END");
+        for name in ["STATIC_REF", "STATIC_RAW", "REBORROW_STATIC"] {
+            assert_eq!(static_pointer_target(tcx, constant(tcx, name)), value, "{name}");
+        }
+        assert_eq!(static_pointer_target(tcx, constant(tcx, "OTHER_REF")), static_def("OTHER"));
+        assert_ne!(value, static_def("OTHER"));
+        for name in ["MUT_STATIC_RAW", "MUT_STATIC_CONST_RAW", "MUT_STATIC_REF"] {
+            assert_eq!(static_pointer_target(tcx, constant(tcx, name)), write_end, "{name}");
+        }
+        for (def, mutable) in [(value, false), (write_end, true)] {
+            let allocation = tcx.eval_static_initializer(def).expect("static initializer folds");
+            assert_eq!(allocation.inner().mutability.is_mut(), mutable);
+            let scalar = allocation
+                .inner()
+                .read_scalar(&tcx, alloc_range(Size::ZERO, Size::from_bytes(4)), false)
+                .expect("static integer");
+            assert_eq!(
+                scalar
+                    .try_to_scalar_int()
+                    .expect("integer initializer")
+                    .to_bits(Size::from_bytes(4)),
+                0xffff_ffff
+            );
+        }
+        for (name, target) in
+            [("SAVED_ADDRESS", write_end), ("SELF_ADDRESS", static_def("SELF_ADDRESS"))]
+        {
+            let allocation = tcx
+                .eval_static_initializer(static_def(name))
+                .expect("static pointer initializer folds");
+            assert!(allocation.inner().mutability.is_mut());
+            let scalar = allocation
+                .inner()
+                .read_scalar(&tcx, alloc_range(Size::ZERO, tcx.data_layout.pointer_size()), true)
+                .expect("static pointer");
+            assert_eq!(static_pointer_target(tcx, ConstValue::Scalar(scalar)), target);
+        }
+        let owner = tcx
+            .hir_body_owners()
+            .find(|&owner| {
+                tcx.def_kind(owner) == DefKind::Fn
+                    && tcx.item_name(owner.to_def_id()).as_str() == "promoted_statics"
+            })
+            .expect("promoted static caller");
+        let mut count = 0;
+        let mut saw_mutable = false;
+        let mut saw_immutable = false;
+        for (promoted, _) in tcx.promoted_mir(owner).iter_enumerated() {
+            let result = tcx
+                .const_eval_global_id(
+                    ty::TypingEnv::fully_monomorphized(),
+                    GlobalId {
+                        instance: ty::Instance::mono(tcx, owner.to_def_id()),
+                        promoted: Some(promoted),
+                    },
+                    frontend::rustc_span::DUMMY_SP,
+                )
+                .expect("promoted static address folds");
+            let target = static_pointer_target(tcx, result);
+            assert!(target == value || target == write_end);
+            saw_mutable |= target == write_end;
+            saw_immutable |= target == value;
+            count += 1;
+        }
+        assert!(count >= 4 && saw_mutable && saw_immutable, "static references must be promoted");
+    });
 }
 
 #[test]
