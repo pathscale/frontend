@@ -25,6 +25,9 @@ use crate::rustc_parse::parser::{
     CommaRecoveryMode, Expr, ExprKind, FnContext, FnParseMode, RecoverColon, RecoverComma,
 };
 
+#[path = "fast_path.rs"]
+mod fast_path;
+
 /// Specifies how to parse a path.
 #[derive(Copy, Clone, PartialEq)]
 pub enum PathStyle {
@@ -149,6 +152,9 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_path(&mut self, style: PathStyle) -> PResult<'a, Path> {
+        if let Some(path) = self.try_fast_parse_path(style) {
+            return Ok(path);
+        }
         self.parse_path_inner(style, None)
     }
 

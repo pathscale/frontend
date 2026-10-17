@@ -45,6 +45,9 @@ use super::{
 use crate::rustc_parse::diagnostics::ExprParenthesesNeeded;
 use crate::rustc_parse::{diagnostics, exp, maybe_recover_from_interpolated_ty_qpath};
 
+#[path = "fast_expr.rs"]
+mod fast_expr;
+
 #[derive(Debug)]
 pub(super) enum DestructuredFloat {
     /// 1e2
@@ -891,6 +894,14 @@ impl<'a> Parser<'a> {
 
     /// Parses `a.b` or `a(13)` or `a[4]` or just `a`.
     fn parse_expr_dot_or_call(&mut self, attrs: AttrWrapper) -> PResult<'a, P<Expr>> {
+        let attrs = if attrs.is_empty() {
+            match self.try_fast_parse_expr_atom(attrs) {
+                Ok(expr) => return Ok(expr),
+                Err(attrs) => attrs,
+            }
+        } else {
+            attrs
+        };
         self.collect_tokens_for_expr(attrs, |this, attrs| {
             let base = this.parse_expr_bottom()?;
             let span = this.interpolated_or_expr_span(&base);

@@ -28,6 +28,9 @@ use super::{
 use crate::exp;
 use crate::rustc_parse::diagnostics::{self, MalformedLoopLabel};
 
+#[path = "fast_stmt.rs"]
+mod fast_stmt;
+
 impl<'a> Parser<'a> {
     /// Parses a statement nonterminal, which has a peculiar syntax preserved for backward
     /// compatibility. The parsing stops just before trailing semicolons on everything but items.
@@ -322,6 +325,15 @@ impl<'a> Parser<'a> {
 
     /// Parses a local variable declaration.
     fn parse_local(&mut self, super_: Option<Span>, attrs: AttrVec) -> PResult<'a, P<Local>> {
+        if super_.is_none() && attrs.is_empty() && self.prev_token.is_keyword(kw::Let) {
+            if let Ok(local) = self.try_fast_parse_local(attrs.clone()) {
+                return Ok(local);
+            }
+        }
+        self.parse_local_full(super_, attrs)
+    }
+
+    fn parse_local_full(&mut self, super_: Option<Span>, attrs: AttrVec) -> PResult<'a, P<Local>> {
         let lo = super_.unwrap_or(self.prev_token.span);
 
         if self.token.is_keyword(kw::Const) && self.look_ahead(1, |t| t.is_ident()) {

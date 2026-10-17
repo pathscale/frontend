@@ -21,6 +21,9 @@ use super::{
 use crate::exp;
 use crate::rustc_parse::diagnostics::{self, FnPointerCannotBeAsync, FnPointerCannotBeConst};
 
+#[path = "fast_fn.rs"]
+mod fast_fn;
+
 /// The parsing configuration used to parse a parameter list (see `parse_fn_params`).
 ///
 /// The function decides if, per-parameter `p`, `p` must have a pattern or just a type.
@@ -711,6 +714,16 @@ impl<'a> Parser<'a> {
         &mut self,
         fn_parse_mode: &FnParseMode,
     ) -> PResult<'a, ast::ArenaVec<Param>> {
+        if let Some((params, _trailing_comma)) = self.try_fast_parse_fn_params(fn_parse_mode) {
+            return Ok(params);
+        }
+        self.parse_fn_params_full(fn_parse_mode).map(|(params, _)| params)
+    }
+
+    fn parse_fn_params_full(
+        &mut self,
+        fn_parse_mode: &FnParseMode,
+    ) -> PResult<'a, (ast::ArenaVec<Param>, bool)> {
         let mut first_param = true;
         // Parse the arguments, starting out with `self` being allowed...
         if self.token != TokenKind::OpenParen
@@ -721,10 +734,10 @@ impl<'a> Parser<'a> {
             self.dcx().emit_err(diagnostics::MissingFnParams {
                 span: self.prev_token.span.shrink_to_hi(),
             });
-            return Ok(ast::ArenaVec::new());
+            return Ok((ast::ArenaVec::new(), false));
         }
 
-        let (mut params, _) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Param>>(
+        let (mut params, trailing) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<Param>>(
             exp!(OpenParen),
             exp!(CloseParen),
             |p| {
@@ -757,7 +770,7 @@ impl<'a> Parser<'a> {
         )?;
         // Replace duplicated recovered params with `_` pattern to avoid unnecessary errors.
         self.deduplicate_recovered_params_names(&mut params);
-        Ok(params)
+        Ok((params, matches!(trailing, Trailing::Yes)))
     }
 
     /// Parses a single function parameter.

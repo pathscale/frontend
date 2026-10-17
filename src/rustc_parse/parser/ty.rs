@@ -26,6 +26,9 @@ use crate::rustc_parse::diagnostics::{
 use crate::rustc_parse::parser::{FnContext, FnParseMode, FrontMatterParsingMode};
 use crate::rustc_parse::{exp, maybe_recover_from_interpolated_ty_qpath};
 
+#[path = "fast_ty.rs"]
+mod fast_ty;
+
 /// Signals whether parsing a type should allow `+`.
 ///
 /// For example, let T be the type `impl Default + 'static`
@@ -310,6 +313,15 @@ impl<'a> Parser<'a> {
             |mv_kind| matches!(mv_kind, MetaVarKind::Ty { .. }),
             |this| this.parse_ty_no_question_mark_recover(),
         ) {
+            return Ok(ty);
+        }
+
+        if allow_c_variadic == AllowCVariadic::No
+            && ty_generics.is_none()
+            && matches!(recover_question_mark, RecoverQuestionMark::Yes)
+            && let Some(ty) =
+                fast_ty::try_fast_parse_ty(self, allow_plus, recover_qpath, recover_return_sign)
+        {
             return Ok(ty);
         }
 

@@ -26,7 +26,7 @@ pub enum Site {
 }
 
 const SITE_COUNT: usize = 6;
-static MODE: AtomicU8 = AtomicU8::new(Mode::Off as u8);
+static MODE: AtomicU8 = AtomicU8::new(Mode::Fast as u8);
 static SHADOW_BYPASS_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static ATTEMPTS: [AtomicU64; SITE_COUNT] = [const { AtomicU64::new(0) }; SITE_COUNT];
 static HITS: [AtomicU64; SITE_COUNT] = [const { AtomicU64::new(0) }; SITE_COUNT];

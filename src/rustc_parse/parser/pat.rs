@@ -35,6 +35,9 @@ use crate::rustc_parse::diagnostics::{
 use crate::rustc_parse::parser::expr::{DestructuredFloat, could_be_unclosed_char_literal};
 use crate::rustc_parse::{exp, maybe_recover_from_interpolated_ty_qpath};
 
+#[path = "fast_pat.rs"]
+mod fast_pat;
+
 #[derive(PartialEq, Copy, Clone)]
 pub enum Expected {
     ParameterName,
@@ -737,6 +740,10 @@ impl<'a> Parser<'a> {
 
         if let Some(pat) = self.eat_metavar_pat() {
             return Ok(pat);
+        }
+
+        if let Some(pat) = self.try_fast_parse_pat(allow_range_pat, expected, syntax_loc) {
+            return Ok(pat.into_inner());
         }
 
         let mut lo = self.token.span;
