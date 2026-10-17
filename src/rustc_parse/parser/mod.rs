@@ -11,6 +11,8 @@ mod function;
 mod generics;
 mod item;
 mod nonterminal;
+#[doc(hidden)]
+pub mod oracle;
 #[cfg(feature = "parallel")]
 mod parallel;
 mod pat;

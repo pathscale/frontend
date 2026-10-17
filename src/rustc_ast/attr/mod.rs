@@ -66,13 +66,13 @@ impl AttrIdGenerator {
         AttrIdGenerator(AtomicU32::new(0))
     }
 
-    #[cfg(feature = "parallel")]
-    pub(crate) fn at(start: u32) -> Self {
+    #[doc(hidden)]
+    pub fn at(start: u32) -> Self {
         Self(AtomicU32::new(start))
     }
 
-    #[cfg(feature = "parallel")]
-    pub(crate) fn position(&self) -> u32 {
+    #[doc(hidden)]
+    pub fn position(&self) -> u32 {
         self.0.load(Ordering::Relaxed)
     }
 

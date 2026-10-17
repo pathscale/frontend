@@ -31,6 +31,9 @@ path = "src/bin/frontend_facts.rs"
 [[example]]
 name = "parallel_timing"
 
+[[example]]
+name = "parse_oracle"
+
 [workspace]
 # **Load-bearing for `no_std`.** Without it cargo unifies features across the host and target
 # graphs, so `frontend_macros` - a proc macro, which may perfectly well use `std` - pulled

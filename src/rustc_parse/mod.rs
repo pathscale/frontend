@@ -133,6 +133,8 @@ pub mod lex_hooks;
 pub mod lexer;
 #[cfg(feature = "parallel")]
 pub mod owned;
+#[doc(hidden)]
+pub mod parse_hooks;
 
 mod diagnostics;
 

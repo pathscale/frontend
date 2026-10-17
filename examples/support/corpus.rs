@@ -75,3 +75,15 @@ pub fn rust_files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
         .filter_map(|p| std::fs::read_to_string(&p).ok().map(|text| (p, text)))
         .collect()
 }
+
+/// Small grammar witnesses supplement the canonical performance corpora.
+pub fn oracle_witnesses() -> Vec<String> {
+    vec![
+        String::from(
+            "use alpha::beta; type T = u32; fn f(x: u32) -> u32 { let y: u32 = x; let _ = y; y } const C: u32 = 1; trait Bound<X> {} trait Assoc { type Out; } fn nested<A: Bound<<u8 as Assoc>::Out>>() {}",
+        ),
+        String::from(
+            "const CLOSURE: fn() = || {}; unsafe extern \"C\" { fn takes(x: u32, y: u32); }",
+        ),
+    ]
+}
