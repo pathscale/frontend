@@ -365,52 +365,46 @@ impl<'a> Parser<'a> {
     ///
     /// Also performs recovery for `and` / `or` which are mistaken for `&&` and `||` respectively.
     pub(super) fn check_assoc_op(&self) -> Option<Spanned<AssocOp>> {
-        let (op, span) = match (AssocOp::from_token(&self.token), self.token.ident()) {
-            // When parsing const expressions, stop parsing when encountering `>`.
-            (
-                Some(
-                    AssocOp::Binary(BinOpKind::Shr | BinOpKind::Gt | BinOpKind::Ge)
-                    | AssocOp::AssignOp(AssignOpKind::ShrAssign),
-                ),
-                _,
-            ) if self.restrictions.contains(Restrictions::CONST_EXPR) => {
+        let op = AssocOp::from_token(&self.token);
+        if let Some(op) = op {
+            let blocked = match op {
+                AssocOp::Binary(BinOpKind::Shr | BinOpKind::Gt | BinOpKind::Ge) => {
+                    Restrictions::CONST_EXPR
+                }
+                AssocOp::AssignOp(AssignOpKind::ShrAssign) => {
+                    Restrictions::CONST_EXPR | Restrictions::IS_PAT
+                }
+                AssocOp::Assign
+                | AssocOp::AssignOp(_)
+                | AssocOp::Binary(BinOpKind::BitOr)
+                | AssocOp::Range(_) => Restrictions::IS_PAT,
+                _ => Restrictions::empty(),
+            };
+            if self.restrictions.intersects(blocked) {
                 return None;
             }
-            // When recovering patterns as expressions, stop parsing when encountering an
-            // assignment `=`, an alternative `|`, or a range `..`.
-            (
-                Some(
-                    AssocOp::Assign
-                    | AssocOp::AssignOp(_)
-                    | AssocOp::Binary(BinOpKind::BitOr)
-                    | AssocOp::Range(_),
-                ),
-                _,
-            ) if self.restrictions.contains(Restrictions::IS_PAT) => {
-                return None;
-            }
-            (Some(op), _) => (op, self.token.span),
-            (None, Some((Ident { name: sym::and, span }, IdentIsRaw::No)))
-                if self.may_recover() =>
-            {
+            return Some(Spanned { node: op, span: self.token.span });
+        }
+
+        match self.token.ident() {
+            Some((Ident { name: sym::and, span }, IdentIsRaw::No)) if self.may_recover() => {
                 self.dcx().emit_err(diagnostics::InvalidLogicalOperator {
                     span: self.token.span,
                     incorrect: "and".into(),
                     sub: diagnostics::InvalidLogicalOperatorSub::Conjunction(self.token.span),
                 });
-                (AssocOp::Binary(BinOpKind::And), span)
+                Some(respan(span, AssocOp::Binary(BinOpKind::And)))
             }
-            (None, Some((Ident { name: sym::or, span }, IdentIsRaw::No))) if self.may_recover() => {
+            Some((Ident { name: sym::or, span }, IdentIsRaw::No)) if self.may_recover() => {
                 self.dcx().emit_err(diagnostics::InvalidLogicalOperator {
                     span: self.token.span,
                     incorrect: "or".into(),
                     sub: diagnostics::InvalidLogicalOperatorSub::Disjunction(self.token.span),
                 });
-                (AssocOp::Binary(BinOpKind::Or), span)
+                Some(respan(span, AssocOp::Binary(BinOpKind::Or)))
             }
-            _ => return None,
-        };
-        Some(respan(span, op))
+            _ => None,
+        }
     }
 
     /// Checks if this expression is a successfully parsed statement.

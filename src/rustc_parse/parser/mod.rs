@@ -1001,6 +1001,9 @@ impl<'a> Parser<'a> {
         closes_expected: &[ExpTokenPair],
         closes_not_expected: &[&TokenKind],
     ) -> bool {
+        if let [close] = closes_expected {
+            return self.check(*close) || closes_not_expected.iter().any(|k| self.check_noexpect(k));
+        }
         closes_expected.iter().any(|&close| self.check(close))
             || closes_not_expected.iter().any(|k| self.check_noexpect(k))
     }
