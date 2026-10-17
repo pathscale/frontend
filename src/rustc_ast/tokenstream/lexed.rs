@@ -4,17 +4,42 @@
 //! token here is built from the file's arrays alone: no source text is read and nothing is
 //! interned. Spans are the token's offsets plus the file's position in the source map.
 
-use frontend_lex::{Kind, LexedFile};
+use frontend_lex::{Kind, Token as LexedToken};
 
 use super::Spacing;
 use crate::rustc_ast::ast::AttrStyle;
-use crate::rustc_ast::token::{self, CommentKind, IdentIsRaw, Token, TokenKind};
+use crate::rustc_ast::token::{self, CommentKind, IdentIsRaw, Token};
 use crate::rustc_span::{BytePos, DUMMY_SP, Span, Symbol};
 
-/// The parser's kind for a token with no payload, or `None` for one that carries a symbol.
 #[inline]
-pub(crate) fn simple_kind(kind: Kind) -> Option<TokenKind> {
-    Some(match kind {
+pub(crate) fn spacing(spacing: frontend_lex::Spacing) -> Spacing {
+    match spacing {
+        frontend_lex::Spacing::Alone => Spacing::Alone,
+        frontend_lex::Spacing::Joint => Spacing::Joint,
+        frontend_lex::Spacing::JointHidden => Spacing::JointHidden,
+    }
+}
+
+/// The span of `lo..hi` in a file that starts at `base`.
+#[inline]
+pub(crate) fn span(base: BytePos, lo: u32, hi: u32) -> Span {
+    Span::with_root_ctxt(base + BytePos(lo), base + BytePos(hi))
+}
+
+/// Decode one borrowed lexer token. `index` is used only for the optional suffix lookup.
+#[inline(always)]
+pub(crate) fn token(
+    t: &LexedToken,
+    base: BytePos,
+    suffixes: &[(u32, Symbol)],
+    index: u32,
+) -> (Token, Spacing) {
+    let spacing = spacing(t.spacing());
+    if t.kind == Kind::Eof {
+        return (Token::new(token::Eof, DUMMY_SP), spacing);
+    }
+    let span = span(base, t.lo, t.hi);
+    let kind = match t.kind {
         Kind::Eq => token::Eq,
         Kind::Lt => token::Lt,
         Kind::Le => token::Le,
@@ -67,65 +92,75 @@ pub(crate) fn simple_kind(kind: Kind) -> Option<TokenKind> {
         Kind::CloseBrace => token::CloseBrace,
         Kind::OpenBracket => token::OpenBracket,
         Kind::CloseBracket => token::CloseBracket,
-        Kind::Eof => token::Eof,
-        _ => return None,
-    })
-}
-
-#[inline]
-pub(crate) fn spacing(spacing: frontend_lex::Spacing) -> Spacing {
-    match spacing {
-        frontend_lex::Spacing::Alone => Spacing::Alone,
-        frontend_lex::Spacing::Joint => Spacing::Joint,
-        frontend_lex::Spacing::JointHidden => Spacing::JointHidden,
-    }
-}
-
-/// The span of `lo..hi` in a file that starts at `base`.
-#[inline]
-pub(crate) fn span(base: BytePos, lo: u32, hi: u32) -> Span {
-    Span::with_root_ctxt(base + BytePos(lo), base + BytePos(hi))
-}
-
-/// Token `index` of `file`, as the parser reads it, for a file that starts at `base`.
-#[inline]
-pub(crate) fn token(file: &LexedFile, base: BytePos, index: usize) -> (Token, Spacing) {
-    let t = &file.tokens[index];
-    let spacing = spacing(t.spacing());
-    if t.kind == Kind::Eof {
-        return (Token::new(token::Eof, DUMMY_SP), spacing);
-    }
-    let span = span(base, t.lo, t.hi);
-    if let Some(simple) = simple_kind(t.kind) {
-        return (Token::new(simple, span), spacing);
-    }
-    let symbol = Symbol::new(t.data);
-    let kind = match t.kind {
-        Kind::Ident => {
-            token::Ident(symbol, if t.is_raw() { IdentIsRaw::Yes } else { IdentIsRaw::No })
-        }
-        Kind::Lifetime => token::Lifetime(symbol, IdentIsRaw::No),
+        Kind::Ident => token::Ident(
+            Symbol::new(t.data),
+            if t.is_raw() { IdentIsRaw::Yes } else { IdentIsRaw::No },
+        ),
+        Kind::Lifetime => token::Lifetime(Symbol::new(t.data), IdentIsRaw::No),
         Kind::LineDoc | Kind::BlockDoc => token::DocComment(
             if t.kind == Kind::LineDoc { CommentKind::Line } else { CommentKind::Block },
             if t.aux == 1 { AttrStyle::Inner } else { AttrStyle::Outer },
-            symbol,
+            Symbol::new(t.data),
         ),
-        literal => {
-            let kind = match literal {
-                Kind::Integer => token::Integer,
-                Kind::Float => token::Float,
-                Kind::Char => token::Char,
-                Kind::Byte => token::Byte,
-                Kind::Str => token::Str,
-                Kind::ByteStr => token::ByteStr,
-                Kind::CStr => token::CStr,
-                Kind::StrRaw => token::StrRaw(t.aux),
-                Kind::ByteStrRaw => token::ByteStrRaw(t.aux),
-                Kind::CStrRaw => token::CStrRaw(t.aux),
-                other => unreachable!("{other:?} has a simple kind"),
-            };
-            token::Literal(token::Lit::new(kind, symbol, file.suffix(index as u32)))
-        }
+        Kind::Integer => token::Literal(token::Lit::new(
+            token::Integer,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::Float => token::Literal(token::Lit::new(
+            token::Float,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::Char => token::Literal(token::Lit::new(
+            token::Char,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::Byte => token::Literal(token::Lit::new(
+            token::Byte,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::Str => token::Literal(token::Lit::new(
+            token::Str,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::ByteStr => token::Literal(token::Lit::new(
+            token::ByteStr,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::CStr => token::Literal(token::Lit::new(
+            token::CStr,
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::StrRaw => token::Literal(token::Lit::new(
+            token::StrRaw(t.aux),
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::ByteStrRaw => token::Literal(token::Lit::new(
+            token::ByteStrRaw(t.aux),
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::CStrRaw => token::Literal(token::Lit::new(
+            token::CStrRaw(t.aux),
+            Symbol::new(t.data),
+            suffix(t, suffixes, index),
+        )),
+        Kind::Eof => unreachable!("EOF handled before span construction"),
     };
     (Token::new(kind, span), spacing)
+}
+
+#[inline(always)]
+fn suffix(t: &LexedToken, suffixes: &[(u32, Symbol)], index: u32) -> Option<Symbol> {
+    if !t.has_suffix() {
+        return None;
+    }
+    suffixes.binary_search_by_key(&index, |&(i, _)| i).ok().map(|at| suffixes[at].1)
 }

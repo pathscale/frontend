@@ -90,6 +90,92 @@ impl TokenCursor {
         }
     }
 
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn cut_tokens(&self) -> &[u32] {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor.tape().cut_tokens(),
+            Cursor::Flat(_) | Cursor::Trees(_) => &[],
+        }
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn cut_attrs(&self) -> &[u32] {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor.tape().cut_attrs(),
+            Cursor::Flat(_) | Cursor::Trees(_) => &[],
+        }
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn next_index(&self) -> Option<u32> {
+        match &self.inner {
+            Cursor::Source(cursor) => Some(cursor.next_index()),
+            Cursor::Flat(_) | Cursor::Trees(_) => None,
+        }
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn at_file_depth_zero(&self) -> bool {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor.at_file_depth_zero(),
+            Cursor::Flat(_) | Cursor::Trees(_) => false,
+        }
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn eof_index(&self) -> Option<u32> {
+        match &self.inner {
+            Cursor::Source(cursor) => Some(cursor.eof_index()),
+            Cursor::Flat(_) | Cursor::Trees(_) => None,
+        }
+    }
+
+    #[cfg(any(feature = "parallel", test))]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn detached_for_range(&self, start: u32, end: u32) -> Option<Self> {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor
+                .detached_for_range(start, end)
+                .map(|cursor| Self { inner: Cursor::Source(cursor) }),
+            Cursor::Flat(_) | Cursor::Trees(_) => None,
+        }
+    }
+
+    #[cfg(any(feature = "parallel", test))]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn jump_to(&mut self, index: u32) -> bool {
+        match &mut self.inner {
+            Cursor::Source(cursor) => cursor.jump_to(index),
+            Cursor::Flat(_) | Cursor::Trees(_) => false,
+        }
+    }
+
     pub(crate) fn lexed_tape(&self) -> Option<&Arc<LexedTape>> {
         match &self.inner {
             Cursor::Source(cursor) => Some(cursor.tape()),
@@ -199,6 +285,7 @@ impl TokenCursor {
         }
     }
 
+    #[inline(always)]
     pub fn next_and_bump(&mut self) -> (Token, Spacing) {
         self.inlined_next_and_bump_reusing(&mut FrameSpare::default())
     }

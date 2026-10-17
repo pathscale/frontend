@@ -426,6 +426,255 @@ fn w4_tape_deduplicates_repeated_unknown_symbols_and_glues_punct() {
 }
 
 #[test]
+fn p4_source_tokens_spans_equal_diagnostic_lexer() {
+    use super::TokenCursor;
+    use crate::rustc_ast::token;
+    use crate::rustc_parse::lexer::{self, StripTokens};
+    use crate::rustc_session::parse::ParseSess;
+    use crate::rustc_span::{BytePos, edition};
+
+    for &edition in edition::ALL_EDITIONS {
+        crate::rustc_span::create_session_globals_then(edition, &[], None, || {
+            // Covers every punctuation token, adjacency and whitespace/comment spacing, nested
+            // delimiter kinds, normalized and raw identifiers, lifetimes, literal payloads and docs.
+            let source = concat!(
+                "//! inner docs\n",
+                "/// outer docs\n",
+                "fn r#type_name<'a>(x: e\u{301}, y: 'a) {\n",
+                "  let _ = ([{()}]); (x+y)-z * q / r % s ^ t & u | v && w || !n ~m;\n",
+                "  a==b != c <= d >= e < f > g << h >> i += j -= k *= l /= m %= n ^= o &= p |= q <<= r >>= s;\n",
+                "  @ . .. ... ..= , ; : :: -> <- => # $ ?\n",
+                "  1u8 2.0f32 'x' b'y' \"str\" b\"bytes\" c\"cstr\" r#\"raw\"# br##\"bytes\"## cr\"craw\" cr##\"craw\"##\n",
+                "  3suffix 4.5suffix 'z'suffix b'a'suffix \"s\"suffix b\"s\"bsuffix c\"s\"csuffix r##\"r\"##suffix br\"r\"bsuffix cr\"r\"csuffix\n",
+                "  // line comment spacing\n",
+                "  /* block comment spacing */ value\n",
+                "}\n",
+            );
+            // C string literals are admitted only from edition 2021 onward.
+            let source = if edition < edition::Edition::Edition2021 {
+                source
+                    .replace(" c\"cstr\"", "")
+                    .replace(" cr\"craw\" cr##\"craw\"##", "")
+                    .replace(" c\"s\"csuffix", "")
+                    .replace(" cr\"r\"csuffix", "")
+            } else {
+                alloc::string::String::from(source)
+            };
+            let source = source.as_str();
+            let owner = alloc::sync::Arc::new(alloc::string::String::from(source));
+            let psess = ParseSess::new();
+
+            let tape = super::lexed_tape::LexedTape::build(
+                owner.clone(),
+                BytePos(100),
+                0,
+                crate::rustc_lexer::FrontmatterAllowed::No,
+                edition,
+            )
+            .expect("the complete fixture must be admitted by the indexed lexer");
+            let eager = lexer::lex_token_trees(
+                &psess,
+                source,
+                Some(&owner),
+                BytePos(100),
+                None,
+                StripTokens::Nothing,
+            )
+            .expect("the diagnostic lexer must accept the same fixture");
+            let mut parser_source = crate::rustc_parse::parser::Parser::new_with_cursor(
+                &psess,
+                TokenCursor::from_lexed_tape(tape.clone()),
+                None,
+            );
+            let mut parser_trees =
+                crate::rustc_parse::parser::Parser::new(&psess, eager.clone(), None);
+            while parser_source.token.kind != token::Eof {
+                assert_eq!(parser_source.token, parser_trees.token);
+                parser_source.bump();
+                parser_trees.bump();
+            }
+            // Parser::bump turns raw cursor EOF's dummy span into the previous token's span.
+            assert_eq!(parser_source.token, parser_trees.token);
+            parser_source.bump();
+            parser_trees.bump();
+            assert_eq!(parser_source.token, parser_trees.token);
+
+            let mut source_cursor = TokenCursor::from_lexed_tape(tape.clone());
+            let mut tree_cursor = TokenCursor::new(eager);
+            let mut token_index = 0usize;
+
+            loop {
+                for distance in [1, 2, 8, usize::MAX] {
+                    let source_token = source_cursor.look_ahead_token(distance).unwrap();
+                    // The tree oracle walks one step per requested distance, even past EOF.
+                    // Clamp its walk after the whole tape while testing the source overflow path.
+                    let tree_token =
+                        tree_cursor.look_ahead_token(distance.min(tape.token_count() + 1)).unwrap();
+                    assert_eq!(source_token, tree_token, "lookahead {distance} at {token_index}");
+                }
+                let source_snapshot = source_cursor.clone();
+                let tree_snapshot = tree_cursor.clone();
+                let actual = source_cursor.next_and_bump();
+                let expected = tree_cursor.next_and_bump();
+                assert_eq!(actual.0.kind, expected.0.kind, "kind at {token_index}");
+                assert_eq!(actual.1, expected.1, "spacing at {token_index}");
+                assert_eq!(actual.0.span, expected.0.span, "encoded span at {token_index}");
+                assert_eq!(actual.0.span.lo(), expected.0.span.lo());
+                assert_eq!(actual.0.span.hi(), expected.0.span.hi());
+                assert_eq!(actual.0.span.ctxt(), expected.0.span.ctxt());
+                assert_eq!(actual.0.span.parent(), expected.0.span.parent());
+
+                let mut replay_source = source_snapshot;
+                let mut replay_tree = tree_snapshot;
+                assert_eq!(replay_source.next_and_bump(), actual);
+                assert_eq!(replay_tree.next_and_bump(), expected);
+
+                if actual.0.kind == token::Eof {
+                    // Raw cursors return their EOF directly with the full-file dummy span.
+                    assert_eq!(actual.0.span, DUMMY_SP);
+                    assert_eq!(expected.0.span, DUMMY_SP);
+                    assert_eq!(source_cursor.next_and_bump().0.span, DUMMY_SP);
+                    assert_eq!(tree_cursor.next_and_bump().0.span, DUMMY_SP);
+                    break;
+                }
+                token_index += 1;
+            }
+
+            // Each admitted group can be detached at its opening; it returns that group's
+            // close once, then repeats EOF at the same close span without exposing its parent.
+            for group_index in 0..tape.groups().len() {
+                let group = tape.groups()[group_index];
+                let mut cursor = TokenCursor::from_lexed_tape(tape.clone());
+                for _ in 0..=group.open {
+                    cursor.next_and_bump();
+                }
+                let mut detached = cursor.detached_for_group(group_index as u32).unwrap();
+                assert_eq!(detached.depth(), group.depth as usize);
+                assert!(detached.parent_delim_and_span().is_some());
+                detached.bump_to_end();
+                let close = detached.next_and_bump().0;
+                assert_eq!(
+                    close.kind,
+                    match group.delim {
+                        frontend_lex::Delimiter::Parenthesis => token::CloseParen,
+                        frontend_lex::Delimiter::Brace => token::CloseBrace,
+                        frontend_lex::Delimiter::Bracket => token::CloseBracket,
+                    }
+                );
+                assert_eq!(close.span, tape.token_span(group.close as usize));
+                assert_eq!(detached.depth(), 0);
+                assert!(detached.parent_delim_and_span().is_none());
+                for _ in 0..2 {
+                    let eof = detached.next_and_bump().0;
+                    assert_eq!(eof.kind, token::Eof);
+                    assert_eq!(eof.span, close.span);
+                }
+            }
+        });
+    }
+
+    crate::rustc_span::create_default_session_globals_then(|| {
+        let empty = super::lexed_tape::LexedTape::build(
+            alloc::sync::Arc::new(alloc::string::String::new()),
+            BytePos(100),
+            0,
+            crate::rustc_lexer::FrontmatterAllowed::No,
+            edition::Edition::Edition2024,
+        )
+        .expect("empty source must be admitted");
+        assert_eq!(TokenCursor::from_lexed_tape(empty).next_and_bump().0.span, DUMMY_SP);
+
+        let shebang = alloc::sync::Arc::new(alloc::string::String::from(
+            "#!/usr/bin/env rustx\nfn main() {}",
+        ));
+        let shebang_begin = crate::rustc_lexer::strip_shebang(&shebang).unwrap() as u32;
+        assert_eq!(frontend_lex::shebang_len(&shebang), Some(shebang_begin as usize));
+        super::lexed_tape::LexedTape::build(
+            shebang,
+            BytePos(100),
+            shebang_begin,
+            crate::rustc_lexer::FrontmatterAllowed::No,
+            edition::Edition::Edition2024,
+        )
+        .expect("shebang source must be admitted after its prefix");
+
+        let long_literal = alloc::format!("\"{}\"", "x".repeat(0x8000));
+        let long_tape = super::lexed_tape::LexedTape::build(
+            alloc::sync::Arc::new(long_literal),
+            BytePos(100),
+            0,
+            crate::rustc_lexer::FrontmatterAllowed::No,
+            edition::Edition::Edition2024,
+        )
+        .expect("long literal must be admitted");
+        let long_span = long_tape.materialize_token(0).0.span;
+        assert!(long_span.hi().0 - long_span.lo().0 > 0x7ffe);
+        assert_ne!(long_span, DUMMY_SP);
+    });
+}
+
+#[test]
+fn s3_range_cursor_reads_a_depth_zero_segment_then_eof() {
+    use super::TokenCursor;
+    use crate::rustc_ast::token;
+
+    crate::rustc_span::create_default_session_globals_then(|| {
+        let tape = r24_tape("head; { nested } tail;");
+        let mut original = TokenCursor::from_lexed_tape(tape.clone());
+        assert!(original.at_file_depth_zero());
+        assert_eq!(
+            original.next_and_bump().0.kind,
+            token::Ident(
+                crate::rustc_span::Symbol::intern("head"),
+                crate::rustc_ast::token::IdentIsRaw::No,
+            )
+        );
+        assert_eq!(original.next_and_bump().0.kind, token::Semi);
+        assert_eq!(original.next_index(), Some(2));
+        assert!(original.at_file_depth_zero());
+
+        let mut segment = original.detached_for_range(1, 5).expect("balanced item segment");
+        assert_eq!(segment.eof_index(), Some(5));
+        assert!(!segment.jump_to(0));
+        assert_eq!(segment.next_and_bump().0.kind, token::OpenBrace);
+        assert_eq!(segment.depth(), 1);
+        assert!(segment.look_ahead_token(8).unwrap().kind == token::Eof);
+        let close_span = tape.materialize_token(4).0.span;
+        assert_eq!(
+            segment.next_and_bump().0.kind,
+            token::Ident(
+                crate::rustc_span::Symbol::intern("nested"),
+                crate::rustc_ast::token::IdentIsRaw::No,
+            )
+        );
+        let close = segment.next_and_bump().0;
+        assert_eq!(close.kind, token::CloseBrace);
+        assert_eq!(close.span, close_span);
+        assert_eq!(segment.depth(), 0);
+        assert!(segment.at_file_depth_zero());
+        for _ in 0..2 {
+            let (eof, spacing) = segment.next_and_bump();
+            assert_eq!(eof.kind, token::Eof);
+            assert_eq!(eof.span, close_span);
+            assert_eq!(spacing, super::Spacing::Alone);
+        }
+
+        let mut jump = original.clone();
+        assert!(jump.jump_to(4));
+        assert_eq!(jump.depth(), 1);
+        assert!(!jump.at_file_depth_zero());
+        assert_eq!(jump.next_and_bump().0.kind, token::CloseBrace);
+        assert!(jump.at_file_depth_zero());
+        assert!(!jump.jump_to(tape.eof_index() + 1));
+
+        assert!(original.detached_for_range(1, 4).is_none());
+        assert!(original.detached_for_range(2, 5).is_none());
+        assert!(original.detached_for_range(1, tape.eof_index() + 1).is_none());
+        assert_eq!(original.next_and_bump().0.kind, token::OpenBrace);
+    });
+}
+
+#[test]
 fn arena_vec_bulk_moves_preserve_ownership() {
     arena_bulk_moves::bulk_moves_preserve_ownership_and_scratch_prefix();
 }

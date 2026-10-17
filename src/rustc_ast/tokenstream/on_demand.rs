@@ -32,6 +32,7 @@ pub(crate) struct OnDemandCursor {
     end_idx: u32,
     enclosing: u32,
     end_group: u32,
+    range_eof: Option<(u32, Span)>,
 }
 
 impl OnDemandCursor {
@@ -46,9 +47,8 @@ impl OnDemandCursor {
     }
 
     pub(crate) fn from_tape(tape: Arc<LexedTape>) -> Self {
-        let end_idx = u32::try_from(tape.token_count().checked_sub(1).expect("tape has EOF"))
-            .expect("tape index fits u32");
-        Self { tape, idx: 0, end_idx, enclosing: NO_GROUP, end_group: NO_GROUP }
+        let end_idx = tape.eof_index();
+        Self { tape, idx: 0, end_idx, enclosing: NO_GROUP, end_group: NO_GROUP, range_eof: None }
     }
 
     pub(crate) fn tape(&self) -> &Arc<LexedTape> {
@@ -63,18 +63,56 @@ impl OnDemandCursor {
         self.tape.depth_zero_cuts()
     }
 
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn next_index(&self) -> u32 {
+        self.idx
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn eof_index(&self) -> u32 {
+        self.end_idx
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn at_file_depth_zero(&self) -> bool {
+        self.end_group == NO_GROUP && self.enclosing == NO_GROUP
+    }
+
+    #[cold]
+    #[inline(never)]
     fn eof(&self) -> (Token, Spacing) {
-        let span = self.tape.group(self.end_group).map_or_else(
-            || self.tape.eof_span(),
-            |group| self.tape.token_span(group.close as usize),
-        );
+        let span = self.range_eof.map(|(_, span)| span).unwrap_or_else(|| {
+            self.tape.group(self.end_group).map_or_else(
+                || self.tape.eof_span(),
+                |group| self.tape.token_span(group.close as usize),
+            )
+        });
         (Token::new(token::Eof, span), Spacing::Alone)
     }
 
+    #[inline]
     fn read(&self, idx: u32) -> (Token, Spacing) {
-        if idx >= self.end_idx { self.eof() } else { self.tape.materialize_token(idx as usize) }
+        if idx >= self.end_idx {
+            self.eof()
+        } else {
+            let index = idx as usize;
+            self.tape.materialize_token(index)
+        }
     }
 
+    #[inline]
     fn kind(&self) -> Kind {
         if self.idx >= self.end_idx { Kind::Eof } else { self.tape.kind(self.idx as usize) }
     }
@@ -91,20 +129,24 @@ impl OnDemandCursor {
         Some(group)
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn next_and_bump(&mut self) -> (Token, Spacing) {
-        let result = self.read(self.idx);
-        if self.idx < self.end_idx {
-            let kind = self.tape.kind(self.idx as usize);
-            if kind.is_open_delim() {
-                self.enclosing = self.tape.token_group(self.idx as usize);
-            } else if kind.is_close_delim() {
-                let group_idx = self.tape.token_group(self.idx as usize);
-                self.enclosing =
-                    self.tape.group(group_idx).expect("indexed closing delimiter").parent;
-            }
-            self.idx += 1;
+        if self.idx >= self.end_idx {
+            return self.eof();
         }
+        let index = self.idx as usize;
+        let t = self.tape.token(index);
+        let result = self.tape.decode_token(t, index);
+        match t.kind {
+            Kind::OpenParen | Kind::OpenBrace | Kind::OpenBracket => {
+                self.enclosing = t.data;
+            }
+            Kind::CloseParen | Kind::CloseBrace | Kind::CloseBracket => {
+                self.enclosing = self.tape.group(t.data).expect("indexed closing delimiter").parent;
+            }
+            _ => {}
+        }
+        self.idx += 1;
         result
     }
 
@@ -254,6 +296,72 @@ impl OnDemandCursor {
             end_idx,
             enclosing: self.enclosing,
             end_group: group_idx,
+            range_eof: None,
         })
+    }
+
+    /// Detach a balanced depth-zero segment `[start, end)`. The cursor's current
+    /// token is `start`, so its next-token index must be `start + 1`.
+    #[cfg(any(feature = "parallel", test))]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn detached_for_range(&self, start: u32, end: u32) -> Option<Self> {
+        if self.end_group != NO_GROUP
+            || self.enclosing != NO_GROUP
+            || start.checked_add(1) != Some(self.idx)
+            || start >= end
+            || end > self.end_idx
+            || !self.is_file_depth_zero_boundary(start)
+            || !self.is_file_depth_zero_boundary(end)
+        {
+            return None;
+        }
+        let eof_span = self.tape.token_span(end.checked_sub(1)? as usize);
+        Some(Self {
+            tape: self.tape.clone(),
+            idx: self.idx,
+            end_idx: end,
+            enclosing: NO_GROUP,
+            end_group: NO_GROUP,
+            range_eof: Some((start, eof_span)),
+        })
+    }
+
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    fn is_file_depth_zero_boundary(&self, index: u32) -> bool {
+        self.tape.groups().iter().all(|group| !(group.open < index && index <= group.close))
+    }
+
+    /// Move to the token at `index`, rebuilding the group containing that token.
+    #[cfg(any(feature = "parallel", test))]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn jump_to(&mut self, index: u32) -> bool {
+        if index > self.end_idx || self.range_eof.is_some_and(|(start, _)| index < start) {
+            return false;
+        }
+        if self.end_group != NO_GROUP {
+            let Some(bound) = self.tape.group(self.end_group) else { return false };
+            if index < bound.open + 1 || index > bound.close + 1 {
+                return false;
+            }
+        }
+        self.idx = index;
+        self.enclosing = self
+            .tape
+            .groups()
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| group.open < index && index <= group.close)
+            .max_by_key(|(_, group)| group.depth)
+            .map_or(NO_GROUP, |(group_idx, _)| group_idx as u32);
+        true
     }
 }

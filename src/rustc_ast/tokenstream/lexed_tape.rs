@@ -105,8 +105,19 @@ impl LexedTape {
         LexedTape { file, base, raw_identifier_spans }
     }
 
+    #[cfg(test)]
     pub(crate) fn token_count(&self) -> usize {
         self.file.tokens.len()
+    }
+
+    #[inline]
+    pub(crate) fn tokens(&self) -> &[frontend_lex::Token] {
+        &self.file.tokens
+    }
+
+    #[inline]
+    pub(crate) fn eof_index(&self) -> u32 {
+        u32::try_from(self.file.tokens.len() - 1).expect("tape index fits u32")
     }
 
     pub(crate) fn eof_span(&self) -> Span {
@@ -116,6 +127,11 @@ impl LexedTape {
     #[inline]
     pub(crate) fn kind(&self, idx: usize) -> Kind {
         self.file.tokens[idx].kind
+    }
+
+    #[inline(always)]
+    pub(crate) fn token(&self, idx: usize) -> &frontend_lex::Token {
+        &self.tokens()[idx]
     }
 
     /// The group a delimiter opens or closes, or `NO_GROUP` for any other token.
@@ -130,7 +146,7 @@ impl LexedTape {
         self.file.groups.get(group_idx as usize)
     }
 
-    #[cfg(test)]
+    #[inline]
     pub(crate) fn groups(&self) -> &[Group] {
         &self.file.groups
     }
@@ -140,9 +156,15 @@ impl LexedTape {
         if t.kind == Kind::Eof { self.eof_span() } else { lexed::span(self.base, t.lo, t.hi) }
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn materialize_token(&self, idx: usize) -> (Token, Spacing) {
-        lexed::token(&self.file, self.base, idx)
+        let t = self.token(idx);
+        self.decode_token(t, idx)
+    }
+
+    #[inline(always)]
+    pub(crate) fn decode_token(&self, t: &frontend_lex::Token, idx: usize) -> (Token, Spacing) {
+        lexed::token(t, self.base, &self.file.suffixes, idx as u32)
     }
 
     /// Offsets of every `\n` the lexer met, in order: the file's line table, if no shebang
@@ -154,6 +176,24 @@ impl LexedTape {
     /// End offsets of the top-level `;` and `}` tokens: where top-level items can end.
     pub(crate) fn depth_zero_cuts(&self) -> &[u32] {
         &self.file.item_cuts
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn cut_tokens(&self) -> &[u32] {
+        &self.file.cut_tokens
+    }
+
+    #[inline]
+    #[allow(
+        dead_code,
+        reason = "depth-zero item task cursor API retained for the next parser stage"
+    )]
+    pub(crate) fn cut_attrs(&self) -> &[u32] {
+        &self.file.cut_attrs
     }
 
     pub(crate) fn raw_identifier_spans(&self) -> &[Span] {
