@@ -5,11 +5,11 @@ use alloc::vec::Vec;
 use core::iter::once;
 use eko::path::{self, Path, PathBuf};
 
-use crate::rustc_ast::{AttrVec, Attribute, Inline, Item, ModSpans};
+use crate::rustc_ast::{ast, AttrVec, Attribute, Inline, Item, ModSpans};
 use crate::rustc_attr_parsing::validate_attr::emit_malformed_attribute;
 use crate::rustc_errors::{Diag, ErrorGuaranteed};
 use crate::rustc_parse::lexer::StripTokens;
-use crate::rustc_parse::{exp, new_parser_from_file, unwrap_or_emit_fatal};
+use crate::rustc_parse::{new_parser_from_file, unwrap_or_emit_fatal};
 use crate::rustc_session::Session;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::fatal_error::FatalError;
@@ -84,10 +84,10 @@ pub(crate) fn parse_external_mod(
             StripTokens::ShebangAndFrontmatter,
             Some(span),
         ));
-        let (inner_attrs, items, inner_span) =
-            parser.parse_mod(exp!(Eof)).map_err(ModError::ParserError)?;
+        let krate = parser.parse_crate_mod().map_err(ModError::ParserError)?;
+        let ast::Crate { attrs: inner_attrs, items, spans, .. } = krate;
         attrs.extend(inner_attrs);
-        Ok((items, inner_span, mp.file_path))
+        Ok((items, spans, mp.file_path))
     })();
 
     // (1) ...instead, we return a dummy module.

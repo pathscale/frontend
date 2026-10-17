@@ -3757,7 +3757,8 @@ impl<'a, 'ast, 'ra, 'tcx> LateResolutionVisitor<'a, 'ast, 'ra, 'tcx> {
         let mut new_val = None;
         let mut new_id = None;
         if let Some(trait_ref) = opt_trait_ref {
-            let path: Vec<_> = Segment::from_path(&trait_ref.path);
+            let path: SmallVec<[Segment; 4]> =
+                trait_ref.path.segments.iter().map(Segment::from).collect();
             self.diag_metadata.currently_processing_impl_trait =
                 Some((trait_ref.clone(), self_type.clone()));
             let res = self.smart_resolve_path_fragment(

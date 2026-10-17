@@ -618,7 +618,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         // This particular use tree
         use_tree: &ast::UseTree,
         id: NodeId,
-        parent_prefix: &[Segment],
+        prefix: &mut Vec<Segment>,
         nested: bool,
         list_stem: bool,
         // The whole `use` item
@@ -628,8 +628,8 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         feed: TyCtxtFeed<'tcx, LocalDefId>,
     ) {
         debug!(
-            "build_reduced_graph_for_use_tree(parent_prefix={:?}, use_tree={:?}, nested={})",
-            parent_prefix, use_tree, nested
+            "build_reduced_graph_for_use_tree(prefix={:?}, use_tree={:?}, nested={})",
+            prefix, use_tree, nested
         );
 
         // Top level use tree reuses the item's id and list stems reuse their parent
@@ -638,17 +638,14 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             self.r.feed_visibility(feed, vis);
         }
 
-        let mut prefix_iter = parent_prefix
-            .iter()
-            .cloned()
-            .chain(use_tree.prefix.segments.iter().map(|seg| seg.into()))
-            .peekable();
+        let prefix_start = prefix.len();
+        prefix.extend(use_tree.prefix.segments.iter().map(Segment::from));
 
         // On 2015 edition imports are resolved as crate-relative by default,
         // so prefixes are prepended with crate root segment if necessary.
         // The root is prepended lazily, when the first non-empty prefix or terminating glob
         // appears, so imports in braced groups can have roots prepended independently.
-        let crate_root = match prefix_iter.peek() {
+        let crate_root = match prefix.first() {
             Some(seg) if !seg.ident.is_path_segment_keyword() && seg.ident.span.is_rust_2015() => {
                 Some(seg.ident.span.ctxt())
             }
@@ -666,163 +663,199 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             ))
         });
 
-        let prefix = crate_root.into_iter().chain(prefix_iter).collect::<Vec<_>>();
+        let prepended_crate_root = crate_root.is_some();
+        if let Some(crate_root) = crate_root {
+            prefix.insert(0, crate_root);
+        }
         debug!("build_reduced_graph_for_use_tree: prefix={:?}", prefix);
 
-        match use_tree.kind {
-            ast::UseTreeKind::Simple(rename) => {
-                let mut module_path = prefix;
-                let source = module_path.pop().unwrap();
+        let result = (|| {
+            match use_tree.kind {
+                ast::UseTreeKind::Simple(rename) => {
+                    let mut module_path = prefix.clone();
+                    let source = module_path.pop().unwrap();
 
-                // If the identifier is `self` without a rename,
-                // then it is replaced with the parent identifier.
-                let ident = if source.ident.name == kw::SelfLower
-                    && rename.is_none()
-                    && let Some(parent) = module_path.last()
-                {
-                    Ident::new(parent.ident.name, source.ident.span)
-                } else {
-                    use_tree.ident()
-                };
+                    // If the identifier is `self` without a rename,
+                    // then it is replaced with the parent identifier.
+                    let ident = if source.ident.name == kw::SelfLower
+                        && rename.is_none()
+                        && let Some(parent) = module_path.last()
+                    {
+                        Ident::new(parent.ident.name, source.ident.span)
+                    } else {
+                        use_tree.ident()
+                    };
 
-                match source.ident.name {
-                    kw::DollarCrate => {
-                        if !module_path.is_empty() {
-                            self.r.dcx().span_err(
-                                source.ident.span,
-                                "`$crate` in paths can only be used in start position",
-                            );
-                            return;
+                    match source.ident.name {
+                        kw::DollarCrate => {
+                            if !module_path.is_empty() {
+                                self.r.dcx().span_err(
+                                    source.ident.span,
+                                    "`$crate` in paths can only be used in start position",
+                                );
+                                return;
+                            }
                         }
-                    }
-                    kw::Crate => {
-                        if !module_path.is_empty() {
-                            self.r.dcx().span_err(
-                                source.ident.span,
-                                "`crate` in paths can only be used in start position",
-                            );
-                            return;
+                        kw::Crate => {
+                            if !module_path.is_empty() {
+                                self.r.dcx().span_err(
+                                    source.ident.span,
+                                    "`crate` in paths can only be used in start position",
+                                );
+                                return;
+                            }
                         }
-                    }
-                    kw::Super => {
-                        // Allow `self::super` as a valid prefix - `self` at position 0
-                        // followed by any number of `super` segments.
-                        let valid_prefix = module_path.iter().enumerate().all(|(i, seg)| {
-                            let name = seg.ident.name;
-                            name == kw::Super || (name == kw::SelfLower && i == 0)
-                        });
+                        kw::Super => {
+                            // Allow `self::super` as a valid prefix - `self` at position 0
+                            // followed by any number of `super` segments.
+                            let valid_prefix = module_path.iter().enumerate().all(|(i, seg)| {
+                                let name = seg.ident.name;
+                                name == kw::Super || (name == kw::SelfLower && i == 0)
+                            });
 
-                        if !valid_prefix {
-                            self.r.dcx().span_err(
+                            if !valid_prefix {
+                                self.r.dcx().span_err(
                                 source.ident.span,
                                 "`super` in paths can only be used in start position, after `self`, or after another `super`",
                             );
+                                return;
+                            }
+                        }
+                        // Deny `use ::{self};` after edition 2015
+                        kw::SelfLower
+                            if let Some(parent) = module_path.last()
+                                && parent.ident.name == kw::PathRoot
+                                && !self.r.path_root_is_crate_root(parent.ident) =>
+                        {
+                            self.r
+                                .dcx()
+                                .span_err(use_tree.span(), "extern prelude cannot be imported");
                             return;
                         }
+                        _ => (),
                     }
-                    // Deny `use ::{self};` after edition 2015
-                    kw::SelfLower
-                        if let Some(parent) = module_path.last()
-                            && parent.ident.name == kw::PathRoot
-                            && !self.r.path_root_is_crate_root(parent.ident) =>
+
+                    // Deny `use ...::self::source [as target];` or `use ...::self::self [as target];`,
+                    // but allow `use self::source [as target];` and `use self::self as target;`.
+                    if let Some(parent) = module_path.last()
+                        && parent.ident.name == kw::SelfLower
+                        && module_path.len() > 1
                     {
-                        self.r.dcx().span_err(use_tree.span(), "extern prelude cannot be imported");
+                        self.r.dcx().span_err(
+                            parent.ident.span,
+                            "`self` in paths can only be used in start position or last position",
+                        );
                         return;
                     }
-                    _ => (),
-                }
 
-                // Deny `use ...::self::source [as target];` or `use ...::self::self [as target];`,
-                // but allow `use self::source [as target];` and `use self::self as target;`.
-                if let Some(parent) = module_path.last()
-                    && parent.ident.name == kw::SelfLower
-                    && module_path.len() > 1
-                {
-                    self.r.dcx().span_err(
-                        parent.ident.span,
-                        "`self` in paths can only be used in start position or last position",
+                    // Deny importing path-kw without renaming
+                    if rename.is_none() && ident.is_path_segment_keyword() {
+                        let ident = use_tree.ident();
+                        self.r.dcx().emit_err(diagnostics::UnnamedImport {
+                            span: ident.span,
+                            sugg: diagnostics::UnnamedImportSugg { span: ident.span, ident },
+                        });
+                        return;
+                    }
+
+                    let kind = ImportKind::Single {
+                        source: source.ident,
+                        target: ident,
+                        decls: Default::default(),
+                        nested,
+                        id,
+                        def_id: feed.def_id(),
+                    };
+
+                    self.add_import(
+                        module_path,
+                        kind,
+                        use_tree.span(),
+                        item,
+                        root_span,
+                        item.id,
+                        vis,
                     );
-                    return;
                 }
-
-                // Deny importing path-kw without renaming
-                if rename.is_none() && ident.is_path_segment_keyword() {
-                    let ident = use_tree.ident();
-                    self.r.dcx().emit_err(diagnostics::UnnamedImport {
-                        span: ident.span,
-                        sugg: diagnostics::UnnamedImportSugg { span: ident.span, ident },
-                    });
-                    return;
-                }
-
-                let kind = ImportKind::Single {
-                    source: source.ident,
-                    target: ident,
-                    decls: Default::default(),
-                    nested,
-                    id,
-                    def_id: feed.def_id(),
-                };
-
-                self.add_import(module_path, kind, use_tree.span(), item, root_span, item.id, vis);
-            }
-            ast::UseTreeKind::Glob(_) => {
-                if !ast::attr::contains_name(&item.attrs, sym::prelude_import) {
-                    let kind =
-                        ImportKind::Glob { max_vis: CmCell::new(None), id, def_id: feed.def_id() };
-                    self.add_import(prefix, kind, use_tree.span(), item, root_span, item.id, vis);
-                } else {
-                    // Resolve the prelude import early.
-                    let path_res =
-                        self.r.cm().maybe_resolve_path(&prefix, None, &self.parent_scope, None);
-                    if let PathResult::Module(ModuleOrUniformRoot::Module(module)) = path_res {
-                        self.r.prelude = Some(module);
+                ast::UseTreeKind::Glob(_) => {
+                    if !ast::attr::contains_name(&item.attrs, sym::prelude_import) {
+                        let kind = ImportKind::Glob {
+                            max_vis: CmCell::new(None),
+                            id,
+                            def_id: feed.def_id(),
+                        };
+                        self.add_import(
+                            prefix.clone(),
+                            kind,
+                            use_tree.span(),
+                            item,
+                            root_span,
+                            item.id,
+                            vis,
+                        );
                     } else {
-                        self.r.dcx().span_err(use_tree.span(), "cannot resolve a prelude import");
+                        // Resolve the prelude import early.
+                        let path_res =
+                            self.r.cm().maybe_resolve_path(prefix, None, &self.parent_scope, None);
+                        if let PathResult::Module(ModuleOrUniformRoot::Module(module)) = path_res {
+                            self.r.prelude = Some(module);
+                        } else {
+                            self.r
+                                .dcx()
+                                .span_err(use_tree.span(), "cannot resolve a prelude import");
+                        }
+                    }
+                }
+                ast::UseTreeKind::Nested { ref items, .. } => {
+                    for &(ref tree, id) in items {
+                        self.with_owner(id, None, DefKind::Use, use_tree.span(), |this, feed| {
+                            this.build_reduced_graph_for_use_tree(
+                                // This particular use tree
+                                tree, id, prefix, true, false, // The whole `use` item
+                                item, vis, root_span, feed,
+                            )
+                        });
+                    }
+
+                    // Empty groups `a::b::{}` are turned into synthetic `self` imports
+                    // `a::b::c::{self as _}`, so that their prefixes are correctly
+                    // resolved and checked for privacy/stability/etc.
+                    if items.is_empty()
+                        && !prefix.is_empty()
+                        && (prefix.len() > 1 || prefix[0].ident.name != kw::PathRoot)
+                    {
+                        let new_span = prefix[prefix.len() - 1].ident.span;
+                        let tree = ast::UseTree {
+                            prefix: ast::Path::from_ident(Ident::new(kw::SelfLower, new_span)),
+                            kind: ast::UseTreeKind::Simple(Some(Ident::new(
+                                kw::Underscore,
+                                new_span,
+                            ))),
+                        };
+                        self.build_reduced_graph_for_use_tree(
+                            // This particular use tree
+                            &tree,
+                            id,
+                            prefix,
+                            true,
+                            true,
+                            // The whole `use` item
+                            item,
+                            Visibility::Restricted(
+                                self.parent_scope.module.nearest_parent_mod().expect_local(),
+                            ),
+                            root_span,
+                            feed,
+                        );
                     }
                 }
             }
-            ast::UseTreeKind::Nested { ref items, .. } => {
-                for &(ref tree, id) in items {
-                    self.with_owner(id, None, DefKind::Use, use_tree.span(), |this, feed| {
-                        this.build_reduced_graph_for_use_tree(
-                            // This particular use tree
-                            tree, id, &prefix, true, false, // The whole `use` item
-                            item, vis, root_span, feed,
-                        )
-                    });
-                }
-
-                // Empty groups `a::b::{}` are turned into synthetic `self` imports
-                // `a::b::c::{self as _}`, so that their prefixes are correctly
-                // resolved and checked for privacy/stability/etc.
-                if items.is_empty()
-                    && !prefix.is_empty()
-                    && (prefix.len() > 1 || prefix[0].ident.name != kw::PathRoot)
-                {
-                    let new_span = prefix[prefix.len() - 1].ident.span;
-                    let tree = ast::UseTree {
-                        prefix: ast::Path::from_ident(Ident::new(kw::SelfLower, new_span)),
-                        kind: ast::UseTreeKind::Simple(Some(Ident::new(kw::Underscore, new_span))),
-                    };
-                    self.build_reduced_graph_for_use_tree(
-                        // This particular use tree
-                        &tree,
-                        id,
-                        &prefix,
-                        true,
-                        true,
-                        // The whole `use` item
-                        item,
-                        Visibility::Restricted(
-                            self.parent_scope.module.nearest_parent_mod().expect_local(),
-                        ),
-                        root_span,
-                        feed,
-                    );
-                }
-            }
+        })();
+        if prepended_crate_root {
+            prefix.remove(0);
         }
+        prefix.truncate(prefix_start);
+        result
     }
 
     fn build_reduced_graph_for_struct_variant(
@@ -870,11 +903,12 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 
         match item.kind {
             ItemKind::Use(ref use_tree) => {
+                let mut prefix = Vec::new();
                 self.build_reduced_graph_for_use_tree(
                     // This particular use tree
                     use_tree,
                     item.id,
-                    &[],
+                    &mut prefix,
                     false,
                     false,
                     // The whole `use` item

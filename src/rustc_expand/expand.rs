@@ -2222,6 +2222,21 @@ impl DummyAstNode for AstNodeWrapper<ast::Expr, MethodReceiverTag> {
     }
 }
 
+#[derive(Default)]
+struct AttrScanState {
+    next_unclassified: usize,
+    first_candidate: Option<usize>,
+}
+
+impl AttrScanState {
+    fn restart_at(&mut self, pos: usize) {
+        self.next_unclassified = pos;
+        if self.first_candidate.is_some_and(|candidate| candidate >= pos) {
+            self.first_candidate = None;
+        }
+    }
+}
+
 struct InvocationCollector<'a, 'b> {
     cx: &'a mut ExtCtxt<'b>,
     invocations: Vec<(Invocation, Option<Arc<SyntaxExtension>>)>,
@@ -2292,12 +2307,16 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
     fn take_first_attr(
         &self,
         item: &mut impl HasAttrs,
+        scan: &mut AttrScanState,
     ) -> Option<(ast::Attribute, usize, Vec<ast::Path>)> {
         let mut attr = None;
 
         let mut cfg_pos = None;
-        let mut attr_pos = None;
-        for (pos, attr) in item.attrs().iter().enumerate() {
+        let attrs = item.attrs();
+        while scan.next_unclassified < attrs.len() {
+            let pos = scan.next_unclassified;
+            scan.next_unclassified += 1;
+            let attr = &attrs[pos];
             if let AttrKind::Normal(..) = attr.kind
                 && !self.cx.expanded_inert_attrs.is_marked(attr)
             {
@@ -2305,13 +2324,14 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
                 if name == Some(sym::cfg) || name == Some(sym::cfg_attr) {
                     cfg_pos = Some(pos); // a cfg attr found, no need to search anymore
                     break;
-                } else if attr_pos.is_none()
+                } else if scan.first_candidate.is_none()
                     && !name.is_some_and(crate::rustc_feature::is_builtin_attr_name)
                 {
-                    attr_pos = Some(pos); // a non-cfg attr found, still may find a cfg attr
+                    scan.first_candidate = Some(pos); // a non-cfg attr found, still may find a cfg attr
                 }
             }
         }
+        let attr_pos = scan.first_candidate;
 
         // Nothing to take (the common case, a node with no attributes): the closure below
         // would return without touching the attributes.
@@ -2463,13 +2483,17 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
         &mut self,
         mut node: Node,
     ) -> Node::OutputTy {
+        let mut attr_scan = AttrScanState::default();
         loop {
-            return match self.take_first_attr(&mut node) {
+            return match self.take_first_attr(&mut node, &mut attr_scan) {
                 Some((attr, pos, derives)) => match attr.name() {
                     Some(sym::cfg) => {
                         let res = self.expand_cfg_true(&mut node, attr, pos);
                         match res {
-                            EvalConfigResult::True => continue,
+                            EvalConfigResult::True => {
+                                attr_scan.restart_at(pos);
+                                continue;
+                            }
                             EvalConfigResult::False { reason, reason_span } => {
                                 for ident in node.declared_idents() {
                                     self.cx.resolver.append_stripped_cfg_item(
@@ -2486,6 +2510,7 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
                     }
                     Some(sym::cfg_attr) => {
                         self.expand_cfg_attr(&mut node, &attr, pos);
+                        attr_scan.restart_at(pos);
                         continue;
                     }
                     _ => {
@@ -2548,6 +2573,7 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
                         Ok(output) => output,
                         Err(returned_node) => {
                             node = returned_node;
+                            attr_scan = AttrScanState::default();
                             continue;
                         }
                     }
@@ -2560,20 +2586,24 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
         &mut self,
         node: &mut Node,
     ) {
+        let mut attr_scan = AttrScanState::default();
         loop {
-            return match self.take_first_attr(node) {
+            return match self.take_first_attr(node, &mut attr_scan) {
                 Some((attr, pos, derives)) => match attr.name() {
                     Some(sym::cfg) => {
                         let span = attr.span;
                         if self.expand_cfg_true(node, attr, pos).as_bool() {
+                            attr_scan.restart_at(pos);
                             continue;
                         }
 
                         node.expand_cfg_false(self, pos, span);
+                        attr_scan = AttrScanState::default();
                         continue;
                     }
                     Some(sym::cfg_attr) => {
                         self.expand_cfg_attr(node, &attr, pos);
+                        attr_scan.restart_at(pos);
                         continue;
                     }
                     _ => {

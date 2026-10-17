@@ -363,7 +363,12 @@ impl<'r, 'ra, 'tcx> CmResolver<'r, 'ra, 'tcx> {
             // Use the rib kind to determine whether we are resolving parameters
             // (macro 2.0 hygiene) or local variables (`macro_rules` hygiene).
             let rib_ident = if rib.kind.contains_params() { normalized_ident } else { ident };
-            if let Some((original_rib_ident_def, res)) = rib.bindings.get_key_value(&rib_ident) {
+            let rib_binding = if rib.bindings.len() <= 4 {
+                rib.bindings.iter().find(|(ident, _)| **ident == rib_ident)
+            } else {
+                rib.bindings.get_key_value(&rib_ident)
+            };
+            if let Some((original_rib_ident_def, res)) = rib_binding {
                 // The ident resolves to a type parameter or local variable.
                 return Some(LateDecl::RibDef(self.validate_res_from_ribs(
                     i,

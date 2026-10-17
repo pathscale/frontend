@@ -1,14 +1,11 @@
 //! A bunch of methods and structures more or less related to resolving imports.
 
-mod round;
-
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -16,7 +13,7 @@ use core::cmp::Ordering;
 use core::mem;
 
 use crate::rustc_ast::NodeId;
-use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
+use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
 
 use crate::rustc_errors::{Applicability, BufferedEarlyLint, Diagnostic};
@@ -839,19 +836,16 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
             self.write_import_resolutions(&imports_to_resolve);
 
-            let pending_counts = imports_to_resolve.iter().map(|(_, _, count)| *count).collect();
-            let deltas = round::stage_deltas(pending_counts);
-            let mut next_round = Vec::with_capacity(imports_to_resolve.len());
-            for ((import, resolution, count), delta) in imports_to_resolve.into_iter().zip(deltas) {
-                assert_eq!(delta.indeterminate_count, count, "rs3_import_round_delta");
-                indeterminate_count += delta.indeterminate_count;
-                if delta.indeterminate_count > 0 {
-                    next_round.push((import, resolution, count));
+            imports_to_resolve.retain(|(import, _, count)| {
+                indeterminate_count += *count;
+                if *count > 0 {
+                    true
                 } else {
-                    self.determined_imports.push(import);
+                    self.determined_imports.push(*import);
+                    false
                 }
-            }
-            self.indeterminate_imports = next_round;
+            });
+            self.indeterminate_imports = imports_to_resolve;
         }
     }
 
@@ -1860,10 +1854,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     ) -> ImportResolutionKind<'ra> {
         let import_bindings = match imported_module {
             ModuleOrUniformRoot::Module(module) if module != import.parent_scope.module => {
-                let mut candidates = Vec::new();
-                let mut snapshot = Vec::new();
-                // Resolve hygiene and read declaration visibility on the caller's thread.
-                // Arena handles stay here; workers receive only owned visibility facts.
+                let mut import_bindings = Vec::new();
+                let mut ancestors_by_scope: FxHashMap<DefId, FxHashSet<DefId>> =
+                    FxHashMap::default();
+                // Resolve hygiene and visibility on this thread. Cache only immutable ancestry;
+                // declarations, hygiene and binding resolutions are read for each candidate.
                 for (key, resolution) in self.resolutions(module).iter() {
                     let res = resolution.borrow_checked(self);
                     let Some(decl) = res.determined_decl() else { continue };
@@ -1876,48 +1871,32 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                         None => continue,
                     };
                     let vis = decl.vis().map_id(|id| id.to_def_id());
-                    let mut ancestors = Vec::new();
-                    if let Visibility::Restricted(ancestor) = vis {
-                        let mut current = scope.nearest_parent_mod().to_def_id();
-                        // Definitions in different crates are unrelated, as in
-                        // Visibility::is_accessible_from.
-                        if current.krate == ancestor.krate {
-                            loop {
-                                ancestors.push(current);
-                                let Some(parent) = self.tcx.opt_parent(current) else { break };
-                                current = parent;
+                    let accessible = match vis {
+                        Visibility::Public => true,
+                        Visibility::Restricted(ancestor) => {
+                            let scope_id = scope.nearest_parent_mod().to_def_id();
+                            if scope_id.krate != ancestor.krate {
+                                false
+                            } else {
+                                let ancestors = ancestors_by_scope.entry(scope_id).or_insert_with(|| {
+                                    let mut ancestors = FxHashSet::default();
+                                    let mut current = scope_id;
+                                    loop {
+                                        ancestors.insert(current);
+                                        let Some(parent) = self.tcx.opt_parent(current) else { break };
+                                        current = parent;
+                                    }
+                                    ancestors
+                                });
+                                ancestors.contains(&ancestor)
                             }
                         }
+                    };
+                    if accessible {
+                        import_bindings.push((decl, key, res.orig_ident_span));
                     }
-                    candidates.push((decl, key, res.orig_ident_span));
-                    snapshot.push((vis, ancestors));
                 }
-
-                // Workers receive only owned visibility facts and return ordered decisions.
-                let decisions = crate::rustc_data_structures::sync::run_owned_stage(
-                    Arc::new(snapshot),
-                    candidates.len(),
-                    |snapshot, index| {
-                        u32::try_from(snapshot[index].1.len()).unwrap_or(u32::MAX).saturating_add(1)
-                    },
-                    |snapshot, index| {
-                        let (vis, ancestors) = &snapshot[index];
-                        let accessible = match *vis {
-                            Visibility::Public => true,
-                            Visibility::Restricted(ancestor) => ancestors.contains(&ancestor),
-                        };
-                        (index, accessible)
-                    },
-                );
-                // Check the complete ordering before integrating any candidate.
-                for (expected, &(index, _)) in decisions.iter().enumerate() {
-                    assert_eq!(index, expected, "rs3_glob_commit_order");
-                }
-                candidates
-                    .into_iter()
-                    .zip(decisions)
-                    .filter_map(|(binding, (_, accessible))| accessible.then_some(binding))
-                    .collect::<Vec<_>>()
+                import_bindings
             }
 
             // Errors are reported in `write_imports_resolutions`
