@@ -8,8 +8,8 @@ use crate::rustc_abi::{Size, TagEncoding, VariantIdx, Variants};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_middle::mir::interpret::{
-    AllocId, Allocation, ConstAllocation, GlobalAlloc, GlobalId, Pointer, Scalar, alloc_range,
-    read_target_uint, write_target_uint,
+    AllocId, AllocInit, Allocation, CTFE_ALLOC_SALT, ConstAllocation, GlobalAlloc, GlobalId,
+    Pointer, Scalar, alloc_range, read_target_uint, write_target_uint,
 };
 use crate::rustc_middle::mir::{self, ConstValue, Local, Operand, Rvalue};
 use crate::rustc_middle::ty::layout::LayoutCx;
@@ -116,6 +116,38 @@ pub(super) fn fold_static_initializer<'tcx>(
     let mutable =
         tcx.is_mutable_static(def_id.to_def_id()) || !value.ty().is_freeze(tcx, typing_env);
     folder.allocation(value, if mutable { mir::Mutability::Mut } else { mir::Mutability::Not })
+}
+
+pub(super) fn fold_allocation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: ty::TypingEnv<'tcx>,
+    id: GlobalId<'tcx>,
+) -> Result<mir::ConstAlloc<'tcx>, &'static str> {
+    let mut folder = Folder {
+        tcx,
+        typing_env,
+        active: Vec::new(),
+        cache: FxHashMap::default(),
+        remaining_steps: MAX_FOLD_STEPS,
+    };
+    let value = folder.eval_instance(id, 0)?;
+    Ok(mir::ConstAlloc { alloc_id: folder.allocate(value)?, ty: value.ty() })
+}
+
+pub(super) fn fold_valtree<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: ty::TypingEnv<'tcx>,
+    value: ty::Value<'tcx>,
+) -> Result<ConstValue, &'static str> {
+    let mut folder = Folder {
+        tcx,
+        typing_env,
+        active: Vec::new(),
+        cache: FxHashMap::default(),
+        remaining_steps: MAX_FOLD_STEPS,
+    };
+    let value = folder.eval_valtree(value.ty, value.valtree, 0)?;
+    folder.to_const(value)
 }
 
 impl<'tcx> Folder<'tcx> {
@@ -540,8 +572,7 @@ impl<'tcx> Folder<'tcx> {
         span: crate::rustc_span::Span,
         depth: usize,
     ) -> Result<FoldValue<'tcx>, &'static str> {
-        if let Some(scalar) = constant.try_to_scalar_int() {
-            let ty = constant.ty();
+        if let mir::Const::Val(ConstValue::Scalar(Scalar::Int(scalar)), ty) = constant {
             let (size, _) = self.layout(ty)?;
             return self.scalar_value(scalar.to_bits(size), ty);
         }
@@ -558,13 +589,7 @@ impl<'tcx> Folder<'tcx> {
                 self.read_value(alloc_id, offset, ty, depth)
             }
             mir::Const::Ty(value_ty, type_const) => match type_const.kind() {
-                ty::ConstKind::Value(_) => {
-                    if self.layout(value_ty)?.0.bytes() == 0 {
-                        self.zero_sized(value_ty)
-                    } else {
-                        Err("aggregate type-level constant is unsupported")
-                    }
-                }
+                ty::ConstKind::Value(value) => self.eval_valtree(value_ty, value.valtree, depth),
                 ty::ConstKind::Alias(_, alias) => {
                     if type_const.has_non_region_param() {
                         return Err("type-level constant alias has generic parameters");
@@ -593,6 +618,127 @@ impl<'tcx> Folder<'tcx> {
                 self.eval_unevaluated(unevaluated, span, depth + 1)
             }
         }
+    }
+
+    fn eval_valtree(
+        &mut self,
+        ty: Ty<'tcx>,
+        tree: ty::ValTree<'tcx>,
+        depth: usize,
+    ) -> Result<FoldValue<'tcx>, &'static str> {
+        self.spend_step()?;
+        if depth >= MAX_FOLD_DEPTH {
+            return Err("type-level constant exceeded its depth bound");
+        }
+        if let ty::Pat(base, _) = *ty.kind() {
+            let value = self.eval_valtree(base, tree, depth + 1)?;
+            return self.retype(value, ty);
+        }
+        if tree.try_to_branch().is_some_and(|branches| branches.len() > MAX_FOLD_STEPS) {
+            return Err("type-level aggregate exceeded its field bound");
+        }
+        if let ty::Ref(_, target, _) = *ty.kind() {
+            let len = || {
+                tree.try_to_branch()
+                    .map(|branches| branches.len() as u64)
+                    .ok_or("slice valtree requires a branch")
+            };
+            let (storage_ty, len) = match *target.kind() {
+                ty::Slice(element) => (Ty::new_array(self.tcx, element, len()?), Some(len()?)),
+                ty::Str => (Ty::new_array(self.tcx, self.tcx.types.u8, len()?), Some(len()?)),
+                _ => (target, None),
+            };
+            let pointee = self.eval_valtree(storage_ty, tree, depth + 1)?;
+            let alloc_id = self.allocate(pointee)?;
+            return Ok(match len {
+                Some(len) => FoldValue::Slice { ty, alloc_id, offset: Size::ZERO, len },
+                None => FoldValue::Reference {
+                    ty,
+                    pointee: self.tcx.arena.dropless.alloc(pointee),
+                    alloc_id,
+                    offset: Size::ZERO,
+                },
+            });
+        }
+        if let Some(leaf) = tree.try_to_leaf() {
+            return self.scalar_value(leaf.to_bits(self.layout(ty)?.0), ty);
+        }
+        let branches = tree.to_branch();
+        let layout = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(ty))
+            .map_err(|_| "type-level aggregate layout is unavailable")?;
+        if layout.is_zst() {
+            return self.zero_sized(ty);
+        }
+        let (variant, branches) = if let ty::Adt(def, _) = *ty.kind()
+            && def.is_enum()
+        {
+            let (index, fields) = branches.split_first().ok_or("enum valtree has no variant")?;
+            let index = index.to_value().to_leaf().to_bits(Size::from_bytes(4)) as u32;
+            let variant = VariantIdx::from_u32(index);
+            if index as usize >= def.variants().len() {
+                return Err("enum valtree variant is out of bounds");
+            }
+            (Some(variant), fields)
+        } else {
+            (None, &branches[..])
+        };
+        let cx = LayoutCx::new(self.tcx, self.typing_env);
+        let layout = variant.map_or(layout, |variant| layout.for_variant(&cx, variant));
+        if branches.len() != layout.fields.count() {
+            return Err("type-level aggregate has a mismatched field count");
+        }
+        let fields = branches
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                self.eval_valtree(layout.field(&cx, index).ty, field.to_value().valtree, depth + 1)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(FoldValue::Aggregate {
+            ty,
+            fields: self.tcx.arena.dropless.alloc_slice(&fields),
+            variant,
+        })
+    }
+
+    fn transmute(
+        &mut self,
+        value: FoldValue<'tcx>,
+        destination_ty: Ty<'tcx>,
+        depth: usize,
+    ) -> Result<FoldValue<'tcx>, &'static str> {
+        let source = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(value.ty()))
+            .map_err(|_| "transmute source layout is unavailable")?;
+        let destination = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(destination_ty))
+            .map_err(|_| "transmute destination layout is unavailable")?;
+        if source.size != destination.size {
+            return Err("transmute changed the value size");
+        }
+        if destination.is_uninhabited() {
+            return Err("transmute destination has no valid values");
+        }
+        if source.size.bytes() > (MAX_FOLD_STEPS * 16) as u64 {
+            return Err("constant allocation exceeded its size bound");
+        }
+        // Atomic constructors transmute integers into structs containing UnsafeCell.
+        // Re-read their fields using the destination layout, preserving relocations.
+        // Leave padding uninitialized so a transmute cannot invent initialized bytes.
+        let mut allocation = Allocation::new(
+            source.size,
+            source.align.abi.max(destination.align.abi),
+            AllocInit::Uninit,
+            (),
+        );
+        self.write_value(&mut allocation, Size::ZERO, value)?;
+        allocation.mutability = mir::Mutability::Not;
+        let alloc_id = self.tcx.reserve_and_set_memory_alloc(self.tcx.mk_const_alloc(allocation));
+        self.read_value(alloc_id, Size::ZERO, destination_ty, depth + 1)
     }
 
     fn read_memory(
@@ -632,6 +778,19 @@ impl<'tcx> Folder<'tcx> {
         len: Option<u64>,
         depth: usize,
     ) -> Result<FoldValue<'tcx>, &'static str> {
+        if matches!(ty.kind(), ty::FnPtr(..)) {
+            let (provenance, offset) = scalar.to_pointer(&self.tcx).into_raw_parts();
+            let alloc_id = provenance.ok_or("function pointer has no provenance")?.alloc_id();
+            if offset != Size::ZERO
+                || !matches!(
+                    self.tcx.try_get_global_alloc(alloc_id),
+                    Some(GlobalAlloc::Function { .. })
+                )
+            {
+                return Err("function pointer does not name a function");
+            }
+            return Ok(FoldValue::Pointer { ty, alloc_id, offset });
+        }
         let target = pointer_target(ty).ok_or("pointer constant has a non-pointer type")?;
         if len.is_none()
             && matches!(ty.kind(), ty::RawPtr(..))
@@ -660,6 +819,9 @@ impl<'tcx> Folder<'tcx> {
                 return Err("unsupported constant pointer metadata");
             }
             return Ok(FoldValue::Slice { ty, alloc_id, offset, len });
+        }
+        if matches!(ty.kind(), ty::RawPtr(..)) {
+            return Ok(FoldValue::Pointer { ty, alloc_id, offset });
         }
         let pointee = self.read_value(alloc_id, offset, target, depth + 1)?;
         Ok(FoldValue::Reference {
@@ -709,6 +871,10 @@ impl<'tcx> Folder<'tcx> {
         if layout.is_zst() {
             return self.zero_sized(ty);
         }
+        if matches!(ty.kind(), ty::FnPtr(..)) {
+            let scalar = self.read_memory(alloc_id, offset, layout.size, align, true)?;
+            return self.read_pointer(scalar, ty, None, depth);
+        }
         if let Some(target) = pointer_target(ty) {
             let size = self.tcx.data_layout.pointer_size();
             let scalar = self.read_memory(alloc_id, offset, size, size.bytes(), true)?;
@@ -724,6 +890,57 @@ impl<'tcx> Folder<'tcx> {
             };
             return self.read_pointer(scalar, ty, len, depth);
         }
+        let cx = LayoutCx::new(self.tcx, self.typing_env);
+        let variant = if let ty::Adt(def, _) = *ty.kind()
+            && def.is_enum()
+        {
+            Some(match &layout.variants {
+                Variants::Empty => return Err("constant enum has no inhabited variants"),
+                Variants::Single { index } => *index,
+                Variants::Multiple { tag, tag_encoding, tag_field, .. } => {
+                    let size = tag.size(&self.tcx);
+                    let scalar = self.read_memory(
+                        alloc_id,
+                        offset + layout.fields.offset(tag_field.as_usize()),
+                        size,
+                        1,
+                        matches!(tag.primitive(), crate::rustc_abi::Primitive::Pointer(_)),
+                    )?;
+                    match tag_encoding {
+                        TagEncoding::Direct => {
+                            let bits = scalar
+                                .try_to_scalar_int()
+                                .map_err(|_| "enum tag has pointer provenance")?
+                                .to_bits(size);
+                            def.discriminants(self.tcx)
+                                .find(|(_, discr)| size.truncate(discr.val) == bits)
+                                .map(|(variant, _)| variant)
+                                .ok_or("constant enum has an invalid tag")?
+                        }
+                        TagEncoding::Niche { untagged_variant, niche_variants, niche_start } => {
+                            if let Ok(integer) = scalar.try_to_scalar_int() {
+                                let relative =
+                                    size.truncate(integer.to_bits(size).wrapping_sub(*niche_start));
+                                let count =
+                                    niche_variants.last.as_u32() - niche_variants.start.as_u32();
+                                if relative <= count as u128 {
+                                    VariantIdx::from_u32(
+                                        niche_variants.start.as_u32() + relative as u32,
+                                    )
+                                } else {
+                                    *untagged_variant
+                                }
+                            } else {
+                                *untagged_variant
+                            }
+                        }
+                    }
+                }
+            })
+        } else {
+            None
+        };
+        let layout = variant.map_or(layout, |variant| layout.for_variant(&cx, variant));
         let count = match *ty.kind() {
             ty::Array(_, count) => {
                 count.try_to_target_usize(self.tcx).ok_or("constant array length is unresolved")?
@@ -731,6 +948,8 @@ impl<'tcx> Folder<'tcx> {
             }
             ty::Tuple(fields) => fields.len(),
             ty::Adt(def, _) if def.is_struct() => def.non_enum_variant().fields.len(),
+            ty::Adt(def, _) if def.is_enum() => def.variant(variant.unwrap()).fields.len(),
+            ty::Closure(_, args) => args.as_closure().upvar_tys().len(),
             _ => {
                 if !layout.backend_repr.is_scalar() {
                     return Err("unsupported allocation-backed constant type");
@@ -752,7 +971,6 @@ impl<'tcx> Folder<'tcx> {
         if count > MAX_FOLD_STEPS {
             return Err("constant memory aggregate exceeded its field bound");
         }
-        let cx = LayoutCx::new(self.tcx, self.typing_env);
         let fields = (0..count)
             .map(|index| {
                 self.read_value(
@@ -763,7 +981,11 @@ impl<'tcx> Folder<'tcx> {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(self.aggregate(ty, &fields))
+        Ok(FoldValue::Aggregate {
+            ty,
+            fields: self.tcx.arena.dropless.alloc_slice(&fields),
+            variant,
+        })
     }
 
     fn eval_unevaluated(
@@ -1259,7 +1481,47 @@ impl<'tcx> Folder<'tcx> {
             }
             Rvalue::Cast(mir::CastKind::Transmute, operand, _) => {
                 let value = self.eval_operand(body, locals, operand, depth)?;
-                self.retype(value, destination_ty)
+                self.transmute(value, destination_ty, depth)
+            }
+            Rvalue::Cast(mir::CastKind::PointerCoercion(coercion, _), operand, cast_ty)
+                if *cast_ty == destination_ty && matches!(destination_ty.kind(), ty::FnPtr(..)) =>
+            {
+                use ty::adjustment::PointerCoercion;
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                let instance = match (*coercion, *value.ty().kind()) {
+                    (PointerCoercion::ReifyFnPointer(_), ty::FnDef(def, args)) => {
+                        Instance::resolve_for_fn_ptr(
+                            self.tcx,
+                            self.typing_env,
+                            def,
+                            args.skip_binder(),
+                        )
+                        .ok_or("function pointer instance is unresolved")?
+                    }
+                    (PointerCoercion::ClosureFnPointer(_), ty::Closure(def, args))
+                        if self.layout(value.ty())?.0 == Size::ZERO =>
+                    {
+                        Instance::resolve_closure(self.tcx, def, args, ty::ClosureKind::FnOnce)
+                    }
+                    (PointerCoercion::UnsafeFnPointer, ty::FnPtr(..)) => {
+                        return self.retype(value, destination_ty);
+                    }
+                    _ => return Err("unsupported function pointer coercion"),
+                };
+                if instance.args.has_non_region_param() {
+                    return Err("function pointer instance still has generic parameters");
+                }
+                let alloc_id = self.tcx.reserve_and_set_fn_alloc(instance, CTFE_ALLOC_SALT);
+                Ok(FoldValue::Pointer { ty: destination_ty, alloc_id, offset: Size::ZERO })
+            }
+            Rvalue::Cast(mir::CastKind::FnPtrToPtr, operand, cast_ty)
+                if *cast_ty == destination_ty && self.is_thin_raw_pointer(destination_ty) =>
+            {
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                let FoldValue::Pointer { alloc_id, offset, .. } = value else {
+                    return Err("function address cast requires a function pointer");
+                };
+                Ok(FoldValue::Pointer { ty: destination_ty, alloc_id, offset })
             }
             Rvalue::Cast(..) => Err("non-integer cast is unsupported"),
             Rvalue::Discriminant(place) => {
@@ -1280,7 +1542,9 @@ impl<'tcx> Folder<'tcx> {
                     return Err("aggregate exceeded its field bound");
                 }
                 let variant = match &**kind {
-                    mir::AggregateKind::Array(_) | mir::AggregateKind::Tuple => None,
+                    mir::AggregateKind::Array(_)
+                    | mir::AggregateKind::Tuple
+                    | mir::AggregateKind::Closure(..) => None,
                     mir::AggregateKind::Adt(def, variant, _, _, None) => {
                         let def = self.tcx.adt_def(*def);
                         if def.is_union() {
@@ -1400,7 +1664,7 @@ impl<'tcx> Folder<'tcx> {
                 let [value] = values.as_slice() else {
                     return Err("transmute requires one argument");
                 };
-                return self.retype(*value, destination_ty);
+                return self.transmute(*value, destination_ty, depth);
             }
             if destination_ty
                 .ty_adt_def()
@@ -2034,6 +2298,11 @@ impl<'tcx> Folder<'tcx> {
                 Ok(FoldValue::Slice { ty: destination_ty, alloc_id, offset, len })
             }
             FoldValue::Pointer { ty, alloc_id, offset } => {
+                if matches!(ty.kind(), ty::FnPtr(..))
+                    && matches!(destination_ty.kind(), ty::FnPtr(..))
+                {
+                    return Ok(FoldValue::Pointer { ty: destination_ty, alloc_id, offset });
+                }
                 let static_reference = matches!(destination_ty.kind(), ty::Ref(..))
                     && matches!(
                         self.tcx.try_get_global_alloc(alloc_id),

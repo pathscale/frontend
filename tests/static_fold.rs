@@ -195,6 +195,425 @@ fn read_word(tcx: TyCtxt<'_>, alloc_id: AllocId, offset: Size) -> u128 {
         .to_bits(tcx.data_layout.pointer_size())
 }
 
+#[test]
+#[ignore = "requires FRONTEND_FOLD_SYSROOT naming the caller's compiled library"]
+fn static_aggregates_atomics_and_function_pointers_against_a_named_library() {
+    let sysroot = eko::env::var("FRONTEND_FOLD_SYSROOT").expect("explicit test sysroot");
+    let source = r#"
+        #![no_std]
+        use core::cell::UnsafeCell;
+        use core::sync::atomic::{AtomicU64, AtomicUsize};
+        pub static COUNTER: AtomicU64 = AtomicU64::new(0);
+        pub static COUNT: AtomicUsize = AtomicUsize::new(0);
+        pub fn answer() -> i64 { 73 }
+        pub fn generic<T>() -> i64 { 91 }
+        #[repr(C)]
+        pub struct State {
+            prefix: u8,
+            count: AtomicUsize,
+            cells: [UnsafeCell<usize>; 2],
+            pair: (UnsafeCell<usize>, fn() -> i64),
+            init: fn() -> i64,
+            raw: *const (),
+            reference: &'static usize,
+            slice: &'static [usize],
+            optional: Option<fn() -> i64>,
+            empty: (),
+        }
+        unsafe impl Sync for State {}
+        pub static STATE: State = State {
+            prefix: 5,
+            count: AtomicUsize::new(17),
+            cells: [UnsafeCell::new(23), UnsafeCell::new(29)],
+            pair: (UnsafeCell::new(31), generic::<u8>),
+            init: answer,
+            raw: answer as fn() -> i64 as *const (),
+            reference: &41,
+            slice: &[43, 47],
+            optional: Some(answer),
+            empty: (),
+        };
+        pub struct LocalKey<T: 'static> { count: AtomicUsize, init: fn() -> T }
+        unsafe impl<T> Sync for LocalKey<T> {}
+        impl<T> LocalKey<T> {
+            pub const fn new(init: fn() -> T) -> Self {
+                Self { count: AtomicUsize::new(0), init }
+            }
+        }
+        pub static TLS: LocalKey<i64> = LocalKey::new(answer);
+        pub static SCOPED: LocalKey<core::cell::Cell<*const i64>> =
+            LocalKey::new(|| core::cell::Cell::new(core::ptr::null()));
+        pub static mut ARRAY: [fn() -> i64; 2] = [answer; 2];
+        pub static mut UNSAFE: unsafe fn() -> i64 = answer as fn() -> i64;
+        pub static ROUNDTRIP: Option<fn() -> i64> = unsafe { core::mem::transmute(Some(answer as fn() -> i64)) };
+        pub static NONE: Option<fn() -> i64> = unsafe { core::mem::transmute(None::<fn() -> i64>) };
+        pub static FUNCTION_BACK: fn() -> i64 = unsafe { core::mem::transmute(answer as fn() -> i64 as *const ()) };
+        pub static NESTED: &&fn() -> i64 = &&(answer as fn() -> i64);
+        #[repr(C)]
+        pub enum Direct { First(usize), Second(u8, usize) }
+        pub static DIRECT: Direct = unsafe { core::mem::transmute(Direct::Second(2, 73)) };
+        pub const FUNCTIONS: (fn() -> i64, fn() -> i64) = (answer, generic::<u8>);
+        pub const EMPTY: [u8; 0] = [];
+    "#;
+    with_source_tcx(source, Some(&sysroot), |tcx| {
+        use frontend::rustc_middle::ty::layout::LayoutCx;
+        let env = ty::TypingEnv::fully_monomorphized();
+        let cx = LayoutCx::new(tcx, env);
+        let static_def = |name: &str| {
+            tcx.hir_body_owners()
+                .find(|&owner| {
+                    matches!(tcx.def_kind(owner), DefKind::Static { .. })
+                        && tcx.item_name(owner.to_def_id()).as_str() == name
+                })
+                .expect("fixture static")
+        };
+        let word = tcx.data_layout.pointer_size();
+        for name in ["COUNTER", "COUNT"] {
+            let allocation = tcx.eval_static_initializer(static_def(name)).expect("atomic folds");
+            assert!(allocation.inner().mutability.is_mut(), "{name}");
+            let size = if name == "COUNTER" { Size::from_bytes(8) } else { word };
+            assert_eq!(
+                allocation
+                    .inner()
+                    .read_scalar(&tcx, alloc_range(Size::ZERO, size), false)
+                    .unwrap()
+                    .try_to_scalar_int()
+                    .unwrap()
+                    .to_bits(size),
+                0,
+                "{name}"
+            );
+        }
+        let state = static_def("STATE");
+        let allocation = tcx.eval_static_initializer(state).expect("nested aggregate folds");
+        assert!(allocation.inner().mutability.is_mut());
+        let layout = tcx
+            .layout_of(
+                env.as_query_input(tcx.type_of(state).instantiate_identity().skip_norm_wip()),
+            )
+            .unwrap();
+        let offset = |path: &[usize]| {
+            let mut layout = layout;
+            let mut offset = Size::ZERO;
+            for &index in path {
+                offset += layout.fields.offset(index);
+                layout = layout.field(&cx, index);
+            }
+            offset
+        };
+        for (path, expected) in
+            [(&[1][..], 17), (&[2, 0][..], 23), (&[2, 1][..], 29), (&[3, 0][..], 31)]
+        {
+            assert_eq!(
+                allocation
+                    .inner()
+                    .read_scalar(&tcx, alloc_range(offset(path), word), false)
+                    .unwrap()
+                    .try_to_scalar_int()
+                    .unwrap()
+                    .to_bits(word),
+                expected
+            );
+        }
+        let function_at =
+            |allocation: frontend::rustc_middle::mir::interpret::ConstAllocation<'_>,
+             offset,
+             expected| {
+                let scalar =
+                    allocation.inner().read_scalar(&tcx, alloc_range(offset, word), true).unwrap();
+                let (provenance, address) = scalar.to_pointer(&tcx).into_raw_parts();
+                assert_eq!(address, Size::ZERO);
+                let GlobalAlloc::Function { instance } =
+                    tcx.global_alloc(provenance.unwrap().alloc_id())
+                else {
+                    panic!("function provenance expected");
+                };
+                if let Some(expected) = expected {
+                    assert_eq!(tcx.item_name(instance.def_id()).as_str(), expected);
+                } else {
+                    assert!(matches!(
+                        instance.def,
+                        ty::InstanceKind::Shim(ty::ShimKind::ClosureOnce { .. })
+                    ));
+                }
+                instance
+            };
+        let generic = function_at(allocation, offset(&[3, 1]), Some("generic"));
+        assert_eq!(generic.args.type_at(0), tcx.types.u8);
+        for index in [4, 5, 8] {
+            function_at(allocation, offset(&[index]), Some("answer"));
+        }
+        for (index, expected) in [(6, 41), (7, 43)] {
+            let scalar = allocation
+                .inner()
+                .read_scalar(&tcx, alloc_range(offset(&[index]), word), true)
+                .unwrap();
+            let (provenance, address) = scalar.to_pointer(&tcx).into_raw_parts();
+            assert_eq!(read_word(tcx, provenance.unwrap().alloc_id(), address), expected);
+        }
+        assert_eq!(
+            allocation
+                .inner()
+                .read_scalar(&tcx, alloc_range(offset(&[7]) + word, word), false)
+                .unwrap()
+                .try_to_scalar_int()
+                .unwrap()
+                .to_bits(word),
+            2
+        );
+        for (name, expected) in [("TLS", Some("answer")), ("SCOPED", None)] {
+            let def = static_def(name);
+            let allocation = tcx.eval_static_initializer(def).expect("local key folds");
+            assert!(allocation.inner().mutability.is_mut());
+            let layout = tcx
+                .layout_of(
+                    env.as_query_input(tcx.type_of(def).instantiate_identity().skip_norm_wip()),
+                )
+                .unwrap();
+            function_at(allocation, layout.fields.offset(1), expected);
+        }
+        let array = tcx.eval_static_initializer(static_def("ARRAY")).unwrap();
+        for index in 0..2 {
+            function_at(array, word * index, Some("answer"));
+        }
+        function_at(
+            tcx.eval_static_initializer(static_def("UNSAFE")).unwrap(),
+            Size::ZERO,
+            Some("answer"),
+        );
+        for name in ["ROUNDTRIP", "FUNCTION_BACK"] {
+            function_at(
+                tcx.eval_static_initializer(static_def(name)).unwrap(),
+                Size::ZERO,
+                Some("answer"),
+            );
+        }
+        let none = tcx.eval_static_initializer(static_def("NONE")).unwrap();
+        assert_eq!(
+            none.inner()
+                .read_scalar(&tcx, alloc_range(Size::ZERO, word), false)
+                .unwrap()
+                .try_to_scalar_int()
+                .unwrap()
+                .to_bits(word),
+            0
+        );
+        let direct = tcx.eval_static_initializer(static_def("DIRECT")).unwrap();
+        assert_eq!(
+            direct
+                .inner()
+                .read_scalar(&tcx, alloc_range(word * 2, word), false)
+                .unwrap()
+                .try_to_scalar_int()
+                .unwrap()
+                .to_bits(word),
+            73
+        );
+        let mut nested = tcx.eval_static_initializer(static_def("NESTED")).unwrap();
+        for _ in 0..2 {
+            let scalar =
+                nested.inner().read_scalar(&tcx, alloc_range(Size::ZERO, word), true).unwrap();
+            let (provenance, offset) = scalar.to_pointer(&tcx).into_raw_parts();
+            assert_eq!(offset, Size::ZERO);
+            nested = tcx.global_alloc(provenance.unwrap().alloc_id()).unwrap_memory();
+        }
+        function_at(nested, Size::ZERO, Some("answer"));
+        for name in ["FUNCTIONS", "EMPTY"] {
+            let def = tcx
+                .hir_body_owners()
+                .find(|&owner| {
+                    matches!(tcx.def_kind(owner), DefKind::Const { .. })
+                        && tcx.item_name(owner.to_def_id()).as_str() == name
+                })
+                .unwrap();
+            let result =
+                tcx.const_eval_poly_to_alloc(def.to_def_id()).expect("raw allocation query folds");
+            let allocation = tcx.global_alloc(result.alloc_id).unwrap_memory();
+            if name == "FUNCTIONS" {
+                function_at(allocation, Size::ZERO, Some("answer"));
+                function_at(allocation, word, Some("generic"));
+            } else {
+                assert_eq!(allocation.inner().size(), Size::ZERO);
+            }
+        }
+        let items = tcx.collect_and_partition_mono_items(());
+        assert!(
+            items.codegen_units.iter().flat_map(|unit| unit.items().keys()).any(|item| {
+                matches!(item, frontend::rustc_middle::mono::MonoItem::Fn(instance)
+                if matches!(instance.def, ty::InstanceKind::Shim(ty::ShimKind::ClosureOnce { .. })))
+            }),
+            "the closure function pointer must keep its callable shim reachable"
+        );
+        assert!(tcx.dcx().has_errors().is_none());
+    });
+}
+
+#[test]
+#[ignore = "requires FRONTEND_FOLD_SYSROOT naming the caller's compiled library"]
+fn transmute_rejects_uninitialized_padding_and_uninhabited_values() {
+    let sysroot = eko::env::var("FRONTEND_FOLD_SYSROOT").expect("explicit test sysroot");
+    let source = r#"
+        #![no_std]
+        #[repr(C)]
+        pub struct Padded { byte: u8, word: u32 }
+        pub enum Void {}
+        pub const PADDING: u64 = unsafe { core::mem::transmute(Padded { byte: 1, word: 2 }) };
+        pub const VOID: Void = unsafe { core::mem::transmute(()) };
+    "#;
+    with_source_tcx(source, Some(&sysroot), |tcx| {
+        for name in ["PADDING", "VOID"] {
+            let def = tcx
+                .hir_body_owners()
+                .find(|&owner| {
+                    matches!(tcx.def_kind(owner), DefKind::Const { .. })
+                        && tcx.item_name(owner.to_def_id()).as_str() == name
+                })
+                .unwrap();
+            assert!(tcx.const_eval_poly(def.to_def_id()).is_err(), "{name}");
+        }
+        tcx.dcx().reset_err_count();
+    });
+}
+
+#[test]
+fn aggregate_valtrees_use_layout_offsets_and_reference_provenance() {
+    with_tcx(|tcx| {
+        let env = ty::TypingEnv::fully_monomorphized();
+        let word = tcx.data_layout.pointer_size();
+        let leaf = |bits: u128, ty| {
+            let size = tcx.layout_of(env.as_query_input(ty)).unwrap().size;
+            ty::Const::new_value(
+                tcx,
+                ty::ValTree::from_scalar_int(
+                    tcx,
+                    ty::ScalarInt::try_from_uint(bits, size).unwrap(),
+                ),
+                ty,
+            )
+        };
+        let tree =
+            ty::ValTree::from_branches(tcx, [leaf(11, tcx.types.usize), leaf(22, tcx.types.usize)]);
+        let scalar_reference = ty::Ty::new_imm_ref(tcx, tcx.lifetimes.re_static, tcx.types.usize);
+        let scalar = tcx
+            .valtree_to_const_val(ty::Value {
+                ty: scalar_reference,
+                valtree: leaf(37, tcx.types.usize).to_value().valtree,
+            })
+            .unwrap();
+        let (provenance, address) =
+            scalar.try_to_scalar().unwrap().to_pointer(&tcx).into_raw_parts();
+        assert_eq!(read_word(tcx, provenance.unwrap().alloc_id(), address), 37);
+        let array_ty = ty::Ty::new_array(tcx, tcx.types.usize, 2);
+        let array = tcx.valtree_to_const_val(ty::Value { ty: array_ty, valtree: tree }).unwrap();
+        let ConstValue::Indirect { alloc_id, offset } = array else { panic!("array allocation") };
+        assert_eq!(read_word(tcx, alloc_id, offset), 11);
+        assert_eq!(read_word(tcx, alloc_id, offset + word), 22);
+        let reference = ty::Ty::new_imm_ref(tcx, tcx.lifetimes.re_static, array_ty);
+        let value = tcx.valtree_to_const_val(ty::Value { ty: reference, valtree: tree }).unwrap();
+        let (provenance, offset) = value.try_to_scalar().unwrap().to_pointer(&tcx).into_raw_parts();
+        assert_eq!(read_word(tcx, provenance.unwrap().alloc_id(), offset + word), 22);
+        let slice = ty::Ty::new_imm_ref(
+            tcx,
+            tcx.lifetimes.re_static,
+            ty::Ty::new_slice(tcx, tcx.types.usize),
+        );
+        let value = tcx.valtree_to_const_val(ty::Value { ty: slice, valtree: tree }).unwrap();
+        let ConstValue::Slice { alloc_id, meta } = value else { panic!("slice allocation") };
+        assert_eq!(meta, 2);
+        assert_eq!(read_word(tcx, alloc_id, word), 22);
+        for (name, tree) in [
+            (
+                "PAIR",
+                ty::ValTree::from_branches(tcx, [leaf(5, tcx.types.u8), leaf(47, tcx.types.usize)]),
+            ),
+            (
+                "ENUM",
+                ty::ValTree::from_branches(
+                    tcx,
+                    [leaf(1, tcx.types.u32), leaf(2, tcx.types.u8), leaf(73, tcx.types.usize)],
+                ),
+            ),
+        ] {
+            let def = tcx
+                .hir_body_owners()
+                .find(|&owner| {
+                    matches!(tcx.def_kind(owner), DefKind::Const { .. })
+                        && tcx.item_name(owner.to_def_id()).as_str() == name
+                })
+                .unwrap();
+            let ty = tcx.type_of(def).instantiate_identity().skip_norm_wip();
+            let value = tcx.valtree_to_const_val(ty::Value { ty, valtree: tree }).unwrap();
+            let ConstValue::Indirect { alloc_id, offset } = value else {
+                panic!("aggregate allocation")
+            };
+            assert_eq!(
+                read_word(tcx, alloc_id, offset + word * if name == "ENUM" { 2 } else { 1 }),
+                if name == "ENUM" { 73 } else { 47 }
+            );
+        }
+    });
+}
+
+#[test]
+#[ignore = "requires FRONTEND_FOLD_SYSROOT naming the caller's compiled library"]
+fn pthread_initializer_aggregates_against_a_named_library() {
+    let sysroot = eko::env::var("FRONTEND_FOLD_SYSROOT").expect("explicit test sysroot");
+    let source = r#"
+        #![no_std]
+        #![feature(rustc_private)]
+        extern crate libc;
+        use core::cell::UnsafeCell;
+        pub struct Mutex<T> { raw: UnsafeCell<libc::pthread_mutex_t>, value: UnsafeCell<T> }
+        unsafe impl<T: Send> Sync for Mutex<T> {}
+        impl<T> Mutex<T> {
+            pub const fn new(value: T) -> Self {
+                Self { raw: UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER), value: UnsafeCell::new(value) }
+            }
+        }
+        pub struct Condvar(UnsafeCell<libc::pthread_cond_t>);
+        unsafe impl Sync for Condvar {}
+        pub struct RwLock<T> { raw: UnsafeCell<libc::pthread_rwlock_t>, value: UnsafeCell<T> }
+        unsafe impl<T: Send + Sync> Sync for RwLock<T> {}
+        pub static MTX: Mutex<usize> = Mutex::new(59);
+        pub static CV: Condvar = Condvar(UnsafeCell::new(libc::PTHREAD_COND_INITIALIZER));
+        pub static RW: RwLock<usize> = RwLock {
+            raw: UnsafeCell::new(libc::PTHREAD_RWLOCK_INITIALIZER), value: UnsafeCell::new(61)
+        };
+    "#;
+    with_source_tcx(source, Some(&sysroot), |tcx| {
+        let env = ty::TypingEnv::fully_monomorphized();
+        for (name, expected) in [("MTX", Some(59)), ("CV", None), ("RW", Some(61))] {
+            let def = tcx
+                .hir_body_owners()
+                .find(|&owner| {
+                    matches!(tcx.def_kind(owner), DefKind::Static { .. })
+                        && tcx.item_name(owner.to_def_id()).as_str() == name
+                })
+                .unwrap();
+            let allocation = tcx.eval_static_initializer(def).expect("pthread initializer folds");
+            assert!(allocation.inner().mutability.is_mut());
+            if let Some(expected) = expected {
+                let layout = tcx
+                    .layout_of(
+                        env.as_query_input(tcx.type_of(def).instantiate_identity().skip_norm_wip()),
+                    )
+                    .unwrap();
+                let word = tcx.data_layout.pointer_size();
+                assert_eq!(
+                    allocation
+                        .inner()
+                        .read_scalar(&tcx, alloc_range(layout.fields.offset(1), word), false)
+                        .unwrap()
+                        .try_to_scalar_int()
+                        .unwrap()
+                        .to_bits(word),
+                    expected
+                );
+            }
+        }
+    });
+}
+
 fn check_type_id<'tcx>(tcx: TyCtxt<'tcx>, value: ConstValue, expected_ty: ty::Ty<'tcx>) {
     let ConstValue::Indirect { alloc_id, offset } = value else {
         panic!("TypeId allocation expected");

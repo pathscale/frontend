@@ -1,7 +1,6 @@
 use alloc::format;
 
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::rustc_middle::mir::ConstValue;
 use crate::rustc_middle::mir::interpret::{
     ErrorHandled, EvalStaticInitializerRawResult, EvalToAllocationRawResult,
     EvalToConstValueResult, GlobalId, ReportedErrorInfo,
@@ -58,5 +57,16 @@ pub fn eval_to_allocation_raw_provider<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: ty::PseudoCanonicalInput<'tcx, GlobalId<'tcx>>,
 ) -> EvalToAllocationRawResult<'tcx> {
-    Err(ErrorHandled::TooGeneric(tcx.def_span(key.value.instance.def_id())))
+    let def_id = key.value.instance.def_id();
+    if key.value.instance.args.has_non_region_param() {
+        return Err(ErrorHandled::TooGeneric(tcx.def_span(def_id)));
+    }
+    super::static_fold::fold_allocation(tcx, key.typing_env, key.value).map_err(|reason| {
+        let span = tcx.def_span(def_id);
+        let error = tcx.dcx().span_err(
+            span,
+            format!("cannot statically fold allocation `{}`: {reason}", key.value.display(tcx)),
+        );
+        ErrorHandled::Reported(ReportedErrorInfo::const_eval_error(error), span)
+    })
 }
