@@ -124,3 +124,19 @@ fn dropless_slices_and_strings_are_copies_of_their_input() {
     let from_iter = arena.alloc_from_iter((0..1000_u64).map(|n| n * n));
     assert!(from_iter.iter().copied().eq((0..1000_u64).map(|n| n * n)));
 }
+
+#[test]
+fn empty_dropless_inputs_do_not_allocate() {
+    let arena = DroplessArena::default();
+    let start = arena.start.get();
+    let end = arena.end.get();
+    assert!(arena.alloc_slice::<u64>(&[]).is_empty());
+    assert_eq!(arena.alloc_str(""), "");
+    assert!(arena.alloc_from_iter(core::iter::empty::<u64>()).is_empty());
+    assert!(arena.alloc_from_iter((0..4_u64).filter(|_| false)).is_empty());
+    assert!(arena.try_alloc_from_iter(core::iter::empty::<Result<u64, ()>>()).unwrap().is_empty());
+    assert_eq!(arena.start.get(), start);
+    assert_eq!(arena.end.get(), end);
+    assert!(arena.chunks.borrow().is_empty());
+    assert_eq!(*arena.alloc(37_u64), 37);
+}

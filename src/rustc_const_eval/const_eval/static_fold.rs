@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::rustc_abi::Size;
+use crate::rustc_abi::{Size, TagEncoding, VariantIdx, Variants};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_middle::mir::interpret::{
@@ -20,9 +20,19 @@ const MAX_FOLD_STEPS: usize = 4096;
 enum FoldValue<'tcx> {
     Scalar { bits: u128, ty: Ty<'tcx> },
     ZeroSized { ty: Ty<'tcx> },
-    Reference { ty: Ty<'tcx>, pointee_ty: Ty<'tcx>, alloc_id: AllocId },
-    Aggregate { ty: Ty<'tcx>, fields: &'tcx [FoldValue<'tcx>] },
-    Slice { ty: Ty<'tcx>, alloc_id: AllocId, len: u64 },
+    Reference { ty: Ty<'tcx>, pointee: &'tcx FoldValue<'tcx>, alloc_id: AllocId, offset: Size },
+    Aggregate { ty: Ty<'tcx>, fields: &'tcx [FoldValue<'tcx>], variant: Option<VariantIdx> },
+    Slice { ty: Ty<'tcx>, alloc_id: AllocId, offset: Size, len: u64 },
+}
+
+// A projected borrow keeps the original allocation and its byte offset. Keeping
+// the folded pointee too lets subsequent dereferences use values, without
+// interpreting arbitrary pointers or reading unknown memory.
+struct FoldPlace<'tcx> {
+    value: FoldValue<'tcx>,
+    root: FoldValue<'tcx>,
+    alloc_id: Option<AllocId>,
+    offset: Size,
 }
 
 impl<'tcx> FoldValue<'tcx> {
@@ -171,12 +181,16 @@ impl<'tcx> Folder<'tcx> {
         match value {
             FoldValue::Scalar { .. } => Ok(ConstValue::Scalar(self.to_scalar(value)?)),
             FoldValue::ZeroSized { .. } => Ok(ConstValue::ZeroSized),
-            FoldValue::Reference { alloc_id, .. } => Ok(ConstValue::Scalar(Scalar::from_pointer(
-                Pointer::new(alloc_id.into(), Size::ZERO),
-                &self.tcx,
-            ))),
-            FoldValue::Slice { alloc_id, len, .. } => Ok(ConstValue::Slice { alloc_id, meta: len }),
-            FoldValue::Aggregate { ty, fields } => {
+            FoldValue::Reference { alloc_id, offset, .. } => Ok(ConstValue::Scalar(
+                Scalar::from_pointer(Pointer::new(alloc_id.into(), offset), &self.tcx),
+            )),
+            FoldValue::Slice { alloc_id, offset: Size::ZERO, len, .. } => {
+                Ok(ConstValue::Slice { alloc_id, meta: len })
+            }
+            FoldValue::Slice { .. } => {
+                Ok(ConstValue::Indirect { alloc_id: self.allocate(value)?, offset: Size::ZERO })
+            }
+            FoldValue::Aggregate { ty, fields, variant } => {
                 let layout = self
                     .tcx
                     .layout_of(self.typing_env.as_query_input(ty))
@@ -184,14 +198,31 @@ impl<'tcx> Folder<'tcx> {
                 if layout.is_zst() {
                     return Ok(ConstValue::ZeroSized);
                 }
-                if layout.backend_repr.is_scalar() {
+                if variant.is_none() && layout.backend_repr.is_scalar() {
                     for field in fields {
                         if self.layout(field.ty())?.0.bytes() != 0 {
                             return self.to_const(*field);
                         }
                     }
                 }
-                Ok(ConstValue::Indirect { alloc_id: self.allocate(value)?, offset: Size::ZERO })
+                let alloc_id = self.allocate(value)?;
+                if let crate::rustc_abi::BackendRepr::Scalar(scalar) = layout.backend_repr {
+                    let read_provenance =
+                        matches!(scalar.primitive(), crate::rustc_abi::Primitive::Pointer(_));
+                    let scalar = self
+                        .tcx
+                        .global_alloc(alloc_id)
+                        .unwrap_memory()
+                        .inner()
+                        .read_scalar(
+                            &self.tcx,
+                            alloc_range(Size::ZERO, layout.size),
+                            read_provenance,
+                        )
+                        .map_err(|_| "constant aggregate scalar read failed")?;
+                    return Ok(ConstValue::Scalar(scalar));
+                }
+                Ok(ConstValue::Indirect { alloc_id, offset: Size::ZERO })
             }
         }
     }
@@ -218,13 +249,45 @@ impl<'tcx> Folder<'tcx> {
         offset: Size,
         value: FoldValue<'tcx>,
     ) -> Result<(), &'static str> {
-        if let FoldValue::Aggregate { ty, fields } = value {
+        if let FoldValue::Aggregate { ty, fields, variant } = value {
             let layout = self
                 .tcx
                 .layout_of(self.typing_env.as_query_input(ty))
                 .map_err(|_| "aggregate layout could not be computed")?;
+            let cx = LayoutCx::new(self.tcx, self.typing_env);
+            let field_layout = variant.map_or(layout, |variant| layout.for_variant(&cx, variant));
             for (index, field) in fields.iter().enumerate() {
-                self.write_value(allocation, offset + layout.fields.offset(index), *field)?;
+                self.write_value(allocation, offset + field_layout.fields.offset(index), *field)?;
+            }
+            if let Some(variant) = variant
+                && let Variants::Multiple { tag, tag_encoding, tag_field, .. } = &layout.variants
+            {
+                let bits = match tag_encoding {
+                    TagEncoding::Direct => {
+                        let ty::Adt(def, _) = *ty.kind() else {
+                            return Err("enum aggregate has a non-ADT type");
+                        };
+                        def.discriminant_for_variant(self.tcx, variant).val
+                    }
+                    TagEncoding::Niche { untagged_variant, niche_variants, niche_start } => {
+                        if variant == *untagged_variant {
+                            return Ok(());
+                        }
+                        if !niche_variants.contains(&variant) {
+                            return Err("enum variant has no representable tag");
+                        }
+                        ((variant.as_u32() - niche_variants.start.as_u32()) as u128)
+                            .wrapping_add(*niche_start)
+                    }
+                };
+                let size = tag.size(&self.tcx);
+                allocation
+                    .write_scalar(
+                        &self.tcx,
+                        alloc_range(offset + layout.fields.offset(tag_field.as_usize()), size),
+                        Scalar::from_uint(size.truncate(bits), size),
+                    )
+                    .map_err(|_| "constant enum tag write failed")?;
             }
             return Ok(());
         }
@@ -233,16 +296,19 @@ impl<'tcx> Folder<'tcx> {
             return Ok(());
         }
         let scalar = match value {
-            FoldValue::Reference { alloc_id, .. } => {
-                Scalar::from_pointer(Pointer::new(alloc_id.into(), Size::ZERO), &self.tcx)
+            FoldValue::Reference { alloc_id, offset, .. } => {
+                Scalar::from_pointer(Pointer::new(alloc_id.into(), offset), &self.tcx)
             }
-            FoldValue::Slice { alloc_id, len, .. } => {
+            FoldValue::Slice { alloc_id, offset: pointee_offset, len, .. } => {
                 let pointer_size = self.tcx.data_layout.pointer_size();
                 allocation
                     .write_scalar(
                         &self.tcx,
                         alloc_range(offset, pointer_size),
-                        Scalar::from_pointer(Pointer::new(alloc_id.into(), Size::ZERO), &self.tcx),
+                        Scalar::from_pointer(
+                            Pointer::new(alloc_id.into(), pointee_offset),
+                            &self.tcx,
+                        ),
                     )
                     .map_err(|_| "constant pointer write failed")?;
                 allocation
@@ -262,7 +328,11 @@ impl<'tcx> Folder<'tcx> {
     }
 
     fn aggregate(&self, ty: Ty<'tcx>, fields: &[FoldValue<'tcx>]) -> FoldValue<'tcx> {
-        FoldValue::Aggregate { ty, fields: self.tcx.arena.dropless.alloc_slice(fields) }
+        FoldValue::Aggregate {
+            ty,
+            fields: self.tcx.arena.dropless.alloc_slice(fields),
+            variant: None,
+        }
     }
 
     fn layout(&self, ty: Ty<'tcx>) -> Result<(Size, u64), &'static str> {
@@ -439,7 +509,7 @@ impl<'tcx> Folder<'tcx> {
             mir::Const::Val(ConstValue::ZeroSized, ty) => self.zero_sized(ty),
             mir::Const::Val(ConstValue::Scalar(_), _) => Err("raw pointer constant is unsupported"),
             mir::Const::Val(ConstValue::Slice { alloc_id, meta }, ty) => {
-                Ok(FoldValue::Slice { ty, alloc_id, len: meta })
+                Ok(FoldValue::Slice { ty, alloc_id, offset: Size::ZERO, len: meta })
             }
             mir::Const::Val(ConstValue::Indirect { .. }, _) => {
                 Err("allocation-backed constant is unsupported")
@@ -656,22 +726,127 @@ impl<'tcx> Folder<'tcx> {
 
     fn eval_place(
         &self,
-        _body: &mir::Body<'tcx>,
+        body: &mir::Body<'tcx>,
         locals: &FxHashMap<Local, FoldValue<'tcx>>,
         place: &mir::Place<'tcx>,
     ) -> Result<FoldValue<'tcx>, &'static str> {
-        let mut value =
-            *locals.get(&place.local).ok_or("MIR reads a local without a folded value")?;
+        Ok(self.project_place(body, locals, place)?.value)
+    }
+
+    fn project_place(
+        &self,
+        _body: &mir::Body<'tcx>,
+        locals: &FxHashMap<Local, FoldValue<'tcx>>,
+        place: &mir::Place<'tcx>,
+    ) -> Result<FoldPlace<'tcx>, &'static str> {
+        if place.projection.len() > MAX_FOLD_DEPTH {
+            return Err("constant place projection exceeded its depth bound");
+        }
+        let value = *locals.get(&place.local).ok_or("MIR reads a local without a folded value")?;
+        let mut place_value = FoldPlace { value, root: value, alloc_id: None, offset: Size::ZERO };
+        let mut downcast = None;
+        let cx = LayoutCx::new(self.tcx, self.typing_env);
         for projection in place.projection {
-            match (projection, value) {
-                (mir::ProjectionElem::Field(index, _), FoldValue::Aggregate { fields, .. }) => {
-                    value =
+            let value = place_value.value;
+            match projection {
+                mir::ProjectionElem::Deref => {
+                    let FoldValue::Reference { pointee, alloc_id, offset, .. } = value else {
+                        return Err("dereference requires a folded reference");
+                    };
+                    place_value = FoldPlace {
+                        value: *pointee,
+                        root: *pointee,
+                        alloc_id: Some(alloc_id),
+                        offset,
+                    };
+                    downcast = None;
+                }
+                mir::ProjectionElem::Downcast(_, variant) => {
+                    let FoldValue::Aggregate { variant: Some(active), .. } = value else {
+                        return Err("downcast requires a folded enum variant");
+                    };
+                    if variant != active {
+                        return Err("constant downcast selects an inactive variant");
+                    }
+                    downcast = Some(variant);
+                }
+                mir::ProjectionElem::Field(index, field_ty) => {
+                    let FoldValue::Aggregate { ty, fields, variant } = value else {
+                        return Err("field projection requires a folded aggregate");
+                    };
+                    if variant != downcast {
+                        return Err("enum field projection requires its active downcast");
+                    }
+                    let field =
                         *fields.get(index.as_usize()).ok_or("constant field is out of bounds")?;
+                    if field.ty() != field_ty {
+                        return Err("constant field projection has a mismatched type");
+                    }
+                    let layout = self
+                        .tcx
+                        .layout_of(self.typing_env.as_query_input(ty))
+                        .map_err(|_| "projected aggregate layout could not be computed")?;
+                    let layout = variant.map_or(layout, |variant| layout.for_variant(&cx, variant));
+                    place_value.offset += layout.fields.offset(index.as_usize());
+                    place_value.value = field;
+                    downcast = None;
+                }
+                mir::ProjectionElem::ConstantIndex { offset, min_length, from_end } => {
+                    let len = self.array_len(value)?;
+                    if len < min_length {
+                        return Err("constant index minimum length exceeds the array length");
+                    }
+                    let index = if from_end {
+                        len.checked_sub(offset).ok_or("constant index is out of bounds")?
+                    } else {
+                        offset
+                    };
+                    self.project_index(&mut place_value, index)?;
+                    downcast = None;
+                }
+                mir::ProjectionElem::Index(local) => {
+                    let index = *locals.get(&local).ok_or("constant index has no folded value")?;
+                    let index = self.scalar_info(index)?;
+                    if index.ty != self.tcx.types.usize {
+                        return Err("constant index is not a usize");
+                    }
+                    let index =
+                        u64::try_from(index.bits).map_err(|_| "constant index is too large")?;
+                    self.project_index(&mut place_value, index)?;
+                    downcast = None;
                 }
                 _ => return Err("unsupported constant place projection"),
             }
         }
-        Ok(value)
+        Ok(place_value)
+    }
+
+    fn array_len(&self, value: FoldValue<'tcx>) -> Result<u64, &'static str> {
+        let ty::Array(_, count) = *value.ty().kind() else {
+            return Err("constant index requires a folded array");
+        };
+        count.try_to_target_usize(self.tcx).ok_or("constant array length is unresolved")
+    }
+
+    fn project_index(&self, place: &mut FoldPlace<'tcx>, index: u64) -> Result<(), &'static str> {
+        let len = self.array_len(place.value)?;
+        if index >= len {
+            return Err("constant index is out of bounds");
+        }
+        let FoldValue::Aggregate { ty, fields, variant: None } = place.value else {
+            return Err("constant index requires a folded array value");
+        };
+        if fields.len() as u64 != len {
+            return Err("folded array has a mismatched element count");
+        }
+        let index = usize::try_from(index).map_err(|_| "constant index is too large")?;
+        let layout = self
+            .tcx
+            .layout_of(self.typing_env.as_query_input(ty))
+            .map_err(|_| "projected array layout could not be computed")?;
+        place.offset += layout.fields.offset(index);
+        place.value = fields[index];
+        Ok(())
     }
 
     fn eval_rvalue(
@@ -695,9 +870,6 @@ impl<'tcx> Folder<'tcx> {
                 self.eval_binary(*op, left, right, destination_ty)
             }
             Rvalue::Ref(_, _, place) => {
-                if !place.projection.is_empty() {
-                    return Err("reference to a projected place is unsupported");
-                }
                 let pointee_ty = place.ty(&body.local_decls, self.tcx).ty;
                 let ty::Ref(_, target_pointee, _) = *destination_ty.kind() else {
                     return Err("reference rvalue has a non-reference type");
@@ -705,9 +877,20 @@ impl<'tcx> Folder<'tcx> {
                 if target_pointee != pointee_ty {
                     return Err("reference rvalue has a mismatched pointee type");
                 }
-                let value = self.eval_place(body, locals, place)?;
-                let alloc_id = self.allocate(value)?;
-                Ok(FoldValue::Reference { ty: destination_ty, pointee_ty, alloc_id })
+                let place = self.project_place(body, locals, place)?;
+                if place.value.ty() != pointee_ty {
+                    return Err("folded reference has a mismatched pointee type");
+                }
+                let alloc_id = match place.alloc_id {
+                    Some(alloc_id) => alloc_id,
+                    None => self.allocate(place.root)?,
+                };
+                Ok(FoldValue::Reference {
+                    ty: destination_ty,
+                    pointee: self.tcx.arena.dropless.alloc(place.value),
+                    alloc_id,
+                    offset: place.offset,
+                })
             }
             Rvalue::Cast(mir::CastKind::IntToInt, operand, cast_ty)
                 if *cast_ty == destination_ty =>
@@ -739,10 +922,10 @@ impl<'tcx> Folder<'tcx> {
                 _,
             ) => {
                 let value = self.eval_operand(body, locals, operand, depth)?;
-                let FoldValue::Reference { pointee_ty, alloc_id, .. } = value else {
+                let FoldValue::Reference { pointee, alloc_id, offset, .. } = value else {
                     return Err("unsizing requires a folded reference");
                 };
-                let ty::Array(element, count) = *pointee_ty.kind() else {
+                let ty::Array(element, count) = *pointee.ty().kind() else {
                     return Err("only array-to-slice unsizing is supported");
                 };
                 let ty::Ref(_, target, _) = *destination_ty.kind() else {
@@ -753,31 +936,53 @@ impl<'tcx> Folder<'tcx> {
                 }
                 let len =
                     count.try_to_target_usize(self.tcx).ok_or("unsizing length is unresolved")?;
-                Ok(FoldValue::Slice { ty: destination_ty, alloc_id, len })
+                Ok(FoldValue::Slice { ty: destination_ty, alloc_id, offset, len })
             }
             Rvalue::Cast(mir::CastKind::Transmute, operand, _) => {
                 let value = self.eval_operand(body, locals, operand, depth)?;
                 self.retype(value, destination_ty)
             }
             Rvalue::Cast(..) => Err("non-integer cast is unsupported"),
-            Rvalue::Discriminant(..) => Err("discriminant read is unsupported"),
+            Rvalue::Discriminant(place) => {
+                let value = self.eval_place(body, locals, place)?;
+                let FoldValue::Aggregate { ty, variant: Some(variant), .. } = value else {
+                    return Err("discriminant read requires a folded enum variant");
+                };
+                let ty::Adt(def, _) = *ty.kind() else {
+                    return Err("enum aggregate has a non-ADT type");
+                };
+                self.scalar_value(
+                    def.discriminant_for_variant(self.tcx, variant).val,
+                    destination_ty,
+                )
+            }
             Rvalue::Aggregate(kind, operands) => {
                 if operands.len() > MAX_FOLD_STEPS {
                     return Err("aggregate exceeded its field bound");
                 }
-                let supported = match &**kind {
-                    mir::AggregateKind::Array(_) | mir::AggregateKind::Tuple => true,
-                    mir::AggregateKind::Adt(def, _, _, _, _) => self.tcx.adt_def(*def).is_struct(),
-                    _ => false,
+                let variant = match &**kind {
+                    mir::AggregateKind::Array(_) | mir::AggregateKind::Tuple => None,
+                    mir::AggregateKind::Adt(def, variant, _, _, None) => {
+                        let def = self.tcx.adt_def(*def);
+                        if def.is_union() {
+                            return Err("union aggregate construction is unsupported");
+                        }
+                        if def.variant(*variant).fields.len() != operands.len() {
+                            return Err("aggregate has a mismatched field count");
+                        }
+                        def.is_enum().then_some(*variant)
+                    }
+                    _ => return Err("unsupported aggregate construction"),
                 };
-                if !supported {
-                    return Err("unsupported aggregate construction");
-                }
                 let fields = operands
                     .iter()
                     .map(|operand| self.eval_operand(body, locals, operand, depth))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.aggregate(destination_ty, &fields))
+                Ok(FoldValue::Aggregate {
+                    ty: destination_ty,
+                    fields: self.tcx.arena.dropless.alloc_slice(&fields),
+                    variant,
+                })
             }
             Rvalue::CopyForDeref(..) => Err("deref copy is unsupported"),
             Rvalue::WrapUnsafeBinder(..) => Err("unsafe binder wrapping is unsupported"),
@@ -888,10 +1093,10 @@ impl<'tcx> Folder<'tcx> {
                 return Err("size_of_val or align_of_val call has an unexpected argument count");
             }
             let argument = self.eval_operand(body, locals, &args[0].node, depth)?;
-            let FoldValue::Reference { pointee_ty, .. } = argument else {
+            let FoldValue::Reference { pointee, .. } = argument else {
                 return Err("size_of_val or align_of_val argument is not a folded local reference");
             };
-            if pointee_ty != ty {
+            if pointee.ty() != ty {
                 return Err("size_of_val or align_of_val argument has a mismatched pointee type");
             }
         } else if !args.is_empty() {
@@ -1237,14 +1442,14 @@ impl<'tcx> Folder<'tcx> {
                 self.scalar_value(bits, destination_ty)
             }
             FoldValue::ZeroSized { .. } => self.zero_sized(destination_ty),
-            FoldValue::Reference { pointee_ty, alloc_id, .. } => {
+            FoldValue::Reference { pointee, alloc_id, offset, .. } => {
                 let ty::Ref(_, destination_pointee, _) = *destination_ty.kind() else {
                     return Err("subtype cast changed a reference into a non-reference");
                 };
-                if pointee_ty != destination_pointee {
+                if pointee.ty() != destination_pointee {
                     return Err("subtype cast changed a reference pointee");
                 }
-                Ok(FoldValue::Reference { ty: destination_ty, pointee_ty, alloc_id })
+                Ok(FoldValue::Reference { ty: destination_ty, pointee, alloc_id, offset })
             }
             _ => Err("aggregate reinterpretation is unsupported"),
         }
