@@ -35,6 +35,7 @@ mod output;
 mod prescan;
 mod scan;
 mod skip;
+mod simd;
 mod table;
 
 use alloc::boxed::Box;
@@ -295,6 +296,10 @@ pub struct LexedFile {
     /// Offsets just past each top-level `}` that closes a group and each top-level `;`: where a
     /// top-level item can end.
     pub item_cuts: Box<[u32]>,
+    /// Token indices immediately after top-level item boundaries.
+    pub cut_tokens: Box<[u32]>,
+    /// Cumulative predicted AttrIds at each corresponding token boundary.
+    pub cut_attrs: Box<[u32]>,
     /// Token indices of raw identifiers.
     pub raw_idents: Box<[u32]>,
     /// Literal suffixes, by token index, in token order.
@@ -554,7 +559,13 @@ impl Part {
     /// offset) and copies it to its place in the file's buffers. Touches nothing else shared.
     pub fn patch(mut self) {
         let (tokens, groups) = (self.at.tokens as u32, self.at.groups as u32);
-        scan::patch(&mut self.chunk, &self.symbols, tokens, groups);
+        scan::patch(
+            &mut self.chunk,
+            &self.symbols,
+            tokens,
+            groups,
+            u32::try_from(self.at.attr_base).expect("attribute prefix overflow"),
+        );
         // SAFETY: `at` is this chunk's offsets among the chunks `output` was sized for
         // (`Assembly::parts`), and a part is consumed by its one write.
         unsafe { self.output.write(self.at, &self.chunk) };
@@ -634,7 +645,7 @@ impl Assembly {
         }
         let mut chunks = self.chunks;
         let mut chunk = chunks.pop().expect("a file has one chunk at least");
-        scan::patch(&mut chunk, &self.symbols[0], 0, 0);
+        scan::patch(&mut chunk, &self.symbols[0], 0, 0, 0);
         Arc::new(scan::single(self.src, self.begin, chunk))
     }
 }

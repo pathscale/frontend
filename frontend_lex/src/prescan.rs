@@ -47,9 +47,9 @@ pub(crate) struct Segment {
     /// Lines a chunk may start at, if their absolute depth is 0: (line start, relative depth).
     /// Each follows a `;` or `}` and begins with a token that is not a delimiter or a comment.
     candidates: Vec<(usize, i64)>,
-    /// Whether the first candidate condition depends on the previous segment's last byte: the
-    /// segment had no significant byte before its first newline.
-    open_start: Option<(usize, i64)>,
+    /// Candidates whose condition depends on the previous segment's last significant byte.
+    /// Keep every leading blank line so a chunk grid point can fall between them.
+    open_start: Vec<(usize, i64)>,
     /// The last significant byte, or 0 if none.
     last: u8,
     /// Whether the scan met bytes it cannot settle. Fatal only if the segment really started
@@ -66,7 +66,7 @@ pub(crate) fn segment(src: &[u8], start: usize, end: usize) -> Segment {
         depth: 0,
         min_depth: 0,
         candidates: Vec::new(),
-        open_start: None,
+        open_start: Vec::new(),
         last: 0,
         failed: true,
     })
@@ -80,7 +80,7 @@ fn scan(src: &[u8], start: usize, end: usize) -> Option<Segment> {
         depth: 0,
         min_depth: 0,
         candidates: Vec::new(),
-        open_start: None,
+        open_start: Vec::new(),
         last: 0,
         failed: false,
     };
@@ -102,7 +102,7 @@ fn scan(src: &[u8], start: usize, end: usize) -> Option<Segment> {
                 if line < len && starts_item(src, line) {
                     match last {
                         b';' | b'}' => seg.candidates.push((line, depth)),
-                        0 if seg.open_start.is_none() => seg.open_start = Some((line, depth)),
+                        0 => seg.open_start.push((line, depth)),
                         _ => {}
                     }
                 }
@@ -211,14 +211,15 @@ pub(crate) fn compose(
         if depth + seg.min_depth < 0 {
             return Vec::new();
         }
-        if let Some((line, rel)) = seg.open_start
-            && matches!(last, b';' | b'}')
-            && depth + rel == 0
-            && line >= next_cut
-            && len - line >= chunk_bytes / 2
-        {
-            cuts.push(line);
-            next_cut = line + chunk_bytes;
+        for &(line, rel) in &seg.open_start {
+            if matches!(last, b';' | b'}')
+                && depth + rel == 0
+                && line >= next_cut
+                && len - line >= chunk_bytes / 2
+            {
+                cuts.push(line);
+                next_cut = line + chunk_bytes;
+            }
         }
         for &(line, rel) in &seg.candidates {
             if line >= next_cut && depth + rel == 0 && len - line >= chunk_bytes / 2 {
@@ -334,5 +335,25 @@ fn quote(src: &[u8], pos: usize) -> Option<usize> {
         }
         // A lifetime (or a malformed literal, which the lexer reports).
         _ => Some(pos + 1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn segmented_blank_lines_keep_chunk_grid_candidates() {
+        let src = b"fn a() {}\n\nfn b() {}\n\nfn c() {}\n\nfn d() {}\n";
+        for segment_bytes in 1..32 {
+            let mut bounds: alloc::vec::Vec<_> = (0..src.len()).step_by(segment_bytes).collect();
+            bounds.push(src.len());
+            for chunk_bytes in 4..16 {
+                let segments = bounds.windows(2).map(|b| super::segment(src, b[0], b[1])).collect();
+                assert_eq!(
+                    super::compose(src, 0, segments, &bounds, chunk_bytes),
+                    super::plan(src, 0, chunk_bytes),
+                    "segments {segment_bytes}, chunks {chunk_bytes}"
+                );
+            }
+        }
     }
 }

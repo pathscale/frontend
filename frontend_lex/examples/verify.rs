@@ -26,11 +26,13 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn same(a: &LexedFile, b: &LexedFile) -> Result<(), &'static str> {
-    let checks: [(bool, &str); 9] = [
+    let checks: [(bool, &str); 11] = [
         (a.error == b.error, "error"),
         (a.tokens == b.tokens, "tokens"),
         (a.groups == b.groups, "groups"),
         (a.item_cuts == b.item_cuts, "item cuts"),
+        (a.cut_tokens == b.cut_tokens, "cut tokens"),
+        (a.cut_attrs == b.cut_attrs, "cut attributes"),
         (a.raw_idents == b.raw_idents, "raw identifiers"),
         (a.suffixes == b.suffixes, "suffixes"),
         (a.newlines == b.newlines, "newlines"),
@@ -68,6 +70,7 @@ fn main() {
         .iter()
         .map(|(_, src)| frontend_lex::lex(Arc::clone(src), options, &interner))
         .collect();
+    let mut differences = 0;
     for chunk_bytes in [512, 4096, 65536] {
         let mut differ = Vec::new();
         let (mut planned, mut guessed, mut wrong) = (0, 0, 0);
@@ -82,7 +85,7 @@ fn main() {
                 let composed =
                     frontend_lex::plan_from_segments(src, &segments, scanned, chunk_bytes);
                 if composed.bounds() != plan.bounds() {
-                    differ.push(format!("{name}: segmented prescan ({segment_bytes} B) cuts"));
+                    differ.push(format!("{name}: segmented prescan ({segment_bytes} B) cuts: serial {:?}, segmented {:?}", plan.bounds(), composed.bounds()));
                 }
             }
             if plan.len() > 1 {
@@ -111,8 +114,10 @@ fn main() {
             sources.len(),
             differ.len()
         );
+        differences += differ.len();
         for line in differ.iter().take(8) {
             println!("  {line}");
         }
     }
+    assert_eq!(differences, 0, "chunk verification differences");
 }

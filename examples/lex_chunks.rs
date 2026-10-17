@@ -5,8 +5,8 @@
 //!
 //! `verify` lexes every file (the generated corpora and every `.rs` under each `DIR`) serially
 //! and chunked at several chunk sizes, and requires every field of the two files to be equal:
-//! tokens, groups, item cuts, raw identifiers, suffixes, newlines, multi-byte characters,
-//! gallery and error. Chunks there run one after another; order cannot change their output,
+//! tokens, groups, item cuts, cut token/attribute metadata, raw identifiers, suffixes, newlines,
+//! multi-byte characters, gallery and error. Chunks there run one after another; order cannot change their output,
 //! since a chunk touches nothing shared.
 //!
 //! `bench` builds large single files by concatenating sources (still one valid token stream)
@@ -41,6 +41,12 @@ fn same(a: &LexedFile, b: &LexedFile) -> Result<(), &'static str> {
     }
     if a.item_cuts != b.item_cuts {
         return Err("item cuts");
+    }
+    if a.cut_tokens != b.cut_tokens {
+        return Err("cut tokens");
+    }
+    if a.cut_attrs != b.cut_attrs {
+        return Err("cut attributes");
     }
     if a.raw_idents != b.raw_idents {
         return Err("raw identifiers");

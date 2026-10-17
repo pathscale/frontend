@@ -175,6 +175,8 @@ pub(crate) struct Scanner<'a> {
     groups: Vec<Group>,
     frames: Vec<Frame>,
     item_cuts: Vec<u32>,
+    cut_tokens: Vec<u32>,
+    cut_attrs: Vec<u32>,
     raw_idents: Vec<u32>,
     /// Literal suffixes as (token, atom).
     suffixes: Vec<(u32, u32)>,
@@ -201,6 +203,9 @@ pub(crate) struct Chunk {
     pub(crate) tokens: Vec<Token>,
     pub(crate) groups: Vec<Group>,
     pub(crate) item_cuts: Vec<u32>,
+    pub(crate) cut_tokens: Vec<u32>,
+    pub(crate) cut_attrs: Vec<u32>,
+    pub(crate) attr_total: u32,
     pub(crate) raw_idents: Vec<u32>,
     pub(crate) suffixes: Vec<(u32, u32)>,
     pub(crate) newlines: Vec<u32>,
@@ -244,6 +249,8 @@ impl<'a> Scanner<'a> {
             groups: Vec::with_capacity(len / 32 + 8),
             frames: alloc::vec![Frame::new(NO_GROUP, false)],
             item_cuts: Vec::new(),
+            cut_tokens: Vec::new(),
+            cut_attrs: Vec::new(),
             raw_idents: Vec::new(),
             suffixes: Vec::new(),
             newlines: Vec::with_capacity(len / 32 + 8),
@@ -265,6 +272,9 @@ impl<'a> Scanner<'a> {
             tokens: s.tokens,
             groups: s.groups,
             item_cuts: s.item_cuts,
+            cut_tokens: s.cut_tokens,
+            cut_attrs: s.cut_attrs,
+            attr_total: s.frames[0].attributes,
             raw_idents: s.raw_idents,
             suffixes: s.suffixes,
             newlines: s.newlines,
@@ -366,6 +376,7 @@ impl<'a> Scanner<'a> {
         if self.frames.len() != 1 {
             return self.fail(end, ErrorKind::Delimiter);
         }
+        let eof_index = self.tokens.len() as u32;
         self.tokens.push(Token {
             lo: end as u32,
             hi: end as u32,
@@ -375,6 +386,8 @@ impl<'a> Scanner<'a> {
             aux: 0,
             _reserved: 0,
         });
+        let root_attrs = self.frames[0].attributes;
+        self.record_cut(eof_index, root_attrs);
         Ok(())
     }
 
@@ -440,7 +453,9 @@ impl<'a> Scanner<'a> {
         };
         frame.remember(role);
         if kind == Kind::Semi && frame.group == NO_GROUP {
+            let attrs = frame.attributes;
             self.item_cuts.push(hi as u32);
+            self.record_cut(self.tokens.len() as u32, attrs);
         }
         index
     }
@@ -506,7 +521,20 @@ impl<'a> Scanner<'a> {
             aux: 0,
             _reserved: 0,
         });
+        if top_brace {
+            self.record_cut(self.tokens.len() as u32, self.frames[0].attributes);
+        }
         Ok(lo + 1)
+    }
+
+    #[inline(always)]
+    fn record_cut(&mut self, token: u32, attrs: u32) {
+        if self.cut_tokens.last() == Some(&token) {
+            *self.cut_attrs.last_mut().expect("cut arrays stay aligned") = attrs;
+        } else {
+            self.cut_tokens.push(token);
+            self.cut_attrs.push(attrs);
+        }
     }
 
     // ---- Atoms. ----
@@ -559,6 +587,27 @@ impl<'a> Scanner<'a> {
     fn whitespace(&mut self, mut pos: usize) -> usize {
         // Bounded by the chunk: the bytes past its end are the next chunk's.
         let src = &self.src[..self.end];
+        #[cfg(all(target_arch = "aarch64", target_feature = "neon", target_endian = "little"))]
+        while pos + 16 <= self.end {
+            // SAFETY: the complete block lies within the chunk and source.
+            let (accepted, lfs) = unsafe { crate::simd::whitespace_masks(src.as_ptr().add(pos)) };
+            let all = 0x8888_8888_8888_8888u64;
+            let rejected = all & !accepted;
+            let count = if rejected == 0 { 16 } else { rejected.trailing_zeros() as usize / 4 };
+            let mut events = lfs & all;
+            while events != 0 {
+                let at = events.trailing_zeros() as usize / 4;
+                if at >= count {
+                    break;
+                }
+                self.newlines.push((pos + at) as u32);
+                events &= events - 1;
+            }
+            pos += count;
+            if count != 16 {
+                return pos;
+            }
+        }
         while let Some(&b) = src.get(pos) {
             match b {
                 b'\n' => {
@@ -575,22 +624,75 @@ impl<'a> Scanner<'a> {
     /// Records the newlines and multi-byte characters of `text[lo..hi]`, which a token or
     /// comment spans, and stops at a bidi control. Returns whether it holds a `\r`.
     fn segment(&mut self, lo: usize, hi: usize) -> Result<bool, Stop> {
-        let bytes = &self.src[lo..hi];
-        for nl in memchr::memchr_iter(b'\n', bytes) {
-            self.newlines.push((lo + nl) as u32);
-        }
-        if !bytes.is_ascii() {
-            for (at, c) in self.text[lo..hi].char_indices() {
-                let width = c.len_utf8();
-                if width > 1 {
-                    self.multibyte.push(((lo + at) as u32, width as u8));
+        #[cfg(all(target_arch = "aarch64", target_feature = "neon", target_endian = "little"))]
+        {
+            let mut pos = lo;
+            let mut has_cr = false;
+            while pos + 16 <= hi {
+                // SAFETY: the complete block lies within this source segment.
+                let (lf, cr, leads) =
+                    unsafe { crate::simd::segment_masks(self.src.as_ptr().add(pos)) };
+                let lanes = 0x8888_8888_8888_8888u64;
+                let mut events = lf & lanes;
+                while events != 0 {
+                    self.newlines.push((pos + events.trailing_zeros() as usize / 4) as u32);
+                    events &= events - 1;
+                }
+                has_cr |= cr != 0;
+                let mut chars = leads & lanes;
+                while chars != 0 {
+                    let at = pos + chars.trailing_zeros() as usize / 4;
+                    let c = self.text[at..].chars().next().expect("lead byte is a scalar boundary");
+                    let width = c.len_utf8();
+                    self.multibyte.push((at as u32, width as u8));
                     if is_text_flow(c) {
-                        return self.fail(lo + at, ErrorKind::TextFlow);
+                        return self.fail(at, ErrorKind::TextFlow);
+                    }
+                    chars &= chars - 1;
+                }
+                pos += 16;
+            }
+            for (off, &b) in self.src[pos..hi].iter().enumerate() {
+                has_cr |= b == b'\r';
+                if b == b'\n' {
+                    self.newlines.push((pos + off) as u32);
+                }
+                if b >= 0xC2 {
+                    let at = pos + off;
+                    let c = self.text[at..].chars().next().expect("valid UTF-8 source");
+                    if c.len_utf8() > 1 {
+                        self.multibyte.push((at as u32, c.len_utf8() as u8));
+                        if is_text_flow(c) {
+                            return self.fail(at, ErrorKind::TextFlow);
+                        }
                     }
                 }
             }
+            Ok(has_cr)
         }
-        Ok(memchr::memchr(b'\r', bytes).is_some())
+        #[cfg(not(all(
+            target_arch = "aarch64",
+            target_feature = "neon",
+            target_endian = "little"
+        )))]
+        {
+            let bytes = &self.src[lo..hi];
+            for nl in memchr::memchr_iter(b'\n', bytes) {
+                self.newlines.push((lo + nl) as u32);
+            }
+            if !bytes.is_ascii() {
+                for (at, c) in self.text[lo..hi].char_indices() {
+                    let width = c.len_utf8();
+                    if width > 1 {
+                        self.multibyte.push(((lo + at) as u32, width as u8));
+                        if is_text_flow(c) {
+                            return self.fail(lo + at, ErrorKind::TextFlow);
+                        }
+                    }
+                }
+            }
+            Ok(memchr::memchr(b'\r', bytes).is_some())
+        }
     }
 
     fn line_comment(&mut self, lo: usize) -> Step {
@@ -660,6 +762,35 @@ impl<'a> Scanner<'a> {
     #[inline(always)]
     fn ident_tail(&self, mut pos: usize) -> (usize, bool) {
         let src = self.src;
+        // Short names stay on the scalar path. Let a short scalar prefix establish that the
+        // identifier is long before paying for a vector load.
+        let prefix_end = pos.saturating_add(8).min(src.len());
+        while pos < prefix_end {
+            let b = src[pos];
+            if CLASS[b as usize] & ID_CONT == 0 {
+                if b >= 0x80 {
+                    return (self.unicode_ident_tail(pos), false);
+                }
+                return (pos, true);
+            }
+            pos += 1;
+        }
+        // Enter NEON only when a complete load is readable.
+        #[cfg(all(target_arch = "aarch64", target_feature = "neon", target_endian = "little"))]
+        while src.len().saturating_sub(pos) >= 16 {
+            // SAFETY: at least 16 bytes remain in the source allocation.
+            let rejected = unsafe { crate::simd::ident_reject_mask(src.as_ptr().add(pos)) };
+            let lanes = 0x8888_8888_8888_8888u64;
+            if rejected & lanes == 0 {
+                pos += 16;
+                continue;
+            }
+            let at = pos + (rejected & lanes).trailing_zeros() as usize / 4;
+            if src[at] >= 0x80 {
+                return (self.unicode_ident_tail(at), false);
+            }
+            return (at, true);
+        }
         while let Some(&b) = src.get(pos) {
             if CLASS[b as usize] & ID_CONT == 0 {
                 if b >= 0x80 {
@@ -1255,6 +1386,8 @@ pub(crate) fn failed(src: Arc<String>, begin: usize, error: LexError) -> LexedFi
         tokens: Box::new([]),
         groups: Box::new([]),
         item_cuts: Box::new([]),
+        cut_tokens: Box::new([]),
+        cut_attrs: Box::new([]),
         raw_idents: Box::new([]),
         suffixes: Box::new([]),
         newlines: Box::new([]),
@@ -1355,7 +1488,18 @@ pub(crate) fn resolve(
 /// Rewrites one chunk to file numbering: identifier and literal payloads, suffixes and gallery
 /// candidates from atoms to `symbols`; token numbers offset by `token_base`, group numbers by
 /// `group_base`. Pure and owned: one task per chunk.
-pub(crate) fn patch(chunk: &mut Chunk, symbols: &[u32], token_base: u32, group_base: u32) {
+pub(crate) fn patch(
+    chunk: &mut Chunk,
+    symbols: &[u32],
+    token_base: u32,
+    group_base: u32,
+    attr_base: u32,
+) {
+    debug_assert_eq!(chunk.cut_tokens.len(), chunk.cut_attrs.len());
+    debug_assert!(chunk.cut_tokens.windows(2).all(|pair| pair[0] < pair[1]));
+    debug_assert!(chunk.cut_attrs.windows(2).all(|pair| pair[0] <= pair[1]));
+    debug_assert!(chunk.cut_tokens.iter().all(|&i| i <= chunk.tokens.len() as u32));
+    debug_assert!(chunk.cut_attrs.iter().all(|&i| i <= chunk.attr_total));
     for token in &mut chunk.tokens {
         if token.kind >= Kind::Ident {
             if token.kind != Kind::Eof {
@@ -1385,6 +1529,13 @@ pub(crate) fn patch(chunk: &mut Chunk, symbols: &[u32], token_base: u32, group_b
         *atom = symbols[*atom as usize];
         *token += token_base;
     }
+    for token in &mut chunk.cut_tokens {
+        *token = token.checked_add(token_base).expect("token cut offset overflow");
+    }
+    for attrs in &mut chunk.cut_attrs {
+        *attrs = attrs.checked_add(attr_base).expect("attribute cut offset overflow");
+    }
+    debug_assert!(chunk.cut_tokens.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 /// A file of one patched chunk: its buffers are moved, not copied.
@@ -1401,6 +1552,8 @@ pub(crate) fn single(src: Arc<String>, begin: usize, chunk: Chunk) -> LexedFile 
         tokens: chunk.tokens.into_boxed_slice(),
         groups: chunk.groups.into_boxed_slice(),
         item_cuts: chunk.item_cuts.into_boxed_slice(),
+        cut_tokens: chunk.cut_tokens.into_boxed_slice(),
+        cut_attrs: chunk.cut_attrs.into_boxed_slice(),
         raw_idents: chunk.raw_idents.into_boxed_slice(),
         newlines: chunk.newlines.into_boxed_slice(),
         multibyte: chunk.multibyte.into_boxed_slice(),
@@ -1417,6 +1570,8 @@ pub(crate) fn from_filled(src: Arc<String>, begin: usize, filled: Filled) -> Lex
         tokens: filled.tokens,
         groups: filled.groups,
         item_cuts: filled.item_cuts,
+        cut_tokens: filled.cut_tokens,
+        cut_attrs: filled.cut_attrs,
         raw_idents: filled.raw_idents,
         suffixes: filled.suffixes,
         newlines: filled.newlines,

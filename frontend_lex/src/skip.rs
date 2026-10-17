@@ -1,9 +1,8 @@
 //! The prescan's inner loop: the next byte that can change its state, sixteen bytes at a time.
 //!
-//! The stop set is `" ' / \n ( ) [ ] { } ;`. Pairs that differ in one bit share a compare:
-//! `(` and `)` are `0x28 | 1`, `[` and `{` are `0x5B` under `!0x20`, `]` and `}` likewise `0x5D`.
-//! So a block costs eight compares and two masks on SSE2 (baseline on x86-64) and on NEON
-//! (baseline on AArch64); elsewhere, and for a tail shorter than a block, a table does it.
+//! The stop set is `" ' / \n ( ) [ ] { } ;`. x86-64 uses shared compares; AArch64 uses two
+//! nibble lookup tables and a test, then narrows predicates to one bit per byte. Elsewhere, and
+//! for a tail shorter than a block, a scalar table does it.
 
 /// Bytes the prescan stops at in code.
 pub(crate) const STOP: [bool; 256] = {
@@ -21,7 +20,10 @@ pub(crate) const STOP: [bool; 256] = {
 #[inline(always)]
 pub(crate) fn next_stop(src: &[u8], mut pos: usize, end: usize) -> usize {
     debug_assert!(end <= src.len());
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_feature = "neon", target_endian = "little")
+    ))]
     while pos + 16 <= end {
         // SAFETY: `pos + 16 <= end <= src.len()`, so the block is in bounds.
         if let Some(at) = unsafe { block(src.as_ptr().add(pos)) } {
@@ -67,26 +69,12 @@ unsafe fn block(p: *const u8) -> Option<usize> {
 /// # Safety
 ///
 /// `p` must be valid for reading 16 bytes.
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", target_feature = "neon", target_endian = "little"))]
 #[inline(always)]
 unsafe fn block(p: *const u8) -> Option<usize> {
-    use core::arch::aarch64::*;
-    // SAFETY: the caller guarantees 16 readable bytes; NEON is baseline on AArch64.
-    unsafe {
-        let v = vld1q_u8(p);
-        let eq = |b: u8| vceqq_u8(v, vdupq_n_u8(b));
-        let paren = vceqq_u8(vandq_u8(v, vdupq_n_u8(!1)), vdupq_n_u8(0x28));
-        let folded = vandq_u8(v, vdupq_n_u8(!0x20));
-        let open = vceqq_u8(folded, vdupq_n_u8(0x5B));
-        let close = vceqq_u8(folded, vdupq_n_u8(0x5D));
-        let any = vorrq_u8(
-            vorrq_u8(vorrq_u8(eq(b'"'), eq(b'\'')), vorrq_u8(eq(b'/'), eq(b'\n'))),
-            vorrq_u8(vorrq_u8(paren, open), vorrq_u8(close, eq(b';'))),
-        );
-        // Four bits per byte: shift each 16-bit lane right by 4 and narrow.
-        let mask = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(any), 4)), 0);
-        if mask == 0 { None } else { Some(mask.trailing_zeros() as usize / 4) }
-    }
+    // SAFETY: the caller guarantees 16 readable bytes.
+    let mask = unsafe { crate::simd::stop_mask(p) };
+    if mask == 0 { None } else { Some(mask.trailing_zeros() as usize / 4) }
 }
 
 #[cfg(test)]

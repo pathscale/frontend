@@ -93,6 +93,9 @@ pub(crate) struct Offsets {
     pub(crate) tokens: usize,
     pub(crate) groups: usize,
     item_cuts: usize,
+    cut_tokens: usize,
+    cut_attrs: usize,
+    pub(crate) attr_base: usize,
     raw_idents: usize,
     suffixes: usize,
     newlines: usize,
@@ -111,6 +114,9 @@ impl Offsets {
                 at.tokens += c.tokens.len();
                 at.groups += c.groups.len();
                 at.item_cuts += c.item_cuts.len();
+                at.cut_tokens += c.cut_tokens.len();
+                at.cut_attrs += c.cut_attrs.len();
+                at.attr_base += c.attr_total as usize;
                 at.raw_idents += c.raw_idents.len();
                 at.suffixes += c.suffixes.len();
                 at.newlines += c.newlines.len();
@@ -128,6 +134,8 @@ pub(crate) struct Output {
     tokens: Slab<Token>,
     groups: Slab<Group>,
     item_cuts: Slab<u32>,
+    cut_tokens: Slab<u32>,
+    cut_attrs: Slab<u32>,
     raw_idents: Slab<u32>,
     suffixes: Slab<(u32, Symbol)>,
     newlines: Slab<u32>,
@@ -143,6 +151,8 @@ pub(crate) struct Filled {
     pub(crate) tokens: Box<[Token]>,
     pub(crate) groups: Box<[Group]>,
     pub(crate) item_cuts: Box<[u32]>,
+    pub(crate) cut_tokens: Box<[u32]>,
+    pub(crate) cut_attrs: Box<[u32]>,
     pub(crate) raw_idents: Box<[u32]>,
     pub(crate) suffixes: Box<[(u32, Symbol)]>,
     pub(crate) newlines: Box<[u32]>,
@@ -156,6 +166,8 @@ impl Output {
             tokens: Slab::new(totals.tokens),
             groups: Slab::new(totals.groups),
             item_cuts: Slab::new(totals.item_cuts),
+            cut_tokens: Slab::new(totals.cut_tokens),
+            cut_attrs: Slab::new(totals.cut_attrs),
             raw_idents: Slab::new(totals.raw_idents),
             suffixes: Slab::new(totals.suffixes),
             newlines: Slab::new(totals.newlines),
@@ -173,12 +185,26 @@ impl Output {
     /// `at` is this chunk's entry of [`Offsets::of`] over the chunks this output was sized
     /// for, `chunk` is that chunk, and each chunk is written once.
     pub(crate) unsafe fn write(&self, at: Offsets, chunk: &Chunk) {
+        debug_assert_eq!(chunk.cut_tokens.len(), chunk.cut_attrs.len());
+        let token_base = u32::try_from(at.tokens).expect("token prefix overflow");
+        let attr_base = u32::try_from(at.attr_base).expect("attribute prefix overflow");
+        debug_assert!(
+            chunk
+                .cut_tokens
+                .iter()
+                .all(|&i| i >= token_base && i <= token_base + chunk.tokens.len() as u32)
+        );
+        debug_assert!(
+            chunk.cut_attrs.iter().all(|&i| i >= attr_base && i <= attr_base + chunk.attr_total)
+        );
         // SAFETY: the offsets are prefix sums of the same chunks' counts, so each chunk's
         // ranges are in bounds and disjoint from every other chunk's.
         unsafe {
             self.tokens.copy(at.tokens, &chunk.tokens);
             self.groups.copy(at.groups, &chunk.groups);
             self.item_cuts.copy(at.item_cuts, &chunk.item_cuts);
+            self.cut_tokens.copy(at.cut_tokens, &chunk.cut_tokens);
+            self.cut_attrs.copy(at.cut_attrs, &chunk.cut_attrs);
             self.raw_idents.copy(at.raw_idents, &chunk.raw_idents);
             self.suffixes.write(
                 at.suffixes,
@@ -205,6 +231,8 @@ impl Output {
                 tokens: self.tokens.into_box(),
                 groups: self.groups.into_box(),
                 item_cuts: self.item_cuts.into_box(),
+                cut_tokens: self.cut_tokens.into_box(),
+                cut_attrs: self.cut_attrs.into_box(),
                 raw_idents: self.raw_idents.into_box(),
                 suffixes: self.suffixes.into_box(),
                 newlines: self.newlines.into_box(),
