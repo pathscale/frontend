@@ -70,6 +70,7 @@ pub mod snapshot_map;
 pub mod sorted_map;
 pub mod sso;
 pub mod stable_hash;
+pub mod stage_timing;
 pub mod steal;
 pub mod svh;
 pub mod sync;

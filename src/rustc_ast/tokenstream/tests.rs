@@ -12,77 +12,8 @@ fn test_token_stream_iter() {
     assert_eq!(iter.size_hint(), (1, Some(1)));
 }
 
-#[test]
-fn r24_compact_token_layout_and_packing() {
-    compact_delimiter_groups_pack_twenty_bits();
-    short_symbol_cache_keys_preserve_exact_source_bytes();
-    arena_bulk_moves::bulk_moves_preserve_ownership_and_scratch_prefix();
-    use super::Spacing;
-    use super::compact_token::*;
-    use super::source_token::{SourceKind, SourceToken};
-    assert_eq!(core::mem::size_of::<CompactToken>(), 8);
-    assert_eq!(core::mem::align_of::<CompactToken>(), 8);
-    assert_eq!(core::mem::size_of::<SourceToken>(), 16);
-    for raw in 0..=66 {
-        let kind = SourceKind::from_raw(raw);
-        assert_eq!(kind as u8, raw);
-        for len in [0, 1, 4094, 4095, 4096, 0x7ffe] {
-            for spacing in [Spacing::Alone, Spacing::Joint, Spacing::JointHidden] {
-                for (group, aux) in [(false, false), (true, false), (false, true), (true, true)] {
-                    let token = CompactToken::new(91, len, kind, spacing, 1, group, aux);
-                    assert_eq!(token.lo(), 91);
-                    assert_eq!(token.kind(), kind);
-                    assert_eq!(token.aux(), 1);
-                    assert_eq!(token.inline_len(), (len < 4095).then_some(len));
-                    assert_eq!(token.spacing(), spacing);
-                    assert_eq!(token.has_group(), group);
-                    assert_eq!(token.has_aux_u32(), aux);
-                    assert_ne!(
-                        token.len_and_flags & (COMPACT_FLAG_JOINT | COMPACT_FLAG_JOINT_HIDDEN),
-                        COMPACT_FLAG_JOINT | COMPACT_FLAG_JOINT_HIDDEN
-                    );
-                }
-            }
-        }
-    }
-    for raw in 67..=255 {
-        assert_eq!(SourceKind::from_raw(raw), SourceKind::Eof);
-    }
-    assert_eq!(SourceKind::Ident as u8, 52);
-    assert_eq!(SourceKind::Lifetime as u8, 53);
-    assert_eq!(SourceKind::LineDoc as u8, 64);
-    assert_eq!(SourceKind::BlockDoc as u8, 65);
-}
-
-#[test]
-fn r24_preglued_punctuation_matches_source_glue() {
-    use super::compact_token::{may_glue_after, try_glue_punct};
-    use super::source_token::SourceKind;
-    for (text, parts) in [
-        ("==", &[SourceKind::Eq, SourceKind::Eq][..]),
-        ("::", &[SourceKind::Colon, SourceKind::Colon][..]),
-        ("->", &[SourceKind::Minus, SourceKind::Gt][..]),
-        ("..=", &[SourceKind::Dot, SourceKind::Dot, SourceKind::Eq][..]),
-        (">>=", &[SourceKind::Gt, SourceKind::Gt, SourceKind::Eq][..]),
-    ] {
-        let expected = parts[1..].iter().fold(parts[0], |a, &b| a.glue(b).unwrap());
-        let glued = try_glue_punct(text.as_bytes()).unwrap();
-        assert_eq!(glued.kind, expected);
-        assert_eq!(glued.len as usize, text.len());
-        assert!(!may_glue_after(text.as_bytes(), text.len()));
-    }
-    for text in ["//comment", "/*comment*/"] {
-        let result = try_glue_punct(text.as_bytes());
-        assert!(result.is_none_or(|punct| punct.len == 1));
-    }
-    for text in ["= x", "=/*x*/", "=//x", "=(", "=name", "="] {
-        assert!(!may_glue_after(text.as_bytes(), 1));
-    }
-    assert!(may_glue_after(b"=+", 1));
-}
-
-fn r24_tape(source: &str) -> alloc::sync::Arc<super::indexed_tape::IndexedSourceTape> {
-    super::indexed_tape::IndexedSourceTape::build(
+fn r24_tape(source: &str) -> alloc::sync::Arc<super::lexed_tape::LexedTape> {
+    super::lexed_tape::LexedTape::build(
         alloc::sync::Arc::new(alloc::string::String::from(source)),
         crate::rustc_span::BytePos(100),
         0,
@@ -140,31 +71,21 @@ fn r24_tree_cursor() -> super::TokenCursor {
 #[test]
 fn r24_indexed_tape_side_arrays_and_cursor_boundaries() {
     use super::on_demand::OnDemandCursor;
-    use super::source_token::SourceKind;
     use crate::rustc_ast::token::{self, Delimiter};
     crate::rustc_span::create_default_session_globals_then(|| {
         let source = "{ r#name::call(1, [2]); } tail";
         let tape = r24_tape(source);
-        assert_eq!(tape.token_count(), tape.tokens.len());
-        assert_eq!(core::mem::size_of_val(&tape.tokens[0]), 8);
-        assert!(tape.overflow_lengths.is_empty());
-        for (i, compact) in tape.tokens.iter().copied().enumerate() {
-            assert_eq!(compact.has_group(), tape.token_group(i) != super::indexed_tape::NO_GROUP);
-            if !compact.has_group()
-                && let Some(len) = compact.inline_len()
-            {
-                assert_eq!(len, tape.token_len(i));
-            }
-            if compact.kind() != SourceKind::Eof {
-                assert_eq!(tape.token_span(i).lo().0, 100 + compact.lo());
-                assert_eq!(tape.token_span(i).hi().0, 100 + compact.lo() + tape.token_len(i));
-            }
+        let count = tape.token_count();
+        for i in 0..count {
+            let kind = tape.kind(i);
+            let delimiter = kind.is_open_delim() || kind.is_close_delim();
+            assert_eq!(delimiter, tape.token_group(i) != super::lexed_tape::NO_GROUP);
         }
-        let raw = tape.tokens.iter().position(|t| t.kind() == SourceKind::Ident).unwrap();
-        assert_eq!(tape.tokens[raw].aux(), 1);
-        assert_eq!(tape.raw_identifier_spans.len(), 1);
-        assert_eq!(tape.tokens.last().unwrap().kind(), SourceKind::Eof);
-        assert_eq!(tape.tokens.last().unwrap().lo() as usize, source.len());
+        let raw = (0..count).find(|&i| tape.kind(i) == frontend_lex::Kind::Ident).unwrap();
+        // `r#name` at offset 2: the span covers the prefix, the symbol does not.
+        assert_eq!((tape.token_span(raw).lo().0, tape.token_span(raw).hi().0), (102, 108));
+        assert_eq!(tape.raw_identifier_spans(), [tape.token_span(raw)]);
+        assert_eq!(tape.kind(count - 1), frontend_lex::Kind::Eof);
         let mut cursor = OnDemandCursor::from_tape(tape.clone());
         assert_eq!(cursor.look_ahead_token(0), token::Token::dummy());
         for i in 0..tape.token_count() {
@@ -180,7 +101,8 @@ fn r24_indexed_tape_side_arrays_and_cursor_boundaries() {
         assert_eq!(cursor.next_and_bump().0.kind, token::OpenBrace);
         let info = cursor.enclosing_group_info().unwrap();
         assert_eq!(info.delim, Delimiter::Brace);
-        assert_eq!(info.inside_bumps, tape.groups[0].close_idx - tape.groups[0].open_idx - 1);
+        let group = tape.groups()[0];
+        assert_eq!(info.inside_bumps, group.close - group.open - 1);
         assert!(matches!(cursor.look_ahead(4), Some(super::TokenTree::Delimited(..))));
         assert_eq!(cursor.look_ahead_tree_token(4).unwrap().kind, token::OpenParen);
         let mut detached = cursor.detached_for_group(info.group_idx).unwrap();
@@ -215,9 +137,9 @@ fn r24_cursor_adapters_match_tree_oracle() {
         let mut trees = r24_tree_cursor();
         let tape = r24_tape(source);
         let mut indexed = OnDemandCursor::from_tape(tape.clone());
-        let mut adapter = TokenCursor::from_indexed_tape(tape.clone());
+        let mut adapter = TokenCursor::from_lexed_tape(tape.clone());
         assert!(adapter.can_parallel_parse());
-        assert!(alloc::sync::Arc::ptr_eq(adapter.indexed_tape().unwrap(), &tape));
+        assert!(alloc::sync::Arc::ptr_eq(adapter.lexed_tape().unwrap(), &tape));
         loop {
             for dist in 1..=8 {
                 assert_eq!(
@@ -250,33 +172,27 @@ fn r24_cursor_adapters_match_tree_oracle() {
 }
 
 #[test]
-fn r24_tape_overflow_lengths_and_admission_fallback() {
+fn r24_tape_long_tokens_and_admission_fallback() {
     crate::rustc_span::create_default_session_globals_then(|| {
-        for len in [4094, 4095, 4096] {
+        for len in [4094, 4095, 4096, 70_000] {
             let source = "x".repeat(len);
             let tape = r24_tape(&source);
-            assert_eq!(tape.token_len(0) as usize, len);
-            if len < 4095 {
-                assert!(tape.overflow_lengths.is_empty());
-            } else {
-                assert_eq!(tape.overflow_lengths, alloc::vec![(0, len as u32)]);
-            }
-            assert_eq!(tape.tokens[0].inline_len(), (len < 4095).then_some(len as u32));
             assert_eq!(tape.materialize_token(0).0.span.hi().0, 100 + len as u32);
         }
-        for source in ["'r#name", "é", "{]", "\"\\q\"", "r#self"] {
-            assert!(
-                super::indexed_tape::IndexedSourceTape::build(
-                    alloc::sync::Arc::new(alloc::string::String::from(source)),
-                    crate::rustc_span::BytePos(100),
-                    0,
-                    crate::rustc_lexer::FrontmatterAllowed::No,
-                    crate::rustc_span::edition::Edition::Edition2024,
-                )
-                .is_none(),
-                "{source:?}"
-            );
+        let build = |source: &str| {
+            super::lexed_tape::LexedTape::build(
+                alloc::sync::Arc::new(alloc::string::String::from(source)),
+                crate::rustc_span::BytePos(100),
+                0,
+                crate::rustc_lexer::FrontmatterAllowed::No,
+                crate::rustc_span::edition::Edition::Edition2024,
+            )
+        };
+        for source in ["'r#name", "{]", "\"\\q\"", "r#self"] {
+            assert!(build(source).is_none(), "{source:?}");
         }
+        // Non-ASCII identifiers lex (to their NFC symbol); the old tape refused them.
+        assert!(build("é").is_some());
         let source = "// skipped\n{ /*\n*/ r#\"\n\"#; }\n";
         let tape = r24_tape(source);
         let expected: alloc::vec::Vec<u32> = source
@@ -284,7 +200,7 @@ fn r24_tape_overflow_lengths_and_admission_fallback() {
             .enumerate()
             .filter_map(|(i, b)| (b == b'\n').then_some(i as u32))
             .collect();
-        assert_eq!(tape.newlines(), expected);
+        assert_eq!(tape.newlines(), expected.as_slice());
     });
 }
 
@@ -408,13 +324,13 @@ fn r24_tape_attribute_counts_preserve_independent_macro_groups() {
             ("{ macro m() { #[hidden] item } }", 0, Some(("{ #[hidden]", 1))),
         ] {
             let tape = r24_tape(source);
-            assert_eq!(tape.groups[0].attr_count, expected, "{source}");
+            assert_eq!(tape.groups()[0].attr_count, expected, "{source}");
             if let Some((prefix, expected)) = nested {
                 let offset = source.find(prefix).unwrap() as u32 + 100;
                 let group = tape
-                    .groups
+                    .groups()
                     .iter()
-                    .find(|g| tape.token_span(g.open_idx as usize).lo().0 == offset)
+                    .find(|g| tape.token_span(g.open as usize).lo().0 == offset)
                     .unwrap();
                 assert_eq!(group.attr_count, expected, "independent body: {source}");
             }
@@ -428,7 +344,7 @@ fn r24_source_and_flat_cursor_detachment_adapters() {
     use crate::rustc_ast::token;
     crate::rustc_span::create_default_session_globals_then(|| {
         let tape = r24_tape("{ { nested } tail } after");
-        let mut flat = FlatTokenBuffer::with_capacity(tape.token_count(), tape.groups.len());
+        let mut flat = FlatTokenBuffer::with_capacity(tape.token_count(), tape.groups().len());
         let mut opens = alloc::vec::Vec::new();
         for i in 0..tape.token_count() - 1 {
             let (token, spacing) = tape.materialize_token(i);
@@ -445,7 +361,7 @@ fn r24_source_and_flat_cursor_detachment_adapters() {
                 flat.push(token, spacing);
             }
         }
-        for mut cursor in [TokenCursor::from_indexed_tape(tape), TokenCursor::from_flat(flat)] {
+        for mut cursor in [TokenCursor::from_lexed_tape(tape), TokenCursor::from_flat(flat)] {
             assert!(cursor.can_parallel_parse());
             assert_eq!(cursor.next_and_bump().0.kind, token::OpenBrace);
             let info = cursor.enclosing_group_info().unwrap();
@@ -473,7 +389,7 @@ fn w4_tape_deduplicates_repeated_unknown_symbols_and_glues_punct() {
         let source =
             "custom_ident_alpha + custom_ident_alpha == custom_ident_beta -> custom_ident_alpha";
         let tape = r24_tape(source);
-        let owner = tape.src.clone();
+        let owner = alloc::sync::Arc::new(alloc::string::String::from(source));
         let eager = crate::rustc_parse::lexer::lex_token_trees(
             &crate::rustc_session::parse::ParseSess::new(),
             source,
@@ -491,7 +407,7 @@ fn w4_tape_deduplicates_repeated_unknown_symbols_and_glues_punct() {
             })
             .collect();
         let tape_tokens: alloc::vec::Vec<_> = (0..tape.token_count())
-            .filter(|&i| tape.tokens[i].kind() != super::source_token::SourceKind::Eof)
+            .filter(|&i| tape.kind(i) != frontend_lex::Kind::Eof)
             .map(|i| tape.materialize_token(i))
             .collect();
         assert_eq!(tape_tokens, eager_tokens);
@@ -505,38 +421,13 @@ fn w4_tape_deduplicates_repeated_unknown_symbols_and_glues_punct() {
             })
             .collect();
         assert_eq!(alpha_symbols, [alpha, alpha, beta, alpha]);
-        assert_eq!(core::mem::size_of_val(&tape.tokens[0]), 8);
+        assert_eq!(core::mem::size_of::<frontend_lex::Token>(), 16);
     });
 }
 
-fn compact_delimiter_groups_pack_twenty_bits() {
-    use super::compact_token::CompactToken;
-    use super::source_token::SourceKind;
-    for group in [0, 4094, 4095, 65535, (1 << 20) - 2, (1 << 20) - 1, u32::MAX] {
-        for spacing in [super::Spacing::Alone, super::Spacing::Joint, super::Spacing::JointHidden] {
-            let token = CompactToken::with_group(7, SourceKind::OpenBrace, spacing, group);
-            assert!(token.has_group());
-            assert_eq!(
-                token.inline_group(),
-                (group < CompactToken::GROUP_OVERFLOW).then_some(group)
-            );
-            assert_eq!(token.spacing(), spacing);
-        }
-    }
-}
-
-fn short_symbol_cache_keys_preserve_exact_source_bytes() {
-    use super::source_token::short_key;
-    for text in
-        ["a", "ab", "abc", "abcd", "abcde", "abcdef", "abcdefg", "abcdefgh", "é", "éé", "abcé"]
-    {
-        let bytes = short_key(text).unwrap().to_le_bytes();
-        assert_eq!(&bytes[..text.len()], text.as_bytes());
-        assert!(bytes[text.len()..].iter().all(|&byte| byte == 0));
-    }
-    for text in ["", "abcdefghi", "\0", "a\0", "\0a", "a\0b"] {
-        assert_eq!(short_key(text), None, "{text:?}");
-    }
+#[test]
+fn arena_vec_bulk_moves_preserve_ownership() {
+    arena_bulk_moves::bulk_moves_preserve_ownership_and_scratch_prefix();
 }
 
 mod arena_bulk_moves {

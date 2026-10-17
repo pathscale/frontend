@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use super::flat::{FlatTokenBuffer, FlatTokenCursor};
-use super::indexed_tape::IndexedSourceTape;
+use super::lexed_tape::LexedTape;
 #[cfg(any(feature = "parallel", test))]
 use super::on_demand::EnclosingGroupInfo;
 use super::on_demand::OnDemandCursor;
@@ -48,11 +48,7 @@ impl TokenCursor {
         Some(Self { inner: Cursor::Source(cursor) })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retains construction from a prebuilt indexed source tape")
-    )]
-    pub(crate) fn from_indexed_tape(tape: Arc<IndexedSourceTape>) -> Self {
+    pub(crate) fn from_lexed_tape(tape: Arc<LexedTape>) -> Self {
         Self { inner: Cursor::Source(OnDemandCursor::from_tape(tape)) }
     }
 
@@ -94,7 +90,7 @@ impl TokenCursor {
         }
     }
 
-    pub(crate) fn indexed_tape(&self) -> Option<&Arc<IndexedSourceTape>> {
+    pub(crate) fn lexed_tape(&self) -> Option<&Arc<LexedTape>> {
         match &self.inner {
             Cursor::Source(cursor) => Some(cursor.tape()),
             Cursor::Flat(_) | Cursor::Trees(_) => None,

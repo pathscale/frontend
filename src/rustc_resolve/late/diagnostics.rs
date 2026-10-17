@@ -5,6 +5,7 @@
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
+use crate::rustc_span::symbol::SymbolExt as _;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};

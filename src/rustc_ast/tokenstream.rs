@@ -26,12 +26,11 @@ use crate::rustc_ast::ast_traits::HasTokens;
 use crate::rustc_ast::token::{self, Delimiter, Token, TokenKind};
 use crate::rustc_ast::{ArenaVec, AttrVec, Attribute};
 
-pub(crate) mod compact_token;
 mod flat;
-pub(crate) mod indexed_tape;
+mod lexed;
+pub(crate) mod lexed_tape;
 mod on_demand;
 mod source_cursor;
-mod source_token;
 pub(crate) use flat::FlatTokenBuffer;
 pub use source_cursor::TokenCursor;
 

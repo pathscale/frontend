@@ -1,3 +1,4 @@
+use crate::rustc_span::symbol::SymbolExt as _;
 use alloc::vec::Vec;
 use core::iter;
 

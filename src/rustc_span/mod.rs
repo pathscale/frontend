@@ -178,6 +178,7 @@ impl SessionGlobals {
         sm_inputs: Option<SourceMapInputs>,
         source_len: usize,
     ) -> SessionGlobals {
+        register_symbol_hooks();
         SessionGlobals {
             symbol_interner: shared_global(symbol::Interner::with_extra_symbols_and_source_len(
                 extra_symbols,
@@ -190,6 +191,33 @@ impl SessionGlobals {
             source_map: sm_inputs.map(|inputs| Arc::new(SourceMap::with_inputs(inputs))),
         }
     }
+}
+
+/// The calling session's interner, for `Symbol::intern` and `Symbol::as_str`. The `'static` is
+/// the lie `Symbol::as_str` has always told: the interner lives as long as its session, which
+/// outlives every use of a string read from it.
+fn current_interner() -> &'static symbol::Interner {
+    // SAFETY: the reference points into the session's `Arc`'d interner, alive for the session;
+    // callers hold it no longer than the session, as `Symbol::as_str` documents.
+    with_session_globals(|globals| {
+        let interner: &symbol::Interner = &globals.symbol_interner;
+        unsafe { &*core::ptr::from_ref(interner) }
+    })
+}
+
+/// The calling session's interner, handed to a component that interns through an explicit
+/// handle (the lexer) instead of `Symbol::intern`.
+pub fn with_session_interner<R>(f: impl FnOnce(&symbol::Interner) -> R) -> R {
+    with_session_globals(|globals| f(&globals.symbol_interner))
+}
+
+/// Tells `frontend_symbol` how to find this thread's session interner, and (with `parallel`) to
+/// abandon a speculative parse that would add a symbol. Idempotent; done per session because it
+/// is two relaxed stores, cheaper than a once-cell.
+fn register_symbol_hooks() {
+    frontend_symbol::set_current_interner(current_interner);
+    #[cfg(feature = "parallel")]
+    frontend_symbol::set_insert_hook(parse_transaction::symbol_insert);
 }
 
 #[cfg(feature = "parallel")]
@@ -2275,6 +2303,9 @@ impl SourceFile {
         checksum_hash_kind: Option<SourceFileHashAlgorithm>,
         newlines: Option<&[u32]>,
     ) -> Result<Self, OffsetOverflowError> {
+        let _stage = crate::rustc_data_structures::stage_timing::enter(
+            crate::rustc_data_structures::stage_timing::Marker::Source,
+        );
         let mut src: Arc<String> = src.into();
         // Compute the file hash before any normalization.
         let src_hash = hash_kind.map(|kind| SourceFileHash::new_in_memory(kind, src.as_bytes()));

@@ -2,7 +2,10 @@
 
 use core::convert::TryInto;
 
-use super::simd_classify::{BLOCK_LEN, mask_digits_and_underscore_64, mask_ident_cont_64};
+use super::simd_classify::{
+    BLOCK_LEN, LEADING_WORD_BYTES, first_rejected_lane, mask_digits_and_underscore_64,
+    mask_ident_cont_64, word_ident_cont,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentScan {
@@ -19,6 +22,20 @@ pub enum LifetimeScan {
 /// Scan an identifier continuation, excluding any byte consumed by the caller.
 pub fn scan_ascii_ident_tail(bytes: &[u8]) -> IdentScan {
     let mut len = 0;
+    while len < LEADING_WORD_BYTES
+        && let Some(word) = bytes.get(len..len + 8)
+    {
+        let word = u64::from_le_bytes(word.try_into().unwrap());
+        if let Some(lane) = first_rejected_lane(word_ident_cont(word)) {
+            let stop = len + lane;
+            return if bytes[stop].is_ascii() {
+                IdentScan::AsciiOnly(stop)
+            } else {
+                IdentScan::NeedsUnicodeAt(stop)
+            };
+        }
+        len += 8;
+    }
     while bytes.len() - len >= BLOCK_LEN {
         let block = bytes[len..len + BLOCK_LEN].try_into().unwrap();
         let (ident_cont, non_ascii) = mask_ident_cont_64(block);

@@ -7,7 +7,7 @@ use core::num::NonZero;
 use eko::thread::ThreadLocal;
 
 use crate::rustc_data_structures::hash_table::Entry;
-use crate::rustc_data_structures::{defer, outline, sharded, sync};
+use crate::rustc_data_structures::{defer, outline, sharded, stage_timing, sync};
 use crate::rustc_errors::{FatalError, QueryDiagnostics, QueryFrame, consume_query_diagnostics};
 use crate::rustc_middle::dep_graph::{
     DepGraphData, DepNode, DepNodeIndex, DepNodeKey, SerializedDepNodeIndex,
@@ -543,6 +543,7 @@ where
     debug_assert!(!tcx.dep_graph.is_fully_enabled());
 
     let prof_timer = tcx.prof.query_provider();
+    let _stage = stage_timing::enter_query(query.dep_kind.as_usize(), query.name);
     // Call the query provider.
     let value = start_query(job_id, query.depth_limit, || (query.invoke_provider_fn)(tcx, key));
     let dep_node_index = tcx.dep_graph.next_virtual_depnode_index();
@@ -594,6 +595,7 @@ fn execute_job_incr<'tcx, C: QueryCache>(
     }
 
     let prof_timer = tcx.prof.query_provider();
+    let _stage = stage_timing::enter_query(query.dep_kind.as_usize(), query.name);
 
     let (result, dep_node_index) = start_query(job_id, query.depth_limit, || {
         // Call the query provider.
@@ -652,6 +654,7 @@ fn load_from_disk_or_invoke_provider_green<'tcx, C: QueryCache>(
             // We could not load a result from the on-disk cache, so recompute. The dep-graph for
             // this computation is already in-place, so we can just call the query provider.
             let prof_timer = tcx.prof.query_provider();
+            let _stage = stage_timing::enter_query(query.dep_kind.as_usize(), query.name);
             let value = tcx.dep_graph.with_ignore(|| (query.invoke_provider_fn)(tcx, key));
             prof_timer.finish_with_query_invocation_id(dep_node_index.into());
 

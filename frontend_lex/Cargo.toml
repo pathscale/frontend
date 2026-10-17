@@ -1,0 +1,28 @@
+# The lexer: source text in, an immutable `Arc<LexedFile>` out, in one forward pass.
+#
+# Below the main crate and above `frontend_symbol`, so it interns as it scans through an explicit
+# `&Interner`: no session globals, no thread-local lookups, nothing shared but the interner. A
+# file is lexed by one task; independent files lex as independent tasks (the caller's nagoya
+# pool), and the result is shared by `Arc` with every parser task that reads it.
+[package]
+name = "frontend_lex"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+description = "the frontend's lexer: source text to an immutable token file"
+repository = "https://github.com/pathscale/frontend"
+publish = true
+
+[dependencies]
+frontend_symbol = { path = "../frontend_symbol", version = "0.1.0" }
+memchr = { version = "2.7.6", default-features = false }
+rustc-literal-escaper = "0.0.8"
+# Held at the main crate's versions: the Unicode tables the identifier rules read must agree.
+unicode-ident = ">=1.0.22, <1.0.25"
+unicode-normalization = { version = "0.1.25", default-features = false }
+unicode-properties = { version = "0.1.4", default-features = false, features = ["emoji"] }
+
+[dev-dependencies]
+# The chunk benchmark's pool: chunks and prescan segments as `par_for` pieces.
+nagoya = "^0.1.14"
+ps-st3 = { version = "^0.6", default-features = false, features = ["fanout"] }

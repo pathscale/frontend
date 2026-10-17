@@ -3037,6 +3037,10 @@ fn check_input(opts: Options, input: Input, crate_cfg: Vec<String>) -> Checked {
     };
     let mut uncomputed_consts = Vec::new();
     let mut analysis_fatal = false;
+    // The outer stage: what no query or inner marker claims on this thread.
+    let session_stage = crate::rustc_data_structures::stage_timing::enter(
+        crate::rustc_data_structures::stage_timing::Marker::Session,
+    );
     let finished = catch_fatal_errors(|| {
         run_compiler(config, |compiler| {
             let krate = parse(&compiler.sess);
@@ -3047,6 +3051,7 @@ fn check_input(opts: Options, input: Input, crate_cfg: Vec<String>) -> Checked {
             });
         })
     });
+    drop(session_stage);
 
     let captured = captured.lock();
     let errors = captured_strings(&captured, Severity::Error);

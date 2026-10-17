@@ -1,4 +1,5 @@
 use crate::rustc_ast::ptr::P;
+use crate::rustc_span::symbol::SymbolExt as _;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::string::String;

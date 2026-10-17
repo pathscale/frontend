@@ -3,6 +3,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
+use crate::rustc_span::symbol::SymbolExt as _;
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;

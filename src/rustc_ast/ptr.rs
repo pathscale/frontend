@@ -207,32 +207,43 @@ impl Drop for Current {
 
 static CURRENT: eko::thread::ThreadLocal<Current> = eko::thread::ThreadLocal::new();
 
+/// This thread's `Current`, found with one lookup. The slot is a `Box` owned by the thread-local
+/// key, so its address is stable until the thread exits, and `ParseArena` swaps the contents in
+/// place. The caller makes a short-lived `&mut` from the pointer for each access and never holds
+/// one across code that can run another lookup (a drop, an allocation). `None` when the thread
+/// is out of thread-local keys.
+#[inline]
+fn current_ptr() -> Option<NonNull<Current>> {
+    CURRENT.with(Current::new, |cur| NonNull::from(cur))
+}
+
 /// Coalesces consecutive chunk releases through nested drops, including unwinding.
 #[inline]
 pub(crate) fn with_drop_batch<R>(f: impl FnOnce() -> R) -> R {
-    struct Batch(bool);
+    struct Batch(Option<NonNull<Current>>);
     impl Drop for Batch {
         fn drop(&mut self) {
-            if self.0 {
-                CURRENT.with(Current::new, |cur| {
-                    cur.drop_depth -= 1;
-                    if cur.drop_depth == 0 {
-                        cur.flush_pending();
-                    }
-                });
+            if let Some(cur) = self.0 {
+                // SAFETY: the pointer came from current_ptr on this thread, whose slot outlives
+                // every drop on it. No other reference to it is live here: the borrow is
+                // created now and ends before this function returns.
+                let cur = unsafe { &mut *cur.as_ptr() };
+                cur.drop_depth -= 1;
+                if cur.drop_depth == 0 {
+                    cur.flush_pending();
+                }
             }
         }
     }
 
-    let _batch = Batch(
-        CURRENT
-            .with(Current::new, |cur| {
-                cur.drop_depth =
-                    cur.drop_depth.checked_add(1).expect("AST drop batch depth overflow");
-            })
-            .is_some(),
-    );
-    // The TLS borrow has ended before f can recurse, allocate, or switch ParseArena.
+    let cur = current_ptr();
+    if let Some(cur) = cur {
+        // SAFETY: as in Batch::drop; this borrow ends at the end of the statement.
+        let cur = unsafe { &mut *cur.as_ptr() };
+        cur.drop_depth = cur.drop_depth.checked_add(1).expect("AST drop batch depth overflow");
+    }
+    let _batch = Batch(cur);
+    // No borrow of the slot is live before f can recurse, allocate, or switch ParseArena.
     f()
 }
 
@@ -543,20 +554,43 @@ impl<T> Drop for P<T> {
             unsafe { release_from_chunk(chunk_of(self.ptr)) };
             return;
         }
-        struct Count(NonNull<ChunkHeader>);
-        impl Drop for Count {
+        /// Gives up the node's count, then leaves the drop batch entered below, on normal
+        /// return and on unwind. One thread-local lookup serves the whole drop.
+        struct Finish(NonNull<ChunkHeader>, Option<NonNull<Current>>);
+        impl Drop for Finish {
             fn drop(&mut self) {
-                // SAFETY: the guard owns the count of a live, initialized and aligned header.
-                // Payload destruction has completed or unwound, with no remaining references.
-                unsafe { release_from_chunk(self.0) };
+                match self.1 {
+                    Some(cur) => {
+                        // SAFETY: the pointer came from current_ptr on this thread, whose slot
+                        // outlives this drop. The borrow is created here, after the payload
+                        // drop ended, and ends with this function. The guard owns the count of
+                        // a live, initialized and aligned header; the payload is gone.
+                        let cur = unsafe { &mut *cur.as_ptr() };
+                        // The batch is still entered, so this may be deferred, as before.
+                        cur.release_from_chunk(self.0);
+                        cur.drop_depth -= 1;
+                        if cur.drop_depth == 0 {
+                            cur.flush_pending();
+                        }
+                    }
+                    // SAFETY: no thread-local slot; the guard owns one count of a live header
+                    // and the payload is gone.
+                    None => unsafe { release_counts(self.0, 1) },
+                }
             }
         }
-        with_drop_batch(|| {
-            let _count = Count(chunk_of(self.ptr));
-            // SAFETY: self uniquely owns a properly aligned, initialized T within this live
-            // chunk. It is dropped once, with its count held until normal return or unwind.
-            unsafe { ptr::drop_in_place(self.ptr.as_ptr()) };
-        });
+        let cur = current_ptr();
+        if let Some(cur) = cur {
+            // SAFETY: as in Finish::drop; the borrow ends with this statement, before the
+            // payload drop can recurse, allocate, or switch ParseArena.
+            let cur = unsafe { &mut *cur.as_ptr() };
+            cur.drop_depth = cur.drop_depth.checked_add(1).expect("AST drop batch depth overflow");
+        }
+        let _finish = Finish(chunk_of(self.ptr), cur);
+        // SAFETY: self uniquely owns a properly aligned, initialized T within this live
+        // chunk. It is dropped once, with its count held until normal return or unwind.
+        // No `&mut Current` is held across this call.
+        unsafe { ptr::drop_in_place(self.ptr.as_ptr()) };
     }
 }
 

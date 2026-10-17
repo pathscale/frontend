@@ -1,5 +1,6 @@
 use crate::rustc_ast::ptr::P;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
+use crate::rustc_span::symbol::SymbolExt as _;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::string::ToString;

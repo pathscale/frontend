@@ -12,7 +12,7 @@ mod tests;
 /// Finds all newlines and multi-byte characters in a SourceFile.
 ///
 /// This function uses a NEON implementation on aarch64, and an SSE2 one on x86 when
-/// hardware support is detected at runtime.
+/// the target is compiled with SSE2 (every x86_64 target is).
 pub(crate) fn analyze_source_file(src: &str) -> (Vec<RelativeBytePos>, Vec<MultiByteChar>) {
     // Rust source averages well over 20 bytes a line, so one entry per 40 bytes covers most
     // of a file without regrowth; capacity never changes what is pushed.
@@ -44,8 +44,10 @@ cfg_select! {
             lines: &mut Vec<RelativeBytePos>,
             multi_byte_chars: &mut Vec<MultiByteChar>,
         ) {
-            if is_x86_feature_detected!("sse2") {
-                // SAFETY: runtime detection established SSE2 support for this call.
+            // `#![no_std]` has no runtime feature detection (`is_x86_feature_detected!` is
+            // `std`'s). SSE2 is in the x86_64 baseline, so the target's features decide.
+            if cfg!(target_feature = "sse2") {
+                // SAFETY: the target is compiled with SSE2 enabled.
                 unsafe {
                     analyze_source_file_sse2(src, lines, multi_byte_chars);
                 }
@@ -65,8 +67,9 @@ cfg_select! {
         /// function falls back to the generic implementation. Otherwise it uses
         /// SSE2 intrinsics to quickly find all newlines.
         #[target_feature(enable = "sse2")]
-        // SAFETY: callers must detect SSE2 first. Loads use complete initialized source chunks
-        // and accept unaligned pointers; shared source bytes are not mutated or aliased mutably.
+        // SAFETY: callers must establish SSE2 support first. Loads use complete initialized
+        // source chunks and accept unaligned pointers; shared source bytes are not mutated or
+        // aliased mutably.
         unsafe fn analyze_source_file_sse2(
             src: &str,
             lines: &mut Vec<RelativeBytePos>,

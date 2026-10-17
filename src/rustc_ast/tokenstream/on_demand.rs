@@ -7,8 +7,9 @@ use crate::rustc_lexer::FrontmatterAllowed;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::{BytePos, Span};
 
-use super::indexed_tape::{Group, IndexedSourceTape, NO_GROUP};
-use super::source_token::SourceKind;
+use frontend_lex::Kind;
+
+use super::lexed_tape::{Group, LexedTape, NO_GROUP, close_delim, delimiter, open_delim};
 use super::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 
 #[cfg(any(feature = "parallel", test))]
@@ -26,7 +27,7 @@ pub(crate) struct EnclosingGroupInfo {
 /// current token. `end_group` retains the detached EOF span after its close.
 #[derive(Clone, Debug)]
 pub(crate) struct OnDemandCursor {
-    tape: Arc<IndexedSourceTape>,
+    tape: Arc<LexedTape>,
     idx: u32,
     end_idx: u32,
     enclosing: u32,
@@ -41,21 +42,21 @@ impl OnDemandCursor {
         frontmatter: FrontmatterAllowed,
         edition: Edition,
     ) -> Option<Self> {
-        Some(Self::from_tape(IndexedSourceTape::build(text, start, begin, frontmatter, edition)?))
+        Some(Self::from_tape(LexedTape::build(text, start, begin, frontmatter, edition)?))
     }
 
-    pub(crate) fn from_tape(tape: Arc<IndexedSourceTape>) -> Self {
+    pub(crate) fn from_tape(tape: Arc<LexedTape>) -> Self {
         let end_idx = u32::try_from(tape.token_count().checked_sub(1).expect("tape has EOF"))
             .expect("tape index fits u32");
         Self { tape, idx: 0, end_idx, enclosing: NO_GROUP, end_group: NO_GROUP }
     }
 
-    pub(crate) fn tape(&self) -> &Arc<IndexedSourceTape> {
+    pub(crate) fn tape(&self) -> &Arc<LexedTape> {
         &self.tape
     }
 
     pub(crate) fn raw_identifier_spans(&self) -> &[Span] {
-        &self.tape.raw_identifier_spans
+        self.tape.raw_identifier_spans()
     }
 
     pub(crate) fn depth_zero_cuts(&self) -> &[u32] {
@@ -65,7 +66,7 @@ impl OnDemandCursor {
     fn eof(&self) -> (Token, Spacing) {
         let span = self.tape.group(self.end_group).map_or_else(
             || self.tape.eof_span(),
-            |group| self.tape.token_span(group.close_idx as usize),
+            |group| self.tape.token_span(group.close as usize),
         );
         (Token::new(token::Eof, span), Spacing::Alone)
     }
@@ -74,12 +75,8 @@ impl OnDemandCursor {
         if idx >= self.end_idx { self.eof() } else { self.tape.materialize_token(idx as usize) }
     }
 
-    fn kind(&self) -> SourceKind {
-        if self.idx >= self.end_idx {
-            SourceKind::Eof
-        } else {
-            self.tape.tokens[self.idx as usize].kind()
-        }
+    fn kind(&self) -> Kind {
+        if self.idx >= self.end_idx { Kind::Eof } else { self.tape.kind(self.idx as usize) }
     }
 
     /// Never expose the detached body's parent after returning its close.
@@ -87,10 +84,7 @@ impl OnDemandCursor {
         let group = self.tape.group(self.enclosing)?;
         if self.end_group != NO_GROUP {
             let bound = self.tape.group(self.end_group)?;
-            if self.idx >= self.end_idx
-                || group.open_idx < bound.open_idx
-                || group.close_idx > bound.close_idx
-            {
+            if self.idx >= self.end_idx || group.open < bound.open || group.close > bound.close {
                 return None;
             }
         }
@@ -101,10 +95,10 @@ impl OnDemandCursor {
     pub(crate) fn next_and_bump(&mut self) -> (Token, Spacing) {
         let result = self.read(self.idx);
         if self.idx < self.end_idx {
-            let kind = self.tape.tokens[self.idx as usize].kind();
-            if kind.open_delim().is_some() {
+            let kind = self.tape.kind(self.idx as usize);
+            if kind.is_open_delim() {
                 self.enclosing = self.tape.token_group(self.idx as usize);
-            } else if kind.close_delim().is_some() {
+            } else if kind.is_close_delim() {
                 let group_idx = self.tape.token_group(self.idx as usize);
                 self.enclosing =
                     self.tape.group(group_idx).expect("indexed closing delimiter").parent;
@@ -127,10 +121,10 @@ impl OnDemandCursor {
     }
 
     fn skip_tree(&mut self) {
-        if self.kind().open_delim().is_some() {
+        if open_delim(self.kind()).is_some() {
             let group_idx = self.tape.token_group(self.idx as usize);
             let group = self.tape.group(group_idx).expect("indexed opening delimiter");
-            self.idx = (group.close_idx + 1).min(self.end_idx);
+            self.idx = (group.close + 1).min(self.end_idx);
         } else {
             self.next_and_bump();
         }
@@ -140,13 +134,12 @@ impl OnDemandCursor {
         assert_ne!(n, 0);
         let mut cursor = self.clone();
         for _ in 1..n {
-            if cursor.kind().close_delim().is_some() || cursor.kind() == SourceKind::Eof {
+            if close_delim(cursor.kind()).is_some() || cursor.kind() == Kind::Eof {
                 return None;
             }
             cursor.skip_tree();
         }
-        (cursor.kind().close_delim().is_none() && cursor.kind() != SourceKind::Eof)
-            .then_some(cursor)
+        (close_delim(cursor.kind()).is_none() && cursor.kind() != Kind::Eof).then_some(cursor)
     }
 
     pub(crate) fn look_ahead_tree_token(&self, n: usize) -> Option<Token> {
@@ -155,13 +148,13 @@ impl OnDemandCursor {
     }
 
     fn take_tree(&mut self) -> TokenTree {
-        if let Some(delim) = self.kind().open_delim() {
+        if let Some(delim) = open_delim(self.kind()) {
             let (open, open_spacing) = self.next_and_bump();
             let mut children = Vec::new();
-            while self.kind().close_delim().is_none() && self.kind() != SourceKind::Eof {
+            while close_delim(self.kind()).is_none() && self.kind() != Kind::Eof {
                 children.push(self.take_tree());
             }
-            assert_eq!(self.kind().close_delim(), Some(delim));
+            assert_eq!(close_delim(self.kind()), Some(delim));
             let (close, close_spacing) = self.next_and_bump();
             TokenTree::Delimited(
                 DelimSpan::from_pair(open.span, close.span),
@@ -170,7 +163,7 @@ impl OnDemandCursor {
                 TokenStream::new(children),
             )
         } else {
-            assert!(self.kind().close_delim().is_none() && self.kind() != SourceKind::Eof);
+            assert!(close_delim(self.kind()).is_none() && self.kind() != Kind::Eof);
             let (token, spacing) = self.next_and_bump();
             TokenTree::Token(token, spacing)
         }
@@ -183,9 +176,9 @@ impl OnDemandCursor {
     pub(crate) fn look_ahead_past_close_delim(&self) -> Option<TokenTree> {
         let group = *self.active_group()?;
         let mut cursor = self.clone();
-        cursor.idx = (group.close_idx + 1).min(self.end_idx);
+        cursor.idx = (group.close + 1).min(self.end_idx);
         cursor.enclosing = group.parent;
-        if cursor.kind().close_delim().is_some() || cursor.kind() == SourceKind::Eof {
+        if close_delim(cursor.kind()).is_some() || cursor.kind() == Kind::Eof {
             None
         } else {
             Some(cursor.take_tree())
@@ -200,13 +193,13 @@ impl OnDemandCursor {
             .or_else(|| self.tape.group(self.end_group))
             .expect("cursor has an enclosing delimiter");
         let mut cursor = self.clone();
-        cursor.idx = group.open_idx;
+        cursor.idx = group.open;
         cursor.enclosing = group.parent;
         cursor.take_tree()
     }
 
     pub(crate) fn bump_to_end(&mut self) {
-        self.idx = self.active_group().map_or(self.end_idx, |group| group.close_idx);
+        self.idx = self.active_group().map_or(self.end_idx, |group| group.close);
     }
 
     pub(crate) fn depth(&self) -> usize {
@@ -216,10 +209,10 @@ impl OnDemandCursor {
     pub(crate) fn parent_delim_and_span(&self) -> Option<(Delimiter, DelimSpan)> {
         let group = self.active_group()?;
         Some((
-            group.delim,
+            delimiter(group.delim),
             DelimSpan::from_pair(
-                self.tape.token_span(group.open_idx as usize),
-                self.tape.token_span(group.close_idx as usize),
+                self.tape.token_span(group.open as usize),
+                self.tape.token_span(group.close as usize),
             ),
         ))
     }
@@ -229,10 +222,10 @@ impl OnDemandCursor {
         let group = self.active_group()?;
         Some(EnclosingGroupInfo {
             group_idx: self.enclosing,
-            delim: group.delim,
-            open: self.tape.token_span(group.open_idx as usize),
-            close: self.tape.token_span(group.close_idx as usize),
-            inside_bumps: group.close_idx - group.open_idx - 1,
+            delim: delimiter(group.delim),
+            open: self.tape.token_span(group.open as usize),
+            close: self.tape.token_span(group.close as usize),
+            inside_bumps: group.close - group.open - 1,
             attr_count: group.attr_count,
         })
     }
@@ -240,13 +233,13 @@ impl OnDemandCursor {
     #[cfg(any(feature = "parallel", test))]
     pub(crate) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
         let group = self.tape.group(group_idx)?;
-        let end_idx = group.close_idx.checked_add(1)?;
-        if self.idx <= group.open_idx || self.idx > end_idx || end_idx > self.end_idx {
+        let end_idx = group.close.checked_add(1)?;
+        if self.idx <= group.open || self.idx > end_idx || end_idx > self.end_idx {
             return None;
         }
         if self.end_group != NO_GROUP {
             let bound = self.tape.group(self.end_group)?;
-            if group.open_idx < bound.open_idx || group.close_idx > bound.close_idx {
+            if group.open < bound.open || group.close > bound.close {
                 return None;
             }
         }
