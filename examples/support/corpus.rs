@@ -78,12 +78,18 @@ pub fn rust_files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
 
 /// Small grammar witnesses supplement the canonical performance corpora.
 pub fn oracle_witnesses() -> Vec<String> {
-    vec![
+    let mut files = vec![
         String::from(
             "use alpha::beta; type T = u32; fn f(x: u32) -> u32 { let y: u32 = x; let _ = y; y } const C: u32 = 1; trait Bound<X> {} trait Assoc { type Out; } fn nested<A: Bound<<u8 as Assoc>::Out>>() {}",
         ),
         String::from(
             "const CLOSURE: fn() = || {}; unsafe extern \"C\" { fn takes(x: u32, y: u32); }",
         ),
-    ]
+    ];
+    let mut segments = String::new();
+    for index in 0..600 {
+        segments.push_str(&format!("pub const ITEM_{index}: usize = {index};\n"));
+    }
+    files.push(segments);
+    files
 }

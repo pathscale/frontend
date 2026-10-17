@@ -31,6 +31,7 @@ pub struct ParseRecord {
     pub continuation: String,
     /// Ordered structured diagnostics, excluding the implementation's emission call site.
     pub diagnostics: Vec<String>,
+    pub effects: Vec<String>,
     pub symbol_gallery: Vec<(String, u32, u32)>,
     pub raw_identifier_spans: Vec<(u32, u32, u32)>,
 }
@@ -129,6 +130,33 @@ fn diagnostics(psess: &ParseSess, records: &Lock<Vec<String>>) -> Vec<String> {
     records.lock().clone()
 }
 
+// Deferred decorators remain opaque; compare ordered lint identities and source spans.
+fn effects(psess: &ParseSess) -> Vec<String> {
+    let mut result: Vec<_> = psess
+        .buffered_lints
+        .lock()
+        .iter()
+        .map(|lint| format!("lint {} {:?} {:?}", lint.lint_id.lint.name, lint.node_id, lint.span))
+        .collect();
+    result.extend(
+        psess
+            .ambiguous_block_expr_parse
+            .lock()
+            .iter()
+            .map(|(left, right)| format!("ambiguous {left:?} {right:?}")),
+    );
+    let mut gates: Vec<_> = psess
+        .gated_spans
+        .spans
+        .lock()
+        .iter()
+        .map(|(feature, spans)| (String::from(feature.as_str()), format!("{spans:?}")))
+        .collect();
+    gates.sort_by(|left, right| left.0.cmp(&right.0));
+    result.extend(gates.into_iter().map(|(feature, spans)| format!("gate {feature} {spans}")));
+    result
+}
+
 fn run_one(source: Arc<String>, edition: Edition, mode: Mode, width: usize) -> ParseRecord {
     let _width = crate::rustc_data_structures::sync::enter_session_width(width);
     create_session_globals_then(edition, &[], None, || {
@@ -165,6 +193,7 @@ fn run_one(source: Arc<String>, edition: Edition, mode: Mode, width: usize) -> P
                         final_attr_id: attr_position(&psess.attr_id_generator),
                         continuation: String::new(),
                         diagnostics: diagnostics(&psess, &records),
+                        effects: effects(&psess),
                         symbol_gallery: gallery(&psess),
                         raw_identifier_spans: span_tuples(
                             psess.raw_identifier_spans.iter().collect(),
@@ -188,6 +217,7 @@ fn run_one(source: Arc<String>, edition: Edition, mode: Mode, width: usize) -> P
                         final_attr_id,
                         continuation: crate::rustc_parse::parser::oracle::continuation(&parser),
                         diagnostics: diagnostics(&psess, &records),
+                        effects: effects(&psess),
                         symbol_gallery,
                         raw_identifier_spans,
                     }
@@ -203,6 +233,7 @@ fn run_one(source: Arc<String>, edition: Edition, mode: Mode, width: usize) -> P
                         final_attr_id: attr_position(&psess.attr_id_generator),
                         continuation: crate::rustc_parse::parser::oracle::continuation(&parser),
                         diagnostics: diagnostics(&psess, &records),
+                        effects: effects(&psess),
                         symbol_gallery: gallery(&psess),
                         raw_identifier_spans: span_tuples(
                             psess.raw_identifier_spans.iter().collect(),
@@ -219,6 +250,7 @@ fn run_one(source: Arc<String>, edition: Edition, mode: Mode, width: usize) -> P
             final_attr_id: attr_position(&psess.attr_id_generator),
             continuation: String::new(),
             diagnostics: diagnostics(&psess, &records),
+            effects: effects(&psess),
             symbol_gallery: gallery(&psess),
             raw_identifier_spans: span_tuples(psess.raw_identifier_spans.iter().collect()),
         })
@@ -285,6 +317,7 @@ fn first_difference(left: &ParseRecord, right: &ParseRecord) -> Option<String> {
         attr_ids,
         final_attr_id,
         diagnostics,
+        effects,
         continuation,
         symbol_gallery,
         raw_identifier_spans

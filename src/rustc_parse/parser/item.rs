@@ -68,6 +68,21 @@ impl<'a> Parser<'a> {
         &mut self,
         term: ExpTokenPair,
     ) -> PResult<'a, (AttrVec, ast::ArenaVec<P<Item>>, ModSpans)> {
+        self.parse_mod_common(term, true)
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(super) fn parse_segment_mod(
+        &mut self,
+    ) -> PResult<'a, (AttrVec, ast::ArenaVec<P<Item>>, ModSpans)> {
+        self.parse_mod_common(exp!(Eof), false)
+    }
+
+    fn parse_mod_common(
+        &mut self,
+        term: ExpTokenPair,
+        consume_terminator: bool,
+    ) -> PResult<'a, (AttrVec, ast::ArenaVec<P<Item>>, ModSpans)> {
         let lo = self.token.span;
         let attrs = self.parse_inner_attributes()?;
 
@@ -83,10 +98,19 @@ impl<'a> Parser<'a> {
         // while calling back into the parser.
         let mut last_item: Option<P<Item>> = None;
 
+        #[cfg(feature = "parallel")]
+        if self.body_jobs.is_some() && self.token_cursor.at_file_depth_zero() {
+            self.initialize_segment_plan();
+        }
+
         // There shouldn't be any stray semicolons before or after items.
         // `parse_item` consumes the appropriate semicolons so any leftover is an error.
         loop {
             while self.maybe_consume_incorrect_semicolon(last_item.as_deref()) {} // Eat all bad semicolons
+            #[cfg(feature = "parallel")]
+            if self.skip_planned_segment() {
+                continue;
+            }
             let item = match self.parse_item(ForceCollect::No, AllowConstBlockItems::Yes) {
                 Ok(Some(item)) => item,
                 Ok(None) => break,
@@ -100,7 +124,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        if !self.eat(term) {
+        let terminated = if consume_terminator { self.eat(term) } else { self.check(term) };
+        if !terminated {
             let token_str = super::token_descr(&self.token);
             if !self.maybe_consume_incorrect_semicolon(last_item.as_deref()) {
                 let is_let = self.token.is_keyword(kw::Let);

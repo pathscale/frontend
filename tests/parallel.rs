@@ -121,11 +121,21 @@ const FILES: &[&str] = &[
      pub fn unresolved() { missing(); }\n",
 ];
 
+const CORPUS: &[&str] = &[
+    include_str!("corpus/prelude.rs"),
+    include_str!("corpus/unit_cells.rs"),
+    include_str!("corpus/unit_geometry.rs"),
+    include_str!("corpus/unit_ledger.rs"),
+    include_str!("corpus/unit_machine.rs"),
+    include_str!("corpus/unit_numeric.rs"),
+];
+
 /// Every input, in a fixed order.
 fn inputs() -> Vec<String> {
     let mut all = vec![format!("{LANG}{MANY_ITEMS}"), format!("{LANG}{WITH_ERRORS}")];
     all.extend(NO_LANG_ITEMS.iter().map(|s| s.to_string()));
     all.extend(FILES.iter().map(|source| format!("{LANG}{source}")));
+    all.extend(CORPUS.iter().map(|source| (*source).to_string()));
     all
 }
 
@@ -161,6 +171,15 @@ fn every_width_gives_the_width_one_answer() {
             let got = answers(width);
             for (index, (want, got)) in reference.checked.iter().zip(&got.checked).enumerate() {
                 assert_eq!(want, got, "check_source, input {index}, width {width}, run {run}");
+                assert_eq!(
+                    format!("{want:#?}"),
+                    format!("{got:#?}"),
+                    "debug AST/facts and diagnostics, input {index}, width {width}, run {run}"
+                );
+                assert_eq!(
+                    want.errors, got.errors,
+                    "diagnostics, input {index}, width {width}, run {run}"
+                );
             }
             for (index, (want, got)) in reference.facts.iter().zip(&got.facts).enumerate() {
                 assert_eq!(want, got, "analyze_source, input {index}, width {width}, run {run}");

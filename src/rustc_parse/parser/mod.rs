@@ -262,7 +262,7 @@ pub struct Parser<'a> {
     list_scratch: ParserListScratchSlot,
     #[cfg(feature = "parallel")]
     body_jobs:
-        Option<alloc::sync::Arc<crate::rustc_data_structures::sync::Lock<Vec<parallel::BodyJob>>>>,
+        Option<alloc::sync::Arc<crate::rustc_data_structures::sync::Lock<parallel::JobQueue>>>,
 }
 
 #[derive(Default)]
@@ -330,7 +330,7 @@ const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 344);
 const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 360);
 
 /// Stores span information about a closure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ClosureSpans {
     whole_closure: Span,
     closing_pipe: Span,

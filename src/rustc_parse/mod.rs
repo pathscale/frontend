@@ -45,6 +45,9 @@ static PARALLEL_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static PARALLEL_COMMITS: AtomicU64 = AtomicU64::new(0);
 static PARALLEL_RETRIES: AtomicU64 = AtomicU64::new(0);
 static PARALLEL_BODY_JOBS: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_SEGMENT_JOBS: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_SEGMENT_TOKENS: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_SEGMENT_BYTES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ParseFastPathMetrics {
@@ -54,6 +57,9 @@ pub struct ParseFastPathMetrics {
     pub parallel_commits: u64,
     pub parallel_retries: u64,
     pub parallel_body_jobs: u64,
+    pub parallel_segment_jobs: u64,
+    pub parallel_segment_tokens: u64,
+    pub parallel_segment_bytes: u64,
     pub chunk_allocs: u64,
     pub chunk_batch_reserves: u64,
     pub chunk_atomic_releases: u64,
@@ -70,6 +76,9 @@ pub fn fast_path_metrics() -> ParseFastPathMetrics {
         parallel_commits: PARALLEL_COMMITS.load(Ordering::Relaxed),
         parallel_retries: PARALLEL_RETRIES.load(Ordering::Relaxed),
         parallel_body_jobs: PARALLEL_BODY_JOBS.load(Ordering::Relaxed),
+        parallel_segment_jobs: PARALLEL_SEGMENT_JOBS.load(Ordering::Relaxed),
+        parallel_segment_tokens: PARALLEL_SEGMENT_TOKENS.load(Ordering::Relaxed),
+        parallel_segment_bytes: PARALLEL_SEGMENT_BYTES.load(Ordering::Relaxed),
         chunk_allocs: arena.chunk_allocs,
         chunk_batch_reserves: arena.chunk_batch_reserves,
         chunk_atomic_releases: arena.chunk_atomic_releases,
@@ -85,6 +94,9 @@ pub fn reset_fast_path_metrics() {
     PARALLEL_COMMITS.store(0, Ordering::Relaxed);
     PARALLEL_RETRIES.store(0, Ordering::Relaxed);
     PARALLEL_BODY_JOBS.store(0, Ordering::Relaxed);
+    PARALLEL_SEGMENT_JOBS.store(0, Ordering::Relaxed);
+    PARALLEL_SEGMENT_TOKENS.store(0, Ordering::Relaxed);
+    PARALLEL_SEGMENT_BYTES.store(0, Ordering::Relaxed);
     reset_arena_metrics();
 }
 
@@ -120,6 +132,14 @@ pub(crate) fn record_parallel_retry() {
 #[inline]
 pub(crate) fn record_parallel_body_jobs(count: usize) {
     PARALLEL_BODY_JOBS.fetch_add(count as u64, Ordering::Relaxed);
+}
+
+#[cfg(feature = "parallel")]
+#[inline]
+pub(crate) fn record_parallel_segment_jobs(jobs: usize, tokens: u64, bytes: u64) {
+    PARALLEL_SEGMENT_JOBS.fetch_add(jobs as u64, Ordering::Relaxed);
+    PARALLEL_SEGMENT_TOKENS.fetch_add(tokens, Ordering::Relaxed);
+    PARALLEL_SEGMENT_BYTES.fetch_add(bytes, Ordering::Relaxed);
 }
 
 #[macro_use]

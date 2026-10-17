@@ -145,6 +145,13 @@ fn main() {
         total.same,
         total.different.len()
     );
+    #[cfg(feature = "parallel")]
+    {
+        let metrics = frontend::rustc_parse::fast_path_metrics();
+        println!("parallel metrics: {metrics:?}");
+        assert!(metrics.parallel_segment_jobs > 0, "oracle must exercise real segment jobs");
+        assert!(metrics.parallel_commits > 0, "oracle must commit owned parallel parses");
+    }
     if shadow_failed || !total.different.is_empty() {
         std::process::exit(1);
     }

@@ -578,6 +578,8 @@ impl<'a, G: EmissionGuarantee> Diag<'a, G> {
     /// Creates a new `Diag` with an already constructed diagnostic.
     #[track_caller]
     pub(crate) fn new_diagnostic(dcx: DiagCtxtHandle<'a>, diag: DiagInner) -> Self {
+        #[cfg(feature = "parallel")]
+        crate::rustc_span::parse_transaction::diagnostic();
         debug!("Created new diagnostic");
         Self { dcx, diag: Some(Box::new(diag)), _marker: PhantomData }
     }

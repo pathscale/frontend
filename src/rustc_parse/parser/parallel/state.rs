@@ -21,6 +21,7 @@ fn capture(capturing: Capturing) -> CaptureState {
 
 macro_rules! parser_state {
     ($($field:ident: $ty:ty),+ $(,)?) => {
+        #[derive(Clone)]
         pub(super) struct State {
             pub(super) capture_state: CaptureState,
             $(pub(super) $field: $ty,)+
@@ -104,7 +105,30 @@ impl State {
             && parser.angle_bracket_nesting == self.angle_bracket_nesting
             && parser.parsing_generics == self.parsing_generics
             && parser.last_unexpected_token_span == self.last_unexpected_token_span
-            && parser.in_fn_body
-            && parser.fn_body_missing_semi_guar.is_none()
+            && parser.in_fn_body == self.in_fn_body
+            && parser.fn_body_missing_semi_guar == self.fn_body_missing_semi_guar
+    }
+
+    pub(super) fn continuation_matches_segment(&self, parser: &Parser<'_>) -> bool {
+        parser.restrictions.bits() == self.restrictions.bits()
+            && (parser.expected_token_types.is_empty()
+                || self.expected_token_types.is_deferred()
+                    && parser.expected_token_types.is_deferred())
+            && parser.capture_cfg == self.capture_cfg
+            && parser.subparser_name == self.subparser_name
+            && core::mem::discriminant(&parser.capture_state.capturing)
+                == core::mem::discriminant(&self.capture_state.capturing)
+            && matches!(
+                (parser.recovery, self.recovery),
+                (Recovery::Allowed, Recovery::Allowed) | (Recovery::Forbidden, Recovery::Forbidden)
+            )
+            && parser.break_last_token == 0
+            && parser.unmatched_angle_bracket_count == self.unmatched_angle_bracket_count
+            && parser.angle_bracket_nesting == self.angle_bracket_nesting
+            && parser.parsing_generics == self.parsing_generics
+            && parser.last_unexpected_token_span == self.last_unexpected_token_span
+            && parser.current_closure == self.current_closure
+            && parser.in_fn_body == self.in_fn_body
+            && parser.fn_body_missing_semi_guar == self.fn_body_missing_semi_guar
     }
 }

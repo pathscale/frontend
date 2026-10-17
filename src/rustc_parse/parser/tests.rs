@@ -2963,14 +2963,12 @@ fn wave3_indexed_raw_identifiers_are_published_once() {
 #[cfg(feature = "parallel")]
 #[test]
 fn r24_on_demand_parallel_bodies_match_serial_ast() {
-    use crate::rustc_ast::tokenstream::TokenCursor;
     use crate::rustc_data_structures::sync::enter_session_width;
-    use crate::rustc_lexer::FrontmatterAllowed;
     use crate::rustc_span::edition::Edition;
 
     // Set the width before creating globals or sessions so all shared parse
     // state is synchronized. Owned body jobs use the existing pool boundary.
-    let _mode = enter_session_width(2);
+    let _mode = enter_session_width(4);
     create_default_session_globals_then(|| {
         for source in [
             "fn empty() {} fn attrs() { #![allow(unused)] } fn after() {}",
@@ -3006,26 +3004,162 @@ fn r24_on_demand_parallel_bodies_match_serial_ast() {
             serial_session.dcx().abort_if_errors();
             parallel_session.dcx().abort_if_errors();
         }
+    });
+}
 
-        fn r24_source_parser<'a>(psess: &'a ParseSess, source: &str) -> Parser<'a> {
-            let file = psess
-                .source_map()
-                .new_source_file(FileName::Custom("r24.rs".to_string()), source.to_string());
-            let cursor = TokenCursor::from_source(
-                file.src.as_ref().unwrap().clone(),
-                file.start_pos,
-                0,
-                FrontmatterAllowed::No,
-                psess.edition,
-            )
-            .expect("fixture must select OnDemandCursor");
-            Parser::new_with_cursor(psess, cursor, None)
+#[cfg(feature = "parallel")]
+#[test]
+fn r24_on_demand_parallel_segments_match_serial_ast() {
+    let _metrics = PARSE_METRICS_TEST_LOCK.lock();
+    let _mode = crate::rustc_data_structures::sync::enter_session_width(4);
+    create_default_session_globals_then(|| {
+        let mut many = String::new();
+        for index in 0..600 {
+            use core::fmt::Write as _;
+            writeln!(&mut many, "pub const ITEM_{index}: usize = {index};").unwrap();
+        }
+        let psess = ParseSess::new();
+        let parser = r24_source_parser(&psess, &many);
+        let segments = super::parallel::plan_segments(&parser, 4, 0);
+        assert!(segments.len() > 1, "large root module should plan multiple segments");
+        for segment in segments {
+            assert!(segment.end.saturating_sub(segment.start) >= 256);
+            assert!(segment.attr_end >= segment.attr_start);
+            let tape = parser.token_cursor.lexed_tape().unwrap();
+            let bytes =
+                tape.token((segment.end - 1) as usize).hi - tape.token(segment.start as usize).lo;
+            assert!(bytes <= 0x7ffe);
+        }
+        psess.dcx().abort_if_errors();
+
+        let mut serial_source = String::new();
+        for index in 0..600 {
+            use core::fmt::Write as _;
+            if index == 30 || index == 330 {
+                writeln!(&mut serial_source, "pub fn f{index}() -> usize {{ {index} }}").unwrap();
+            }
+            writeln!(&mut serial_source, "pub const ITEM_{index}: usize = {index};").unwrap();
+        }
+        let serial_session = ParseSess::new();
+        let parallel_session = ParseSess::new();
+        let mut serial = r24_source_parser(&serial_session, &serial_source);
+        let (attrs, items, spans) = serial.parse_mod(crate::exp!(Eof)).unwrap();
+        let expected =
+            ast::Crate { attrs, items, spans, id: ast::DUMMY_NODE_ID, is_placeholder: false };
+        let mut parallel = r24_source_parser(&parallel_session, &serial_source);
+        crate::rustc_parse::reset_fast_path_metrics();
+        let actual = parallel.parse_parallel_bodies().expect("segment transaction should commit");
+        assert!(crate::rustc_parse::fast_path_metrics().parallel_segment_jobs > 0);
+        assert!(crate::rustc_parse::fast_path_metrics().parallel_commits > 0);
+        assert_eq!(format!("{actual:#?}"), format!("{expected:#?}"));
+        assert_eq!(super::oracle::continuation(&parallel), super::oracle::continuation(&serial));
+        assert_eq!(parallel.token, serial.token);
+        assert_eq!(parallel.prev_token, serial.prev_token);
+        assert_eq!(parallel.token_spacing, serial.token_spacing);
+        assert_eq!(parallel.num_bump_calls, serial.num_bump_calls);
+        assert_eq!(
+            parallel.expected_token_types.iter().collect::<Vec<_>>(),
+            serial.expected_token_types.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            parallel.expected_token_types.is_deferred(),
+            serial.expected_token_types.is_deferred()
+        );
+        assert_eq!(
+            parallel_session.attr_id_generator.position(),
+            serial_session.attr_id_generator.position()
+        );
+        serial_session.dcx().abort_if_errors();
+        parallel_session.dcx().abort_if_errors();
+
+        // No owned capture-state merge exists. Discard speculative metadata and replay
+        // with the original cursor/session for both a segment and an ordinary body job.
+        for source in [
+            format!("#[allow(dead_code)]\n{serial_source}"),
+            String::from("fn attrs() { #[allow(unused)] let x = 1; } fn after() {}"),
+        ] {
+            let serial_session = ParseSess::new();
+            let parallel_session = ParseSess::new();
+            let mut serial = r24_source_parser(&serial_session, &source);
+            let (attrs, items, spans) = serial.parse_mod(crate::exp!(Eof)).unwrap();
+            let expected =
+                ast::Crate { attrs, items, spans, id: ast::DUMMY_NODE_ID, is_placeholder: false };
+            let mut parallel = r24_source_parser(&parallel_session, &source);
+            assert!(
+                parallel.parse_parallel_bodies().is_none(),
+                "capture metadata must retry serially"
+            );
+            let (attrs, items, spans) = parallel.parse_mod(crate::exp!(Eof)).unwrap();
+            let actual =
+                ast::Crate { attrs, items, spans, id: ast::DUMMY_NODE_ID, is_placeholder: false };
+            assert_eq!(format!("{actual:#?}"), format!("{expected:#?}"));
+            assert_eq!(
+                super::oracle::continuation(&parallel),
+                super::oracle::continuation(&serial)
+            );
+            assert_eq!(
+                parallel_session.attr_id_generator.position(),
+                serial_session.attr_id_generator.position()
+            );
+            serial_session.dcx().abort_if_errors();
+            parallel_session.dcx().abort_if_errors();
         }
     });
 }
 
+#[cfg(feature = "parallel")]
+#[test]
+fn r25_segment_diagnostic_retries_before_guard_construction() {
+    let _mode = crate::rustc_data_structures::sync::enter_session_width(4);
+    create_default_session_globals_then(|| {
+        let mut source = String::new();
+        for index in 0..600 {
+            use core::fmt::Write as _;
+            if index == 300 {
+                source.push_str("mod __segment_diag_name __segment_diag_suffix;\n");
+            }
+            writeln!(&mut source, "pub const ITEM_{index}: usize = {index};").unwrap();
+        }
+        let parallel_session = ParseSess::new();
+        let mut parallel = r24_source_parser(&parallel_session, &source);
+        // Run the speculative pass before serial recovery can intern the concatenated
+        // identifier used by expected_one_of_not_found's keyword suggestion.
+        assert!(parallel.parse_parallel_bodies().is_none());
+        let actual = parallel.parse_mod(crate::exp!(Eof)).unwrap_err().cancel_into_message();
+        let serial_session = ParseSess::new();
+        let mut serial = r24_source_parser(&serial_session, &source);
+        let expected = serial.parse_mod(crate::exp!(Eof)).unwrap_err().cancel_into_message();
+        assert_eq!(actual, expected);
+        assert!(actual.is_some());
+        assert_eq!(super::oracle::continuation(&parallel), super::oracle::continuation(&serial));
+        assert_eq!(
+            parallel_session.attr_id_generator.position(),
+            serial_session.attr_id_generator.position()
+        );
+    });
+}
+
+#[cfg(feature = "parallel")]
+fn r24_source_parser<'a>(psess: &'a ParseSess, source: &str) -> Parser<'a> {
+    use crate::rustc_ast::tokenstream::TokenCursor;
+    use crate::rustc_lexer::FrontmatterAllowed;
+    let file = psess
+        .source_map()
+        .new_source_file(FileName::Custom("r24.rs".to_string()), source.to_string());
+    let cursor = TokenCursor::from_source(
+        file.src.as_ref().unwrap().clone(),
+        file.start_pos,
+        0,
+        FrontmatterAllowed::No,
+        psess.edition,
+    )
+    .expect("fixture must select OnDemandCursor");
+    Parser::new_with_cursor(psess, cursor, None)
+}
+
 #[test]
 fn w4_fast_path_metrics_and_deferred_newlines() {
+    let _metrics = PARSE_METRICS_TEST_LOCK.lock();
     indexed_admission_preserves_gallery_and_lexed_lines();
     create_default_session_globals_then(|| {
         crate::rustc_parse::reset_fast_path_metrics();
@@ -3077,3 +3211,6 @@ fn indexed_admission_preserves_gallery_and_lexed_lines() {
         eager.dcx().abort_if_errors();
     });
 }
+
+// Tests that reset process-wide metrics must not reset one another's witness.
+static PARSE_METRICS_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
