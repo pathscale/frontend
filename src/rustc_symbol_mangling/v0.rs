@@ -751,14 +751,39 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
 
             // We may still encounter alias consts due to the printing
             // logic sometimes passing identity-substituted impl headers.
-            ty::ConstKind::Alias(_, ty::AliasConst { kind, args, .. }) => match kind {
-                ty::AliasConstKind::Projection { def_id }
-                | ty::AliasConstKind::Inherent { def_id }
-                | ty::AliasConstKind::Free { def_id }
-                | ty::AliasConstKind::Anon { def_id } => {
-                    return self.print_def_path(def_id, args);
+            ty::ConstKind::Alias(_, alias) => {
+                let def_id = alias.kind.opt_def_id().expect("constant alias definition");
+                let ct_ty =
+                    self.tcx.type_of(def_id).instantiate(self.tcx, alias.args).skip_norm_wip();
+                // A const position accepts a typed value, never a definition path.
+                // In particular, an anonymous array length is not an `NK` path.
+                if let Some((value, _)) = self.tcx.trivial_const(def_id)
+                    && let Some(integer) = value.try_to_scalar_int()
+                {
+                    let ct = ty::Const::new_value(
+                        self.tcx,
+                        ty::ValTree::from_scalar_int(self.tcx, integer),
+                        ct_ty,
+                    );
+                    return ct.print(self);
                 }
-            },
+                if alias.args.has_non_region_param() {
+                    // Identity-substituted impl headers use the v0 placeholder,
+                    // just as a bare const parameter does above.
+                    self.push("p");
+                    return Ok(());
+                }
+                let valtree = self
+                    .tcx
+                    .const_eval_resolve_for_typeck(
+                        ty::TypingEnv::fully_monomorphized(),
+                        alias,
+                        self.tcx.def_span(def_id),
+                    )
+                    .unwrap_or_else(|_| bug!("symbol_names: could not evaluate constant {ct:?}"))
+                    .unwrap_or_else(|ty| bug!("symbol_names: unsupported constant type {ty:?}"));
+                return ty::Const::new_value(self.tcx, valtree, ct_ty).print(self);
+            }
 
             ty::ConstKind::Expr(_)
             | ty::ConstKind::Infer(_)
