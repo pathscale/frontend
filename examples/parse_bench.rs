@@ -7,15 +7,18 @@
 //! seeds and templates), and every `.rs` file under each `DIR` given. Files that do not parse
 //! are left out of a directory workload and counted, so both builds read the same bytes.
 //! `ONLY=clean|large|dirs` runs one of them.
+//! `WIDTH=N` sets the session width (default 1); files are visited serially.
+//! The counting allocator delegates to mimalloc.
 //!
 //! Each round parses every file of the workload once with `frontend_facts::syntax::parses`, on
 //! this thread. One untimed round comes first, and one more, untimed, counts allocations.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 struct Counting;
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -26,17 +29,17 @@ unsafe impl GlobalAlloc for Counting {
             ALLOCS.fetch_add(1, Relaxed);
             ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
         }
-        unsafe { System.alloc(layout) }
+        unsafe { INNER.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { INNER.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if COUNTING.load(Relaxed) {
             ALLOCS.fetch_add(1, Relaxed);
             ALLOC_BYTES.fetch_add(new_size as u64, Relaxed);
         }
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { INNER.realloc(ptr, layout, new_size) }
     }
 }
 
@@ -141,11 +144,18 @@ fn bench(label: &str, files: &[String], rounds: usize) {
 
 fn main() {
     frontend::unwind_janky::install_catcher(catcher);
+    let width = std::env::var("WIDTH")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("WIDTH must be a positive integer"))
+        .unwrap_or(1);
+    assert!(width > 0, "WIDTH must be a positive integer");
+    let _session_width = frontend::rustc_data_structures::sync::enter_session_width(width);
     let mut args = std::env::args().skip(1);
     let rounds: usize = args.next().and_then(|n| n.parse().ok()).unwrap_or(15);
     let dirs: Vec<String> = args.collect();
     let only = std::env::var("ONLY").ok();
     let wants = |name: &str| only.as_deref().is_none_or(|o| o == name);
+    println!("parse benchmark width {width}, parallel feature: {}", cfg!(feature = "parallel"));
     if wants("clean") {
         bench("clean", &generated('c', 200, 300, 1_500, 0x5eed_0001), rounds);
     }

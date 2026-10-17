@@ -3,9 +3,9 @@
 //! Run: `cargo run --release --features stage-timing --example stage_throughput -- [ROUNDS]`.
 //!
 //! Each corpus (`parallel_timing`'s `clean` and `large`, the same generator and seeds) is
-//! checked once untimed, every file held to no errors, then `ROUNDS` times (default 3) at width
-//! one, one file at a time, with `rustc_data_structures::stage_timing` recording exclusive time
-//! per query and per hand-placed marker. The table groups those slots into stages in pipeline
+//! checked once untimed, every file held to no errors, then `ROUNDS` times (default 3) at session
+//! width `WIDTH` (default 1), one file at a time. `rustc_data_structures::stage_timing` records
+//! exclusive time per query and per hand-placed marker. The table groups those slots into stages in pipeline
 //! order and prints, per stage:
 //!
 //! - **ms**: its exclusive time per pass over the corpus.
@@ -20,12 +20,44 @@
 //! "item sema", which lists its top queries like every other stage.
 //!
 //! `ONLY=clean|large` runs one corpus. `TOP=N` lists N queries per stage (default 3).
+//! The counting allocator delegates to mimalloc.
 
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 use frontend::frontend_facts::check_shared_source_with_width;
 use frontend::rustc_data_structures::stage_timing;
+
+struct Counting;
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if COUNTING.load(Relaxed) {
+            ALLOCS.fetch_add(1, Relaxed);
+            ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
+        }
+        unsafe { INNER.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { INNER.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if COUNTING.load(Relaxed) {
+            ALLOCS.fetch_add(1, Relaxed);
+            ALLOC_BYTES.fetch_add(new_size as u64, Relaxed);
+        }
+        unsafe { INNER.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
 
 fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
@@ -201,13 +233,13 @@ struct Row {
     slots: Vec<(&'static str, u64, u64)>,
 }
 
-fn run(label: &str, files: &[String], rounds: usize, top: usize) {
+fn run(label: &str, files: &[String], rounds: usize, top: usize, width: usize) {
     let bytes: usize = files.iter().map(String::len).sum();
     let mb = bytes as f64 / 1e6;
     let lines: usize = files.iter().map(|f| f.lines().count()).sum();
     let files: Vec<Arc<String>> = files.iter().cloned().map(Arc::new).collect();
     for (i, f) in files.iter().enumerate() {
-        let checked = check_shared_source_with_width("corpus", Arc::clone(f), 1);
+        let checked = check_shared_source_with_width("corpus", Arc::clone(f), width);
         assert!(
             checked.errors.is_empty() && !checked.fatal,
             "{label}: file {i} does not check clean: {:?}",
@@ -218,7 +250,7 @@ fn run(label: &str, files: &[String], rounds: usize, top: usize) {
     let start = Instant::now();
     for _ in 0..rounds {
         for f in &files {
-            std::hint::black_box(check_shared_source_with_width("corpus", Arc::clone(f), 1));
+            std::hint::black_box(check_shared_source_with_width("corpus", Arc::clone(f), width));
         }
     }
     let wall = start.elapsed().as_secs_f64() / rounds as f64;
@@ -236,11 +268,11 @@ fn run(label: &str, files: &[String], rounds: usize, top: usize) {
     let per_pass = |nanos: u64| nanos as f64 / rounds as f64 / 1e6;
 
     println!(
-        "\n{label}: {} files, {lines} lines, {mb:.2} MB; {rounds} rounds at width 1, one file at a time",
+        "\n{label}: {} files, {lines} lines, {mb:.2} MB; {rounds} rounds at width {width}, one file at a time",
         files.len()
     );
     println!(
-        "wall {:.1} ms per pass ({:.2} MB/s); recorded {:.1} ms; {} stage transitions per pass",
+        "wall {:.1} ms per pass ({:.2} MB/s); worker-summed stage time {:.1} ms; {} stage transitions per pass",
         wall * 1e3,
         mb / wall,
         per_pass(recorded),
@@ -265,6 +297,18 @@ fn run(label: &str, files: &[String], rounds: usize, top: usize) {
         "reference: bare rustc_lexer::tokenize {:.2} ms per pass ({:.0} MB/s)",
         raw_lex * 1e3,
         mb / raw_lex
+    );
+    ALLOCS.store(0, Relaxed);
+    ALLOC_BYTES.store(0, Relaxed);
+    COUNTING.store(true, Relaxed);
+    for f in &files {
+        std::hint::black_box(check_shared_source_with_width("corpus", Arc::clone(f), width));
+    }
+    COUNTING.store(false, Relaxed);
+    println!(
+        "allocations: {} allocs, {:.1} MB allocated (untimed pass)",
+        ALLOCS.load(Relaxed),
+        ALLOC_BYTES.load(Relaxed) as f64 / 1e6,
     );
     println!(
         "{:<14} {:>9} {:>6} {:>11} {:>13}  top queries (ms per pass, calls per pass)",
@@ -303,13 +347,19 @@ fn main() {
     }
     frontend::unwind_janky::install_catcher(catcher);
     let rounds: usize = std::env::args().nth(1).and_then(|n| n.parse().ok()).unwrap_or(3);
+    let width = std::env::var("WIDTH")
+        .ok()
+        .map(|value| value.parse::<usize>().expect("WIDTH must be a positive integer"))
+        .unwrap_or(1);
+    assert!(width > 0, "WIDTH must be a positive integer");
+    println!("stage benchmark width {width}, parallel feature: {}", cfg!(feature = "parallel"));
     let top: usize = std::env::var("TOP").ok().and_then(|n| n.parse().ok()).unwrap_or(3);
     let only = std::env::var("ONLY").ok();
     let wants = |name: &str| only.as_deref().is_none_or(|o| o == name);
     if wants("clean") {
-        run("clean", &generated('c', 200, 300, 1_500, 0x5eed_0001), rounds, top);
+        run("clean", &generated('c', 200, 300, 1_500, 0x5eed_0001), rounds, top, width);
     }
     if wants("large") {
-        run("large", &generated('l', 6, 5_000, 8_000, 0x5eed_0002), rounds, top);
+        run("large", &generated('l', 6, 5_000, 8_000, 0x5eed_0002), rounds, top, width);
     }
 }
