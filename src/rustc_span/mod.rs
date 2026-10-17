@@ -246,7 +246,7 @@ impl SessionGlobals {
         reason = "the isolated span table stays in the speculative caller-thread parse"
     )]
     pub(crate) fn fork_for_parse(&self) -> (Self, usize) {
-        let spans = self.span_interner.lock().clone();
+        let spans = self.span_interner.lock().fork();
         let baseline = spans.len();
         let mut fork = self.share_for_parse();
         fork.span_interner = Arc::new(Lock::new(spans));
@@ -256,10 +256,11 @@ impl SessionGlobals {
     /// Workers have finished; transfer the table without relocating AST nodes.
     pub(crate) fn commit_parse_spans(&self, fork: &Self, baseline: usize) -> bool {
         let mut original = self.span_interner.lock();
-        if original.len() != baseline {
+        let mut fork_interner = fork.span_interner.lock();
+        if !original.can_commit_fork(&fork_interner, baseline) {
             return false;
         }
-        *original = core::mem::take(&mut *fork.span_interner.lock());
+        original.commit_fork(&mut fork_interner);
         true
     }
 }

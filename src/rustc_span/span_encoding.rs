@@ -4,6 +4,7 @@
 
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_data_structures::stable_hash::RawSpan;
+use alloc::sync::Arc;
 // This code is very hot and uses lots of arithmetic, avoid overflow checks for performance.
 // See https://github.com/rust-lang/rust/pull/119440#issuecomment-1874255727
 use crate::rustc_serialize::int_overflow::DebugStrictAdd;
@@ -490,7 +491,9 @@ impl Span {
 
 #[derive(Clone, Default)]
 pub(crate) struct SpanInterner {
-    spans: FxIndexSet<SpanData>,
+    spans: Arc<FxIndexSet<SpanData>>,
+    #[cfg(feature = "parallel")]
+    fork_baseline: Option<Arc<FxIndexSet<SpanData>>>,
 }
 
 impl SpanInterner {
@@ -499,15 +502,36 @@ impl SpanInterner {
         self.spans.len()
     }
 
+    #[cfg(feature = "parallel")]
+    pub(super) fn fork(&self) -> Self {
+        Self { spans: Arc::clone(&self.spans), fork_baseline: Some(Arc::clone(&self.spans)) }
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(super) fn can_commit_fork(&self, fork: &Self, baseline_len: usize) -> bool {
+        self.spans.len() == baseline_len
+            && fork.spans.len() >= baseline_len
+            && fork
+                .fork_baseline
+                .as_ref()
+                .is_some_and(|baseline| Arc::ptr_eq(&self.spans, baseline))
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(super) fn commit_fork(&mut self, fork: &mut Self) {
+        self.spans = Arc::clone(&fork.spans);
+        fork.fork_baseline = None;
+    }
+
     fn intern(&mut self, span_data: &SpanData) -> u32 {
+        if let Some(index) = self.spans.get_index_of(span_data) {
+            return index as u32;
+        }
         #[cfg(feature = "parallel")]
         {
-            if let Some(index) = self.spans.get_index_of(span_data) {
-                return index as u32;
-            }
             super::parse_transaction::span_insert();
         }
-        let (index, _) = self.spans.insert_full(*span_data);
+        let (index, _) = Arc::make_mut(&mut self.spans).insert_full(*span_data);
         index as u32
     }
 }
@@ -518,4 +542,41 @@ fn with_span_interner<T, F: FnOnce(&mut SpanInterner) -> T>(f: F) -> T {
     crate::rustc_span::with_session_globals(|session_globals| {
         f(&mut session_globals.span_interner.lock())
     })
+}
+
+#[cfg(all(test, feature = "parallel"))]
+mod fork_tests {
+    use super::*;
+
+    #[test]
+    fn span_fork_shares_reads_detaches_writes_and_rejects_stale_parent() {
+        crate::rustc_span::create_default_session_globals_then(|| {
+            let data = SpanData {
+                lo: BytePos(1),
+                hi: BytePos(0x9000),
+                ctxt: SyntaxContext::root(),
+                parent: None,
+            };
+            let mut parent = SpanInterner::default();
+            assert_eq!(parent.intern(&data), 0);
+            let mut fork = parent.fork();
+            assert_eq!(fork.intern(&data), 0);
+            assert!(Arc::ptr_eq(&parent.spans, &fork.spans));
+            let added = SpanData { hi: BytePos(0x9001), ..data };
+            assert_eq!(fork.intern(&added), 1);
+            assert!(!Arc::ptr_eq(&parent.spans, &fork.spans));
+            assert_eq!(parent.len(), 1);
+            assert!(parent.can_commit_fork(&fork, 1));
+            parent.commit_fork(&mut fork);
+            assert_eq!(parent.intern(&data), 0);
+            assert_eq!(parent.intern(&added), 1);
+            assert!(!parent.can_commit_fork(&fork, 1));
+
+            let stale = parent.fork();
+            parent.intern(&SpanData { hi: BytePos(0x9002), ..data });
+            assert!(!parent.can_commit_fork(&stale, 2));
+            let unrelated = SpanInterner::default();
+            assert!(!parent.can_commit_fork(&unrelated, parent.len()));
+        });
+    }
 }

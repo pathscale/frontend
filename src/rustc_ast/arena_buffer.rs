@@ -9,7 +9,8 @@ use core::ptr::NonNull;
 use core::{fmt, ptr, slice};
 
 use crate::rustc_ast::ptr::{
-    alloc_slice_bytes, dealloc_slice_bytes, try_grow_in_chunk_in_place, with_drop_batch,
+    alloc_slice_bytes, alloc_slice_bytes_in, current_slot, dealloc_slice_bytes,
+    try_grow_in_chunk_in_place_in, with_drop_batch,
 };
 use crate::rustc_data_structures::flat_map_in_place::FlatMapInPlaceVec;
 
@@ -204,12 +205,15 @@ impl<T> ArenaBuffer<T> {
         }
         let (new_layout, offset) = Self::layout(capacity);
         let len = self.len();
+        let slot = current_slot();
         if let Some(header) = self.0 {
             let (old_layout, _) = Self::layout(old_capacity);
             // SAFETY: header uniquely owns a live slice-family allocation described
             // by old_layout. The new layout has the same alignment and no smaller
             // size, and there are no live header or element references during growth.
-            let grew = unsafe { try_grow_in_chunk_in_place(header.cast(), old_layout, new_layout) };
+            let grew = unsafe {
+                try_grow_in_chunk_in_place_in(header.cast(), old_layout, new_layout, slot)
+            };
             if grew || old_layout == new_layout {
                 // Equal layouts also cover ZST growth away from the active chunk tip.
                 // SAFETY: growth preserved the aligned, initialized header and its
@@ -219,7 +223,7 @@ impl<T> ArenaBuffer<T> {
             }
         }
 
-        let data = alloc_slice_bytes(new_layout);
+        let data = alloc_slice_bytes_in(new_layout, slot);
         let header = data.cast::<BufferHeader<T>>();
         // SAFETY: new_layout provides correctly aligned, disjoint storage for the
         // header and capacity elements. The old len-element prefix is initialized

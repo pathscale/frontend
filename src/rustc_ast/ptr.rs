@@ -138,7 +138,7 @@ fn chunk_of<T>(node: NonNull<T>) -> NonNull<ChunkHeader> {
 }
 
 /// A thread's current chunk, next free byte, and unissued ownership counts.
-struct Current {
+pub(crate) struct Current {
     chunk: Option<NonNull<ChunkHeader>>,
     next: usize,
     reserved: usize,
@@ -213,8 +213,13 @@ static CURRENT: eko::thread::ThreadLocal<Current> = eko::thread::ThreadLocal::ne
 /// one across code that can run another lookup (a drop, an allocation). `None` when the thread
 /// is out of thread-local keys.
 #[inline]
-fn current_ptr() -> Option<NonNull<Current>> {
+pub(crate) fn current_slot() -> Option<NonNull<Current>> {
     CURRENT.with(Current::new, |cur| NonNull::from(cur))
+}
+
+#[inline]
+fn current_ptr() -> Option<NonNull<Current>> {
+    current_slot()
 }
 
 /// Coalesces consecutive chunk releases through nested drops, including unwinding.
@@ -281,7 +286,16 @@ impl Drop for ParseArena {
 /// Room for one node of layout, transferring one reserved count to it.
 #[inline]
 fn alloc_node(layout: Layout) -> NonNull<u8> {
-    let slot = CURRENT.with(Current::new, |cur| {
+    alloc_node_in(layout, current_slot())
+}
+
+/// Allocate using a slot already looked up by a compound buffer operation.
+#[inline]
+fn alloc_node_in(layout: Layout, slot: Option<NonNull<Current>>) -> NonNull<u8> {
+    if let Some(cur) = slot {
+        // SAFETY: current_ptr returned this thread's stable slot. This short borrow ends
+        // before any caller can allocate, drop a value, or otherwise look up the slot.
+        let cur = unsafe { &mut *cur.as_ptr() };
         let align = layout.align();
         let mut offset = (cur.next + align - 1) & !(align - 1);
         let chunk = match cur.chunk {
@@ -327,15 +341,14 @@ fn alloc_node(layout: Layout) -> NonNull<u8> {
         // offset + size is strictly inside the live chunk. These fresh, uninitialized
         // bytes are uniquely allocated, and no reference is formed, even for a ZST.
         unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(offset)) }
-    });
-    // Out of thread-local keys: a chunk of its own, whose one count is the node's.
-    slot.unwrap_or_else(|| {
+    } else {
+        // Out of thread-local keys: a chunk of its own, whose one count is the node's.
         let chunk = new_chunk();
         // SAFETY: HEADER_BYTES is aligned for every accepted layout, and that layout fits
         // strictly inside the fresh chunk after the initialized header. The returned payload
         // is uniquely owned, uninitialized storage and no reference is formed.
         unsafe { NonNull::new_unchecked(chunk.as_ptr().cast::<u8>().add(HEADER_BYTES)) }
-    })
+    }
 }
 
 /// Allocates nonempty storage, sharing AST chunks for small layouts.
@@ -388,8 +401,18 @@ fn fits_in_chunk(layout: Layout) -> bool {
 /// Allocates contiguous, nonempty slice storage using the list allocation classification.
 #[inline]
 pub(crate) fn alloc_slice_bytes(layout: Layout) -> NonNull<u8> {
+    alloc_slice_bytes_in(layout, current_slot())
+}
+
+#[inline]
+pub(crate) fn alloc_slice_bytes_in(layout: Layout, slot: Option<NonNull<Current>>) -> NonNull<u8> {
     assert!(layout.size() != 0);
-    if fits_in_chunk(layout) { alloc_node(layout) } else { alloc_bytes(layout) }
+    if fits_in_chunk(layout) {
+        alloc_node_in(layout, slot)
+    } else {
+        // Oversized buffers do not use the thread's bump chunk.
+        alloc_bytes(layout)
+    }
 }
 
 /// Releases an initialized or uninitialized list buffer after its elements are gone.
@@ -419,10 +442,11 @@ pub(crate) unsafe fn dealloc_list_bytes(ptr: NonNull<u8>, layout: Layout) {
 // SAFETY: the caller supplies uniquely owned, aligned storage with the matching old layout.
 // Classification is checked before deriving a header. Only unused bytes after the exact tip
 // become owned, and no references to existing or uninitialized payload bytes are formed.
-pub(crate) unsafe fn try_grow_in_chunk_in_place(
+pub(crate) unsafe fn try_grow_in_chunk_in_place_in(
     ptr: NonNull<u8>,
     old_layout: Layout,
     new_layout: Layout,
+    slot: Option<NonNull<Current>>,
 ) -> bool {
     if old_layout.size() == 0
         || new_layout.size() < old_layout.size()
@@ -433,19 +457,19 @@ pub(crate) unsafe fn try_grow_in_chunk_in_place(
         return false;
     }
     let chunk = chunk_of(ptr);
-    CURRENT
-        .with(Current::new, |cur| {
-            if cur.chunk != Some(chunk) {
-                return false;
-            }
-            let offset = ptr.as_ptr() as usize - chunk.as_ptr() as usize;
-            if offset + old_layout.size() != cur.next || offset + new_layout.size() >= CHUNK_BYTES {
-                return false;
-            }
-            cur.next = offset + new_layout.size();
-            true
-        })
-        .unwrap_or(false)
+    let Some(cur) = slot else { return false };
+    // SAFETY: current_ptr returned this thread's stable slot. This short mutable borrow
+    // performs only checks and a cursor update, with no allocation or callback.
+    let cur = unsafe { &mut *cur.as_ptr() };
+    if cur.chunk != Some(chunk) {
+        return false;
+    }
+    let offset = ptr.as_ptr() as usize - chunk.as_ptr() as usize;
+    if offset + old_layout.size() != cur.next || offset + new_layout.size() >= CHUNK_BYTES {
+        return false;
+    }
+    cur.next = offset + new_layout.size();
+    true
 }
 
 /// Releases list/slice storage, reclaiming the active chunk's tip when possible.
