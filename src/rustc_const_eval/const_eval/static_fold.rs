@@ -25,7 +25,7 @@ enum FoldValue<'tcx> {
     ZeroSized { ty: Ty<'tcx> },
     // Thin references and raw pointers share allocation provenance and a pointee.
     Reference { ty: Ty<'tcx>, pointee: &'tcx FoldValue<'tcx>, alloc_id: AllocId, offset: Size },
-    // TypeId hash fragments carry symbolic provenance without a memory pointee.
+    // Thin pointers with deferred pointee reads, including symbolic TypeId fragments.
     Pointer { ty: Ty<'tcx>, alloc_id: AllocId, offset: Size },
     Aggregate { ty: Ty<'tcx>, fields: &'tcx [FoldValue<'tcx>], variant: Option<VariantIdx> },
     // A slice/string pointer, or its unsized pointee during place projection.
@@ -369,7 +369,8 @@ impl<'tcx> Folder<'tcx> {
         let width = bit_width(size)?;
         let bits = bits & bit_mask(width);
         self.validate_scalar_type(ty, bits, 0)?;
-        if matches!(scalar.primitive(), crate::rustc_abi::Primitive::Pointer(_))
+        if (matches!(scalar.primitive(), crate::rustc_abi::Primitive::Pointer(_))
+            && !matches!(ty.kind(), ty::RawPtr(..)))
             || !scalar.valid_range(&self.tcx).contains(bits)
         {
             return Err("constant scalar violates its type's validity range");
@@ -604,6 +605,12 @@ impl<'tcx> Folder<'tcx> {
         depth: usize,
     ) -> Result<FoldValue<'tcx>, &'static str> {
         let target = pointer_target(ty).ok_or("pointer constant has a non-pointer type")?;
+        if len.is_none()
+            && matches!(ty.kind(), ty::RawPtr(..))
+            && let Ok(integer) = scalar.try_to_scalar_int()
+        {
+            return self.scalar_value(integer.to_bits(self.tcx.data_layout.pointer_size()), ty);
+        }
         let (provenance, offset) = scalar.to_pointer(&self.tcx).into_raw_parts();
         let alloc_id =
             provenance.ok_or("constant pointer has no allocation provenance")?.alloc_id();
@@ -924,6 +931,19 @@ impl<'tcx> Folder<'tcx> {
             let value = place_value.value;
             match projection {
                 mir::ProjectionElem::Deref => {
+                    if let FoldValue::Pointer { ty, alloc_id, offset } = value {
+                        let target =
+                            pointer_target(ty).ok_or("dereference requires a pointer type")?;
+                        let pointee = self.read_value(alloc_id, offset, target, 0)?;
+                        place_value = FoldPlace {
+                            value: pointee,
+                            root: pointee,
+                            alloc_id: Some(alloc_id),
+                            offset,
+                        };
+                        downcast = None;
+                        continue;
+                    }
                     if let FoldValue::Slice { ty, alloc_id, offset, len } = value {
                         let target =
                             pointer_target(ty).ok_or("dereference requires a pointer type")?;
@@ -1113,6 +1133,40 @@ impl<'tcx> Folder<'tcx> {
                 let value = self.eval_operand(body, locals, operand, depth)?;
                 self.cast_integer(value, destination_ty)
             }
+            Rvalue::Cast(mir::CastKind::PointerWithExposedProvenance, operand, cast_ty)
+                if *cast_ty == destination_ty && self.is_thin_raw_pointer(destination_ty) =>
+            {
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                let value = self.scalar_info(value)?;
+                if !is_integer_ty(value.ty) {
+                    return Err("raw address cast requires an integer");
+                }
+                let bits = if value.signed {
+                    value.size.sign_extend(value.bits) as u128
+                } else {
+                    value.bits
+                };
+                self.scalar_value(bits, destination_ty)
+            }
+            Rvalue::Cast(mir::CastKind::PtrToPtr, operand, cast_ty)
+                if *cast_ty == destination_ty
+                    && self.is_thin_raw_pointer(destination_ty)
+                    && self.is_thin_raw_pointer(operand.ty(&body.local_decls, self.tcx)) =>
+            {
+                let value = self.eval_operand(body, locals, operand, depth)?;
+                match value {
+                    FoldValue::Scalar { bits, .. } => self.scalar_value(bits, destination_ty),
+                    FoldValue::Reference { pointee, alloc_id, offset, .. }
+                        if pointer_target(destination_ty) != Some(pointee.ty()) =>
+                    {
+                        Ok(FoldValue::Pointer { ty: destination_ty, alloc_id, offset })
+                    }
+                    FoldValue::Pointer { alloc_id, offset, .. } => {
+                        Ok(FoldValue::Pointer { ty: destination_ty, alloc_id, offset })
+                    }
+                    _ => self.retype(value, destination_ty),
+                }
+            }
             Rvalue::Cast(mir::CastKind::Subtype | mir::CastKind::PtrToPtr, operand, cast_ty)
                 if *cast_ty == destination_ty =>
             {
@@ -1221,6 +1275,44 @@ impl<'tcx> Folder<'tcx> {
         let is_size_val = self.tcx.is_intrinsic(def_id, sym::size_of_val);
         let is_align_val = self.tcx.is_intrinsic(def_id, sym::align_of_val);
         let is_needs_drop = self.tcx.is_intrinsic(def_id, sym::needs_drop);
+        if self.tcx.is_intrinsic(def_id, sym::offset_of) {
+            let ty = crate::rustc_const_eval::util::intrinsic_type_param(
+                self.tcx,
+                def_id,
+                generic_args,
+                0,
+            )
+            .ok_or("offset_of requires a concrete type")?;
+            if args.len() != 2 || destination_ty != self.tcx.types.usize {
+                return Err("offset_of has an invalid signature");
+            }
+            let variant = self.eval_operand(body, locals, &args[0].node, depth)?;
+            let field = self.eval_operand(body, locals, &args[1].node, depth)?;
+            let variant = self.scalar_info(variant)?;
+            let field = self.scalar_info(field)?;
+            if variant.ty != self.tcx.types.u32 || field.ty != self.tcx.types.u32 {
+                return Err("offset_of indices must be u32");
+            }
+            let layout = self
+                .tcx
+                .layout_of(self.typing_env.as_query_input(ty))
+                .map_err(|_| "offset_of layout is unavailable")?;
+            let variant = VariantIdx::from_u32(variant.bits as u32);
+            match layout.variants {
+                Variants::Single { index } if variant == index => {}
+                Variants::Multiple { ref variants, .. } if variant.as_usize() < variants.len() => {}
+                _ => return Err("offset_of variant is out of bounds"),
+            }
+            let cx = LayoutCx::new(self.tcx, self.typing_env);
+            let layout = layout.for_variant(&cx, variant);
+            let field = field.bits as usize;
+            if field >= layout.fields.count() {
+                return Err("offset_of field is out of bounds");
+            }
+            // This is a compile-time intrinsic. Its placeholder MIR body is
+            // unreachable and must never be executed as an ordinary const fn.
+            return self.scalar_value(layout.fields.offset(field).bytes().into(), destination_ty);
+        }
         if !is_size && !is_align && !is_size_val && !is_align_val && !is_needs_drop {
             if depth + 1 >= MAX_FOLD_DEPTH {
                 return Err("constant call exceeded its depth bound");
@@ -1824,6 +1916,11 @@ impl<'tcx> Folder<'tcx> {
         } else {
             Ok((value.bits % u128::from(width)) as u32)
         }
+    }
+
+    fn is_thin_raw_pointer(&self, ty: Ty<'tcx>) -> bool {
+        matches!(ty.kind(), ty::RawPtr(..))
+            && self.layout(ty).is_ok_and(|(size, _)| size == self.tcx.data_layout.pointer_size())
     }
 
     fn cast_integer(

@@ -61,6 +61,11 @@ impl<T> Index<usize> for [T] {
     fn rem(self, rhs: Rhs) -> Self::Output;
 }
 impl Rem for usize { type Output = usize; fn rem(self, _: usize) -> usize { 0 } }
+#[lang = "not"] pub trait Not {
+    type Output;
+    fn not(self) -> Self::Output;
+}
+impl Not for usize { type Output = usize; fn not(self) -> usize { 0 } }
 
 #[repr(C)]
 pub struct Pair { byte: u8, word: usize }
@@ -112,6 +117,9 @@ pub const SLICE: &[usize] = &Buffer { prefix: 9, words: [11, 22, 33] }.words;
 
 pub const OUT_OF_BOUNDS: &usize = &[11, 22, 33][3];
 pub const RAW_POINTER: usize = { let pointer = &PAIR.word as *const usize; unsafe { *pointer } };
+pub const MAX_ADDRESS: *mut u8 = !0usize as *mut u8;
+pub const NULL_ADDRESS: *const usize = 0 as *const usize;
+pub const RECAST_ADDRESS: *const usize = MAX_ADDRESS as *const usize;
 pub const RAW_ADDRESS: usize = { let pair = Pair { byte: 1, word: 47 }; let pointer = &raw const pair.word; unsafe { *pointer } };
 pub const RAW_SLICE: *const [usize] = SLICE as *const [usize];
 pub const SLICE_REBORROW: &[usize] = &*SLICE;
@@ -139,8 +147,11 @@ fn with_source_tcx(
         name: FileName::Custom("static-fold.rs".into()),
         input: Arc::new(source.into()),
     };
-    let opts =
+    let mut opts =
         Setup { sysroot, ..Setup::plain("static_fold") }.options(&input).expect("session options");
+    // These sessions request no object output. Still collect callers when a
+    // regression explicitly asks for monomorphization below.
+    opts.cg.link_dead_code = Some(true);
     run_compiler(
         Config {
             opts,
@@ -213,6 +224,141 @@ impl<'tcx> Visitor<'tcx> for Constants<'tcx> {
     fn visit_const_operand(&mut self, constant: &mir::ConstOperand<'tcx>, _: mir::Location) {
         self.0.push(constant.const_);
     }
+}
+
+#[test]
+fn thin_raw_addresses_fold_without_a_library_or_provenance() {
+    with_tcx(|tcx| {
+        let size = tcx.data_layout.pointer_size();
+        for (name, bits) in [
+            ("MAX_ADDRESS", size.truncate(u128::MAX)),
+            ("NULL_ADDRESS", 0),
+            ("RECAST_ADDRESS", size.truncate(u128::MAX)),
+        ] {
+            let scalar = constant(tcx, name).try_to_scalar().expect("raw address");
+            assert_eq!(
+                scalar.to_pointer(&tcx).into_raw_parts(),
+                (None, Size::from_bytes(bits as u64))
+            );
+        }
+    });
+}
+
+#[test]
+#[ignore = "requires FRONTEND_FOLD_SYSROOT naming the caller's compiled library"]
+fn mmap_addresses_and_read_unaligned_assertions_against_a_named_library() {
+    let sysroot = eko::env::var("FRONTEND_FOLD_SYSROOT").expect("explicit test sysroot");
+    let source = r#"
+        pub const MAP_FAILED: *mut core::ffi::c_void = !0usize as *mut core::ffi::c_void;
+        pub const NULL: *const u8 = 0usize as *const u8;
+        pub const NEGATIVE: *const u8 = -1i8 as *const u8;
+        pub const TRUNCATED: *const u8 = u128::MAX as *const u8;
+        pub const RECAST: *const u32 = MAP_FAILED as *const u8 as *const u32;
+        pub const SIGNED_MAP_FAILED: *mut core::ffi::c_void = !0 as *mut core::ffi::c_void;
+        pub const STORAGE: u64 = 73;
+        pub const STORAGE_CAST: *const u8 = &STORAGE as *const u64 as *const u8;
+        pub const STORAGE_READ: u64 = unsafe { *(STORAGE_CAST as *const u64) };
+        pub const POINTER_ARRAY: [*const u8; 2] = [0 as *const u8, !0usize as *const u8];
+        pub const POINTER_READ: *const u8 = POINTER_ARRAY[1];
+        #[repr(C)]
+        pub struct Padded { byte: u8, word: u64 }
+        #[repr(C, packed)]
+        pub struct Packed { byte: u8, word: u64 }
+        pub const PADDED_OFFSET: usize = core::mem::offset_of!(Padded, word);
+        pub const PACKED_OFFSET: usize = core::mem::offset_of!(Packed, word);
+        pub const NESTED_OFFSET: usize = core::mem::offset_of!((u64, Padded), 1.word);
+        pub const unsafe fn read_word(src: *const usize) -> usize {
+            unsafe { core::ptr::read_unaligned(src) }
+        }
+        pub fn contains(bytes: &[u8], needle: &u8) -> bool { bytes.contains(needle) }
+    "#;
+    with_source_tcx(source, Some(&sysroot), |tcx| {
+        let size = tcx.data_layout.pointer_size();
+        for name in [
+            "MAP_FAILED",
+            "NULL",
+            "NEGATIVE",
+            "TRUNCATED",
+            "RECAST",
+            "SIGNED_MAP_FAILED",
+            "POINTER_READ",
+        ] {
+            let value = constant(tcx, name).try_to_scalar().expect("raw address scalar");
+            let (provenance, offset) = value.to_pointer(&tcx).into_raw_parts();
+            assert!(provenance.is_none(), "{name}");
+            assert_eq!(
+                offset.bytes() as u128,
+                if name == "NULL" { 0 } else { size.truncate(u128::MAX) }
+            );
+        }
+        assert_eq!(constant(tcx, "STORAGE_READ").try_to_bits(Size::from_bytes(8)), Some(73));
+        let scalar = constant(tcx, "STORAGE_CAST").try_to_scalar().expect("cast reference");
+        assert!(scalar.to_pointer(&tcx).into_raw_parts().0.is_some());
+        let owner = tcx
+            .hir_body_owners()
+            .find(|&owner| {
+                tcx.def_kind(owner) == DefKind::Fn
+                    && tcx.item_name(owner.to_def_id()).as_str() == "read_word"
+            })
+            .expect("read_unaligned caller");
+        let mut constants = Constants(alloc::vec![]);
+        constants.visit_body(tcx.mir_for_ctfe(owner));
+        let read = constants
+            .0
+            .iter()
+            .find_map(|constant| {
+                if let ty::FnDef(def, _) = *constant.ty().kind()
+                    && tcx.item_name(def).as_str() == "read_unaligned"
+                {
+                    Some(def)
+                } else {
+                    None
+                }
+            })
+            .expect("read_unaligned function");
+        let typing_env = ty::TypingEnv::fully_monomorphized();
+        for ty in [tcx.types.usize, tcx.types.u64, tcx.types.u8, tcx.types.unit] {
+            let instance = ty::Instance::new_raw(read, tcx.mk_args(&[ty.into()]));
+            let body = instance.instantiate_mir_and_normalize_erasing_regions(
+                tcx,
+                typing_env,
+                ty::EarlyBinder::bind(tcx, tcx.mir_for_ctfe(read).clone()),
+            );
+            let mut constants = Constants(alloc::vec![]);
+            constants.visit_body(&body);
+            let assertion = constants
+                .0
+                .into_iter()
+                .find(|value| {
+                    matches!(value, mir::Const::Unevaluated(unevaluated, _)
+                if tcx.def_path_str(unevaluated.def).ends_with("read_unaligned::{constant#0}"))
+                })
+                .expect("exact read_unaligned inline assertion");
+            assert!(matches!(
+                assertion
+                    .eval(tcx, typing_env, frontend::rustc_span::DUMMY_SP)
+                    .expect("read_unaligned::{constant#0} folds"),
+                ConstValue::ZeroSized
+            ));
+        }
+        for (name, bits) in [("PADDED_OFFSET", 8), ("PACKED_OFFSET", 1), ("NESTED_OFFSET", 16)] {
+            assert_eq!(constant(tcx, name).try_to_bits(size), Some(bits), "{name}");
+        }
+        let items = tcx.collect_and_partition_mono_items(());
+        assert!(items.all_mono_items.contains(&owner.to_def_id()), "read_word is instantiated");
+        let contains = tcx
+            .hir_body_owners()
+            .find(|&owner| {
+                tcx.def_kind(owner) == DefKind::Fn
+                    && tcx.item_name(owner.to_def_id()).as_str() == "contains"
+            })
+            .expect("slice contains caller");
+        assert!(
+            items.all_mono_items.contains(&contains.to_def_id()),
+            "[u8]::contains is instantiated"
+        );
+        assert!(tcx.dcx().has_errors().is_none(), "contains instantiation has no diagnostics");
+    });
 }
 
 #[test]
