@@ -201,6 +201,8 @@ pub struct Parser<'a> {
     token_spacing: Spacing,
     /// The previous token.
     pub prev_token: Token,
+    /// Cached for keyword checks, which are on the token parsing hot path.
+    interner: &'static crate::rustc_span::symbol::Interner,
     pub capture_cfg: bool,
     restrictions: Restrictions,
     expected_token_types: TokenTypeSet,
@@ -315,14 +317,14 @@ impl<T> SequenceList<T> for ThinVec<T> {
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
 // The source/tree cursor variant may add one aligned slot.
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 336);
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 344);
 #[cfg(all(
     feature = "parallel",
     target_pointer_width = "64",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
 // The source/tree cursor variant may add one aligned slot.
-const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 352);
+const _: () = assert!(core::mem::size_of::<Parser<'_>>() <= 360);
 
 /// Stores span information about a closure.
 #[derive(Clone, Debug)]
@@ -458,6 +460,7 @@ impl<'a> Parser<'a> {
             token: Token::dummy(),
             token_spacing: Spacing::Alone,
             prev_token: Token::dummy(),
+            interner: crate::rustc_span::current_interner(),
             capture_cfg: false,
             restrictions: Restrictions::empty(),
             expected_token_types: TokenTypeSet::new(),
@@ -700,7 +703,7 @@ impl<'a> Parser<'a> {
         } else if case == Case::Insensitive
             && let Some((ident, IdentIsRaw::No)) = self.token.ident()
             // Do an ASCII case-insensitive match, because all keywords are ASCII.
-            && ident.as_str().eq_ignore_ascii_case(exp.kw.as_str())
+            && self.interner.get(ident.name).eq_ignore_ascii_case(self.interner.get(exp.kw))
         {
             true
         } else {
@@ -738,36 +741,41 @@ impl<'a> Parser<'a> {
         }
     }
 
-    #[cold]
-    #[inline(never)]
+    #[inline]
     fn eat_keyword_wrong_case(&mut self, exp: ExpKeywordPair) -> bool {
         if let Some((ident, IdentIsRaw::No)) = self.token.ident()
             // Do an ASCII case-insensitive match, because all keywords are ASCII.
-            && ident.as_str().eq_ignore_ascii_case(exp.kw.as_str())
+            && self.interner.get(ident.name).eq_ignore_ascii_case(self.interner.get(exp.kw))
         {
-            let kw = exp.kw.as_str();
-            let is_upper = kw.chars().all(char::is_uppercase);
-            let is_lower = kw.chars().all(char::is_lowercase);
-
-            let case = match (is_upper, is_lower) {
-                (true, true) => {
-                    unreachable!("keyword that is both fully upper- and fully lowercase")
-                }
-                (true, false) => crate::rustc_parse::diagnostics::Case::Upper,
-                (false, true) => crate::rustc_parse::diagnostics::Case::Lower,
-                (false, false) => crate::rustc_parse::diagnostics::Case::Mixed,
-            };
-
-            self.dcx().emit_err(crate::rustc_parse::diagnostics::KwBadCase {
-                span: ident.span,
-                kw,
-                case,
-            });
-            self.bump();
-            true
+            self.report_keyword_wrong_case(exp, ident)
         } else {
             false
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn report_keyword_wrong_case(&mut self, exp: ExpKeywordPair, ident: Ident) -> bool {
+        let kw = exp.kw.as_str();
+        let is_upper = kw.chars().all(char::is_uppercase);
+        let is_lower = kw.chars().all(char::is_lowercase);
+
+        let case = match (is_upper, is_lower) {
+            (true, true) => {
+                unreachable!("keyword that is both fully upper- and fully lowercase")
+            }
+            (true, false) => crate::rustc_parse::diagnostics::Case::Upper,
+            (false, true) => crate::rustc_parse::diagnostics::Case::Lower,
+            (false, false) => crate::rustc_parse::diagnostics::Case::Mixed,
+        };
+
+        self.dcx().emit_err(crate::rustc_parse::diagnostics::KwBadCase {
+            span: ident.span,
+            kw,
+            case,
+        });
+        self.bump();
+        true
     }
 
     /// If the next token is the given keyword, eats it and returns `true`.

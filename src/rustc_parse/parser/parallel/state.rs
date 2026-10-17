@@ -56,6 +56,7 @@ macro_rules! parser_state {
                     frame_spare: FrameSpare::default(),
                     list_scratch: Default::default(),
                     body_jobs: None,
+                    interner: crate::rustc_span::current_interner(),
                     capture_state: self.capture_state,
                     $($field: self.$field,)+
                 }

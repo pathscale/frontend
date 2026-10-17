@@ -196,7 +196,7 @@ impl SessionGlobals {
 /// The calling session's interner, for `Symbol::intern` and `Symbol::as_str`. The `'static` is
 /// the lie `Symbol::as_str` has always told: the interner lives as long as its session, which
 /// outlives every use of a string read from it.
-fn current_interner() -> &'static symbol::Interner {
+pub(crate) fn current_interner() -> &'static symbol::Interner {
     // SAFETY: the reference points into the session's `Arc`'d interner, alive for the session;
     // callers hold it no longer than the session, as `Symbol::as_str` documents.
     with_session_globals(|globals| {
