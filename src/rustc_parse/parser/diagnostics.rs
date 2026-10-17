@@ -3042,19 +3042,34 @@ impl<'a> Parser<'a> {
     /// * `=======`
     /// * `>>>>>>>`
     ///
+    #[inline]
     pub(super) fn is_vcs_conflict_marker(
         &mut self,
         long_kind: &TokenKind,
         short_kind: &TokenKind,
     ) -> bool {
-        if long_kind == short_kind {
+        if self.token.kind != *long_kind {
+            return false;
+        }
+        self.is_vcs_conflict_marker_cold(long_kind, short_kind)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn is_vcs_conflict_marker_cold(
+        &mut self,
+        long_kind: &TokenKind,
+        short_kind: &TokenKind,
+    ) -> bool {
+        let matches = if long_kind == short_kind {
             // For conflict marker chars like `%` and `\`.
             (0..7).all(|i| self.look_ahead(i, |tok| tok == long_kind))
         } else {
             // For conflict marker chars like `<` and `|`.
             (0..3).all(|i| self.look_ahead(i, |tok| tok == long_kind))
                 && self.look_ahead(3, |tok| tok == short_kind || tok == long_kind)
-        }
+        };
+        matches && self.psess.source_map().span_to_margin(self.token.span) == Some(0)
     }
 
     fn conflict_marker(
@@ -3065,9 +3080,6 @@ impl<'a> Parser<'a> {
     ) -> Option<(Span, usize)> {
         if self.is_vcs_conflict_marker(long_kind, short_kind) {
             let lo = self.token.span;
-            if self.psess.source_map().span_to_margin(lo) != Some(0) {
-                return None;
-            }
             let mut len = 0;
             while self.token.kind == *long_kind || self.token.kind == *short_kind {
                 if self.token.kind.break_two_token_op(1).is_some() {
@@ -3088,7 +3100,16 @@ impl<'a> Parser<'a> {
         None
     }
 
+    #[inline]
     pub(super) fn recover_vcs_conflict_marker(&mut self) {
+        if self.token.kind == TokenKind::Shl {
+            self.recover_vcs_conflict_marker_cold();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn recover_vcs_conflict_marker_cold(&mut self) {
         // <<<<<<<
         let Some((start, len)) = self.conflict_marker(&TokenKind::Shl, &TokenKind::Lt, None) else {
             return;
