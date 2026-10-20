@@ -1,11 +1,14 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_middle::traits::solve::Goal;
-use crate::rustc_middle::ty::relate::combine::{combine_ty_args, super_combine_consts, super_combine_tys};
-use crate::rustc_middle::ty::relate::{Relate, RelateResult, TypeRelation, relate_args_invariantly};
+use crate::rustc_middle::ty::relate::combine::{
+    combine_ty_args, super_combine_consts, super_combine_tys,
+};
+use crate::rustc_middle::ty::relate::{
+    Relate, RelateResult, TypeRelation, relate_args_invariantly,
+};
 use crate::rustc_middle::ty::{self, DelayedSet, Ty, TyCtxt, TyVar, TypeVisitableExt};
 use crate::rustc_span::Span;
+use alloc::boxed::Box;
 use tracing::{debug, instrument};
 
 use crate::rustc_infer::infer::BoundRegionConversionTime::HigherRankedType;

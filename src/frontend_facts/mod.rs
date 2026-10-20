@@ -2144,10 +2144,10 @@ fn source_text(tcx: TyCtxt<'_>, span: Span) -> Option<String> {
 /// A HIR type as written. Expansion spans can point at the invocation, so print those from
 /// HIR instead of copying unrelated source text.
 fn type_text(tcx: TyCtxt<'_>, ty: &hir::Ty<'_>) -> String {
-    if !ty.span.from_expansion() {
-        if let Some(text) = source_text(tcx, ty.span) {
-            return text;
-        }
+    if !ty.span.from_expansion()
+        && let Some(text) = source_text(tcx, ty.span)
+    {
+        return text;
     }
     let ann: &dyn crate::rustc_hir::intravisit::HirTyCtxt<'_> = &tcx;
     crate::rustc_hir_pretty::ty_to_string(&ann, ty)
@@ -2512,7 +2512,8 @@ impl<'a> Setup<'a> {
     /// The session's options, and whether its input may be read `no_core`: nothing to load
     /// (no sysroot, no dependency) and a root that does not declare it already.
     pub fn options(&self, input: &Input) -> Result<Options, Vec<String>> {
-        let mut opts = Options::default();
+        let mut opts = Options { isolated_env: true, ..Options::default() };
+        opts.unstable_opts.enforce_type_length_limit = true;
         opts.crate_name = Some(self.crate_name.to_string());
         opts.crate_types =
             alloc::vec![if self.proc_macro { CrateType::ProcMacro } else { CrateType::Rlib }];
@@ -2718,7 +2719,7 @@ fn analyze_input(
         && written
         && unfinished
     {
-        let _ = eko::file::remove_file(path);
+        eko::file::remove_file(path);
     }
     // No facts means no HIR to read them from: the errors are the whole answer.
     let Some(mut facts) = extracted else {
@@ -2946,7 +2947,8 @@ fn check_no_core_source(
         crate::unwind_janky::unwinding_is_enabled(),
         "check_source needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
     );
-    let mut opts = Options::default();
+    let mut opts = Options { isolated_env: true, ..Options::default() };
+    opts.unstable_opts.enforce_type_length_limit = true;
     opts.crate_name = Some(crate_name.to_string());
     opts.crate_types = alloc::vec![CrateType::Rlib];
     opts.test = test;
@@ -3454,6 +3456,10 @@ pub enum ResolvedCallableGenericArgumentIdentity {
 /// must reject it before issuing a fully-monomorphized query. `Adt` is nominal and retains args.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "serialized identity variants retain the established public in-memory shape"
+)]
 pub enum ResolvedCallableGenericTypeIdentity {
     Primitive {
         primitive: ResolvedPrimitive,
@@ -3519,6 +3525,10 @@ pub struct ResolvedCallableTraitObligation {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "callable selection facts retain the established public in-memory shape"
+)]
 pub enum ResolvedCallableTraitSelection {
     UserDefined {
         implementation: StableDefPathIdentity,
@@ -4846,6 +4856,10 @@ fn supported_body_desugaring(
     Ok((callsite, chain))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "body facts require distinct compiler context and source identity inputs"
+)]
 fn body_expression_type_parts<'tcx>(
     tcx: TyCtxt<'tcx>,
     typeck: &crate::rustc_middle::ty::TypeckResults<'tcx>,
@@ -5635,11 +5649,17 @@ mod body_type_fact_tests {
     fn exact_body_selection_rejects_inner_expression_and_ambiguous_spans() {
         let body = source_span(10, 30);
         assert_eq!(
-            exact_body_span_index(effects::TextRange { start: 10, end: 30 }, &[body.clone()]),
+            exact_body_span_index(
+                effects::TextRange { start: 10, end: 30 },
+                core::slice::from_ref(&body)
+            ),
             Ok(0)
         );
         assert_eq!(
-            exact_body_span_index(effects::TextRange { start: 15, end: 20 }, &[body.clone()]),
+            exact_body_span_index(
+                effects::TextRange { start: 15, end: 20 },
+                core::slice::from_ref(&body)
+            ),
             Err(BodyTypeCoverageGapKind::BodyNotFound)
         );
         assert_eq!(

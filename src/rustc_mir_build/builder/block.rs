@@ -1,9 +1,9 @@
-use alloc::vec::Vec;
 use crate::rustc_middle::middle::region::Scope;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::thir::*;
 use crate::rustc_middle::{span_bug, ty};
 use crate::rustc_span::Span;
+use alloc::vec::Vec;
 use tracing::debug;
 
 use crate::rustc_mir_build::builder::ForGuard::OutsideGuard;
@@ -168,8 +168,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     // block.
                     let dummy_place = this.temp(this.tcx.types.never, else_block_span);
                     let failure_entry = this.cfg.start_new_block();
-                    let failure_block;
-                    failure_block = this
+
+                    let failure_block = this
                         .ast_block(
                             dummy_place,
                             failure_entry,
@@ -267,7 +267,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                     None,
                                     Some((None, initializer_span)),
                                 );
-                                this.expr_into_pattern(block, &pattern, init)
+                                this.expr_into_pattern(block, pattern, init)
                                 // irrefutable pattern
                             })
                             .into_block();

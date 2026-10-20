@@ -1,8 +1,8 @@
 use crate::assert_matches;
 
+use crate::bug;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
-use crate::bug;
 use crate::rustc_middle::ty::{self, CanonicalUserType, TyCtxt};
 use tracing::debug;
 

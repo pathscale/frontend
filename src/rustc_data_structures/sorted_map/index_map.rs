@@ -3,11 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::hash::{Hash, Hasher};
@@ -44,6 +39,12 @@ pub struct SortedIndexMultiMap<I: Idx, K, V> {
     idx_sorted_by_item_key: Vec<I>,
 }
 
+impl<I: Idx, K: Ord, V> Default for SortedIndexMultiMap<I, K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<I: Idx, K: Ord, V> SortedIndexMultiMap<I, K, V> {
     #[inline]
     pub fn new() -> Self {
@@ -62,6 +63,10 @@ impl<I: Idx, K: Ord, V> SortedIndexMultiMap<I, K, V> {
 
     /// Returns an iterator over the items in the map in insertion order.
     #[inline]
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "the inherent method is retained as part of the existing API"
+    )]
     pub fn into_iter(self) -> impl DoubleEndedIterator<Item = (K, V)> {
         self.items.into_iter()
     }

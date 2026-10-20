@@ -1,9 +1,15 @@
-use alloc::vec::Vec;
 use super::IntEncodedWithFixedSize;
 use crate::rustc_serialize::{Encodable, Encoder, leb128};
+use alloc::vec::Vec;
 
 pub struct MemEncoder {
     pub data: Vec<u8>,
+}
+
+impl Default for MemEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemEncoder {

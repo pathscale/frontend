@@ -3,11 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::ExternAbi;
@@ -16,10 +13,10 @@ use crate::rustc_errors::{
     Applicability, Diag, DiagCtxtHandle, DiagSymbolList, Diagnostic, EmissionGuarantee, Level,
     MultiSpan, listify, msg,
 };
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::{Ident, Span, Symbol};
 use crate::rustc_structures::Limit;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 pub(crate) mod wrong_number_of_generic_args;
 
 mod precise_captures;
@@ -127,7 +124,6 @@ pub(crate) enum AssocItemNotFoundLabel<'a> {
 }
 
 #[derive(Subdiagnostic)]
-
 pub(crate) enum AssocItemNotFoundSugg<'a> {
     #[suggestion(
         "there is an associated {$assoc_kind} with a similar name",
@@ -240,6 +236,10 @@ pub(crate) struct DropImplOnWrongItem {
 }
 
 #[derive(Diagnostic)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Nested` suffix distinguishes the field collision's nesting cases."
+)]
 pub(crate) enum FieldAlreadyDeclared {
     #[diag("field `{$field_name}` is already declared", code = E0124)]
     NotNested {

@@ -3,12 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::slice;
 
@@ -542,10 +536,10 @@ mod helper {
                 // single successor
                 Goto { target: ref t }
                 | Call { target: None, unwind: UnwindAction::Cleanup(ref t), .. }
-                | Call { target: Some(ref t), unwind: _, .. }
+                | Call { target: Some(ref t), .. }
                 | Yield { resume: ref t, drop: None, .. }
-                | Drop { target: ref t, unwind: _, .. }
-                | Assert { target: ref t, unwind: _, .. }
+                | Drop { target: ref t, .. }
+                | Assert { target: ref t, .. }
                 | FalseUnwind { real_target: ref t, unwind: _ } => {
                     mk_successors(slice::from_ref(t), None, None)
                 }
@@ -556,12 +550,12 @@ mod helper {
                 | Return
                 | Unreachable
                 | TailCall { .. }
-                | Call { target: None, unwind: _, .. } => mk_successors(&[], None, None),
+                | Call { target: None, .. } => mk_successors(&[], None, None),
                 // Multiple successors
                 InlineAsm { ref targets, unwind: UnwindAction::Cleanup(u), .. } => {
                     mk_successors(targets, Some(u), None)
                 }
-                InlineAsm { ref targets, unwind: _, .. } => mk_successors(targets, None, None),
+                InlineAsm { ref targets, .. } => mk_successors(targets, None, None),
                 SwitchInt { ref targets, .. } => mk_successors(&targets.targets, None, None),
                 // FalseEdge
                 FalseEdge { ref real_target, imaginary_target } => {
@@ -777,7 +771,7 @@ impl<'tcx> TerminatorKind<'tcx> {
 
             Yield { resume: target, drop, resume_arg, value: _ } => {
                 TerminatorEdges::AssignOnReturn {
-                    return_: [target].into_iter().chain(drop.into_iter()).collect(),
+                    return_: [target].into_iter().chain(drop).collect(),
                     cleanup: None,
                     place: CallReturnPlaces::Yield(resume_arg),
                 }

@@ -7,9 +7,6 @@
 //! * Traits that represent operators; e.g., `Add`, `Sub`, `Index`.
 //! * Functions called by the compiler itself.
 
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::visit;
 use crate::rustc_crate_store::ExternCrate;
@@ -19,6 +16,9 @@ use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{ResolverAstLowering, TyCtxt};
 use crate::rustc_span::{Span, Symbol, sym};
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 use crate::rustc_passes::diagnostics::{DuplicateLangItem, IncorrectCrateType, IncorrectTarget};
 use crate::rustc_passes::weak_lang_items;

@@ -173,10 +173,7 @@ fn comparison_literal_reaches_a_controlled_exit() {
 
     assert_eq!(literal.text, "'\"'");
     assert_eq!(literal.condition.as_deref(), Some("the == '\"'"));
-    assert_eq!(
-        source.get(literal.span.start as usize..literal.span.end as usize),
-        Some("'\"'")
-    );
+    assert_eq!(source.get(literal.span.start as usize..literal.span.end as usize), Some("'\"'"));
     assert!(facts.exits.iter().any(|exit| exit.span == literal.exit));
 
     let reversed_source = r#"fn quoted(the: char) -> usize {

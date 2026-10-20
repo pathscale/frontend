@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use {alloc::string::String};
+use alloc::string::String;
 use core::ops::ControlFlow;
 
 use derive_where::derive_where;
@@ -10,7 +10,9 @@ use rustc_macros::{
 use crate::rustc_type_ir::data_structures::DelayedMap;
 use crate::rustc_type_ir::fold::{TypeFoldable, TypeFolder, TypeSuperFoldable, shift_region};
 use crate::rustc_type_ir::inherent::*;
-use crate::rustc_type_ir::visit::{TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor};
+use crate::rustc_type_ir::visit::{
+    TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor,
+};
 use crate::rustc_type_ir::{self as ty, FnSigKind, Interner, Region};
 
 /// A closure can be modeled as a struct that looks like:
@@ -411,6 +413,10 @@ impl<I: Interner> CoroutineClosureSignature<I> {
     ///
     /// This function expects the upvars to have been computed already, and doesn't check
     /// that the `ClosureKind` is actually supported by the coroutine-closure.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument describes a distinct coroutine type component"
+    )]
     pub fn to_coroutine_given_kind_and_upvars(
         self,
         cx: I,

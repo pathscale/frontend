@@ -1,13 +1,13 @@
-use alloc::string::ToString;
+use crate::find_attr;
 use crate::rustc_hir::attrs::RustcAbiAttrKind;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::find_attr;
-use crate::span_bug;
 use crate::rustc_middle::ty::layout::{FnAbiError, LayoutError};
 use crate::rustc_middle::ty::{self, GenericArgs, Instance, Ty, TyCtxt};
 use crate::rustc_span::Span;
 use crate::rustc_target::callconv::FnAbi;
+use crate::span_bug;
+use alloc::string::ToString;
 
 use super::layout_test::ensure_wf;
 use crate::rustc_passes::diagnostics::{AbiInvalidAttribute, AbiNe, AbiOf, UnrecognizedArgument};

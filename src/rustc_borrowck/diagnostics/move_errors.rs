@@ -1,19 +1,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::{Applicability, Diag};
 use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::{self as hir, CaptureBy, ExprKind, HirId, Node};
-use crate::bug;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_mir_dataflow::move_paths::{LookupResult, MovePathIndex};
@@ -181,6 +179,10 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         });
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn append_binding_error(
         &self,
         grouped_errors: &mut Vec<GroupedMoveError<'tcx>>,
@@ -242,12 +244,12 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                         binds_to,
                         ..
                     } = ge
+                        && match_span == *span
+                        && mpi == *other_mpi
                     {
-                        if match_span == *span && mpi == *other_mpi {
-                            debug!("appending local({bind_to:?}) to list");
-                            binds_to.push(bind_to);
-                            return;
-                        }
+                        debug!("appending local({bind_to:?}) to list");
+                        binds_to.push(bind_to);
+                        return;
                     }
                 }
                 debug!("found a new move error location");
@@ -289,8 +291,8 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
         }
 
         let mut has_clone_suggestion = CloneSuggestion::NotEmitted;
-        let mut err = match kind {
-            &IllegalMoveOriginKind::BorrowedContent { target_place } => {
+        let mut err = match *kind {
+            IllegalMoveOriginKind::BorrowedContent { target_place } => {
                 let (diag, clone_sugg) = self.report_cannot_move_from_borrowed_content(
                     original_path,
                     target_place,
@@ -300,10 +302,10 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                 has_clone_suggestion = clone_sugg;
                 diag
             }
-            &IllegalMoveOriginKind::InteriorOfTypeWithDestructor { container_ty: ty } => {
+            IllegalMoveOriginKind::InteriorOfTypeWithDestructor { container_ty: ty } => {
                 self.cannot_move_out_of_interior_of_drop(span, ty)
             }
-            &IllegalMoveOriginKind::InteriorOfSliceOrArray { ty, is_index } => {
+            IllegalMoveOriginKind::InteriorOfSliceOrArray { ty, is_index } => {
                 self.cannot_move_out_of_interior_noncopy(span, ty, Some(is_index))
             }
         };
@@ -766,12 +768,14 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                         self.suggest_cloning(err, move_from.as_ref(), place_ty, expr, None);
                     }
 
-                    err.subdiagnostic(crate::rustc_borrowck::session_diagnostics::TypeNoCopy::Label {
-                        is_partial_move: false,
-                        ty: place_ty,
-                        place: &place_desc,
-                        span,
-                    });
+                    err.subdiagnostic(
+                        crate::rustc_borrowck::session_diagnostics::TypeNoCopy::Label {
+                            is_partial_move: false,
+                            ty: place_ty,
+                            place: &place_desc,
+                            span,
+                        },
+                    );
                 } else {
                     let binding_info = self.pattern_binding_info(&binds_to);
                     let suggest_pattern_binding = binding_info.as_ref().is_some_and(|info| {
@@ -834,16 +838,16 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                         CloneSuggestion::NotEmitted
                     };
 
-                    if emitted_ufcs == CloneSuggestion::NotEmitted {
-                        if let Some(expr) = self.find_expr(use_span) {
-                            self.suggest_cloning(
-                                err,
-                                original_path.as_ref(),
-                                place_ty,
-                                expr,
-                                Some(use_spans),
-                            );
-                        }
+                    if emitted_ufcs == CloneSuggestion::NotEmitted
+                        && let Some(expr) = self.find_expr(use_span)
+                    {
+                        self.suggest_cloning(
+                            err,
+                            original_path.as_ref(),
+                            place_ty,
+                            expr,
+                            Some(use_spans),
+                        );
                     }
                 }
 
@@ -895,10 +899,12 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                     }
                 });
                 if !pointed_at_span && use_span != span {
-                    err.subdiagnostic(crate::rustc_borrowck::session_diagnostics::CaptureArgLabel::MoveOutPlace {
-                        place: place_desc,
-                        args_span: span,
-                    });
+                    err.subdiagnostic(
+                        crate::rustc_borrowck::session_diagnostics::CaptureArgLabel::MoveOutPlace {
+                            place: place_desc,
+                            args_span: span,
+                        },
+                    );
                 }
 
                 self.add_note_for_packed_struct_derive(err, original_path.local);
@@ -1179,14 +1185,10 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
                 self.has_adjustments = parent_has_adjustments;
             }
         }
-        let Some(binding_info) = self.pattern_binding_info(binds_to) else {
-            return None;
-        };
+        let binding_info = self.pattern_binding_info(binds_to)?;
 
         let tcx = self.infcx.tcx;
-        let Some(body) = tcx.hir_maybe_body_owned_by(self.mir_def_id()) else {
-            return None;
-        };
+        let body = tcx.hir_maybe_body_owned_by(self.mir_def_id())?;
         let typeck_results = self.infcx.tcx.typeck(self.mir_def_id());
         let mut finder = BindingFinder {
             typeck_results,
@@ -1240,11 +1242,13 @@ impl<'diag, 'tcx> MirBorrowckCtxt<'_, 'diag, 'tcx> {
             if binds_to.len() == 1 {
                 let place_desc = self.local_name(*local).map(|sym| format!("`{sym}`"));
 
-                err.subdiagnostic(crate::rustc_borrowck::session_diagnostics::TypeNoCopy::LabelMovedHere {
-                    ty: bind_to.ty,
-                    place: place_desc.as_deref().unwrap_or("the place"),
-                    span: binding_span,
-                });
+                err.subdiagnostic(
+                    crate::rustc_borrowck::session_diagnostics::TypeNoCopy::LabelMovedHere {
+                        ty: bind_to.ty,
+                        place: place_desc.as_deref().unwrap_or("the place"),
+                        span: binding_span,
+                    },
+                );
 
                 if !desugar_spans.contains(&binding_span)
                     && let Some(expr) = self.find_expr(binding_span)

@@ -1,13 +1,13 @@
 //! Contains the data structures used by the diagnostic attribute family.
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::fmt;
 use core::fmt::Debug;
 
-use rustc_macros::{Decodable, Encodable, PrintAttribute, StableHash};
 use crate::rustc_span::{DesugaringKind, Span, Symbol, kw};
+use rustc_macros::{Decodable, Encodable, PrintAttribute, StableHash};
 use thin_vec::ThinVec;
 use tracing::debug;
 
@@ -162,7 +162,7 @@ impl FormatString {
                 // It's only `rustc_onunimplemented` from here
                 Piece::Arg(FormatArg::ThisPath) => ret.push_str(&args.this_path),
                 Piece::Arg(FormatArg::ThisResolved) => {
-                    let _ = fmt::write(&mut ret, format_args!("{}", &args.this_resolved));
+                    let _ = fmt::write(&mut ret, format_args!("{}", args.this_resolved));
                 }
                 Piece::Arg(FormatArg::ItemContext) => ret.push_str(args.item_context),
             }

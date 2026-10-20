@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use alloc::borrow::Cow;
 
@@ -66,7 +61,7 @@ pub fn try_format_diag_message<'a>(
 /// `try_format_diag_message` says no. It exists because `DiagMessage::as_str` answers `None`
 /// for a template, and an emitter that filters those out drops the message entirely - which is
 /// how `error[E0463]:` with nothing after the colon reached a terminal.
-pub fn diag_message_source<'a>(message: &'a DiagMessage) -> &'a str {
+pub fn diag_message_source(message: &DiagMessage) -> &str {
     match message {
         DiagMessage::Str(msg) | DiagMessage::Inline(msg) => msg,
     }

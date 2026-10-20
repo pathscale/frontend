@@ -178,7 +178,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -805,7 +804,8 @@ impl<'a> TraitDef<'a> {
         let rustc_const_unstable =
             cx.path_ident(self.span, Ident::new(sym::rustc_const_unstable, self.span));
 
-        let mut attrs: ast::AttrVec = core::iter::once(cx.attr_word(sym::automatically_derived, self.span)).collect();
+        let mut attrs: ast::AttrVec =
+            core::iter::once(cx.attr_word(sym::automatically_derived, self.span)).collect();
 
         // Only add `rustc_const_unstable` attributes if `derive_const` is used within libcore/libstd,
         // Other crates don't need stability attributes, so adding them is not useful, but libcore needs them
@@ -1001,6 +1001,10 @@ impl<'a> MethodDef<'a> {
     // - nonselflike_args: Expressions for all the remaining args.
     // - nonself_arg_tys: Additional information about all the args other than
     //   `&self`.
+    #[expect(
+        clippy::type_complexity,
+        reason = "returns the distinct derived receiver, expression, and type inputs together"
+    )]
     fn extract_arg_details(
         &self,
         cx: &ExtCtxt<'_>,
@@ -1039,6 +1043,10 @@ impl<'a> MethodDef<'a> {
         (explicit_self, selflike_args, nonselflike_args, nonself_arg_tys)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn create_method(
         &self,
         cx: &ExtCtxt<'_>,
@@ -1133,6 +1141,10 @@ impl<'a> MethodDef<'a> {
     ///     }
     /// }
     /// ```
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn expand_struct_method_body<'b>(
         &self,
         cx: &ExtCtxt<'_>,

@@ -8,21 +8,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
-use core::cell::RefMut;
 use alloc::sync::Arc;
+use core::cell::RefMut;
 
 use crate::rustc_ast::visit::{self, AssocCtxt, Visitor, WalkItemKind};
 use crate::rustc_ast::{
-    self as ast, AssocItem, AssocItemKind, Block, ConstItem, DUMMY_NODE_ID, Delegation,
-    DelegationSource, Fn, ForeignItem, ForeignItemKind, Inline, Item, ItemKind, NodeId, StaticItem,
-    StmtKind, TraitAlias, TyAlias,
+    self as ast, AssocItem, AssocItemKind, Block, DUMMY_NODE_ID, DelegationSource, ForeignItem,
+    ForeignItemKind, Inline, Item, ItemKind, NodeId, StmtKind,
 };
 use crate::rustc_attr_parsing::AttributeParser;
 use crate::rustc_data_structures::fx::FxIndexMap;
@@ -58,7 +53,7 @@ use crate::rustc_resolve::{
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Attempt to put the declaration with the given name and namespace into the module,
     /// and report an error in case of a collision.
-    pub(crate) fn plant_decl_into_local_module(
+    pub(super) fn plant_decl_into_local_module(
         &mut self,
         ident: IdentKey,
         orig_ident_span: Span,
@@ -73,6 +68,10 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Create a name definition from the given components, and put it into the local module.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn define_local(
         &mut self,
         parent: LocalModule<'ra>,
@@ -105,7 +104,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// Reachable macros with block module parents exist due to `#[macro_export] macro_rules!`,
     /// but they cannot use def-site hygiene, so the assumption holds
     /// (<https://github.com/rust-lang/rust/pull/77984#issuecomment-712445508>).
-    pub(crate) fn get_nearest_non_block_module(&self, mut def_id: DefId) -> Module<'ra> {
+    pub(super) fn get_nearest_non_block_module(&self, mut def_id: DefId) -> Module<'ra> {
         loop {
             match self.get_module(def_id) {
                 Some(module) => return module,
@@ -114,14 +113,14 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn expect_module(&self, def_id: DefId) -> Module<'ra> {
+    pub(super) fn expect_module(&self, def_id: DefId) -> Module<'ra> {
         self.get_module(def_id).expect("argument `DefId` is not a module")
     }
 
     /// If `def_id` refers to a module (in resolver's sense, i.e. a module item, crate root, enum,
     /// or trait), then this function returns that module's resolver representation, otherwise it
     /// returns `None`.
-    pub(crate) fn get_module(&self, def_id: DefId) -> Option<Module<'ra>> {
+    pub(super) fn get_module(&self, def_id: DefId) -> Option<Module<'ra>> {
         match def_id.as_local() {
             Some(local_def_id) => self.local_module_map.get(&local_def_id).map(|m| m.to_module()),
             None => {
@@ -184,7 +183,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         None
     }
 
-    pub(crate) fn expn_def_scope(&self, expn_id: ExpnId) -> Module<'ra> {
+    pub(super) fn expn_def_scope(&self, expn_id: ExpnId) -> Module<'ra> {
         match expn_id.expn_data().macro_def_id {
             Some(def_id) => self.macro_def_scope(def_id),
             None => expn_id
@@ -195,7 +194,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn macro_def_scope(&self, def_id: DefId) -> Module<'ra> {
+    pub(super) fn macro_def_scope(&self, def_id: DefId) -> Module<'ra> {
         if let Some(id) = def_id.as_local() {
             self.local_macro_def_scopes[&id].to_module()
         } else {
@@ -204,7 +203,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 
     /// Gets the `SyntaxExtension` corresponding to `res`.
-    pub(crate) fn get_macro(&self, res: Res) -> Option<&'ra Arc<SyntaxExtension>> {
+    pub(super) fn get_macro(&self, res: Res) -> Option<&'ra Arc<SyntaxExtension>> {
         match res {
             Res::Def(DefKind::Macro(..), def_id) => Some(self.get_macro_by_def_id(def_id)),
             Res::NonMacroAttr(_) => Some(self.non_macro_attr),
@@ -212,7 +211,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn get_macro_by_def_id(&self, def_id: DefId) -> &'ra Arc<SyntaxExtension> {
+    pub(super) fn get_macro_by_def_id(&self, def_id: DefId) -> &'ra Arc<SyntaxExtension> {
         // Local macros are always compiled.
         // External macros are loaded here on first use, a lazy write; late resolution never runs
         // frozen when any external crate is loaded.
@@ -238,7 +237,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     /// Add every proc macro accessible from the current crate to the `macro_map` so diagnostics can
     /// find them for suggestions.
-    pub(crate) fn register_macros_for_all_crates(&mut self) {
+    pub(super) fn register_macros_for_all_crates(&mut self) {
         if !self.all_crate_macros_already_registered {
             for def_id in self.cstore().all_proc_macro_def_ids(self.tcx) {
                 self.get_macro_by_def_id(def_id);
@@ -247,7 +246,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn try_resolve_visibility(
+    #[expect(
+        clippy::result_large_err,
+        reason = "Boxing this established diagnostic error would add allocation to the error path."
+    )]
+    pub(super) fn try_resolve_visibility(
         &mut self,
         parent_scope: &ParentScope<'ra>,
         vis: &ast::Visibility,
@@ -274,7 +277,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
                 // paths" right now, so on 2018 edition we only allow module-relative paths for now.
                 // On 2015 edition visibilities are resolved as crate-relative by default,
                 // so we are prepending a root segment if necessary.
-                let ident = path.segments.get(0).expect("empty path in visibility").ident;
+                let ident = path.segments.first().expect("empty path in visibility").ident;
                 let crate_root = if ident.is_path_segment_keyword() {
                     None
                 } else if ident.span.is_rust_2015() {
@@ -354,7 +357,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn build_reduced_graph_external(
+    pub(super) fn build_reduced_graph_external(
         &self,
         module: ExternModule<'ra>,
     ) -> ResolutionTable<'ra> {
@@ -555,6 +558,10 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
     }
 
     // Add an import to the current module.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn add_import(
         &mut self,
         module_path: Vec<Segment>,
@@ -602,6 +609,10 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Resolver helper keeps its established arguments explicit across call sites."
+    )]
     fn build_reduced_graph_for_use_tree(
         &mut self,
         // This particular use tree
@@ -1131,7 +1142,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
     }
 
     /// Constructs the reduced graph for one foreign item.
-    pub(crate) fn build_reduced_graph_for_foreign_item(
+    pub(super) fn build_reduced_graph_for_foreign_item(
         &mut self,
         item: &ForeignItem,
         ident: Ident,
@@ -1267,7 +1278,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
     }
 
     /// Returns `true` if this attribute list contains `macro_use`.
-    pub(crate) fn contains_macro_use(&self, attrs: &[ast::Attribute]) -> bool {
+    pub(super) fn contains_macro_use(&self, attrs: &[ast::Attribute]) -> bool {
         for attr in attrs {
             if attr.has_name(sym::macro_escape) {
                 let inner_attribute = matches!(attr.style, ast::AttrStyle::Inner);
@@ -1288,7 +1299,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         false
     }
 
-    pub(crate) fn visit_invoc(&mut self, id: NodeId) -> LocalExpnId {
+    pub(super) fn visit_invoc(&mut self, id: NodeId) -> LocalExpnId {
         let invoc_id = id.placeholder_to_expn_id();
         let old_parent_scope = self.r.invocation_parent_scopes.insert(invoc_id, self.parent_scope);
         assert!(old_parent_scope.is_none(), "invocation data is reset for an invocation");
@@ -1297,7 +1308,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 
     /// Visit invocation in context in which it can emit a named item (possibly `macro_rules`)
     /// directly into its parent scope's module.
-    pub(crate) fn visit_invoc_in_module(&mut self, id: NodeId) -> MacroRulesScopeRef<'ra> {
+    pub(super) fn visit_invoc_in_module(&mut self, id: NodeId) -> MacroRulesScopeRef<'ra> {
         let invoc_id = self.visit_invoc(id);
         let module = self.parent_scope.module.expect_local();
         module.unexpanded_invocations.borrow_mut(self.r).insert(invoc_id);
@@ -1315,7 +1326,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             return Some((MacroKind::Attr, fn_ident, item.span));
         } else if let Some(attr) = ast::attr::find_by_name(&item.attrs, sym::proc_macro_derive)
             && let Some(meta_item_inner) =
-                attr.meta_item_list().and_then(|list| list.get(0).cloned())
+                attr.meta_item_list().and_then(|list| list.first().cloned())
             && let Some(ident) = meta_item_inner.ident()
         {
             return Some((MacroKind::Derive, ident, ident.span));
@@ -1348,18 +1359,16 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
             ItemKind::MacroDef(ident, def) => {
                 (self.res(def_id), *ident, item.span, def.macro_rules)
             }
-            ItemKind::Fn(fn_item) => {
-                match self.proc_macro_stub(item, fn_item.ident) {
-                    Some((macro_kind, ident, span)) => {
-                        let macro_kinds = macro_kind.into();
-                        let res = Res::Def(DefKind::Macro(macro_kinds), def_id.to_def_id());
-                        self.r.local_macro_map.insert(def_id, self.r.dummy_ext(macro_kind));
-                        self.r.proc_macro_stubs.insert(def_id);
-                        (res, ident, span, false)
-                    }
-                    None => return parent_scope.macro_rules,
+            ItemKind::Fn(fn_item) => match self.proc_macro_stub(item, fn_item.ident) {
+                Some((macro_kind, ident, span)) => {
+                    let macro_kinds = macro_kind.into();
+                    let res = Res::Def(DefKind::Macro(macro_kinds), def_id.to_def_id());
+                    self.r.local_macro_map.insert(def_id, self.r.dummy_ext(macro_kind));
+                    self.r.proc_macro_stubs.insert(def_id);
+                    (res, ident, span, false)
                 }
-            }
+                None => return parent_scope.macro_rules,
+            },
             _ => unreachable!(),
         };
 
@@ -1442,7 +1451,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 
 impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
     /// `def_kind` is the kind `feed`'s def was created with.
-    pub(crate) fn brg_visit_item(
+    pub(super) fn brg_visit_item(
         &mut self,
         item: &'a Item,
         feed: TyCtxtFeed<'tcx, LocalDefId>,
@@ -1481,11 +1490,11 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 
     /// Handle a macro call that itself can produce new `macro_rules` items
     /// in the current module.
-    pub(crate) fn brg_visit_mac_call_in_module(&mut self, id: NodeId) {
+    pub(super) fn brg_visit_mac_call_in_module(&mut self, id: NodeId) {
         self.parent_scope.macro_rules = self.visit_invoc_in_module(id);
     }
 
-    pub(crate) fn brg_visit_block(&mut self, block: &'a Block) {
+    pub(super) fn brg_visit_block(&mut self, block: &'a Block) {
         let orig_current_module = self.parent_scope.module;
         let orig_current_macro_rules_scope = self.parent_scope.macro_rules;
         self.build_reduced_graph_for_block(block);
@@ -1494,7 +1503,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         self.parent_scope.macro_rules = orig_current_macro_rules_scope;
     }
 
-    pub(crate) fn brg_visit_assoc_item(
+    pub(super) fn brg_visit_assoc_item(
         &mut self,
         item: &'a AssocItem,
         ctxt: AssocCtxt,
@@ -1531,7 +1540,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         visit::walk_assoc_item(self, item, ctxt);
     }
 
-    pub(crate) fn visit_assoc_item_mac_call(
+    pub(super) fn visit_assoc_item_mac_call(
         &mut self,
         item: &'a Item<AssocItemKind>,
         ctxt: AssocCtxt,
@@ -1554,7 +1563,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn brg_visit_field_def(
+    pub(super) fn brg_visit_field_def(
         &mut self,
         sf: &'a ast::FieldDef,
         feed: TyCtxtFeed<'tcx, LocalDefId>,
@@ -1566,7 +1575,7 @@ impl<'a, 'ra, 'tcx> DefCollector<'a, 'ra, 'tcx> {
 
     // Constructs the reduced graph for one variant. Variants exist in the
     // type and value namespaces.
-    pub(crate) fn brg_visit_variant(
+    pub(super) fn brg_visit_variant(
         &mut self,
         variant: &'a ast::Variant,
         feed: TyCtxtFeed<'tcx, LocalDefId>,

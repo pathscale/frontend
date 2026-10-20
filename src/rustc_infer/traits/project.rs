@@ -2,9 +2,9 @@
 
 use crate::rustc_data_structures::snapshot_map::{self, SnapshotMapRef, SnapshotMapStorage};
 use crate::rustc_data_structures::undo_log::Rollback;
-use rustc_macros::TypeVisitable;
 use crate::rustc_middle::traits::EvaluationResult;
 use crate::rustc_middle::ty;
+use rustc_macros::TypeVisitable;
 use tracing::{debug, info};
 
 use super::PredicateObligations;

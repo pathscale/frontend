@@ -6,14 +6,12 @@
 // Reads source from disk - `fs::read` for a module file, `read_dir` when suggesting the
 // path of one that is missing. That is the file-loading surface: an embedded compiler is handed source
 // by its caller, and `Config::file_loader` is already the seam for replacing it.
-#![cfg_attr(test, feature(iter_order_by))]
 
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
-// `#![no_std]` above is the ban and the compiler is the enforcer: without `extern crate std;`
-// there is no `std` in the extern prelude, so any `std::` path fails to resolve and the build
-// stops. Do not add that line back to make an error go away - the error is the point. Whatever
+// The crate root's no_std attribute excludes the standard-library extern prelude.
+// Keep that boundary intact when resolving an import error. Whatever
 // needed `std` either has a `core`/`alloc` equivalent, belongs in `ekostd`, or is a
 // dependency that has to be replaced.
 //
@@ -21,26 +19,108 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::vec::Vec;
 use alloc::string::String;
-use alloc::string::ToString;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::str::Utf8Error;
+use core::sync::atomic::{AtomicU64, Ordering};
 use eko::path::{Path, PathBuf};
 
 use crate::rustc_ast as ast;
+use crate::rustc_ast::ptr::{arena_metrics, reset_arena_metrics};
 use crate::rustc_ast::token;
 use crate::rustc_ast::tokenstream::{DelimSpacing, DelimSpan, Spacing, TokenStream, TokenTree};
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Diag, EmissionGuarantee, FatalError, PResult, pluralize};
 pub use crate::rustc_lexer::UNICODE_VERSION;
 use crate::rustc_session::parse::ParseSess;
-use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::source_map::SourceMap;
-use crate::rustc_span::{FileName, SourceFile, Span, Symbol};
+use crate::rustc_span::{FileName, SourceFile, Span};
 
 pub const MACRO_ARGUMENTS: Option<&str> = Some("macro arguments");
+
+static TAPE_ADMISSIONS: AtomicU64 = AtomicU64::new(0);
+static TAPE_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_COMMITS: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_RETRIES: AtomicU64 = AtomicU64::new(0);
+static PARALLEL_BODY_JOBS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParseFastPathMetrics {
+    pub tape_admissions: u64,
+    pub tape_fallbacks: u64,
+    pub parallel_attempts: u64,
+    pub parallel_commits: u64,
+    pub parallel_retries: u64,
+    pub parallel_body_jobs: u64,
+    pub chunk_allocs: u64,
+    pub chunk_batch_reserves: u64,
+    pub chunk_atomic_releases: u64,
+    pub chunk_deallocs: u64,
+}
+
+#[inline]
+pub fn fast_path_metrics() -> ParseFastPathMetrics {
+    let arena = arena_metrics();
+    ParseFastPathMetrics {
+        tape_admissions: TAPE_ADMISSIONS.load(Ordering::Relaxed),
+        tape_fallbacks: TAPE_FALLBACKS.load(Ordering::Relaxed),
+        parallel_attempts: PARALLEL_ATTEMPTS.load(Ordering::Relaxed),
+        parallel_commits: PARALLEL_COMMITS.load(Ordering::Relaxed),
+        parallel_retries: PARALLEL_RETRIES.load(Ordering::Relaxed),
+        parallel_body_jobs: PARALLEL_BODY_JOBS.load(Ordering::Relaxed),
+        chunk_allocs: arena.chunk_allocs,
+        chunk_batch_reserves: arena.chunk_batch_reserves,
+        chunk_atomic_releases: arena.chunk_atomic_releases,
+        chunk_deallocs: arena.chunk_deallocs,
+    }
+}
+
+#[inline]
+pub fn reset_fast_path_metrics() {
+    TAPE_ADMISSIONS.store(0, Ordering::Relaxed);
+    TAPE_FALLBACKS.store(0, Ordering::Relaxed);
+    PARALLEL_ATTEMPTS.store(0, Ordering::Relaxed);
+    PARALLEL_COMMITS.store(0, Ordering::Relaxed);
+    PARALLEL_RETRIES.store(0, Ordering::Relaxed);
+    PARALLEL_BODY_JOBS.store(0, Ordering::Relaxed);
+    reset_arena_metrics();
+}
+
+#[inline]
+pub(crate) fn record_tape_admission() {
+    TAPE_ADMISSIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(crate) fn record_tape_fallback() {
+    TAPE_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "parallel")]
+#[inline]
+pub(crate) fn record_parallel_attempt() {
+    PARALLEL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "parallel")]
+#[inline]
+pub(crate) fn record_parallel_commit() {
+    PARALLEL_COMMITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "parallel")]
+#[inline]
+pub(crate) fn record_parallel_retry() {
+    PARALLEL_RETRIES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "parallel")]
+#[inline]
+pub(crate) fn record_parallel_body_jobs(count: usize) {
+    PARALLEL_BODY_JOBS.fetch_add(count as u64, Ordering::Relaxed);
+}
 
 #[macro_use]
 pub mod parser;
@@ -146,35 +226,6 @@ pub fn new_parser_from_file<'a>(
         };
 
         let mut err = psess.dcx().struct_fatal(msg);
-
-        if e.kind() == ErrorKind::NotFound {
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                let parent = match path.parent() {
-                    Some(p) if !p.as_os_str().is_empty() => p,
-                    _ => Path::new("."),
-                };
-                if let Ok(entries) = eko::file::read_dir(parent) {
-                    let candidates: Vec<Symbol> = entries
-                        .iter()
-                        .filter_map(|entry| entry.file_name()?.to_str().map(Symbol::intern))
-                        .collect();
-                    let lookup = Symbol::intern(file_name);
-                    if let Some(suggestion) = find_best_match_for_name(&candidates, lookup, None) {
-                        let suggested_path = if parent == Path::new(".") {
-                            suggestion.as_str().to_string()
-                        } else {
-                            parent.join(suggestion.as_str()).display().to_string()
-                        };
-                        err.help(format!("you might have meant to open `{}`", suggested_path));
-                    }
-                }
-            }
-        }
-        if let Ok(contents) = eko::file::read(path)
-            && let Err(utf8err) = core::str::from_utf8(&contents)
-        {
-            utf8_error(sm, &path.display().to_string(), sp, &mut err, utf8err, &contents);
-        }
         if let Some(sp) = sp {
             err.span(sp);
         }
@@ -247,35 +298,28 @@ fn new_parser_from_source_file(
     strip_tokens: StripTokens,
 ) -> Result<Parser<'_>, Vec<Diag<'_>>> {
     let end_pos = source_file.end_position();
-    #[cfg(feature = "parallel")]
-    let use_flat = !crate::rustc_data_structures::sync::is_parallel_here();
-    #[cfg(not(feature = "parallel"))]
-    let use_flat = true;
-    let mut parser = if use_flat {
-        let src = source_file.src.as_ref().unwrap_or_else(|| {
-            psess.dcx().bug(format!(
-                "cannot lex `source_file` without source: {}",
-                psess.source_map().filename_for_diagnostics(&source_file.name)
-            ));
-        });
-        if let Some(cursor) =
-            lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
-        {
-            Parser::new_with_cursor(psess, cursor, None)
-        } else {
-            let buffer = lexer::lex_flat_tokens(
-                psess,
-                src.as_str(),
-                Some(src),
-                source_file.start_pos,
-                None,
-                strip_tokens,
-            )?;
-            Parser::from_flat(psess, buffer)
-        }
+    let src = source_file.src.as_ref().unwrap_or_else(|| {
+        psess.dcx().bug(format!(
+            "cannot lex `source_file` without source: {}",
+            psess.source_map().filename_for_diagnostics(&source_file.name)
+        ));
+    });
+    let mut parser = if let Some(cursor) =
+        lexer::try_source_cursor(psess, src, source_file.start_pos, &strip_tokens)
+    {
+        record_tape_admission();
+        Parser::new_with_cursor(psess, cursor, None)
     } else {
-        let stream = source_file_to_stream(psess, source_file, None, strip_tokens)?;
-        Parser::new(psess, stream, None)
+        record_tape_fallback();
+        let buffer = lexer::lex_flat_tokens(
+            psess,
+            src.as_str(),
+            Some(src),
+            source_file.start_pos,
+            None,
+            strip_tokens,
+        )?;
+        Parser::from_flat(psess, buffer)
     };
     if parser.token == token::Eof {
         parser.token.span = Span::new(end_pos, end_pos, parser.token.span.ctxt(), None);

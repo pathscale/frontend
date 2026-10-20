@@ -21,7 +21,6 @@ fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
 }
 
-
 /// Install the catcher and the recording hook. Every test calls it; both are idempotent.
 fn ready() {
     static HOOK: Once = Once::new();
@@ -58,7 +57,6 @@ fn panic_and_take(message: String) -> Option<String> {
     taken
 }
 
-
 #[test]
 fn a_read_record_is_gone() {
     ready();
@@ -80,5 +78,3 @@ fn resume_keeps_the_original_message() {
     assert_eq!(take_last_panic(), Some(original));
     assert_eq!(take_last_panic(), None);
 }
-
-

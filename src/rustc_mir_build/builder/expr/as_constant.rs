@@ -1,6 +1,5 @@
 //! See docs in builder/expr/mod.rs
 
-use alloc::boxed::Box;
 use crate::rustc_abi::Size;
 use crate::rustc_ast as ast;
 use crate::rustc_hir::attrs::lang_items::LangItem;
@@ -12,6 +11,7 @@ use crate::rustc_middle::ty::{
     TypeVisitableExt as _, UserTypeAnnotationIndex,
 };
 use crate::rustc_middle::{bug, mir, span_bug};
+use alloc::boxed::Box;
 use tracing::{instrument, trace};
 
 use crate::rustc_mir_build::builder::{Builder, parse_float_into_constval};

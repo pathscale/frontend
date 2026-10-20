@@ -355,7 +355,9 @@ fn run_client<A: for<'a, 's> Decode<'a, 's, ()>>(
 }
 
 impl Client {
-    pub const fn expand1(f: impl Fn(crate::rustc_proc_macro::TokenStream) -> crate::rustc_proc_macro::TokenStream + Copy) -> Self {
+    pub const fn expand1(
+        f: impl Fn(crate::rustc_proc_macro::TokenStream) -> crate::rustc_proc_macro::TokenStream + Copy,
+    ) -> Self {
         Client {
             run: super::selfless_reify::reify_to_extern_c_fn_hrt_bridge(move |bridge| {
                 run_client(bridge, f)
@@ -364,7 +366,11 @@ impl Client {
     }
 
     pub const fn expand2(
-        f: impl Fn(crate::rustc_proc_macro::TokenStream, crate::rustc_proc_macro::TokenStream) -> crate::rustc_proc_macro::TokenStream + Copy,
+        f: impl Fn(
+            crate::rustc_proc_macro::TokenStream,
+            crate::rustc_proc_macro::TokenStream,
+        ) -> crate::rustc_proc_macro::TokenStream
+        + Copy,
     ) -> Self {
         Client {
             run: super::selfless_reify::reify_to_extern_c_fn_hrt_bridge(move |bridge| {

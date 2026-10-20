@@ -14,8 +14,8 @@ use crate::rustc_abi::ExternAbi;
 /// - extern "system"
 /// - extern "cdecl"
 /// - extern "C-unwind"
-/// In that sense, this erases mere syntactic distinctions to create a canonical *directive*,
-/// rather than picking the "actual" ABI.
+///   In that sense, this erases mere syntactic distinctions to create a canonical *directive*,
+///   rather than picking the "actual" ABI.
 #[derive(Copy, Clone, Debug)]
 #[derive(PartialOrd, Ord, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "nightly", derive(StableHash))]

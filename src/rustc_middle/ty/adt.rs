@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::hash::{Hash, Hasher};
 use core::ops::Range;
@@ -224,16 +218,14 @@ impl<'tcx> AdtDef<'tcx> {
             return None;
         }
         let params = &tcx.generics_of(self.did()).own_params;
-        let Some(base_param) =
-            params.iter().find(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))
-        else {
-            return None;
-        };
+        let base_param = params
+            .iter()
+            .find(|param| matches!(param.kind, ty::GenericParamDefKind::Type { .. }))?;
         let mut const_params = params
             .iter()
             .filter(|param| matches!(param.kind, ty::GenericParamDefKind::Const { .. }));
-        let Some(variant_param) = const_params.next() else { return None };
-        let Some(field_param) = const_params.next() else { return None };
+        let variant_param = const_params.next()?;
+        let field_param = const_params.next()?;
 
         let base = args.get(base_param.index as usize).copied()?.as_type()?;
         let variant_idx = match args.get(variant_param.index as usize).copied()?.as_const()?.kind()
@@ -363,7 +355,7 @@ impl AdtDefData {
 
         if kind == AdtKind::Enum && find_attr!(tcx, did, NonExhaustive(..)) {
             debug!("found non-exhaustive variant list for {:?}", did);
-            flags = flags | AdtFlags::IS_VARIANT_LIST_NON_EXHAUSTIVE;
+            flags |= AdtFlags::IS_VARIANT_LIST_NON_EXHAUSTIVE;
         }
         if find_attr!(tcx, did, PinV2(..)) {
             debug!("found pin-project type {:?}", did);
@@ -650,7 +642,12 @@ impl<'tcx> AdtDef<'tcx> {
         expr_did: DefId,
     ) -> Result<Discr<'tcx>, ErrorHandled> {
         assert!(self.is_enum());
-        Err(ErrorHandled::TooGeneric(tcx.def_span(expr_did)))
+        let ty = self.repr().discr_type().to_ty(tcx);
+        let value = tcx.const_eval_poly(expr_did)?;
+        let val = value
+            .try_to_bits_for_ty(tcx, ty::TypingEnv::fully_monomorphized(), ty)
+            .ok_or_else(|| ErrorHandled::TooGeneric(tcx.def_span(expr_did)))?;
+        Ok(Discr { val, ty })
     }
 
     #[inline]

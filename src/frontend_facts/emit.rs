@@ -179,10 +179,7 @@ fn byte_span(span: Option<Span>, sm: Option<&SourceMap>) -> (ByteSpan, bool) {
     let file = sm
         .and_then(|sm| {
             let files = sm.files();
-            files
-                .iter()
-                .next()
-                .map(|file| file.name.prefer_local_unconditionally().to_string())
+            files.iter().next().map(|file| file.name.prefer_local_unconditionally().to_string())
         })
         .unwrap_or_default();
     (ByteSpan { file: Arc::from(file), start: 0, end: 0 }, false)

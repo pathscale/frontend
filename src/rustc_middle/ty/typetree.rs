@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -19,7 +15,8 @@ use crate::rustc_middle::ty::{self, Ty};
 /// of function parameters and return types for Enzyme autodiff.
 pub fn fnc_typetrees<'tcx>(tcx: TyCtxt<'tcx>, fn_ty: Ty<'tcx>) -> FncTree {
     // Check if TypeTrees are disabled via NoTT flag
-    if tcx.sess.opts.unstable_opts.autodiff.contains(&crate::rustc_session::config::AutoDiff::NoTT) {
+    if tcx.sess.opts.unstable_opts.autodiff.contains(&crate::rustc_session::config::AutoDiff::NoTT)
+    {
         return FncTree { args: vec![], ret: TypeTree::new() };
     }
 
@@ -42,17 +39,23 @@ pub fn fnc_typetrees<'tcx>(tcx: TyCtxt<'tcx>, fn_ty: Ty<'tcx>) -> FncTree {
     // Create TypeTree for return type
     let ret = typetree_from_ty(tcx, sig.output());
 
-    let f = FncTree { args, ret };
-    f
+    FncTree { args, ret }
 }
 
 /// Generate a TypeTree for a specific type.
 /// Mainly a convenience wrapper around the actual implementation.
 pub fn typetree_from_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> TypeTree {
-    if !tcx.sess.opts.unstable_opts.autodiff.contains(&crate::rustc_session::config::AutoDiff::Enable) {
+    if !tcx
+        .sess
+        .opts
+        .unstable_opts
+        .autodiff
+        .contains(&crate::rustc_session::config::AutoDiff::Enable)
+    {
         return TypeTree::new();
     }
-    if tcx.sess.opts.unstable_opts.autodiff.contains(&crate::rustc_session::config::AutoDiff::NoTT) {
+    if tcx.sess.opts.unstable_opts.autodiff.contains(&crate::rustc_session::config::AutoDiff::NoTT)
+    {
         return TypeTree::new();
     }
     let mut visited = Vec::new();
@@ -97,12 +100,12 @@ fn handle_indirection<'a>(
     }
 
     let child = typetree_from_ty_impl_inner(tcx, inner_ty, depth + 1, visited, true);
-    return TypeTree(vec![Type {
+    TypeTree(vec![Type {
         offset: -1,
         size: tcx.data_layout.pointer_size().bytes_usize(),
         kind: Kind::Pointer,
         child,
-    }]);
+    }])
 }
 
 /// Internal implementation with context about whether this is for a reference target.

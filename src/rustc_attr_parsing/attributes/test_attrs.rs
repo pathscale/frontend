@@ -1,7 +1,7 @@
-use alloc::string::ToString;
 use crate::rustc_attr_ir::RustcAbiAttrKind;
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_lint_defs::builtin::ILL_FORMED_ATTRIBUTE_INPUT;
+use alloc::string::ToString;
 
 use super::prelude::*;
 

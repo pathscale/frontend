@@ -13,25 +13,20 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
 #[macro_use]
 mod diagnostics;
 
-use core::marker::PhantomData;
-use core::ops::ControlFlow;
 use crate::debug_assert_matches;
 use core::fmt;
+use core::marker::PhantomData;
+use core::ops::ControlFlow;
 
-use diagnostics::{
-    FieldIsPrivate, FieldIsPrivateLabel, FromPrivateDependencyInPublicInterface, InPublicInterface,
-    ItemIsPrivate, PrivateInterfacesOrBoundsLint, ReportEffectiveVisibility, UnnameableTypesLint,
-    UnnamedItemIsPrivate,
-};
 use crate::rustc_ast::visit::{VisitorResult, try_visit};
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::intern::Interned;
@@ -57,6 +52,11 @@ use crate::rustc_passes::item_likes::{
     item_like_count, item_like_def_id, item_like_weight, visit_item_like,
 };
 use crate::rustc_span::{Ident, Span, Symbol, sym};
+use diagnostics::{
+    FieldIsPrivate, FieldIsPrivateLabel, FromPrivateDependencyInPublicInterface, InPublicInterface,
+    ItemIsPrivate, PrivateInterfacesOrBoundsLint, ReportEffectiveVisibility, UnnameableTypesLint,
+    UnnamedItemIsPrivate,
+};
 use tracing::debug;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -549,8 +549,7 @@ impl<'tcx> EmbargoVisitor<'tcx> {
         max_vis: Option<ty::Visibility>,
         level: Level,
     ) -> bool {
-        let private_vis =
-            ty::Visibility::Restricted(self.tcx.parent_module_from_def_id(def_id).into());
+        let private_vis = ty::Visibility::Restricted(self.tcx.parent_module_from_def_id(def_id));
         if max_vis != Some(private_vis) {
             return self.effective_visibilities.update(
                 def_id,
@@ -715,10 +714,10 @@ impl<'tcx> EmbargoVisitor<'tcx> {
                         // enum is not, make the enum reachable as well.
                         self.reach(def_id, variant_ev).ty();
                     }
-                    if let Some(ctor_def_id) = variant.ctor_def_id() {
-                        if let Some(ctor_ev) = self.get(ctor_def_id.expect_local()) {
-                            self.reach(def_id, ctor_ev).ty();
-                        }
+                    if let Some(ctor_def_id) = variant.ctor_def_id()
+                        && let Some(ctor_ev) = self.get(ctor_def_id.expect_local())
+                    {
+                        self.reach(def_id, ctor_ev).ty();
                     }
                 }
             }
@@ -1377,11 +1376,11 @@ impl<'tcx> Visitor<'tcx> for TypePrivacyVisitor<'tcx> {
     }
 
     fn visit_local(&mut self, local: &'tcx hir::LetStmt<'tcx>) {
-        if let Some(init) = local.init {
-            if self.check_expr_pat_type(init.hir_id, init.span) {
-                // Do not report duplicate errors for `let x = y`.
-                return;
-            }
+        if let Some(init) = local.init
+            && self.check_expr_pat_type(init.hir_id, init.span)
+        {
+            // Do not report duplicate errors for `let x = y`.
+            return;
         }
 
         intravisit::walk_local(self, local);
@@ -1829,16 +1828,15 @@ fn check_mod_privacy(tcx: TyCtxt<'_>, mod_id: LocalModId) {
     let len = item_like_count(module);
     let span = tcx.def_span(mod_id);
     // Both walks weigh an item-like's source at a walk's rate. `Copy`: it captures `tcx`.
-    let weight = move |module: &&ModuleItems, index: usize| {
-        item_like_weight(tcx, module, index, cost::WALK)
-    };
+    let weight =
+        move |module: &&ModuleItems, index: usize| item_like_weight(tcx, module, index, cost::WALK);
 
     stages(|scope| {
         // Check privacy of names not checked in previous compilation stages. Every item says
         // `true`: retained as the serial chain's compatibility input.
         let names = scope.stage_weighted(module, len, weight, |module, index| {
             let mut visitor = NamePrivacyVisitor { tcx, maybe_typeck_results: None };
-            let _ = visit_item_like(tcx, module, index, &mut visitor);
+            visit_item_like(tcx, module, index, &mut visitor);
             true
         });
 

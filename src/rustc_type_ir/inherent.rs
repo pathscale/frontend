@@ -3,10 +3,10 @@
 //! scope when programming in interner-agnostic settings, and to avoid importing any of these
 //! directly elsewhere (i.e. specify the full path for an implementation downstream).
 
-#[allow(unused_imports)]
-use {alloc::string::ToString, alloc::vec::Vec};
 use core::fmt::Debug;
 use core::hash::Hash;
+#[allow(unused_imports)]
+use {alloc::string::ToString, alloc::vec::Vec};
 
 use crate::rustc_ast_ir::Mutability;
 
@@ -735,11 +735,11 @@ impl<'a, T: Copy> SliceLike for &'a [T] {
     type IntoIter = core::iter::Copied<core::slice::Iter<'a, T>>;
 
     fn iter(self) -> Self::IntoIter {
-        self.iter().copied()
+        <[T]>::iter(self).copied()
     }
 
     fn as_slice(&self) -> &[Self::Item] {
-        *self
+        self
     }
 }
 
@@ -748,7 +748,7 @@ impl<'a, T: Copy, const N: usize> SliceLike for &'a [T; N] {
     type IntoIter = core::iter::Copied<core::slice::Iter<'a, T>>;
 
     fn iter(self) -> Self::IntoIter {
-        self.into_iter().copied()
+        <[T]>::iter(self).copied()
     }
 
     fn as_slice(&self) -> &[Self::Item] {
@@ -756,7 +756,7 @@ impl<'a, T: Copy, const N: usize> SliceLike for &'a [T; N] {
     }
 }
 
-impl<'a, S: SliceLike> SliceLike for &'a S {
+impl<S: SliceLike> SliceLike for &S {
     type Item = S::Item;
     type IntoIter = S::IntoIter;
 

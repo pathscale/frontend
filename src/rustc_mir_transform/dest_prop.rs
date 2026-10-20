@@ -140,11 +140,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_data_structures::union_find::UnionFind;
@@ -289,23 +284,16 @@ impl<'tcx> MutVisitor<'tcx> for Merger<'tcx> {
             _ => (),
         };
         self.super_statement(statement, location);
-        match &statement.kind {
-            StatementKind::Assign(assign) => {
+        if let StatementKind::Assign(assign) = &statement.kind {
                 let (dest, rvalue) = &**assign;
-                match rvalue {
-                    Rvalue::Use(Operand::Copy(place) | Operand::Move(place), _) => {
-                        // These might've been turned into self-assignments by the replacement
-                        // (this includes the original statement we wanted to eliminate).
-                        if dest == place {
-                            debug!("{:?} turned into self-assignment, deleting", location);
-                            statement.make_nop(true);
-                        }
+                if let Rvalue::Use(Operand::Copy(place) | Operand::Move(place), _) = rvalue {
+                    // These might've been turned into self-assignments by the replacement
+                    // (this includes the original statement we wanted to eliminate).
+                    if dest == place {
+                        debug!("{:?} turned into self-assignment, deleting", location);
+                        statement.make_nop(true);
                     }
-                    _ => {}
                 }
-            }
-
-            _ => {}
         }
     }
 }
@@ -628,13 +616,13 @@ fn save_as_intervals<'tcx>(
         })
         .visit_terminator(term, loc);
 
-        state.current = state.current + 1;
+        state.current += 1;
         debug_assert_eq!(state.current, two_step_loc(loc, Effect::Before));
         LivenessTransferFunction(&mut state).visit_terminator(term, loc);
 
         for (statement_index, stmt) in block_data.statements.iter().enumerate().rev() {
             let loc = Location { block, statement_index };
-            state.current = state.current + 1;
+            state.current += 1;
             debug_assert_eq!(state.current, two_step_loc(loc, Effect::After));
 
             // Like terminators, ensure we have a non-zero live range even for dead stores.

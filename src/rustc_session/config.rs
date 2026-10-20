@@ -4,7 +4,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -16,8 +15,8 @@ use alloc::collections::btree_map::{
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::hash::Hash;
 use core::num::NonZero;
-use eko::path::{Path, PathBuf};
 use core::str::{self, FromStr};
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_data_structures::stable_hash::{StableHasher, StableOrd};
@@ -25,7 +24,6 @@ use crate::rustc_errors::emitter::HumanReadableErrorType;
 use crate::rustc_errors::{ColorConfig, DiagCtxtFlags};
 use crate::rustc_feature::UnstableFeatures;
 use crate::rustc_hashes::Hash64;
-use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use crate::rustc_span::edition::DEFAULT_EDITION;
 use crate::rustc_span::source_map::FilePathMapping;
 use crate::rustc_span::{
@@ -35,6 +33,7 @@ use crate::rustc_structures::CrateType;
 use crate::rustc_target::spec::{
     LinkSelfContainedComponents, LinkerFeatures, SplitDebuginfo, Target, TargetTuple,
 };
+use rustc_macros::{BlobDecodable, Decodable, Encodable, StableHash};
 use tracing::debug;
 
 pub use crate::rustc_session::config::cfg::{Cfg, CheckCfg, ExpectedValues};
@@ -383,7 +382,6 @@ impl LinkSelfContained {
     pub fn is_linker_disabled(&self) -> bool {
         self.disabled_components.contains(LinkSelfContainedComponents::LINKER)
     }
-
 }
 
 /// The different values that `-C linker-features` can take on the CLI: a list of individually
@@ -766,6 +764,10 @@ impl OutputTypes {
         self.0.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns `true` if any of the output types require codegen or linking.
     pub fn should_codegen(&self) -> bool {
         self.0.keys().any(|k| match *k {
@@ -1085,6 +1087,10 @@ fn maybe_strip_file_name(mut path: PathBuf) -> PathBuf {
     path
 }
 impl OutputFilenames {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "output naming retains its established path and output-policy constructor"
+    )]
     pub fn new(
         out_directory: PathBuf,
         out_crate_name: String,
@@ -1180,7 +1186,7 @@ impl OutputFilenames {
 
     pub fn temp_path_for_diagnostic(&self, ext: &str) -> PathBuf {
         let temps_directory = self.temps_directory.as_ref().unwrap_or(&self.out_directory);
-        self.with_directory_and_extension(temps_directory, &ext)
+        self.with_directory_and_extension(temps_directory, ext)
     }
 
     pub fn with_extension(&self, extension: &str) -> PathBuf {
@@ -1329,6 +1335,7 @@ impl Default for Options {
             working_dir,
             color: ColorConfig::Auto,
             logical_env: FxIndexMap::default(),
+            isolated_env: false,
             verbose: false,
             target_modifiers: BTreeMap::default(),
             mitigation_coverage_map: Default::default(),
@@ -1515,7 +1522,6 @@ pub struct Jobs {
     pub linker: LinkerJobs,
 }
 
-
 pub fn build_configuration(sess: &Session, mut user_cfg: Cfg) -> Cfg {
     // First disallow some configuration given on the command line
     cfg::disallow_cfgs(sess, &user_cfg);
@@ -1594,7 +1600,6 @@ impl JsonUnusedExterns {
         }
     }
 }
-
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum PpSourceMode {
@@ -1694,9 +1699,9 @@ pub enum WasiExecModel {
 /// we have an opt-in scheme here, so one is hopefully forced to think about
 /// how the hash should be calculated when adding a new command-line argument.
 pub(crate) mod dep_tracking {
+    use alloc::collections::BTreeMap;
     use alloc::string::String;
     use alloc::vec::Vec;
-    use alloc::collections::BTreeMap;
     use core::hash::Hash;
     use core::num::NonZero;
     use eko::path::PathBuf;
@@ -1966,10 +1971,10 @@ impl PatchableFunctionEntry {
         prefix_nops: u8,
         section: Option<String>,
     ) -> Option<PatchableFunctionEntry> {
-        if total_nops < prefix_nops {
-            None
-        // Section name cannot contain null characters.
-        } else if section.as_ref().map(|x| x.contains('\0') || x.is_empty()).unwrap_or(false) {
+        // Section names must be nonempty and contain no null characters.
+        if total_nops < prefix_nops
+            || section.as_ref().is_some_and(|x| x.contains('\0') || x.is_empty())
+        {
             None
         } else {
             Some(Self { prefix: prefix_nops, entry: total_nops - prefix_nops, section })
@@ -1982,7 +1987,7 @@ impl PatchableFunctionEntry {
         self.entry
     }
     pub fn section(&self) -> Option<&str> {
-        self.section.as_ref().map(|x| x.as_str())
+        self.section.as_deref()
     }
 }
 

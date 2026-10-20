@@ -1,18 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
+use crate::find_attr;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_hir::attrs::{EiiDecl, EiiImpl, EiiImplResolution};
 use crate::rustc_hir::def_id::DefId;
-use crate::find_attr;
-use crate::bug;
 use crate::rustc_middle::query::LocalCrate;
 use crate::rustc_middle::ty::TyCtxt;
 

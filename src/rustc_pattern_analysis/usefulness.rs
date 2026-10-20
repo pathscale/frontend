@@ -20,7 +20,7 @@
 //! the following:
 //! - a set of values that match none of the patterns (if any),
 //! - for each subpattern (taking into account or-patterns), whether removing it would change
-//!     anything about how the match executes, i.e. whether it is useful/not redundant.
+//!   anything about how the match executes, i.e. whether it is useful/not redundant.
 //!
 //! To a first approximation, the algorithm works by exploring all possible values for the type
 //! being matched on, and determining which arm(s) catch which value. To make this tractable we
@@ -172,17 +172,17 @@
 //! We compute `usefulness(pt_1, .., pt_n, qt)` as follows:
 //!
 //! - Base case: `m == 0`.
-//!     The pattern-tuples are all empty, i.e. they're all `()`. Thus `tq` is useful iff there are
-//!     no rows above it, i.e. if `n == 0`. In that case we return `()` as a witness-tuple of
-//!     usefulness of `tq`.
+//!   The pattern-tuples are all empty, i.e. they're all `()`. Thus `tq` is useful iff there are
+//!   no rows above it, i.e. if `n == 0`. In that case we return `()` as a witness-tuple of
+//!   usefulness of `tq`.
 //!
 //! - Inductive case: `m > 0`.
-//!     In this naive version, we list all the possible constructors for values of type `T1` (we
-//!     will be more clever in the next section).
+//!   In this naive version, we list all the possible constructors for values of type `T1` (we
+//!   will be more clever in the next section).
 //!
 //!     - For each such constructor `c` for which `specialize(c, tq)` is not nothing:
 //!         - We recursively compute `usefulness(specialize(c, tp_1) ... specialize(c, tp_n), specialize(c, tq))`,
-//!             where we discard any `specialize(c, p_i)` that returns nothing.
+//!           where we discard any `specialize(c, p_i)` that returns nothing.
 //!         - For each witness-tuple `w` found, we apply `unspecialize(c, w)` to it.
 //!
 //!     - We return the all the witnesses found, if any.
@@ -316,7 +316,7 @@
 //! Consider the value `(true, true)`:
 //! - Row 2 does not distinguish `(true, true)` and `(false, true)`;
 //! - `false` does not show up in the first column of the match, so without knowing anything else we
-//!     can deduce that `(false, true)` matches the same or fewer rows than `(true, true)`.
+//!   can deduce that `(false, true)` matches the same or fewer rows than `(true, true)`.
 //!
 //! Using those two facts together, we deduce that `(true, true)` will not give us more usefulness
 //! information about row 2 than `(false, true)` would. We say that "`(true, true)` is made
@@ -708,9 +708,8 @@
 //! I (Nadrieril) prefer to put new tests in `ui/pattern/usefulness` unless there's a specific
 //! reason not to, for example if they crucially depend on a particular feature like `or_patterns`.
 
-use alloc::vec::Vec;
 use alloc::string::String;
-use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::fmt;
 
 // `rustc_hash`'s `FxHashMap`/`FxHashSet` alias `std::collections::HashMap`, which is the one
@@ -760,10 +759,11 @@ impl<'p, Cx: PatCx> BranchPatUsefulness<'p, Cx> {
         // sufficient to build a covering set.
         for row_id in row.intersects_at_least.iter() {
             let row = &matrix.rows[row_id];
-            if row.useful && !row.is_under_guard {
-                if let PatOrWild::Pat(intersecting) = row.head() {
-                    self.covered_by.insert(intersecting);
-                }
+            if row.useful
+                && !row.is_under_guard
+                && let PatOrWild::Pat(intersecting) = row.head()
+            {
+                self.covered_by.insert(intersecting);
             }
         }
     }
@@ -903,11 +903,7 @@ struct PlaceInfo<Cx: PatCx> {
 impl<Cx: PatCx> PlaceInfo<Cx> {
     /// Given a constructor for the current place, we return one `PlaceInfo` for each field of the
     /// constructor.
-    fn specialize(
-        &self,
-        cx: &Cx,
-        ctor: &Constructor<Cx>,
-    ) -> impl Iterator<Item = Self> + ExactSizeIterator {
+    fn specialize(&self, cx: &Cx, ctor: &Constructor<Cx>) -> impl ExactSizeIterator<Item = Self> {
         let ctor_sub_tys = cx.ctor_sub_tys(ctor, &self.ty);
         let ctor_sub_validity = self.validity.specialize(ctor);
         ctor_sub_tys.map(move |(ty, PrivateUninhabitedField(private_uninhabited))| PlaceInfo {
@@ -926,6 +922,10 @@ impl<Cx: PatCx> PlaceInfo<Cx> {
     ///
     /// `missing_ctors` is a list of the constructors not found in the column, for reporting
     /// purposes.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the constructor split preserves separate present and missing constructor collections"
+    )]
     fn split_column_ctors<'a>(
         &self,
         cx: &Cx,
@@ -1262,14 +1262,12 @@ impl<'p, Cx: PatCx> Matrix<'p, Cx> {
 
     fn rows(
         &self,
-    ) -> impl Iterator<Item = &MatrixRow<'p, Cx>> + Clone + DoubleEndedIterator + ExactSizeIterator
-    {
+    ) -> impl Clone + DoubleEndedIterator<Item = &MatrixRow<'p, Cx>> + ExactSizeIterator {
         self.rows.iter()
     }
     fn rows_mut(
         &mut self,
-    ) -> impl Iterator<Item = &mut MatrixRow<'p, Cx>> + DoubleEndedIterator + ExactSizeIterator
-    {
+    ) -> impl DoubleEndedIterator<Item = &mut MatrixRow<'p, Cx>> + ExactSizeIterator {
         self.rows.iter_mut()
     }
 
@@ -1351,7 +1349,7 @@ impl<'p, Cx: PatCx> Matrix<'p, Cx> {
 /// ```
 impl<'p, Cx: PatCx> fmt::Debug for Matrix<'p, Cx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "\n")?;
+        writeln!(f)?;
 
         let mut pretty_printed_matrix: Vec<Vec<String>> = self
             .rows
@@ -1380,7 +1378,7 @@ impl<'p, Cx: PatCx> fmt::Debug for Matrix<'p, Cx> {
             if is_validity_row {
                 write!(f, " // validity")?;
             }
-            write!(f, "\n")?;
+            writeln!(f)?;
         }
         Ok(())
     }
@@ -1759,13 +1757,12 @@ fn compute_exhaustiveness_and_usefulness<'a, 'p, Cx: PatCx>(
         ret.extend(witnesses);
 
         // Detect ranges that overlap on their endpoints.
-        if let Constructor::IntRange(overlap_range) = ctor {
-            if overlap_range.is_singleton()
-                && spec_matrix.rows.len() >= 2
-                && spec_matrix.rows.iter().any(|row| !row.intersects_at_least.is_empty())
-            {
-                collect_overlapping_range_endpoints(mcx.tycx, overlap_range, matrix, &spec_matrix);
-            }
+        if let Constructor::IntRange(overlap_range) = ctor
+            && overlap_range.is_singleton()
+            && spec_matrix.rows.len() >= 2
+            && spec_matrix.rows.iter().any(|row| !row.intersects_at_least.is_empty())
+        {
+            collect_overlapping_range_endpoints(mcx.tycx, overlap_range, matrix, &spec_matrix);
         }
 
         matrix.unspecialize(spec_matrix);
@@ -1774,20 +1771,20 @@ fn compute_exhaustiveness_and_usefulness<'a, 'p, Cx: PatCx>(
     // Detect singleton gaps between ranges.
     if missing_ctors.iter().any(|c| matches!(c, Constructor::IntRange(..))) {
         for missing in &missing_ctors {
-            if let Constructor::IntRange(gap) = missing {
-                if gap.is_singleton() {
-                    collect_non_contiguous_range_endpoints(mcx.tycx, gap, matrix);
-                }
+            if let Constructor::IntRange(gap) = missing
+                && gap.is_singleton()
+            {
+                collect_non_contiguous_range_endpoints(mcx.tycx, gap, matrix);
             }
         }
     }
 
     // Record usefulness of the branch patterns.
     for row in matrix.rows() {
-        if row.head_is_branch {
-            if let PatOrWild::Pat(pat) = row.head() {
-                mcx.branch_usefulness.entry(pat.uid).or_default().update(row, matrix);
-            }
+        if row.head_is_branch
+            && let PatOrWild::Pat(pat) = row.head()
+        {
+            mcx.branch_usefulness.entry(pat.uid).or_default().update(row, matrix);
         }
     }
 

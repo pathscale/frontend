@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_attr_ir::WindowsSubsystemKind;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_feature::AttributeStability;
@@ -6,6 +5,7 @@ use crate::rustc_lint_defs::builtin::{DUPLICATE_TOOLS, UNKNOWN_CRATE_TYPES};
 use crate::rustc_span::Symbol;
 use crate::rustc_span::edit_distance::find_best_match_for_name_with_substrings;
 use crate::rustc_structures::CrateType;
+use alloc::vec::Vec;
 
 use super::prelude::*;
 use crate::rustc_attr_parsing::diagnostics::{

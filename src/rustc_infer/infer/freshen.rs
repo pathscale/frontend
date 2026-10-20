@@ -31,8 +31,8 @@
 //! variable only once, and it does so as soon as it can, so it is reasonable to ask what the type
 //! inferencer knows "so far".
 
-use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::bug;
+use crate::rustc_data_structures::sso::SsoHashMap;
 use crate::rustc_middle::ty::{
     self, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable, TypeVisitableExt,
 };

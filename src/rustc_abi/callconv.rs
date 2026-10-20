@@ -1,5 +1,7 @@
 #[cfg(feature = "nightly")]
-use crate::rustc_abi::{BackendRepr, FieldsShape, Primitive, Size, TyAbiInterface, TyAndLayout, Variants};
+use crate::rustc_abi::{
+    BackendRepr, FieldsShape, Primitive, Size, TyAbiInterface, TyAndLayout, Variants,
+};
 
 mod reg;
 

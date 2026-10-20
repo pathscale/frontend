@@ -3,9 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::boxed::Box;
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -144,6 +143,10 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+)]
 pub fn suggest_new_region_bound(
     tcx: TyCtxt<'_>,
     err: &mut Diag<'_>,
@@ -229,9 +232,9 @@ pub fn suggest_new_region_bound(
                                     None
                                 }
                             })
-                            .filter(|n| !matches!(n, None))
+                            .filter(|n| !n.is_none())
                             .collect::<Vec<_>>()
-                        && named_lifetimes.len() > 0
+                        && !named_lifetimes.is_empty()
                     {
                         named_lifetimes[0].clone()
                     } else {
@@ -246,7 +249,7 @@ pub fn suggest_new_region_bound(
                             make_elided_region_spans_suggs(name, generics.params.iter())
                         && spans_suggs.len() > 1
                     {
-                        let use_lt = if existing_lt_name == None {
+                        let use_lt = if existing_lt_name.is_none() {
                             spans_suggs.push((generics.span.shrink_to_hi(), format!("<{name}>")));
                             format!("you can introduce a named lifetime parameter `{name}`")
                         } else {

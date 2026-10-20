@@ -179,7 +179,7 @@ impl Target {
     pub fn from_expr(expr: &ast::Expr) -> Self {
         match &expr.kind {
             ast::ExprKind::Closure(..) | ast::ExprKind::Gen(..) => Self::Closure,
-            ast::ExprKind::Paren(e) => Self::from_expr(&e),
+            ast::ExprKind::Paren(e) => Self::from_expr(e),
             ast::ExprKind::ForLoop { .. } => Self::ForLoop,
             ast::ExprKind::Loop(..) => Self::Loop,
             ast::ExprKind::While(..) => Self::While,

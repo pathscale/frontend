@@ -2,7 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -166,7 +165,7 @@ impl<'a, 'tcx> MirDumper<'a, 'tcx> {
     ///   or `typeck` appears in the name.
     /// - `foo & nll | bar & typeck` == match if `foo` and `nll` both appear in the name
     ///   or `typeck` and `bar` both appear in the name.
-    /// Render this body and hand the text to the session. Writes nothing anywhere.
+    ///   Render this body and hand the text to the session. Writes nothing anywhere.
     ///
     /// The caller asked for a dump by turning one of the `-Zdump-mir` options on; what happens
     /// to the text after that is the driver's decision, not this function's.
@@ -611,7 +610,7 @@ fn write_mir_intro<'tcx>(
     write_mir_sig(tcx, body, w)?;
     writeln!(w, "{{")?;
 
-    if let Some(ref layout) = body.coroutine_layout_raw() {
+    if let Some(layout) = body.coroutine_layout_raw() {
         write_coroutine_layout(tcx, layout, w, options)?;
     }
 
@@ -1104,9 +1103,9 @@ impl<'tcx> TerminatorKind<'tcx> {
             Call { target: Some(_), unwind: UnwindAction::Cleanup(_), .. } => {
                 vec!["return".into(), "unwind".into()]
             }
-            Call { target: Some(_), unwind: _, .. } => vec!["return".into()],
+            Call { target: Some(_), .. } => vec!["return".into()],
             Call { target: None, unwind: UnwindAction::Cleanup(_), .. } => vec!["unwind".into()],
-            Call { target: None, unwind: _, .. } => vec![],
+            Call { target: None, .. } => vec![],
             Yield { drop: Some(_), .. } => vec!["resume".into(), "drop".into()],
             Yield { drop: None, .. } => vec!["resume".into()],
             Drop { unwind: UnwindAction::Cleanup(_), drop: Some(_), .. } => {
@@ -1116,16 +1115,16 @@ impl<'tcx> TerminatorKind<'tcx> {
                 vec!["return".into(), "unwind".into()]
             }
             Drop { unwind: _, drop: Some(_), .. } => vec!["return".into(), "drop".into()],
-            Drop { unwind: _, .. } => vec!["return".into()],
+            Drop { .. } => vec!["return".into()],
             Assert { unwind: UnwindAction::Cleanup(_), .. } => {
                 vec!["success".into(), "unwind".into()]
             }
-            Assert { unwind: _, .. } => vec!["success".into()],
+            Assert { .. } => vec!["success".into()],
             FalseEdge { .. } => vec!["real".into(), "imaginary".into()],
             FalseUnwind { unwind: UnwindAction::Cleanup(_), .. } => {
                 vec!["real".into(), "unwind".into()]
             }
-            FalseUnwind { unwind: _, .. } => vec!["real".into()],
+            FalseUnwind { .. } => vec!["real".into()],
             InlineAsm { asm_macro, options, ref targets, unwind, .. } => {
                 let mut vec = Vec::with_capacity(targets.len() + 1);
                 if !asm_macro.diverges(options) {

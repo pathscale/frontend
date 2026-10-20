@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use core::hash::{BuildHasher, Hash, Hasher};
@@ -115,8 +112,8 @@ pub struct RawDefId(pub u32, pub u32);
 ///   past.
 ///
 /// - `stable_hash()` must be independent of the current
-///    compilation session. E.g. they must not hash memory addresses or other
-///    things that are "randomly" assigned per compilation session.
+///   compilation session. E.g. they must not hash memory addresses or other
+///   things that are "randomly" assigned per compilation session.
 ///
 /// - `stable_hash()` must be independent of the host architecture. The
 ///   `StableHasher` takes care of endianness and `isize`/`usize` platform
@@ -369,16 +366,16 @@ impl StableHash for ::core::cmp::Ordering {
 impl<T1: StableHash> StableHash for (T1,) {
     #[inline]
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        let (ref _0,) = *self;
-        _0.stable_hash(hcx, hasher);
+        let (ref element,) = *self;
+        element.stable_hash(hcx, hasher);
     }
 }
 
 impl<T1: StableHash, T2: StableHash> StableHash for (T1, T2) {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        let (ref _0, ref _1) = *self;
-        _0.stable_hash(hcx, hasher);
-        _1.stable_hash(hcx, hasher);
+        let (ref first, ref second) = *self;
+        first.stable_hash(hcx, hasher);
+        second.stable_hash(hcx, hasher);
     }
 }
 
@@ -397,10 +394,10 @@ where
     T3: StableHash,
 {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        let (ref _0, ref _1, ref _2) = *self;
-        _0.stable_hash(hcx, hasher);
-        _1.stable_hash(hcx, hasher);
-        _2.stable_hash(hcx, hasher);
+        let (ref first, ref second, ref third) = *self;
+        first.stable_hash(hcx, hasher);
+        second.stable_hash(hcx, hasher);
+        third.stable_hash(hcx, hasher);
     }
 }
 
@@ -421,11 +418,11 @@ where
     T4: StableHash,
 {
     fn stable_hash<Hcx: StableHashCtxt>(&self, hcx: &mut Hcx, hasher: &mut StableHasher) {
-        let (ref _0, ref _1, ref _2, ref _3) = *self;
-        _0.stable_hash(hcx, hasher);
-        _1.stable_hash(hcx, hasher);
-        _2.stable_hash(hcx, hasher);
-        _3.stable_hash(hcx, hasher);
+        let (ref first, ref second, ref third, ref fourth) = *self;
+        first.stable_hash(hcx, hasher);
+        second.stable_hash(hcx, hasher);
+        third.stable_hash(hcx, hasher);
+        fourth.stable_hash(hcx, hasher);
     }
 }
 
@@ -603,7 +600,7 @@ where
     }
 }
 
-impl<'a, T> StableHash for &'a T
+impl<T> StableHash for &T
 where
     T: StableHash + ?Sized,
 {

@@ -77,7 +77,7 @@ impl<Cx: PatCx> DeconstructedPat<Cx> {
         self.arity
     }
 
-    pub fn iter_fields<'a>(&'a self) -> impl Iterator<Item = &'a IndexedPat<Cx>> {
+    pub fn iter_fields(&self) -> impl Iterator<Item = &IndexedPat<Cx>> {
         self.fields.iter()
     }
 

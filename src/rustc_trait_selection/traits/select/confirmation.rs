@@ -10,10 +10,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -33,7 +30,9 @@ use tracing::{debug, instrument};
 
 use super::SelectionCandidate::{self, *};
 use super::{PredicateObligations, SelectionContext};
-use crate::rustc_trait_selection::traits::normalize::{normalize_with_depth, normalize_with_depth_to};
+use crate::rustc_trait_selection::traits::normalize::{
+    normalize_with_depth, normalize_with_depth_to,
+};
 use crate::rustc_trait_selection::traits::util::{self, closure_trait_ref_and_return_type};
 use crate::rustc_trait_selection::traits::{
     ImplSource, ImplSourceUserDefinedData, Normalized, Obligation, ObligationCause,
@@ -363,9 +362,14 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let mut assume = predicate.trait_ref.args.const_at(2);
         if self.tcx().features().generic_const_exprs() {
-            assume = crate::rustc_trait_selection::traits::evaluate_const(self.infcx, assume, obligation.param_env)
+            assume = crate::rustc_trait_selection::traits::evaluate_const(
+                self.infcx,
+                assume,
+                obligation.param_env,
+            )
         }
-        let Some(assume) = crate::rustc_transmute::Assume::from_const(self.infcx.tcx, assume) else {
+        let Some(assume) = crate::rustc_transmute::Assume::from_const(self.infcx.tcx, assume)
+        else {
             return Err(SelectionError::Unimplemented);
         };
 

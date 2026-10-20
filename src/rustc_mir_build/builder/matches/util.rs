@@ -1,15 +1,16 @@
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::Ty;
 use crate::rustc_span::Span;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use tracing::debug;
 
 use crate::rustc_mir_build::builder::Builder;
 use crate::rustc_mir_build::builder::expr::as_place::PlaceBase;
-use crate::rustc_mir_build::builder::matches::{Binding, Candidate, FlatPat, MatchPairTree, TestableCase};
+use crate::rustc_mir_build::builder::matches::{
+    Binding, Candidate, FlatPat, MatchPairTree, TestableCase,
+};
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Creates a false edge to `imaginary_target` and a real edge to

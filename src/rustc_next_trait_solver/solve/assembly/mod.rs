@@ -6,7 +6,6 @@ pub(super) mod structural_traits;
 use core::cell::Cell;
 use core::ops::ControlFlow;
 
-use derive_where::derive_where;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::lang_items::SolverTraitLangItem;
 use crate::rustc_type_ir::search_graph::CandidateHeadUsages;
@@ -19,6 +18,7 @@ use crate::rustc_type_ir::{
     TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitableExt, TypeVisitor,
     TypingMode, Unnormalized, Upcast, elaborate,
 };
+use derive_where::derive_where;
 use tracing::{debug, instrument};
 
 use super::trait_goals::TraitGoalProvenVia;
@@ -170,7 +170,6 @@ where
                         ecx.evaluate_added_goals_and_make_canonical_response(certainty)
                     },
                 )
-                .map_err(Into::into)
             });
 
         Ok(match result.map_err_to_rerun()? {
@@ -554,13 +553,13 @@ where
         let cx = self.cx();
         let goal_trait_ref = goal.predicate.trait_ref(cx);
         cx.for_each_relevant_impl(goal_trait_ref, |impl_def_id| -> Result<_, _> {
-            match G::consider_impl_candidate(self, goal, goal_trait_ref, impl_def_id, |ecx| {
-                ecx.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
-            })
-            .map_err_to_rerun()?
+            if let Ok(candidate) =
+                G::consider_impl_candidate(self, goal, goal_trait_ref, impl_def_id, |ecx| {
+                    ecx.evaluate_added_goals_and_make_canonical_response(Certainty::Yes)
+                })
+                .map_err_to_rerun()?
             {
-                Ok(candidate) => candidates.push(candidate),
-                Err(NoSolution) => {}
+                candidates.push(candidate)
             }
 
             Ok(())
@@ -1053,13 +1052,12 @@ where
                 // we still use modulo regions here. This is fine as specialization currently
                 // assumes that specializing impls have to be always applicable, meaning that
                 // the only allowed region constraints may be constraints also present on the default impl.
-                if matches!(allow_inference_constraints, AllowInferenceConstraints::Yes)
-                    || has_only_region_constraints(c.result)
+                if (matches!(allow_inference_constraints, AllowInferenceConstraints::Yes)
+                    || has_only_region_constraints(c.result))
+                    && self.cx().impl_specializes(other_def_id, victim_def_id)
                 {
-                    if self.cx().impl_specializes(other_def_id, victim_def_id) {
-                        candidates.remove(i);
-                        continue 'outer;
-                    }
+                    candidates.remove(i);
+                    continue 'outer;
                 }
             }
 
@@ -1122,11 +1120,10 @@ where
                 fn fold_ty(&mut self, ty: I::Ty) -> I::Ty {
                     if let ty::Alias(is_rigid, alias_ty) = ty.kind()
                         && let Some(opaque_ty) = alias_ty.try_to_opaque()
+                        && opaque_ty == self.opaque_ty
                     {
-                        if opaque_ty == self.opaque_ty {
-                            debug_assert_eq!(is_rigid, ty::IsRigid::No);
-                            return self.self_ty;
-                        }
+                        debug_assert_eq!(is_rigid, ty::IsRigid::No);
+                        return self.self_ty;
                     }
                     ty.super_fold_with(self)
                 }
@@ -1170,23 +1167,25 @@ where
             let goal_trait_ref = goal.predicate.trait_ref(cx);
 
             cx.for_each_blanket_impl(goal.predicate.trait_def_id(cx), |impl_def_id| {
-                match G::consider_impl_candidate(self, goal, goal_trait_ref, impl_def_id, |ecx| {
-                    if ecx.shallow_resolve(self_ty).is_ty_var() {
-                        // We force the certainty of impl candidates to be `Maybe`.
-                        ecx.evaluate_added_goals_and_make_canonical_response(Certainty::AMBIGUOUS)
-                    } else {
-                        // We don't want to use impls if they constrain the opaque.
-                        //
-                        // FIXME(trait-system-refactor-initiative#229): This isn't
-                        // perfect yet as it still allows us to incorrectly constrain
-                        // other inference variables.
-                        Err(NoSolution.into())
-                    }
-                })
-                .map_err_to_rerun()?
+                if let Ok(candidate) =
+                    G::consider_impl_candidate(self, goal, goal_trait_ref, impl_def_id, |ecx| {
+                        if ecx.shallow_resolve(self_ty).is_ty_var() {
+                            // We force the certainty of impl candidates to be `Maybe`.
+                            ecx.evaluate_added_goals_and_make_canonical_response(
+                                Certainty::AMBIGUOUS,
+                            )
+                        } else {
+                            // We don't want to use impls if they constrain the opaque.
+                            //
+                            // FIXME(trait-system-refactor-initiative#229): This isn't
+                            // perfect yet as it still allows us to incorrectly constrain
+                            // other inference variables.
+                            Err(NoSolution.into())
+                        }
+                    })
+                    .map_err_to_rerun()?
                 {
-                    Ok(candidate) => candidates.push(candidate),
-                    Err(NoSolution) => {}
+                    candidates.push(candidate)
                 }
 
                 Ok(())

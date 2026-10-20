@@ -1,5 +1,5 @@
-use rustc_macros::Diagnostic;
 use crate::rustc_span::Span;
+use rustc_macros::Diagnostic;
 
 #[derive(Diagnostic)]
 #[diag("stop_after_dataflow ended compilation")]

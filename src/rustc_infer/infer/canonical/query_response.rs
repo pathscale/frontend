@@ -11,11 +11,13 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::iter;
 
+use crate::bug;
 use crate::rustc_index::Idx;
 use crate::rustc_middle::arena::ArenaAllocatable;
-use crate::bug;
 use crate::rustc_middle::infer::canonical::{CanonicalVarKind, QueryRegionConstraint};
-use crate::rustc_middle::ty::{self, BoundVar, GenericArg, GenericArgKind, Ty, TyCtxt, TypeFoldable};
+use crate::rustc_middle::ty::{
+    self, BoundVar, GenericArg, GenericArgKind, Ty, TyCtxt, TypeFoldable,
+};
 use smallvec::{SmallVec, smallvec};
 use tracing::{debug, instrument};
 
@@ -307,7 +309,7 @@ impl<'tcx> InferCtxt<'tcx> {
 
                 (GenericArgKind::Type(v1), GenericArgKind::Type(v2)) => {
                     obligations.extend(
-                        self.at(&cause, param_env)
+                        self.at(cause, param_env)
                             .eq(DefineOpaqueTypes::Yes, v1, v2)?
                             .into_obligations(),
                     );
@@ -315,7 +317,7 @@ impl<'tcx> InferCtxt<'tcx> {
 
                 (GenericArgKind::Const(v1), GenericArgKind::Const(v2)) => {
                     obligations.extend(
-                        self.at(&cause, param_env)
+                        self.at(cause, param_env)
                             .eq(DefineOpaqueTypes::Yes, v1, v2)?
                             .into_obligations(),
                     );
@@ -497,13 +499,13 @@ impl<'tcx> InferCtxt<'tcx> {
             if kind.universe() != ty::UniverseIndex::ROOT {
                 // A variable from inside a binder of the query. While ideally these shouldn't
                 // exist at all, we have to deal with them for now.
-                self.instantiate_canonical_var(cause.span, kind, &var_values, |u| {
+                self.instantiate_canonical_var(cause.span, kind, var_values, |u| {
                     universe_map[u.as_usize()]
                 })
             } else if kind.is_existential() {
                 match opt_values[var_values.len()] {
                     Some(k) => k,
-                    None => self.instantiate_canonical_var(cause.span, kind, &var_values, |u| {
+                    None => self.instantiate_canonical_var(cause.span, kind, var_values, |u| {
                         universe_map[u.as_usize()]
                     }),
                 }

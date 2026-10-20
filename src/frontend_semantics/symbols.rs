@@ -3,8 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -12,6 +10,7 @@ use alloc::vec::Vec;
 
 use hashbrown::hash_map::Entry::*;
 
+use crate::bug;
 use crate::rustc_abi::{CanonAbi, X86Call};
 use crate::rustc_crate_store::CrateDepKind;
 use crate::rustc_data_structures::fx::FxHashSet;
@@ -19,7 +18,6 @@ use crate::rustc_data_structures::unord::UnordMap;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LOCAL_CRATE, LocalDefId};
-use crate::bug;
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::middle::exported_symbols::{
     ExportedSymbol, SymbolExportInfo, SymbolExportKind, SymbolExportLevel,
@@ -215,7 +213,7 @@ pub fn exported_non_generic_symbols_helper<'tcx>(
     // Export TLS shims
     if !tcx.sess.target.dll_tls_export {
         symbols.extend(sorted.iter().filter_map(|&(&def_id, &info)| {
-            tcx.needs_thread_local_shim(def_id).then(|| {
+            tcx.needs_thread_local_shim(def_id).then_some({
                 (
                     ExportedSymbol::ThreadLocalShim(def_id),
                     SymbolExportInfo {
@@ -352,8 +350,7 @@ fn exported_generic_symbols_provider_local<'tcx>(
                 return false;
             };
 
-            let is_local = !reachable_set.contains(&root_def_id);
-            is_local
+            !reachable_set.contains(&root_def_id)
         };
 
         let is_instantiable_downstream =
@@ -362,9 +359,8 @@ fn exported_generic_symbols_provider_local<'tcx>(
                     .types()
                     .chain(did.into_iter().map(move |did| tcx.type_of(did).skip_binder()))
                     .all(move |arg| {
-                        arg.walk().all(|ty| {
-                            ty.as_type().map_or(true, |ty| !is_local_to_current_crate(ty))
-                        })
+                        arg.walk()
+                            .all(|ty| ty.as_type().is_none_or(|ty| !is_local_to_current_crate(ty)))
                     })
             };
 
@@ -412,7 +408,7 @@ fn exported_generic_symbols_provider_local<'tcx>(
                     let should_export = if item_is_offload {
                         has_generics
                     } else {
-                        has_generics && is_instantiable_downstream(Some(def), &args)
+                        has_generics && is_instantiable_downstream(Some(def), args)
                     };
 
                     if should_export {
@@ -625,10 +621,10 @@ fn symbol_export_level(tcx: TyCtxt<'_>, sym_def_id: DefId) -> SymbolExportLevel 
         let target = &tcx.sess.target.llvm_target;
         // WebAssembly cannot export data symbols, so reduce their export level
         // FIXME(jdonszelmann) don't do a substring match here.
-        if target.contains("emscripten") {
-            if let DefKind::Static { .. } = tcx.def_kind(sym_def_id) {
-                return SymbolExportLevel::Rust;
-            }
+        if target.contains("emscripten")
+            && let DefKind::Static { .. } = tcx.def_kind(sym_def_id)
+        {
+            return SymbolExportLevel::Rust;
         }
 
         SymbolExportLevel::C
@@ -676,11 +672,13 @@ pub(crate) fn symbol_name_for_instance_in_crate<'tcx>(
                 instantiating_crate,
             )
         }
-        ExportedSymbol::DropGlue(ty) => crate::rustc_symbol_mangling::symbol_name_for_instance_in_crate(
-            tcx,
-            Instance::resolve_drop_glue(tcx, ty),
-            instantiating_crate,
-        ),
+        ExportedSymbol::DropGlue(ty) => {
+            crate::rustc_symbol_mangling::symbol_name_for_instance_in_crate(
+                tcx,
+                Instance::resolve_drop_glue(tcx, ty),
+                instantiating_crate,
+            )
+        }
         ExportedSymbol::AsyncDropGlueCtorShim(ty) => {
             crate::rustc_symbol_mangling::symbol_name_for_instance_in_crate(
                 tcx,
@@ -739,6 +737,7 @@ fn calling_convention_for_symbol<'tcx>(
 /// This is the symbol name of the given instance as seen by the linker.
 ///
 /// On 32-bit Windows symbols are decorated according to their calling conventions.
+#[expect(dead_code, reason = "linker spelling remains available to metadata adapters")]
 pub(crate) fn linking_symbol_name_for_instance_in_crate<'tcx>(
     tcx: TyCtxt<'tcx>,
     symbol: ExportedSymbol<'tcx>,
@@ -792,6 +791,7 @@ pub(crate) fn linking_symbol_name_for_instance_in_crate<'tcx>(
     format!("{prefix}{undecorated}{suffix}{args_in_bytes}")
 }
 
+#[expect(dead_code, reason = "export spelling remains available to metadata adapters")]
 pub(crate) fn exporting_symbol_name_for_instance_in_crate<'tcx>(
     tcx: TyCtxt<'tcx>,
     symbol: ExportedSymbol<'tcx>,
@@ -842,6 +842,7 @@ fn wasm_import_module_map(tcx: TyCtxt<'_>, cnum: CrateNum) -> DefIdMap<String> {
     ret
 }
 
+#[expect(dead_code, reason = "assembler symbol escaping remains available to metadata adapters")]
 pub fn escape_symbol_name(tcx: TyCtxt<'_>, symbol: &str, span: Span) -> String {
     // https://github.com/llvm/llvm-project/blob/a55fbab0cffc9b4af497b9e4f187b61143743e06/llvm/lib/MC/MCSymbol.cpp
     use crate::rustc_target::spec::{Arch, BinaryFormat};

@@ -1,7 +1,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-#![warn(unqualified_local_imports)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
@@ -24,8 +23,8 @@ pub mod const_eval;
 mod diagnostics;
 pub mod util;
 
-use crate::rustc_middle::util::Providers;
 use crate::rustc_middle::ty;
+use crate::rustc_middle::util::Providers;
 
 pub fn provide(providers: &mut Providers) {
     const_eval::provide(&mut providers.queries);

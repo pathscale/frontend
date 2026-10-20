@@ -1,7 +1,6 @@
-use alloc::boxed::Box;
+use crate::bug;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_index::bit_set::DenseBitSet;
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::def_id::LocalDefId;
@@ -79,10 +78,10 @@ fn check_representability_adt_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) {
     // but the type parameters may cause a cycle with an upstream type
     let params_in_repr = tcx.params_in_repr(adt.did());
     for (i, arg) in args.iter().enumerate() {
-        if let ty::GenericArgKind::Type(ty) = arg.kind() {
-            if params_in_repr.contains(i as u32) {
-                check_representability_ty(tcx, ty);
-            }
+        if let ty::GenericArgKind::Type(ty) = arg.kind()
+            && params_in_repr.contains(i as u32)
+        {
+            check_representability_ty(tcx, ty);
         }
     }
 }
@@ -108,10 +107,10 @@ fn params_in_repr_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, params_in_repr: &mut
         ty::Adt(adt, args) => {
             let inner_params_in_repr = tcx.params_in_repr(adt.did());
             for (i, arg) in args.iter().enumerate() {
-                if let ty::GenericArgKind::Type(ty) = arg.kind() {
-                    if inner_params_in_repr.contains(i as u32) {
-                        params_in_repr_ty(tcx, ty, params_in_repr);
-                    }
+                if let ty::GenericArgKind::Type(ty) = arg.kind()
+                    && inner_params_in_repr.contains(i as u32)
+                {
+                    params_in_repr_ty(tcx, ty, params_in_repr);
                 }
             }
         }

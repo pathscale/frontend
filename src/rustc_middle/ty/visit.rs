@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
@@ -189,21 +183,18 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector<'tcx> {
     }
 
     fn visit_ty(&mut self, t: Ty<'tcx>) {
-        if self.just_constrained {
-            match t.kind() {
-                // If we are only looking for "constrained" regions, we have to ignore the
-                // inputs to a projection as they may not appear in the normalized form.
-                ty::Alias(_, alias_ty) => {
-                    match alias_ty.kind {
-                        ty::Projection { .. } | ty::Inherent { .. } | ty::Opaque { .. } => return,
+        if self.just_constrained
+            && let ty::Alias(_, alias_ty) = t.kind()
+        {
+            // If we are only looking for "constrained" regions, we have to ignore the
+            // inputs to a projection as they may not appear in the normalized form.
+            match alias_ty.kind {
+                ty::Projection { .. } | ty::Inherent { .. } | ty::Opaque { .. } => return,
 
-                        // All free alias types should've been expanded beforehand.
-                        ty::Free { .. } => {
-                            bug!("unexpected free alias type")
-                        }
-                    }
+                // All free alias types should've been expanded beforehand.
+                ty::Free { .. } => {
+                    bug!("unexpected free alias type")
                 }
-                _ => {}
             }
         }
 
@@ -214,20 +205,20 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for LateBoundRegionsCollector<'tcx> {
         // if we are only looking for "constrained" region, we have to
         // ignore the inputs of an alias const, as they may not appear
         // in the normalized form
-        if self.just_constrained {
-            if let ty::ConstKind::Alias(..) = c.kind() {
-                return;
-            }
+        if self.just_constrained
+            && let ty::ConstKind::Alias(..) = c.kind()
+        {
+            return;
         }
 
         c.super_visit_with(self)
     }
 
     fn visit_region(&mut self, r: ty::Region<'tcx>) {
-        if let ty::ReBound(ty::BoundVarIndexKind::Bound(debruijn), br) = r.kind() {
-            if debruijn == self.current_index {
-                self.regions.insert(br.kind);
-            }
+        if let ty::ReBound(ty::BoundVarIndexKind::Bound(debruijn), br) = r.kind()
+            && debruijn == self.current_index
+        {
+            self.regions.insert(br.kind);
         }
     }
 }

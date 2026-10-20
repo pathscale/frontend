@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::mem;
 
@@ -368,7 +362,7 @@ impl<'a, 'ra, 'tcx> Visitor<'a> for EffectiveVisibilitiesVisitor<'a, 'ra, 'tcx> 
         // If it's a mod, also make the visitor walk all of its items
         match &item.kind {
             // Resolved in rustc_privacy when types are available
-            ast::ItemKind::Impl(..) => return,
+            ast::ItemKind::Impl(..) => (),
 
             // Should be unreachable at this stage
             ast::ItemKind::MacCall(..) | ast::ItemKind::DelegationMac(..) => panic!(
@@ -420,7 +414,7 @@ impl<'a, 'ra, 'tcx> Visitor<'a> for EffectiveVisibilitiesVisitor<'a, 'ra, 'tcx> 
             | ast::ItemKind::ForeignMod(..)
             | ast::ItemKind::Fn(..)
             | ast::ItemKind::Delegation(..)
-            | ast::ItemKind::TestBinderConstraints(..) => return,
+            | ast::ItemKind::TestBinderConstraints(..) => (),
         }
     }
 }

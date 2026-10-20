@@ -28,7 +28,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -361,7 +360,6 @@ impl DroplessArena {
     /// Panics:
     ///
     ///  - Zero-sized types
-    ///  - Zero-length slices
     #[inline]
     pub fn alloc_slice<T>(&self, slice: &[T]) -> &mut [T]
     where
@@ -369,7 +367,9 @@ impl DroplessArena {
     {
         assert!(!mem::needs_drop::<T>());
         assert!(size_of::<T>() != 0);
-        assert!(!slice.is_empty());
+        if slice.is_empty() {
+            return &mut [];
+        }
 
         let mem = self.alloc_raw(Layout::for_value::<[T]>(slice)) as *mut T;
 
@@ -380,11 +380,7 @@ impl DroplessArena {
     }
 
     /// Allocates a string slice that is copied into the `DroplessArena`, returning a
-    /// reference to it. Will panic if passed an empty string.
-    ///
-    /// Panics:
-    ///
-    ///  - Zero-length string
+    /// reference to it. Empty strings require no allocation.
     #[inline]
     pub fn alloc_str(&self, string: &str) -> &str {
         let slice = self.alloc_slice(string.as_bytes());
@@ -452,7 +448,10 @@ impl DroplessArena {
                 // `drop`.
                 unsafe { self.write_from_iter(iter, len, mem) }
             }
-            (_, _) => outline(move || self.try_alloc_from_iter(iter.map(Ok::<T, core::convert::Infallible>)).unwrap_or_else(|never| match never {})),
+            (_, _) => outline(move || {
+                self.try_alloc_from_iter(iter.map(Ok::<T, core::convert::Infallible>))
+                    .unwrap_or_else(|never| match never {})
+            }),
         }
     }
 

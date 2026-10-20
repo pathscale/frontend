@@ -1,14 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
-use hir::{Expr, Pat};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_infer::infer::TyCtxtInferExt;
@@ -17,6 +11,7 @@ use crate::rustc_lint_defs::{declare_lint, declare_lint_pass};
 use crate::rustc_middle::ty;
 use crate::rustc_span::{Span, sym};
 use crate::rustc_trait_selection::traits::ObligationCtxt;
+use hir::{Expr, Pat};
 
 use crate::rustc_lint::diagnostics::{
     ForLoopsOverFalliblesDiag, ForLoopsOverFalliblesLoopSub, ForLoopsOverFalliblesQuestionMark,
@@ -69,9 +64,9 @@ impl<'tcx> LateLintPass<'tcx> for ForLoopsOverFallibles {
 
         let ty = cx.typeck_results().expr_ty(arg);
 
-        let (adt, args, ref_mutability) = match ty.kind() {
-            &ty::Adt(adt, args) => (adt, args, None),
-            &ty::Ref(_, ty, mutability) => match ty.kind() {
+        let (adt, args, ref_mutability) = match *ty.kind() {
+            ty::Adt(adt, args) => (adt, args, None),
+            ty::Ref(_, ty, mutability) => match ty.kind() {
                 &ty::Adt(adt, args) => (adt, args, Some(mutability)),
                 _ => return,
             },
@@ -187,8 +182,11 @@ fn suggest_question_mark<'tcx>(
     let ocx = ObligationCtxt::new(&infcx);
 
     let body_def_id = cx.tcx.hir_body_owner_def_id(body_id);
-    let cause =
-        ObligationCause::new(span, body_def_id, crate::rustc_infer::traits::ObligationCauseCode::Misc);
+    let cause = ObligationCause::new(
+        span,
+        body_def_id,
+        crate::rustc_infer::traits::ObligationCauseCode::Misc,
+    );
 
     ocx.register_bound(
         cause,

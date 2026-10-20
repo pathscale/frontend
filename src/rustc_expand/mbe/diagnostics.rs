@@ -1,19 +1,19 @@
-use alloc::vec::Vec;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::Cow;
+use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_ast::token::{self, Token};
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_attr_ir::diagnostic::{CustomDiagnostic, Directive, FormatArgs};
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::{Applicability, Diag, DiagCtxtHandle, DiagMessage, pluralize};
-use rustc_macros::Subdiagnostic;
-use crate::bug;
 use crate::rustc_parse::parser::{Parser, Recovery, token_descr};
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{DUMMY_SP, ErrorGuaranteed, Ident, Span};
+use rustc_macros::Subdiagnostic;
 use tracing::debug;
 
 use super::macro_rules::{MacroRule, NoopTracker, parser_from_cx};
@@ -30,6 +30,10 @@ pub(super) enum FailedMacro<'a> {
     Derive,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub(super) fn failed_to_match_macro(
     psess: &ParseSess,
     sp: Span,
@@ -365,6 +369,10 @@ impl<'dcx> CollectTrackerAndEmitter<'dcx, '_> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub(super) fn emit_frag_parse_err(
     mut e: Diag<'_>,
     parser: &mut Parser<'_>,
@@ -479,7 +487,11 @@ pub(super) fn emit_frag_parse_err(
                     "there is an macro metavariable with this name in another macro matcher",
                 );
             } else if let Some(matched_name) =
-                crate::rustc_span::edit_distance::find_best_match_for_name(&bindings_names[..], name, None)
+                crate::rustc_span::edit_distance::find_best_match_for_name(
+                    &bindings_names[..],
+                    name,
+                    None,
+                )
             {
                 e.span_suggestion_verbose(
                     parser.token.span,

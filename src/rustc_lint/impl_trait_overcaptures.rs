@@ -1,15 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::cell::LazyCell;
 use crate::debug_assert_matches;
+use core::cell::LazyCell;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::unord::UnordSet;
@@ -20,7 +18,6 @@ use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use crate::rustc_lint_defs::{declare_lint, declare_lint_pass, fcw};
-use rustc_macros::Diagnostic;
 use crate::rustc_middle::middle::resolve_bound_vars::ResolvedArg;
 use crate::rustc_middle::ty::relate::{
     Relate, RelateResult, TypeRelation, relate_args_with_variances, structurally_relate_consts,
@@ -37,6 +34,7 @@ use crate::rustc_trait_selection::diagnostics::{
 };
 use crate::rustc_trait_selection::regions::OutlivesEnvironmentBuildExt;
 use crate::rustc_trait_selection::traits::ObligationCtxt;
+use rustc_macros::Diagnostic;
 
 use crate::rustc_lint::{LateContext, LateLintPass};
 
@@ -119,23 +117,20 @@ declare_lint_pass!(
 
 impl<'tcx> LateLintPass<'tcx> for ImplTraitOvercaptures {
     fn check_item(&mut self, cx: &LateContext<'tcx>, it: &'tcx hir::Item<'tcx>) {
-        match &it.kind {
-            hir::ItemKind::Fn { .. } => check_fn(cx.tcx, it.owner_id.def_id),
-            _ => {}
+        if let hir::ItemKind::Fn { .. } = &it.kind {
+            check_fn(cx.tcx, it.owner_id.def_id)
         }
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'tcx>, it: &'tcx hir::ImplItem<'tcx>) {
-        match &it.kind {
-            hir::ImplItemKind::Fn(_, _) => check_fn(cx.tcx, it.owner_id.def_id),
-            _ => {}
+        if let hir::ImplItemKind::Fn(_, _) = &it.kind {
+            check_fn(cx.tcx, it.owner_id.def_id)
         }
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'tcx>, it: &'tcx hir::TraitItem<'tcx>) {
-        match &it.kind {
-            hir::TraitItemKind::Fn(_, _) => check_fn(cx.tcx, it.owner_id.def_id),
-            _ => {}
+        if let hir::TraitItemKind::Fn(_, _) = &it.kind {
+            check_fn(cx.tcx, it.owner_id.def_id)
         }
     }
 }

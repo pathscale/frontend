@@ -27,11 +27,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use itertools::Itertools;
@@ -48,7 +45,7 @@ fn bcb(index: u32) -> BasicCoverageBlock {
     BasicCoverageBlock::from_u32(index)
 }
 
-// All `TEMP_BLOCK` targets should be replaced before calling `to_body() -> mir::Body`.
+// All `TEMP_BLOCK` targets should be replaced before calling `into_body() -> mir::Body`.
 const TEMP_BLOCK: BasicBlock = BasicBlock::MAX;
 
 struct MockBlocks<'tcx> {
@@ -143,9 +140,9 @@ impl<'tcx> MockBlocks<'tcx> {
         self.add_block_from(
             some_from_block,
             TerminatorKind::Call {
-                func: Operand::Copy(self.dummy_place.clone()),
+                func: Operand::Copy(self.dummy_place),
                 args: [].into(),
-                destination: self.dummy_place.clone(),
+                destination: self.dummy_place,
                 target: Some(TEMP_BLOCK),
                 unwind: UnwindAction::Continue,
                 call_source: CallSource::Misc,
@@ -170,7 +167,7 @@ impl<'tcx> MockBlocks<'tcx> {
         self.add_block_from(some_from_block, TerminatorKind::Return)
     }
 
-    fn to_body(self) -> Body<'tcx> {
+    fn into_body(self) -> Body<'tcx> {
         Body::new_cfg_only(self.blocks)
     }
 }
@@ -274,7 +271,7 @@ fn goto_switchint<'a>() -> Body<'a> {
     blocks.return_(Some(then_call));
     blocks.return_(Some(else_call));
 
-    let mir_body = blocks.to_body();
+    let mir_body = blocks.into_body();
     print_mir_graphviz("mir_goto_switchint", &mir_body);
     /* Graphviz character plots created using: `graph-easy --as=boxart`:
                         ┌────────────────┐
@@ -357,7 +354,7 @@ fn switchint_then_loop_else_return<'a>() -> Body<'a> {
     let else_return = blocks.return_(None);
     blocks.set_branch(switchint, 1, else_return);
 
-    let mir_body = blocks.to_body();
+    let mir_body = blocks.into_body();
     print_mir_graphviz("mir_switchint_then_loop_else_return", &mir_body);
     /*
                         ┌────────────────┐
@@ -439,7 +436,7 @@ fn switchint_loop_then_inner_loop_else_break<'a>() -> Body<'a> {
     let backedge_goto = blocks.goto(Some(inner_else_break_goto));
     blocks.link(backedge_goto, switchint);
 
-    let mir_body = blocks.to_body();
+    let mir_body = blocks.into_body();
     print_mir_graphviz("mir_switchint_loop_then_inner_loop_else_break", &mir_body);
     /*
                         ┌────────────────┐

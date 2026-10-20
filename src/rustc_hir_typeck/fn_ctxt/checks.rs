@@ -1,9 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::boxed::Box;
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -12,12 +11,13 @@ use alloc::vec::Vec;
 use core::ops::Deref;
 use core::{fmt, iter};
 
-use itertools::Itertools;
 use crate::rustc_ast as ast;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_errors::codes::*;
-use crate::rustc_errors::{Applicability, Diag, ErrorGuaranteed, MultiSpan, a_or_an, listify, pluralize};
+use crate::rustc_errors::{
+    Applicability, Diag, ErrorGuaranteed, MultiSpan, a_or_an, listify, pluralize,
+};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
@@ -40,7 +40,10 @@ use crate::rustc_session::Session;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, kw, sym};
 use crate::rustc_trait_selection::error_reporting::infer::{FailureCode, ObligationCauseExt};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
-use crate::rustc_trait_selection::traits::{self, ObligationCauseCode, ObligationCtxt, SelectionContext};
+use crate::rustc_trait_selection::traits::{
+    self, ObligationCauseCode, ObligationCtxt, SelectionContext,
+};
+use itertools::Itertools;
 use smallvec::SmallVec;
 use tracing::debug;
 
@@ -49,7 +52,9 @@ use crate::rustc_hir_typeck::TupleArgumentsFlag::*;
 use crate::rustc_hir_typeck::callee::SplatLoweringInfo;
 use crate::rustc_hir_typeck::coercion::CoerceMany;
 use crate::rustc_hir_typeck::diagnostics::{ExprParenthesesNeeded, SuggestPtrNullMut};
-use crate::rustc_hir_typeck::fn_ctxt::arg_matrix::{ArgMatrix, Compatibility, Error, ExpectedIdx, ProvidedIdx};
+use crate::rustc_hir_typeck::fn_ctxt::arg_matrix::{
+    ArgMatrix, Compatibility, Error, ExpectedIdx, ProvidedIdx,
+};
 use crate::rustc_hir_typeck::gather_locals::Declaration;
 use crate::rustc_hir_typeck::inline_asm::InlineAsmCtxt;
 use crate::rustc_hir_typeck::method::probe::IsSuggestion;
@@ -201,6 +206,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Generic function that factors out common logic from function calls,
     /// method calls and overloaded operators.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(in super::super) fn check_argument_types(
         &self,
         // Span enclosing the call site
@@ -601,6 +610,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     /// Check arguments that are tupled by "rust-call" or `#[rustc_splat]`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_tupled_arguments(
         &self,
         // Span enclosing the call site
@@ -867,6 +880,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_arg_errors(
         &self,
         compatibility_diagonal: IndexVec<ProvidedIdx, Compatibility<'tcx>>,
@@ -1050,7 +1067,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                         match layout.backend_repr {
                             crate::rustc_abi::BackendRepr::Scalar(scalar) => {
-                                scalar.valid_range(&tcx).contains(u128::from(i.get())).then_some(ty)
+                                scalar.valid_range(&tcx).contains(i.get()).then_some(ty)
                             }
                             _ => unreachable!(),
                         }
@@ -1523,10 +1540,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         if let hir::ExprKind::Match(_, arms, _) = expr.kind {
             let mut iter = arms.iter().filter_map(|arm| check_in_progress(arm.body));
-            if let Some(span) = iter.next() {
-                if iter.next().is_none() {
-                    return span;
-                }
+            if let Some(span) = iter.next()
+                && iter.next().is_none()
+            {
+                return span;
             }
         }
 
@@ -1641,6 +1658,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn label_fn_like(
         &self,
         err: &mut Diag<'_>,
@@ -1925,9 +1946,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 err.span_label(
                     output.span(),
                     match output {
-                        FnRetTy::DefaultReturn(_) => format!(
-                            "this implicit `()` return type influences the call expression's return type"
-                        ),
+                        FnRetTy::DefaultReturn(_) => "this implicit `()` return type influences the call expression's return type".to_string(),
                         FnRetTy::Return(_) => {
                             "this return type influences the call expression's return type"
                                 .to_string()
@@ -1993,6 +2012,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn label_generic_mismatches(
         &self,
         err: &mut Diag<'_>,
@@ -2073,6 +2096,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// type of that parameter.
     ///
     /// Returns `None` if the body is not a named function (e.g. a closure).
+    #[expect(
+        clippy::type_complexity,
+        reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+    )]
     fn get_hir_param_info(
         &self,
         def_id: DefId,
@@ -2236,6 +2263,10 @@ enum ArgumentsFormatting {
 }
 
 impl<'a, 'tcx> FnCallDiagCtxt<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn new(
         arg: &'a FnCtxt<'a, 'tcx>,
         compatibility_diagonal: IndexVec<ProvidedIdx, Compatibility<'tcx>>,
@@ -2544,14 +2575,12 @@ impl<'a, 'tcx> FnCallDiagCtxt<'a, 'tcx> {
     }
 
     fn maybe_optimize_extra_arg_suggestion(&mut self) {
-        if let [Error::Extra(provided_idx)] = &self.errors[..] {
-            if !self.remove_idx_is_perfect(provided_idx.as_usize()) {
-                if let Some(i) = (0..self.args_ctxt.call_ctxt.provided_args.len())
-                    .find(|&i| self.remove_idx_is_perfect(i))
-                {
-                    self.errors = vec![Error::Extra(ProvidedIdx::from_usize(i))];
-                }
-            }
+        if let [Error::Extra(provided_idx)] = &self.errors[..]
+            && !self.remove_idx_is_perfect(provided_idx.as_usize())
+            && let Some(i) = (0..self.args_ctxt.call_ctxt.provided_args.len())
+                .find(|&i| self.remove_idx_is_perfect(i))
+        {
+            self.errors = vec![Error::Extra(ProvidedIdx::from_usize(i))];
         }
     }
 
@@ -2582,6 +2611,10 @@ impl<'a, 'tcx> FnCallDiagCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+    )]
     fn labels_and_suggestion_text(
         &self,
         err: &mut Diag<'_>,
@@ -3132,6 +3165,10 @@ impl<'a, 'tcx> Deref for ArgMatchingCtxt<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> ArgMatchingCtxt<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn new(
         arg: &'a FnCtxt<'a, 'tcx>,
         compatibility_diagonal: IndexVec<ProvidedIdx, Compatibility<'tcx>>,
@@ -3199,7 +3236,6 @@ impl<'a, 'tcx> ArgMatchingCtxt<'a, 'tcx> {
                 assoc_name,
                 Applicability::MaybeIncorrect,
             );
-            return;
         }
     }
 
@@ -3280,6 +3316,10 @@ impl<'a, 'tcx> Deref for ArgsCtxt<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> ArgsCtxt<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn new(
         arg: &'a FnCtxt<'a, 'tcx>,
         compatibility_diagonal: IndexVec<ProvidedIdx, Compatibility<'tcx>>,
@@ -3425,6 +3465,10 @@ impl<'a, 'tcx> Deref for CallCtxt<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> CallCtxt<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn new(
         fn_ctxt: &'a FnCtxt<'a, 'tcx>,
         compatibility_diagonal: IndexVec<ProvidedIdx, Compatibility<'tcx>>,

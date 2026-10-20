@@ -11,7 +11,6 @@
 
 // This allows derive macros to reference this crate
 #![allow(internal_features)]
-#![cfg_attr(test, feature(test))]
 #![deny(unsafe_op_in_unsafe_fn)]
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
@@ -33,25 +32,18 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 extern crate self as rustc_data_structures;
 
 use core::fmt;
 
-pub use atomic_ref::AtomicRef;
 pub use crate::ena::{snapshot_vec, undo_log, unify};
+pub use atomic_ref::AtomicRef;
 // Re-export `hashbrown::hash_table`, because it's part of our API
 // (via `ShardedHashMap`), and because it lets other compiler crates use the
 // lower-level `HashTable` API without a tricky `hashbrown` dependency.
-pub use hashbrown::hash_table;
 pub use crate::static_assert_size;
+pub use hashbrown::hash_table;
 // Re-export some data-structure crates which are part of our public API.
 pub use {either, indexmap, smallvec, thin_vec};
 pub mod aligned;

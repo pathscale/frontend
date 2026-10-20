@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_data_structures::transitive_relation::TransitiveRelationBuilder;
 use crate::rustc_middle::{bug, ty};
+use alloc::vec::Vec;
 use tracing::debug;
 
 use super::explicit_outlives_bounds;

@@ -12,12 +12,20 @@ pub(super) trait TokenTreeSink {
 
     fn len(&self) -> usize;
     fn truncate(&mut self, start: usize);
+    /// Recovery must permanently disable source-only metadata on flat buffers.
+    fn invalidate_source_tokens(&mut self) {}
     fn push(&mut self, token: Token, spacing: Spacing);
     fn open(&mut self, token: Token);
     fn finish(&mut self, start: usize) -> Self::Stream;
     fn is_empty(&self, stream: &Self::Stream) -> bool;
     fn first(&self, stream: &Self::Stream) -> Option<Token>;
-    fn close(&mut self, span: DelimSpan, spacing: DelimSpacing, delim: Delimiter, stream: Self::Stream);
+    fn close(
+        &mut self,
+        span: DelimSpan,
+        spacing: DelimSpacing,
+        delim: Delimiter,
+        stream: Self::Stream,
+    );
 }
 
 #[derive(Default)]
@@ -63,7 +71,13 @@ impl TokenTreeSink for TreeSink {
         }
     }
 
-    fn close(&mut self, span: DelimSpan, spacing: DelimSpacing, delim: Delimiter, stream: TokenStream) {
+    fn close(
+        &mut self,
+        span: DelimSpan,
+        spacing: DelimSpacing,
+        delim: Delimiter,
+        stream: TokenStream,
+    ) {
         self.trees.push(TokenTree::Delimited(span, spacing, delim, stream));
     }
 }
@@ -77,6 +91,10 @@ impl TokenTreeSink for FlatTokenBuffer {
 
     fn truncate(&mut self, start: usize) {
         FlatTokenBuffer::truncate(self, start);
+    }
+
+    fn invalidate_source_tokens(&mut self) {
+        FlatTokenBuffer::invalidate_source_tokens(self);
     }
 
     #[inline]
@@ -100,7 +118,13 @@ impl TokenTreeSink for FlatTokenBuffer {
         FlatTokenBuffer::first(self, stream)
     }
 
-    fn close(&mut self, span: DelimSpan, spacing: DelimSpacing, _delim: Delimiter, _stream: Self::Stream) {
+    fn close(
+        &mut self,
+        span: DelimSpan,
+        spacing: DelimSpacing,
+        _delim: Delimiter,
+        _stream: Self::Stream,
+    ) {
         FlatTokenBuffer::close(self, span, spacing);
     }
 }

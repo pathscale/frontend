@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::mem;
 
 use crate::rustc_ast::token::{
@@ -337,11 +337,13 @@ fn transcribe_sequence<'tx, 'itp>(
                     None,
                 ) {
                     typo_repeatable = Some(VarTypoSuggestionRepeatable { span: ident.span, name });
-                } else if let Some(name) = crate::rustc_span::edit_distance::find_best_match_for_name(
-                    &non_repeatable_names[..],
-                    ident.name,
-                    None,
-                ) {
+                } else if let Some(name) =
+                    crate::rustc_span::edit_distance::find_best_match_for_name(
+                        &non_repeatable_names[..],
+                        ident.name,
+                        None,
+                    )
+                {
                     typo_unrepeatable = Some(VarTypoSuggestionUnrepeatable { span: ident.span });
                     if let Some(&orig_ident) = non_repeatables.iter().find(|n| n.symbol() == name) {
                         typo_unrepeatable_label = Some(VarTypoSuggestionUnrepeatableLabel {

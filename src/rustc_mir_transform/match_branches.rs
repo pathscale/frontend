@@ -1,12 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 // `discard_err`/`report_err` and friends: an extension trait now that `InterpResult` is a `Result`.
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::Integer;
@@ -51,7 +47,6 @@ struct SimplifyMatch<'tcx, 'a> {
     patch: MirPatch<'tcx>,
     body: &'a Body<'tcx>,
     switch_bb: BasicBlock,
-    discr: &'a Operand<'tcx>,
     discr_local: Option<Local>,
     discr_ty: Ty<'tcx>,
 }
@@ -81,7 +76,7 @@ impl<'tcx, 'a> SimplifyMatch<'tcx, 'a> {
                 dest,
                 // We didn't remember the `WithRetag` of the original assignments, so in case
                 // one of them had "no", we also have to use "no" here.
-                Rvalue::Use(Operand::Constant(Box::new(first_const.clone())), WithRetag::No),
+                Rvalue::Use(Operand::Constant(Box::new(*first_const)), WithRetag::No),
             ))))
         } else {
             None
@@ -295,7 +290,6 @@ fn simplify_match<'tcx>(
         patch: MirPatch::new(body),
         body,
         switch_bb,
-        discr,
         discr_local: None,
         discr_ty: discr.ty(body.local_decls(), tcx),
     };
@@ -383,6 +377,7 @@ fn can_cast(
     cast_scalar == target_scalar
 }
 
+#[expect(clippy::type_complexity, reason = "the candidate tuple carries the destination and matching branch values")]
 fn candidate_assign<'tcx, 'a>(
     stmts: &'a [(u128, &'a StatementKind<'tcx>)],
     otherwise: Option<&'a StatementKind<'tcx>>,
@@ -390,9 +385,7 @@ fn candidate_assign<'tcx, 'a>(
     let (_, first_stmt) = stmts[0];
     let (dest, _) = first_stmt.as_assign()?;
     let otherwise = if let Some(otherwise) = otherwise {
-        let Some((otherwise_dest, rval)) = otherwise.as_assign() else {
-            return None;
-        };
+        let (otherwise_dest, rval) = otherwise.as_assign()?;
         if otherwise_dest != dest {
             return None;
         }
@@ -401,7 +394,7 @@ fn candidate_assign<'tcx, 'a>(
         None
     };
     let rvals = stmts
-        .into_iter()
+        .iter()
         .map(|&(case, stmt)| {
             let (other_dest, rval) = stmt.as_assign()?;
             if other_dest != dest {
@@ -414,6 +407,7 @@ fn candidate_assign<'tcx, 'a>(
 }
 
 // Returns all ConstOperands if all Rvalues are ConstOperands.
+#[expect(clippy::type_complexity, reason = "the candidate tuple carries constant branch values and the fallback")]
 fn candidate_const<'tcx, 'a>(
     rvals: &'a [(u128, &'a Rvalue<'tcx>)],
     otherwise: Option<&'a Rvalue<'tcx>>,
@@ -428,7 +422,7 @@ fn candidate_const<'tcx, 'a>(
         None
     };
     let consts = rvals
-        .into_iter()
+        .iter()
         .map(|&(case, rval)| {
             let Rvalue::Use(Operand::Constant(const_), _) = rval else { return None };
             Some((case, &**const_))
@@ -443,7 +437,7 @@ fn split_first_case<'a, T>(
     otherwise: Option<&'a T>,
 ) -> (u128, &'a T, impl Iterator<Item = &'a T>) {
     let (first_case, first) = stmts[0];
-    (first_case, first, stmts[1..].into_iter().map(|&(_, val)| val).chain(otherwise))
+    (first_case, first, stmts[1..].iter().map(|&(_, val)| val).chain(otherwise))
 }
 
 // If all statements are identical, we can optimize.

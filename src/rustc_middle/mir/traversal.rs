@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use smallvec::{SmallVec, smallvec};
 
@@ -232,19 +228,18 @@ impl<'tcx> Iterator for Postorder<'_, 'tcx> {
 /// See [`Postorder`]'s docs to learn what is postorder traversal.
 pub fn postorder<'a, 'tcx>(
     body: &'a Body<'tcx>,
-) -> impl Iterator<Item = (BasicBlock, &'a BasicBlockData<'tcx>)> + ExactSizeIterator + DoubleEndedIterator
-{
+) -> impl ExactSizeIterator<Item = (BasicBlock, &'a BasicBlockData<'tcx>)> + DoubleEndedIterator {
     reverse_postorder(body).rev()
 }
 
-pub fn mono_reachable_reverse_postorder<'a, 'tcx>(
-    body: &'a Body<'tcx>,
+pub fn mono_reachable_reverse_postorder<'tcx>(
+    body: &Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     instance: Instance<'tcx>,
 ) -> Vec<BasicBlock> {
-    let mut iter = Postorder::new(&body.basic_blocks, START_BLOCK, Some((tcx, instance)));
+    let iter = Postorder::new(&body.basic_blocks, START_BLOCK, Some((tcx, instance)));
     let mut items = Vec::with_capacity(body.basic_blocks.len());
-    while let Some(block) = iter.next() {
+    for block in iter {
         items.push(block);
     }
     items.reverse();
@@ -264,7 +259,7 @@ pub fn reachable<'a, 'tcx>(
 /// Returns a `DenseBitSet` containing all basic blocks reachable from the `START_BLOCK`.
 pub fn reachable_as_bitset(body: &Body<'_>) -> DenseBitSet<BasicBlock> {
     let mut iter = preorder(body);
-    while let Some(_) = iter.next() {}
+    for _ in iter.by_ref() {}
     iter.visited
 }
 
@@ -294,8 +289,7 @@ pub fn reachable_as_bitset(body: &Body<'_>) -> DenseBitSet<BasicBlock> {
 /// a topological sort.
 pub fn reverse_postorder<'a, 'tcx>(
     body: &'a Body<'tcx>,
-) -> impl Iterator<Item = (BasicBlock, &'a BasicBlockData<'tcx>)> + ExactSizeIterator + DoubleEndedIterator
-{
+) -> impl ExactSizeIterator<Item = (BasicBlock, &'a BasicBlockData<'tcx>)> + DoubleEndedIterator {
     body.basic_blocks.reverse_postorder().iter().map(|&bb| (bb, &body.basic_blocks[bb]))
 }
 
@@ -318,13 +312,13 @@ pub fn mono_reachable<'a, 'tcx>(
 
 /// [`MonoReachable`] internally accumulates a [`DenseBitSet`] of visited blocks. This is just a
 /// convenience function to run that traversal then extract its set of reached blocks.
-pub fn mono_reachable_as_bitset<'a, 'tcx>(
-    body: &'a Body<'tcx>,
+pub fn mono_reachable_as_bitset<'tcx>(
+    body: &Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     instance: Instance<'tcx>,
 ) -> DenseBitSet<BasicBlock> {
     let mut iter = mono_reachable(body, tcx, instance);
-    while let Some(_) = iter.next() {}
+    for _ in iter.by_ref() {}
     iter.visited
 }
 

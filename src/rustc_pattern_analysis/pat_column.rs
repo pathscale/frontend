@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
 use crate::rustc_pattern_analysis::constructor::{Constructor, SplitConstructorSet};
 use crate::rustc_pattern_analysis::pat::{DeconstructedPat, PatOrWild};
 use crate::rustc_pattern_analysis::{MatchArm, PatCx};
+use alloc::vec::Vec;
 
 /// A column of patterns in a match, where a column is the intuitive notion of "subpatterns that
 /// inspect the same subvalue/place".

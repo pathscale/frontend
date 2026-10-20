@@ -7,7 +7,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -21,7 +20,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
 use crate::rustc_middle::query::Providers;
 
 mod abi;

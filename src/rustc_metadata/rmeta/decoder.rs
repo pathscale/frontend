@@ -4,23 +4,20 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::ops::{Deref, DerefMut};
-use eko::path::{Path, PathBuf};
 use alloc::sync::Arc;
-use eko::thread::OnceLock;
+use core::ops::{Deref, DerefMut};
 use core::{fmt, mem};
+use eko::path::{Path, PathBuf};
+use eko::thread::OnceLock;
 // `-Zls` formats text into the caller's sink, so the sink is `core::fmt::Write` - the only
 // writing trait `core` has - rather than `std::io::Write`. Errors are therefore `fmt::Error`,
 // which carries nothing; the previous `io::Error` detail on a failed `-Zls` write is gone.
-use core::fmt::Write as _;
 
-pub(super) use cstore_impl::provide;
 use crate::rustc_ast as ast;
 use crate::rustc_crate_store::{CrateSource, ExternCrate};
 use crate::rustc_data_structures::fingerprint::Fingerprint;
@@ -39,12 +36,12 @@ use crate::rustc_hir::def::Res;
 use crate::rustc_hir::def_id::{CRATE_DEF_INDEX, LOCAL_CRATE};
 use crate::rustc_hir::definitions::{DefPath, DefPathData};
 use crate::rustc_index::Idx;
+use crate::rustc_metadata::dylib::LoadedProcMacro;
 use crate::rustc_middle::middle::lib_features::LibFeatures;
 use crate::rustc_middle::mir::interpret::{AllocDecodingSession, AllocDecodingState};
 use crate::rustc_middle::ty::codec::TyDecoder;
 use crate::rustc_middle::ty::{RestrictionKind, Visibility};
 use crate::rustc_middle::{bug, implement_ty_decoder};
-use crate::rustc_metadata::dylib::LoadedProcMacro;
 use crate::rustc_proc_macro::bridge::client::Client as ProcMacroClient;
 use crate::rustc_serialize::opaque::MemDecoder;
 use crate::rustc_serialize::{Decodable, Decoder};
@@ -56,6 +53,7 @@ use crate::rustc_span::{
     BlobDecoder, BytePos, ByteSymbol, DUMMY_SP, Pos, RemapPathScopeComponents, SpanData,
     SpanDecoder, Symbol, SyntaxContext, kw,
 };
+pub(super) use cstore_impl::provide;
 use tracing::debug;
 
 use crate::rustc_metadata::creader::CStore;
@@ -82,7 +80,10 @@ impl core::ops::Deref for MetadataBlob {
 impl MetadataBlob {
     /// Runs the [`MemDecoder`] validation and if it passes, constructs a new [`MetadataBlob`].
     pub(crate) fn new(slice: OwnedSlice) -> Result<Self, ()> {
-        if MemDecoder::new(&slice, 0).is_ok() { Ok(Self(slice)) } else { Err(()) }
+        MemDecoder::new(&slice, 0)?;
+        let blob = Self(slice);
+        blob.check_compatibility()?;
+        Ok(blob)
     }
 
     /// Since this has passed the validation of [`MetadataBlob::new`], this returns bytes which are
@@ -117,6 +118,10 @@ pub(crate) struct CrateMetadata {
     /// Trait impl data.
     /// FIXME: Used only from queries and can use query cache,
     /// so pre-decoding can probably be avoided.
+    #[expect(
+        clippy::type_complexity,
+        reason = "keeps the decoded trait-impl index keyed and represented in the metadata table's existing form"
+    )]
     trait_impls: FxIndexMap<(u32, DefIndex), LazyArray<(DefIndex, Option<SimplifiedType>)>>,
     /// Inherent impls which do not follow the normal coherence rules.
     ///
@@ -508,7 +513,7 @@ impl<'a, 'tcx> SpanDecoder for MetadataDecodeContext<'a, 'tcx> {
         let cnum = CrateNum::decode(self);
         let index = u32::decode(self);
 
-        let expn_id = crate::rustc_span::hygiene::decode_expn_id(cnum, index, |expn_id| {
+        crate::rustc_span::hygiene::decode_expn_id(cnum, index, |expn_id| {
             let ExpnId { krate: cnum, local_id: index } = expn_id;
             // Lookup local `ExpnData`s in our own crate data. Foreign `ExpnData`s
             // are stored in the owning crate, to avoid duplication.
@@ -523,8 +528,7 @@ impl<'a, 'tcx> SpanDecoder for MetadataDecodeContext<'a, 'tcx> {
             let expn_data = cdata.root.expn_data.get(cdata, index).unwrap().decode((cdata, tcx));
             let expn_hash = cdata.root.expn_hashes.get(cdata, index).unwrap().decode((cdata, tcx));
             (expn_data, expn_hash)
-        });
-        expn_id
+        })
     }
 
     fn decode_span(&mut self) -> Span {
@@ -745,7 +749,44 @@ mod blob {
 
 impl MetadataBlob {
     pub(crate) fn check_compatibility(&self) -> Result<(), ()> {
-        if self.starts_with(METADATA_HEADER) { Ok(()) } else { Err(()) }
+        if !self.starts_with(METADATA_HEADER) {
+            return Err(());
+        }
+
+        let root_offset = METADATA_HEADER.len();
+        let version_offset = root_offset.checked_add(8).ok_or(())?;
+        let root_bytes: [u8; 8] =
+            self.get(root_offset..version_offset).ok_or(())?.try_into().map_err(|_| ())?;
+        let root = usize::try_from(u64::from_le_bytes(root_bytes)).map_err(|_| ())?;
+
+        let mut cursor = version_offset;
+        let mut version_len: usize = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = *self.get(cursor).ok_or(())?;
+            cursor = cursor.checked_add(1).ok_or(())?;
+            version_len |= usize::from(byte & 0x7f).checked_shl(shift).ok_or(())?;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift = shift.checked_add(7).ok_or(())?;
+            if shift >= usize::BITS {
+                return Err(());
+            }
+        }
+        let version_str_end = cursor.checked_add(version_len).ok_or(())?;
+        let version_end = version_str_end.checked_add(1).ok_or(())?;
+        let version_bytes = self.get(cursor..version_str_end).ok_or(())?;
+        if !version_bytes.starts_with(b"rustc ") || self.get(version_str_end) != Some(&0xC1) {
+            return Err(());
+        }
+
+        let decoder = MemDecoder::new(self, 0)?;
+        if root < version_end || root >= decoder.len() {
+            return Err(());
+        }
+
+        Ok(())
     }
 
     fn root_pos(&self) -> NonZero<usize> {
@@ -839,7 +880,7 @@ impl MetadataBlob {
                             }
                         )?;
                     }
-                    write!(out, "\n")?;
+                    writeln!(out)?;
                 }
 
                 "lang_items" => {
@@ -861,7 +902,7 @@ impl MetadataBlob {
                     for lang_item in root.lang_items_missing.decode(self) {
                         writeln!(out, "{} = <missing>", lang_item.name())?;
                     }
-                    write!(out, "\n")?;
+                    writeln!(out)?;
                 }
 
                 "features" => {
@@ -878,7 +919,7 @@ impl MetadataBlob {
                             }
                         )?;
                     }
-                    write!(out, "\n")?;
+                    writeln!(out)?;
                 }
 
                 "items" => {
@@ -893,7 +934,8 @@ impl MetadataBlob {
                         let root = blob.get_root();
 
                         let def_kind = root.tables.def_kind.get(blob, item).unwrap();
-                        let def_key = root.tables.def_keys.get(blob, item).unwrap().decode(blob);                        let def_name = if item == CRATE_DEF_INDEX {
+                        let def_key = root.tables.def_keys.get(blob, item).unwrap().decode(blob);
+                        let def_name = if item == CRATE_DEF_INDEX {
                             kw::Crate
                         } else {
                             def_key
@@ -929,7 +971,7 @@ impl MetadataBlob {
                         if let Some(children) =
                             root.tables.module_children_non_reexports.get(blob, item)
                         {
-                            write!(out, "\n")?;
+                            writeln!(out)?;
                             for child in children.decode(blob) {
                                 print_item(blob, out, child, indent + 4)?;
                             }
@@ -943,7 +985,7 @@ impl MetadataBlob {
 
                     print_item(self, out, CRATE_DEF_INDEX, 0)?;
 
-                    write!(out, "\n")?;
+                    writeln!(out)?;
                 }
                 "target_modifiers" => {
                     writeln!(out, "=Target modifiers=")?;
@@ -975,6 +1017,10 @@ impl MetadataBlob {
         Ok(())
     }
 
+    #[expect(
+        dead_code,
+        reason = "retains proc-macro metadata decoding for proc-macro crate consumers"
+    )]
     pub(crate) fn get_proc_macro_info(&self) -> Vec<ProcMacroKind> {
         self.get_root()
             .proc_macro_data
@@ -1003,23 +1049,23 @@ impl CrateRoot {
         self.stable_crate_id
     }
 
-    pub(crate) fn decode_crate_deps<'a>(
+    pub(crate) fn decode_crate_deps(
         &self,
-        metadata: &'a MetadataBlob,
+        metadata: &MetadataBlob,
     ) -> impl ExactSizeIterator<Item = CrateDep> {
         self.crate_deps.decode(metadata)
     }
 
-    pub(crate) fn decode_target_modifiers<'a>(
+    pub(crate) fn decode_target_modifiers(
         &self,
-        metadata: &'a MetadataBlob,
+        metadata: &MetadataBlob,
     ) -> impl ExactSizeIterator<Item = TargetModifier> {
         self.target_modifiers.decode(metadata)
     }
 
-    pub(crate) fn decode_denied_partial_mitigations<'a>(
+    pub(crate) fn decode_denied_partial_mitigations(
         &self,
-        metadata: &'a MetadataBlob,
+        metadata: &MetadataBlob,
     ) -> impl ExactSizeIterator<Item = DeniedPartialMitigation> {
         self.denied_partial_mitigations.decode(metadata)
     }
@@ -1049,11 +1095,7 @@ impl CrateMetadata {
         let client = self.raw_proc_macros.and_then(|loaded| {
             let mut matching = loaded.iter().filter_map(|entry| entry.client_for(&kind));
             let client = matching.next()?;
-            if matching.next().is_some() {
-                None
-            } else {
-                Some(client)
-            }
+            if matching.next().is_some() { None } else { Some(client) }
         });
         (client, kind)
     }
@@ -1113,15 +1155,14 @@ impl CrateMetadata {
     }
 
     fn load_proc_macro<'tcx>(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> SyntaxExtension {
-        let unrun = |name: &str,
-                     entry_body: Option<ProcMacroEntryBody>,
-                     schema: ProcMacroSchema| {
-            Arc::new(UnrunProcMacro {
-                name: Symbol::intern(name),
-                entry_body: entry_body.unwrap_or(ProcMacroEntryBody::Unclassified),
-                schema,
-            })
-        };
+        let unrun =
+            |name: &str, entry_body: Option<ProcMacroEntryBody>, schema: ProcMacroSchema| {
+                Arc::new(UnrunProcMacro {
+                    name: Symbol::intern(name),
+                    entry_body: entry_body.unwrap_or(ProcMacroEntryBody::Unclassified),
+                    schema,
+                })
+            };
         let (name, kind, helper_attrs) = match self.raw_proc_macro(tcx, id) {
             (
                 client,
@@ -1402,10 +1443,7 @@ impl CrateMetadata {
         });
         let reexports = core::iter::once(()).flat_map(move |()| {
             let reexports = self.root.tables.module_children_reexports.get(self, id);
-            (!reexports.is_default())
-                .then(|| reexports.decode((self, tcx)))
-                .into_iter()
-                .flatten()
+            (!reexports.is_default()).then(|| reexports.decode((self, tcx))).into_iter().flatten()
         });
         let (with_proc_macros, without) = if proc_macro_data {
             (Some(proc_macro_children), None)
@@ -1665,7 +1703,11 @@ impl CrateMetadata {
                 let macro_rules = self.root.tables.is_macro_rules.get(self, id);
                 let body =
                     self.root.tables.macro_definition.get(self, id).unwrap().decode((self, tcx));
-                ast::MacroDef { macro_rules, body: crate::rustc_ast::ptr::P::new(body), eii_declaration: None }
+                ast::MacroDef {
+                    macro_rules,
+                    body: crate::rustc_ast::ptr::P::new(body),
+                    eii_declaration: None,
+                }
             }
             _ => bug!(),
         }
@@ -1818,10 +1860,10 @@ impl CrateMetadata {
                         // https://rust-lang.github.io/rfcs/3127-trim-paths.html#handling-sysroot-paths.
                         // Other imported paths are not currently remapped (see #66251).
                         *name = crate::rustc_span::FileName::Real(
-                            tcx.sess
-                                .source_map()
-                                .path_mapping()
-                                .to_real_filename(&crate::rustc_span::RealFileName::empty(), new_path),
+                            tcx.sess.source_map().path_mapping().to_real_filename(
+                                &crate::rustc_span::RealFileName::empty(),
+                                new_path,
+                            ),
                         );
                     }
                 }
@@ -1850,10 +1892,11 @@ impl CrateMetadata {
                         "simulate_remapped_rust_src_base"
                     );
                     if let Some(rest) = relative_path.and_then(|p| p.strip_prefix(subdir).ok()) {
-                        *name =
-                            crate::rustc_span::FileName::Real(crate::rustc_span::RealFileName::from_virtual_path(
+                        *name = crate::rustc_span::FileName::Real(
+                            crate::rustc_span::RealFileName::from_virtual_path(
                                 &virtual_dir.join(subdir).join(rest),
-                            ))
+                            ),
+                        )
                     }
                 }
             };
@@ -2000,6 +2043,10 @@ impl CrateMetadata {
 }
 
 impl CrateMetadata {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves the explicit decoded metadata inputs at the crate construction boundary"
+    )]
     pub(crate) fn new(
         tcx: TyCtxt<'_>,
         blob: MetadataBlob,
@@ -2084,7 +2131,7 @@ impl CrateMetadata {
     }
 
     pub(crate) fn source(&self) -> &CrateSource {
-        &*self.source
+        &self.source
     }
 
     pub(crate) fn dep_kind(&self) -> CrateDepKind {

@@ -185,7 +185,9 @@ fn parse_file(files: &[ParseFileInput], index: usize) -> ParsedFile {
                 ambiguous: effects.ambiguous,
                 gates: effects.gates,
                 raw_identifier_spans: psess.raw_identifier_spans.iter().collect(),
-                bad_unicode_identifiers: core::mem::take(&mut *psess.bad_unicode_identifiers.lock()),
+                bad_unicode_identifiers: core::mem::take(
+                    &mut *psess.bad_unicode_identifiers.lock(),
+                ),
                 symbols: core::mem::take(&mut *psess.symbol_gallery.symbols.lock()),
             };
             // The emitter and all drop-time diagnostics finish before the records move out.

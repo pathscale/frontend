@@ -1,7 +1,7 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_type_ir::region_constraint::SpannedRegionConstraint;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use tracing::instrument;
 
 pub type SolverRegionConstraint<'tcx> = SpannedRegionConstraint<TyCtxt<'tcx>>;
@@ -41,7 +41,7 @@ impl<'tcx> SolverRegionConstraintStorage<'tcx> {
 
     #[instrument(level = "debug")]
     pub(crate) fn push(&mut self, constraint: SolverRegionConstraint<'tcx>) {
-        match core::mem::replace(&mut self.0, SolverRegionConstraint::new_true()) {
+        match core::mem::take(&mut self.0) {
             SolverRegionConstraint::And(and) => {
                 let and =
                     and.into_iter().chain([constraint]).collect::<Vec<_>>().into_boxed_slice();

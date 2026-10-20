@@ -1,12 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use core::fmt;
 
 use crate::rustc_span::InnerSpan;
 
@@ -21,11 +18,14 @@ pub(crate) enum Substitution<'a> {
     Escape((usize, usize)),
 }
 
-impl ToString for Substitution<'_> {
-    fn to_string(&self) -> String {
+impl fmt::Display for Substitution<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Substitution::Format(fmt) => fmt.span.into(),
-            Substitution::Escape(_) => "%%".into(),
+            Substitution::Format(substitution) => {
+                let text: String = substitution.span.into();
+                f.write_str(&text)
+            }
+            Substitution::Escape(_) => f.write_str("%%"),
         }
     }
 }
@@ -124,7 +124,7 @@ impl Format<'_> {
                 ));
             }
             w @ Some(Num::Arg(_)) => w,
-            w @ Some(Num::Num(_)) => w,
+            w @ Some(Num::Fixed(_)) => w,
             None => None,
         };
 
@@ -251,7 +251,7 @@ enum Num {
     // with more precision, than 32 thousand positions which is so wide it couldn't possibly fit
     // on a screen.
     /// A specific, fixed value.
-    Num(u16),
+    Fixed(u16),
     /// The value is derived from a positional argument.
     Arg(u16),
     /// The value is derived from the "next" unconverted argument.
@@ -265,14 +265,14 @@ impl Num {
         } else if s == "*" {
             Some(Num::Next)
         } else {
-            s.parse().ok().map(Num::Num)
+            s.parse().ok().map(Num::Fixed)
         }
     }
 
     fn translate(&self, s: &mut String) -> core::fmt::Result {
         use core::fmt::Write;
         match *self {
-            Num::Num(n) => write!(s, "{n}"),
+            Num::Fixed(n) => write!(s, "{n}"),
             Num::Arg(n) => {
                 let n = n.checked_sub(1).ok_or(core::fmt::Error)?;
                 write!(s, "{n}$")
@@ -399,7 +399,6 @@ fn parse_next_substitution(s: &str) -> Option<(Substitution<'_>, &str)> {
     let mut precision: Option<Num> = None;
     let mut length: Option<&str> = None;
     let mut type_: &str = "";
-    let end: Cur<'_>;
 
     if let Start = state {
         match c {
@@ -568,7 +567,7 @@ fn parse_next_substitution(s: &str) -> Option<(Substitution<'_>, &str)> {
 
     let _ = c; // to avoid never used value
 
-    end = at;
+    let end: Cur<'_> = at;
     let position = InnerSpan::new(start.at, end.at);
 
     let f = Format {

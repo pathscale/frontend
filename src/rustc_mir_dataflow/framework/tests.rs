@@ -22,7 +22,7 @@ fn mock_body<'tcx>() -> mir::Body<'tcx> {
         let nop = mir::Statement::new(source_info, mir::StatementKind::Nop);
 
         blocks.push(mir::BasicBlockData::new_stmts(
-            core::iter::repeat(&nop).cloned().take(n).collect(),
+            core::iter::repeat_n(&nop, n).cloned().collect(),
             Some(mir::Terminator { source_info, kind, attributes: ThinVec::new() }),
             false,
         ))
@@ -35,9 +35,9 @@ fn mock_body<'tcx>() -> mir::Body<'tcx> {
     block(
         2,
         mir::TerminatorKind::Call {
-            func: mir::Operand::Copy(dummy_place.clone()),
+            func: mir::Operand::Copy(dummy_place),
             args: [].into(),
-            destination: dummy_place.clone(),
+            destination: dummy_place,
             target: Some(mir::START_BLOCK),
             unwind: mir::UnwindAction::Continue,
             call_source: mir::CallSource::Misc,
@@ -49,9 +49,9 @@ fn mock_body<'tcx>() -> mir::Body<'tcx> {
     block(
         4,
         mir::TerminatorKind::Call {
-            func: mir::Operand::Copy(dummy_place.clone()),
+            func: mir::Operand::Copy(dummy_place),
             args: [].into(),
-            destination: dummy_place.clone(),
+            destination: dummy_place,
             target: Some(mir::START_BLOCK),
             unwind: mir::UnwindAction::Continue,
             call_source: mir::CallSource::Misc,

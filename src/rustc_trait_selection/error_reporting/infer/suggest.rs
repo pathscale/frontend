@@ -2,17 +2,13 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
 
-use hir::def::CtorKind;
-use hir::intravisit::{Visitor, walk_expr, walk_stmt};
-use hir::{LetStmt, QPath};
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_errors::{Applicability, Diag};
 use crate::rustc_hir as hir;
@@ -25,6 +21,9 @@ use crate::rustc_middle::ty::{
     self as ty, GenericArgKind, IsSuggestable, Ty, TypeVisitableExt, Unnormalized,
 };
 use crate::rustc_span::{Span, sym};
+use hir::def::CtorKind;
+use hir::intravisit::{Visitor, walk_expr, walk_stmt};
+use hir::{LetStmt, QPath};
 use tracing::debug;
 
 use crate::rustc_trait_selection::diagnostics::{
@@ -585,10 +584,8 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
 
                 diag.subdiagnostic(FnConsiderCasting { casting });
             }
-            _ => {
-                return;
-            }
-        };
+            _ => {}
+        }
     }
 
     pub(super) fn suggest_function_pointers(
@@ -616,35 +613,32 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
         if let (ty::Adt(exp_def, exp_args), ty::Ref(_, found_ty, _)) =
             (expected.kind(), found.kind())
             && let ty::Adt(found_def, found_args) = *found_ty.kind()
+            && exp_def == &found_def
         {
-            if exp_def == &found_def {
-                let have_as_ref = &[
-                    (sym::Option, SuggestAsRefKind::Option),
-                    (sym::Result, SuggestAsRefKind::Result),
-                ];
-                if let Some(msg) = have_as_ref.iter().find_map(|(name, msg)| {
-                    self.tcx.is_diagnostic_item(*name, exp_def.did()).then_some(msg)
-                }) {
-                    let mut show_suggestion = true;
-                    for (exp_ty, found_ty) in core::iter::zip(exp_args.types(), found_args.types()) {
-                        match *exp_ty.kind() {
-                            ty::Ref(_, exp_ty, _) => {
-                                match (exp_ty.kind(), found_ty.kind()) {
-                                    (_, ty::Param(_))
-                                    | (_, ty::Infer(_))
-                                    | (ty::Param(_), _)
-                                    | (ty::Infer(_), _) => {}
-                                    _ if self.same_type_modulo_infer(exp_ty, found_ty) => {}
-                                    _ => show_suggestion = false,
-                                };
-                            }
-                            ty::Param(_) | ty::Infer(_) => {}
-                            _ => show_suggestion = false,
+            let have_as_ref =
+                &[(sym::Option, SuggestAsRefKind::Option), (sym::Result, SuggestAsRefKind::Result)];
+            if let Some(msg) = have_as_ref.iter().find_map(|(name, msg)| {
+                self.tcx.is_diagnostic_item(*name, exp_def.did()).then_some(msg)
+            }) {
+                let mut show_suggestion = true;
+                for (exp_ty, found_ty) in core::iter::zip(exp_args.types(), found_args.types()) {
+                    match *exp_ty.kind() {
+                        ty::Ref(_, exp_ty, _) => {
+                            match (exp_ty.kind(), found_ty.kind()) {
+                                (_, ty::Param(_))
+                                | (_, ty::Infer(_))
+                                | (ty::Param(_), _)
+                                | (ty::Infer(_), _) => {}
+                                _ if self.same_type_modulo_infer(exp_ty, found_ty) => {}
+                                _ => show_suggestion = false,
+                            };
                         }
+                        ty::Param(_) | ty::Infer(_) => {}
+                        _ => show_suggestion = false,
                     }
-                    if show_suggestion {
-                        return Some(*msg);
-                    }
+                }
+                if show_suggestion {
+                    return Some(*msg);
                 }
             }
         }
@@ -714,7 +708,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
 
         self.tcx.hir_maybe_body_owned_by(cause.body_def_id).and_then(|body| {
             IfVisitor { err_span: span, found_if: false }
-                .visit_body(&body)
+                .visit_body(body)
                 .is_break()
                 .then(|| TypeErrorAdditionalDiags::AddLetForLetChains { span: span.shrink_to_lo() })
         })
@@ -877,18 +871,18 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     (
                         hir::OpaqueTy { bounds: last_bounds, .. },
                         hir::OpaqueTy { bounds: exp_bounds, .. },
-                    ) if core::iter::zip(*last_bounds, *exp_bounds).all(|(left, right)| match (
-                        left, right,
-                    ) {
-                        // FIXME: Suspicious
-                        (hir::GenericBound::Trait(tl), hir::GenericBound::Trait(tr))
-                            if tl.trait_ref.trait_def_id() == tr.trait_ref.trait_def_id()
-                                && tl.modifiers == tr.modifiers =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    }) =>
+                    ) if core::iter::zip(*last_bounds, *exp_bounds).all(
+                        |(left, right)| match (left, right) {
+                            // FIXME: Suspicious
+                            (hir::GenericBound::Trait(tl), hir::GenericBound::Trait(tr))
+                                if tl.trait_ref.trait_def_id() == tr.trait_ref.trait_def_id()
+                                    && tl.modifiers == tr.modifiers =>
+                            {
+                                true
+                            }
+                            _ => false,
+                        },
+                    ) =>
                     {
                         StatementAsExpression::NeedsBoxing
                     }
@@ -950,8 +944,8 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
             };
             local.pat.walk(&mut find_compatible_candidates);
         }
-        match self.tcx.parent_hir_node(blk.hir_id) {
-            hir::Node::Expr(hir::Expr { hir_id, .. }) => match self.tcx.parent_hir_node(*hir_id) {
+        if let hir::Node::Expr(hir::Expr { hir_id, .. }) = self.tcx.parent_hir_node(blk.hir_id) {
+            match self.tcx.parent_hir_node(*hir_id) {
                 hir::Node::Arm(hir::Arm { pat, .. }) => {
                     pat.walk(&mut find_compatible_candidates);
                 }
@@ -984,8 +978,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                     let_.pat.walk(&mut find_compatible_candidates);
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
 
         match &candidate_idents[..] {

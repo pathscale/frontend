@@ -11,21 +11,21 @@
 //! more details. Caching is split between a global cache and the per-cycle `provisional_cache`.
 //! The global cache has to be completely unobservable, while the per-cycle cache may impact
 //! behavior as long as the resulting behavior is still correct.
-#[allow(unused_imports)]
-use {alloc::boxed::Box, alloc::vec::Vec};
-use core::cmp::Ordering;
-use hashbrown::hash_map::Entry;
 use alloc::collections::{BTreeMap, btree_map};
+use core::cmp::Ordering;
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::iter;
 use core::marker::PhantomData;
 use core::ops::Sub;
+use hashbrown::hash_map::Entry;
+#[allow(unused_imports)]
+use {alloc::boxed::Box, alloc::vec::Vec};
 
+use crate::rustc_type_ir::data_structures::HashMap;
 use derive_where::derive_where;
 #[cfg(feature = "nightly")]
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
-use crate::rustc_type_ir::data_structures::HashMap;
 use tracing::{debug, instrument, trace};
 
 mod stack;

@@ -51,13 +51,7 @@ impl Algorithm {
     pub const OPTIMIZED: &'static [Algorithm] = &[Algorithm::DatafrogOpt];
 
     pub fn variants() -> [&'static str; 5] {
-        [
-            "Naive",
-            "DatafrogOpt",
-            "LocationInsensitive",
-            "Compare",
-            "Hybrid",
-        ]
+        ["Naive", "DatafrogOpt", "LocationInsensitive", "Compare", "Hybrid"]
     }
 }
 
@@ -80,6 +74,10 @@ impl core::str::FromStr for Algorithm {
 #[derive(Clone, Debug)]
 pub struct Output<T: FactTypes> {
     pub errors: FxHashMap<T::Point, Vec<T::Loan>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "subset errors preserve their point and origin-pair indexing"
+    )]
     pub subset_errors: FxHashMap<T::Point, BTreeSet<(T::Origin, T::Origin)>>,
     pub move_errors: FxHashMap<T::Point, Vec<T::Path>>,
 
@@ -87,10 +85,18 @@ pub struct Output<T: FactTypes> {
 
     // these are just for debugging
     pub loan_live_at: FxHashMap<T::Point, Vec<T::Loan>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "debug output preserves its point, origin and loan indexing"
+    )]
     pub origin_contains_loan_at: FxHashMap<T::Point, BTreeMap<T::Origin, BTreeSet<T::Loan>>>,
     pub origin_contains_loan_anywhere: FxHashMap<T::Origin, BTreeSet<T::Loan>>,
     pub origin_live_on_entry: FxHashMap<T::Point, Vec<T::Origin>>,
     pub loan_invalidated_at: FxHashMap<T::Point, Vec<T::Loan>>,
+    #[expect(
+        clippy::type_complexity,
+        reason = "debug subset output preserves its point and origin indexing"
+    )]
     pub subset: FxHashMap<T::Point, BTreeMap<T::Origin, BTreeSet<T::Origin>>>,
     pub subset_anywhere: FxHashMap<T::Origin, BTreeSet<T::Origin>>,
     pub var_live_on_entry: FxHashMap<T::Point, Vec<T::Variable>>,
@@ -234,10 +240,7 @@ impl<T: FactTypes> Output<T> {
         // from `loan_invalidated_at(point, loan)` to `loan_invalidated_at(loan, point)`.
         // to avoid this allocation.
         let loan_invalidated_at = Relation::from_iter(
-            all_facts
-                .loan_invalidated_at
-                .iter()
-                .map(|&(point, loan)| (loan, point)),
+            all_facts.loan_invalidated_at.iter().map(|&(point, loan)| (loan, point)),
         );
 
         let loan_killed_at = all_facts.loan_killed_at.clone().into();
@@ -255,19 +258,11 @@ impl<T: FactTypes> Output<T> {
         let known_placeholder_subset =
             Output::<T>::compute_known_placeholder_subset(&known_placeholder_subset);
 
-        let placeholder_origin: Relation<_> = Relation::from_iter(
-            all_facts
-                .universal_region
-                .iter()
-                .map(|&origin| (origin, ())),
-        );
+        let placeholder_origin: Relation<_> =
+            Relation::from_iter(all_facts.universal_region.iter().map(|&origin| (origin, ())));
 
-        let placeholder_loan = Relation::from_iter(
-            all_facts
-                .placeholder
-                .iter()
-                .map(|&(origin, loan)| (loan, origin)),
-        );
+        let placeholder_loan =
+            Relation::from_iter(all_facts.placeholder.iter().map(|&(origin, loan)| (loan, origin)));
 
         // Ask the variants to compute errors in their own way
         let mut ctx = Context {
@@ -297,7 +292,7 @@ impl<T: FactTypes> Output<T> {
                 let potential_subset_errors: Relation<(T::Origin, T::Origin, T::Point)> =
                     Relation::from_iter(
                         potential_subset_errors
-                            .into_iter()
+                            .iter()
                             .map(|&(origin1, origin2)| (origin1, origin2, 0.into())),
                     );
 
@@ -335,18 +330,12 @@ impl<T: FactTypes> Output<T> {
 
                 let mut naive_errors_by_point = FxHashMap::default();
                 for &(loan, point) in naive_errors.iter() {
-                    naive_errors_by_point
-                        .entry(point)
-                        .or_insert_with(Vec::new)
-                        .push(loan);
+                    naive_errors_by_point.entry(point).or_insert_with(Vec::new).push(loan);
                 }
 
                 let mut opt_errors_by_point = FxHashMap::default();
                 for &(loan, point) in opt_errors.iter() {
-                    opt_errors_by_point
-                        .entry(point)
-                        .or_insert_with(Vec::new)
-                        .push(loan);
+                    opt_errors_by_point.entry(point).or_insert_with(Vec::new).push(loan);
                 }
 
                 if compare_errors(&naive_errors_by_point, &opt_errors_by_point) {
@@ -370,29 +359,17 @@ impl<T: FactTypes> Output<T> {
 
         // Record illegal subset errors
         for &(origin1, origin2, location) in subset_errors.iter() {
-            result
-                .subset_errors
-                .entry(location)
-                .or_default()
-                .insert((origin1, origin2));
+            result.subset_errors.entry(location).or_default().insert((origin1, origin2));
         }
 
         // Record more debugging info when asked to do so
         if dump_enabled {
             for &(origin, location) in ctx.origin_live_on_entry.iter() {
-                result
-                    .origin_live_on_entry
-                    .entry(location)
-                    .or_default()
-                    .push(origin);
+                result.origin_live_on_entry.entry(location).or_default().push(origin);
             }
 
             for &(origin, loan) in ctx.known_contains.iter() {
-                result
-                    .known_contains
-                    .entry(origin)
-                    .or_default()
-                    .insert(loan);
+                result.known_contains.entry(origin).or_default().insert(loan);
             }
         }
 
@@ -538,20 +515,14 @@ fn compare_errors<Loan: Atom, Point: Atom>(
 
         for err in naive_errors.iter() {
             if !opt_errors.contains(err) {
-                error!(
-                    "Error {0:?} at {1:?} reported by naive, but not opt.",
-                    err, point
-                );
+                error!("Error {0:?} at {1:?} reported by naive, but not opt.", err, point);
                 differ = true;
             }
         }
 
         for err in opt_errors.iter() {
             if !naive_errors.contains(err) {
-                error!(
-                    "Error {0:?} at {1:?} reported by opt, but not naive.",
-                    err, point
-                );
+                error!("Error {0:?} at {1:?} reported by opt, but not naive.", err, point);
                 differ = true;
             }
         }
@@ -583,36 +554,36 @@ mod tests {
     #[test]
     fn test_compare_errors() {
         let empty = FxHashMap::default();
-        assert_eq!(false, compare(&empty, &empty));
+        assert!(!compare(&empty, &empty));
         let mut empty_vec = FxHashMap::default();
         empty_vec.insert(1, vec![]);
         empty_vec.insert(2, vec![]);
-        assert_eq!(false, compare(&empty, &empty_vec));
+        assert!(!compare(&empty, &empty_vec));
 
         let mut singleton1 = FxHashMap::default();
         singleton1.insert(1, vec![10]);
-        assert_eq!(false, compare(&singleton1, &singleton1));
+        assert!(!compare(&singleton1, &singleton1));
         let mut singleton2 = FxHashMap::default();
         singleton2.insert(1, vec![11]);
-        assert_eq!(false, compare(&singleton2, &singleton2));
+        assert!(!compare(&singleton2, &singleton2));
         let mut singleton3 = FxHashMap::default();
         singleton3.insert(2, vec![10]);
-        assert_eq!(false, compare(&singleton3, &singleton3));
+        assert!(!compare(&singleton3, &singleton3));
 
-        assert_eq!(true, compare(&singleton1, &singleton2));
-        assert_eq!(true, compare(&singleton2, &singleton3));
-        assert_eq!(true, compare(&singleton1, &singleton3));
+        assert!(compare(&singleton1, &singleton2));
+        assert!(compare(&singleton2, &singleton3));
+        assert!(compare(&singleton1, &singleton3));
 
-        assert_eq!(true, compare(&empty, &singleton1));
-        assert_eq!(true, compare(&empty, &singleton2));
-        assert_eq!(true, compare(&empty, &singleton3));
+        assert!(compare(&empty, &singleton1));
+        assert!(compare(&empty, &singleton2));
+        assert!(compare(&empty, &singleton3));
 
         let mut errors1 = FxHashMap::default();
         errors1.insert(1, vec![11]);
         errors1.insert(2, vec![10]);
-        assert_eq!(false, compare(&errors1, &errors1));
-        assert_eq!(true, compare(&errors1, &singleton1));
-        assert_eq!(true, compare(&errors1, &singleton2));
-        assert_eq!(true, compare(&errors1, &singleton3));
+        assert!(!compare(&errors1, &errors1));
+        assert!(compare(&errors1, &singleton1));
+        assert!(compare(&errors1, &singleton2));
+        assert!(compare(&errors1, &singleton3));
     }
 }

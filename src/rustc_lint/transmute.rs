@@ -1,12 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast::LitKind;
 use crate::rustc_errors::Applicability;
@@ -14,9 +11,9 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_lint_defs::{declare_lint, impl_lint_pass};
-use rustc_macros::Diagnostic;
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::sym;
+use rustc_macros::Diagnostic;
 
 use crate::rustc_lint::diagnostics::{IntegerToPtrTransmutes, IntegerToPtrTransmutesSuggestion};
 use crate::rustc_lint::{LateContext, LateLintPass};
@@ -225,17 +222,17 @@ fn check_ptr_transmute_in_const<'tcx>(
     src: Ty<'tcx>,
     dst: Ty<'tcx>,
 ) {
-    if matches!(const_context, Some(hir::ConstContext::ConstFn))
-        || matches!(cx.tcx.def_kind(body_owner_def_id), DefKind::AssocConst { .. })
+    if (matches!(const_context, Some(hir::ConstContext::ConstFn))
+        || matches!(cx.tcx.def_kind(body_owner_def_id), DefKind::AssocConst { .. }))
+        && src.is_raw_ptr()
+        && dst.is_integral()
     {
-        if src.is_raw_ptr() && dst.is_integral() {
-            cx.tcx.emit_node_span_lint(
-                PTR_TO_INTEGER_TRANSMUTE_IN_CONSTS,
-                expr.hir_id,
-                expr.span,
-                UndefinedTransmuteLint,
-            );
-        }
+        cx.tcx.emit_node_span_lint(
+            PTR_TO_INTEGER_TRANSMUTE_IN_CONSTS,
+            expr.hir_id,
+            expr.span,
+            UndefinedTransmuteLint,
+        );
     }
 }
 

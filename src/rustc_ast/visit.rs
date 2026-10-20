@@ -386,20 +386,20 @@ macro_rules! common_visitor_and_walkers {
         impl_visitable_noop!(<$($lt)? $($mut)?>
             AttrId,
             bool,
-            crate::rustc_span::ByteSymbol,
+            $crate::rustc_span::ByteSymbol,
             char,
-            crate::rustc_ast::token::CommentKind,
-            crate::rustc_ast::token::Delimiter,
-            crate::rustc_ast::token::Lit,
-            crate::rustc_ast::token::LitKind,
-            crate::rustc_ast::tokenstream::LazyAttrTokenStream,
-            crate::rustc_ast::tokenstream::TokenStream,
+            $crate::rustc_ast::token::CommentKind,
+            $crate::rustc_ast::token::Delimiter,
+            $crate::rustc_ast::token::Lit,
+            $crate::rustc_ast::token::LitKind,
+            $crate::rustc_ast::tokenstream::LazyAttrTokenStream,
+            $crate::rustc_ast::tokenstream::TokenStream,
             Movability,
             Mutability,
             Pinnedness,
-            Result<(), crate::rustc_span::ErrorGuaranteed>,
-            crate::rustc_data_structures::fx::FxHashMap<Symbol, usize>,
-            crate::rustc_span::ErrorGuaranteed,
+            Result<(), $crate::rustc_span::ErrorGuaranteed>,
+            $crate::rustc_data_structures::fx::FxHashMap<Symbol, usize>,
+            $crate::rustc_span::ErrorGuaranteed,
             alloc::borrow::Cow<'_, str>,
             Symbol,
             SyntheticAttr,
@@ -1221,6 +1221,39 @@ macro_rules! common_visitor_and_walkers {
 }
 
 common_visitor_and_walkers!(Visitor<'a>);
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<P<Item>> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for item in self {
+            try_visit!(visitor.visit_item(item));
+        }
+        V::Result::output()
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<P<ForeignItem>> {
+    type Extra = ();
+
+    fn visit(&'a self, visitor: &mut V, (): ()) -> V::Result {
+        for item in self {
+            try_visit!(visitor.visit_foreign_item(item));
+        }
+        V::Result::output()
+    }
+}
+
+impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<P<AssocItem>> {
+    type Extra = AssocCtxt;
+
+    fn visit(&'a self, visitor: &mut V, ctxt: AssocCtxt) -> V::Result {
+        for item in self {
+            try_visit!(visitor.visit_assoc_item(item, ctxt));
+        }
+        V::Result::output()
+    }
+}
 
 impl<'a, V: Visitor<'a>> Visitable<'a, V> for ArenaVec<Param> {
     type Extra = ();

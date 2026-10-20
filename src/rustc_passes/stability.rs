@@ -1,15 +1,15 @@
 //! A pass that annotates every item and method with its stability level,
 //! propagating default levels lexically from parent to children ast nodes.
 
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use alloc::borrow::ToOwned;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::num::NonZero;
 
 use crate::rustc_ast_lowering::stability::extern_abi_stability;
 use crate::rustc_data_structures::fx::FxIndexMap;
-use crate::rustc_data_structures::unord::{ExtendUnord, UnordMap, UnordSet};
 use crate::rustc_data_structures::sync::{cost, run_stage_weighted};
+use crate::rustc_data_structures::unord::{ExtendUnord, UnordMap, UnordSet};
 use crate::rustc_feature::{EnabledLangFeature, EnabledLibFeature, UNSTABLE_LANG_FEATURES};
 use crate::rustc_hir::attrs::{AttributeKind, DeprecatedSince};
 use crate::rustc_hir::def::{DefKind, Res};
@@ -27,7 +27,9 @@ use crate::rustc_lint_defs::builtin::{
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::middle::lib_features::{FeatureStability, LibFeatures};
 use crate::rustc_middle::middle::privacy::EffectiveVisibilities;
-use crate::rustc_middle::middle::stability::{AllowUnstable, Deprecated, DeprecationEntry, EvalResult};
+use crate::rustc_middle::middle::stability::{
+    AllowUnstable, Deprecated, DeprecationEntry, EvalResult,
+};
 use crate::rustc_middle::query::{LocalCrate, Providers};
 use crate::rustc_middle::ty::print::with_no_trimmed_paths;
 use crate::rustc_middle::ty::{AssocContainer, TyCtxt};
@@ -50,20 +52,14 @@ enum AnnotationKind {
 }
 
 fn inherit_deprecation(def_kind: DefKind) -> bool {
-    match def_kind {
-        DefKind::LifetimeParam | DefKind::TyParam | DefKind::ConstParam => false,
-        _ => true,
-    }
+    !matches!(def_kind, DefKind::LifetimeParam | DefKind::TyParam | DefKind::ConstParam)
 }
 
 fn inherit_const_stability(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
     let def_kind = tcx.def_kind(def_id);
     match def_kind {
         DefKind::AssocFn | DefKind::AssocTy | DefKind::AssocConst { .. } => {
-            match tcx.def_kind(tcx.local_parent(def_id)) {
-                DefKind::Trait | DefKind::Impl { .. } => true,
-                _ => false,
-            }
+            matches!(tcx.def_kind(tcx.local_parent(def_id)), DefKind::Trait | DefKind::Impl { .. })
         }
         DefKind::Closure => true,
         _ => false,
@@ -123,10 +119,7 @@ fn lookup_deprecation_entry(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<Depre
 }
 
 fn inherit_stability(def_kind: DefKind) -> bool {
-    match def_kind {
-        DefKind::Field | DefKind::Variant | DefKind::Ctor(..) => true,
-        _ => false,
-    }
+    matches!(def_kind, DefKind::Field | DefKind::Variant | DefKind::Ctor(..))
 }
 
 /// If the `-Z force-unstable-if-unmarked` flag is passed then we provide
@@ -341,7 +334,7 @@ impl<'tcx> MissingStabilityAnnotations<'tcx> {
         }
 
         if stab.is_none()
-            && depr.map_or(false, |d| d.attr.is_since_rustc_version())
+            && depr.is_some_and(|d| d.attr.is_since_rustc_version())
             && let Some(span) = find_attr_span!(Deprecated)
         {
             self.tcx.dcx().emit_err(diagnostics::DeprecatedAttribute { span });
@@ -350,13 +343,12 @@ impl<'tcx> MissingStabilityAnnotations<'tcx> {
         if let Some(stab) = stab {
             // Error if prohibited, or can't inherit anything from a container.
             let kind = annotation_kind(self.tcx, def_id);
-            if kind == AnnotationKind::Prohibited
-                || (kind == AnnotationKind::Container && stab.level.is_stable() && depr.is_some())
+            if (kind == AnnotationKind::Prohibited
+                || (kind == AnnotationKind::Container && stab.level.is_stable() && depr.is_some()))
+                && let Some(span) = find_attr_span!(Stability)
             {
-                if let Some(span) = find_attr_span!(Stability) {
-                    let item_sp = self.tcx.def_span(def_id);
-                    self.tcx.dcx().emit_err(diagnostics::UselessStability { span, item_sp });
-                }
+                let item_sp = self.tcx.def_span(def_id);
+                self.tcx.dcx().emit_err(diagnostics::UselessStability { span, item_sp });
             }
 
             // Check if deprecated_since < stable_since. If it is,
@@ -785,7 +777,7 @@ impl<'tcx> Visitor<'tcx> for Checker<'tcx> {
             && let Some(value_ns_res) = res.value_ns
             && let Some(type_ns_did) = ty_ns_res.opt_def_id()
             && let Some(value_ns_did) = value_ns_res.opt_def_id()
-            && let DefKind::Ctor(.., _) = self.tcx.def_kind(value_ns_did)
+            && let DefKind::Ctor(..) = self.tcx.def_kind(value_ns_did)
             && self.tcx.parent(value_ns_did) == type_ns_did
         {
             // Only visit the value namespace path when we've detected a duplicate,
@@ -956,10 +948,10 @@ impl<'tcx> Visitor<'tcx> for CheckTraitImplStable<'tcx> {
     }
 
     fn visit_trait_ref(&mut self, t: &'tcx TraitRef<'tcx>) {
-        if let Res::Def(DefKind::Trait, trait_did) = t.path.res {
-            if let Some(stab) = self.tcx.lookup_stability(trait_did) {
-                self.fully_stable &= stab.level.is_stable();
-            }
+        if let Res::Def(DefKind::Trait, trait_did) = t.path.res
+            && let Some(stab) = self.tcx.lookup_stability(trait_did)
+        {
+            self.fully_stable &= stab.level.is_stable();
         }
         intravisit::walk_trait_ref(self, t)
     }
@@ -968,10 +960,10 @@ impl<'tcx> Visitor<'tcx> for CheckTraitImplStable<'tcx> {
         if let TyKind::Never = t.kind {
             self.fully_stable = false;
         }
-        if let TyKind::FnPtr(function) = t.kind {
-            if extern_abi_stability(function.abi).is_err() {
-                self.fully_stable = false;
-            }
+        if let TyKind::FnPtr(function) = t.kind
+            && extern_abi_stability(function.abi).is_err()
+        {
+            self.fully_stable = false;
         }
         intravisit::walk_ty(self, t)
     }

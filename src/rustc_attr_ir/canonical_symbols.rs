@@ -1,7 +1,7 @@
 use crate::rustc_data_structures::fx::FxIndexMap;
-use rustc_macros::{Encodable, StableHash};
 use crate::rustc_span::Symbol;
 use crate::rustc_span::def_id::DefId;
+use rustc_macros::{Encodable, StableHash};
 
 /// A representation of a canonical symbol
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Encodable, StableHash)]
@@ -10,7 +10,7 @@ pub struct CanonicalSymbol {
     pub symbol: Symbol,
 }
 
-#[derive(StableHash, Debug)]
+#[derive(Default, StableHash, Debug)]
 pub struct CanonicalSymbols {
     symbols: FxIndexMap<Symbol, CanonicalSymbol>,
 }

@@ -1,17 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use hir::{ExprKind, Node};
 use crate::rustc_abi::{Integer, Size};
-use rustc_apfloat::Float;
-use rustc_apfloat::ieee::{DoubleS, HalfS, IeeeFloat, QuadS, Semantics, SingleS};
 use crate::rustc_ast as ast;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::{HirId, attrs};
@@ -19,6 +12,9 @@ use crate::rustc_middle::ty::Ty;
 use crate::rustc_middle::ty::layout::IntegerExt;
 use crate::rustc_middle::{bug, ty};
 use crate::rustc_span::{Span, Symbol};
+use hir::{ExprKind, Node};
+use rustc_apfloat::Float;
+use rustc_apfloat::ieee::{DoubleS, HalfS, IeeeFloat, QuadS, Semantics, SingleS};
 
 use crate::rustc_lint::LateContext;
 use crate::rustc_lint::context::LintContext;
@@ -148,6 +144,10 @@ fn get_bin_hex_repr(cx: &LateContext<'_>, lit: &hir::Lit) -> Option<String> {
     None
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "literal diagnostics require the literal value, representation and source identity"
+)]
 fn report_bin_hex_error(
     cx: &LateContext<'_>,
     hir_id: HirId,
@@ -350,34 +350,30 @@ fn lint_uint_literal<'tcx>(
     };
 
     if lit_val < min || lit_val > max {
-        if let Node::Expr(par_e) = cx.tcx.parent_hir_node(hir_id) {
-            match par_e.kind {
-                hir::ExprKind::Cast(..) => {
-                    if let ty::Char = cx.typeck_results().expr_ty(par_e).kind() {
-                        if lit_val > 0x10FFFF {
-                            cx.emit_span_lint(
-                                OVERFLOWING_LITERALS,
-                                par_e.span,
-                                TooLargeCharCast { literal: lit_val },
-                            );
-                        } else if (0xD800..=0xDFFF).contains(&lit_val) {
-                            cx.emit_span_lint(
-                                OVERFLOWING_LITERALS,
-                                par_e.span,
-                                SurrogateCharCast { literal: lit_val },
-                            );
-                        } else {
-                            cx.emit_span_lint(
-                                OVERFLOWING_LITERALS,
-                                par_e.span,
-                                OnlyCastu8ToChar { span: par_e.span, literal: lit_val },
-                            );
-                        }
-                        return;
-                    }
-                }
-                _ => {}
+        if let Node::Expr(par_e) = cx.tcx.parent_hir_node(hir_id)
+            && let hir::ExprKind::Cast(..) = par_e.kind
+            && let ty::Char = cx.typeck_results().expr_ty(par_e).kind()
+        {
+            if lit_val > 0x10FFFF {
+                cx.emit_span_lint(
+                    OVERFLOWING_LITERALS,
+                    par_e.span,
+                    TooLargeCharCast { literal: lit_val },
+                );
+            } else if (0xD800..=0xDFFF).contains(&lit_val) {
+                cx.emit_span_lint(
+                    OVERFLOWING_LITERALS,
+                    par_e.span,
+                    SurrogateCharCast { literal: lit_val },
+                );
+            } else {
+                cx.emit_span_lint(
+                    OVERFLOWING_LITERALS,
+                    par_e.span,
+                    OnlyCastu8ToChar { span: par_e.span, literal: lit_val },
+                );
             }
+            return;
         }
         if lint_overflowing_range_endpoint(cx, lit, lit_val, max, hir_id, span, t.name_str()) {
             // The overflowing literal lint was emitted by `lint_overflowing_range_endpoint`.

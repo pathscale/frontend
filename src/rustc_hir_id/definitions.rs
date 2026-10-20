@@ -4,9 +4,9 @@
 //! There are also some rather random cases (like const initializer
 //! expressions) that are mostly just leftovers.
 
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::hash::Hash;
 
@@ -14,12 +14,12 @@ use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::stable_hash::StableHasher;
 use crate::rustc_data_structures::sync::AppendOnlyIndexVec;
 use crate::rustc_hashes::Hash64;
-use rustc_macros::{BlobDecodable, Decodable, Encodable, extension};
 pub use crate::rustc_span::def_id::DefPathHash;
 use crate::rustc_span::def_id::{
     CRATE_DEF_INDEX, CrateNum, DefIndex, LOCAL_CRATE, LocalDefId, LocalDefIdMap, StableCrateId,
 };
 use crate::rustc_span::{Symbol, kw, sym};
+use rustc_macros::{BlobDecodable, Decodable, Encodable, extension};
 use tracing::{debug, instrument};
 
 use crate::rustc_hir_id::def_path_hash_map::DefPathHashMap;
@@ -439,7 +439,7 @@ impl Definitions {
 
     pub fn enumerated_keys_and_path_hashes(
         &self,
-    ) -> impl Iterator<Item = (DefIndex, DefKey, DefPathHash)> + ExactSizeIterator {
+    ) -> impl ExactSizeIterator<Item = (DefIndex, DefKey, DefPathHash)> {
         let table = &*self.table;
         (0..table.num_definitions()).map(move |i| {
             let def_id = LocalDefId { local_def_index: DefIndex::from_usize(i) };

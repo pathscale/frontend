@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::rustc_index::bit_set::GrowableBitSet;
 use crate::rustc_span::{Ident, Span, Symbol, sym};
 use smallvec::{SmallVec, smallvec};
-use thin_vec::{ThinVec, thin_vec};
+use thin_vec::ThinVec;
 
 use crate::rustc_ast::ast::{
     AttrArgs, AttrId, AttrItem, AttrKind, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID, DelimArgs,
@@ -30,6 +30,12 @@ use crate::rustc_ast::util::comments;
 use crate::rustc_ast::util::literal::escape_string_symbol;
 
 pub struct MarkedAttrs(GrowableBitSet<AttrId>);
+
+impl Default for MarkedAttrs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MarkedAttrs {
     pub fn new() -> Self {
@@ -49,6 +55,12 @@ impl MarkedAttrs {
 
 pub struct AttrIdGenerator(AtomicU32);
 
+impl Default for AttrIdGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AttrIdGenerator {
     pub fn new() -> Self {
         AttrIdGenerator(AtomicU32::new(0))
@@ -66,11 +78,14 @@ impl AttrIdGenerator {
 
     #[cfg(feature = "parallel")]
     pub(crate) fn reserve(&self, count: u32) -> Option<u32> {
-        self.0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |start| {
-                start.checked_add(count).filter(|end| *end < u32::MAX)
-            })
-            .ok()
+        let mut start = self.0.load(Ordering::Relaxed);
+        loop {
+            let end = start.checked_add(count).filter(|end| *end < u32::MAX)?;
+            match self.0.compare_exchange_weak(start, end, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(previous) => return Some(previous),
+                Err(actual) => start = actual,
+            }
+        }
     }
 
     #[cfg(feature = "parallel")]
@@ -606,7 +621,7 @@ impl MetaItemKind {
             Some(TokenTree::Delimited(.., Delimiter::Parenthesis, inner_tokens)) => {
                 let inner_tokens = inner_tokens.clone();
                 iter.next();
-                MetaItemKind::list_from_tokens(inner_tokens).map(MetaItemKind::List)
+                MetaItemKind::list_from_tokens(inner_tokens).map(|l| MetaItemKind::List(l.into()))
             }
             Some(TokenTree::Delimited(..)) => None,
             Some(TokenTree::Token(Token { kind: token::Eq, .. }, _)) => {
@@ -621,7 +636,7 @@ impl MetaItemKind {
         match args {
             AttrArgs::Empty => Some(MetaItemKind::Word),
             AttrArgs::Delimited(DelimArgs { dspan: _, delim: Delimiter::Parenthesis, tokens }) => {
-                MetaItemKind::list_from_tokens(tokens.clone()).map(MetaItemKind::List)
+                MetaItemKind::list_from_tokens(tokens.clone()).map(|l| MetaItemKind::List(l.into()))
             }
             AttrArgs::Delimited(..) => None,
             AttrArgs::Eq { expr, .. } => match expr.kind {
@@ -629,7 +644,7 @@ impl MetaItemKind {
                     // Turn failures to `None`, we'll get parse errors elsewhere.
                     MetaItemLit::from_token_lit(token_lit, expr.span)
                         .ok()
-                        .map(|lit| MetaItemKind::NameValue(lit))
+                        .map(MetaItemKind::NameValue)
                 }
                 _ => None,
             },

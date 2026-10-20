@@ -1,8 +1,8 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use rustc_macros::Diagnostic;
 use crate::rustc_middle::ty::{Instance, Ty};
 use crate::rustc_span::{Span, Symbol};
+use alloc::string::String;
+use alloc::vec::Vec;
+use rustc_macros::Diagnostic;
 
 #[derive(Diagnostic)]
 #[diag("reached the recursion limit while instantiating `{$instance}`")]

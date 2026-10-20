@@ -3,10 +3,8 @@
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use super::*;
 
@@ -287,7 +285,7 @@ fn path(p: &str) -> PathBuf {
 fn path_str(p: &str) -> String {
     #[cfg(not(windows))]
     {
-        return p.into();
+        p.into()
     }
 
     #[cfg(windows)]

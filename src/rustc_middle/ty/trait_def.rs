@@ -1,11 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::iter;
@@ -15,14 +11,16 @@ use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use crate::rustc_hir::{self as hir, find_attr};
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::Span;
+use rustc_macros::{Decodable, Encodable, StableHash};
 use tracing::debug;
 
 use crate::rustc_middle::query::LocalCrate;
 use crate::rustc_middle::traits::specialization_graph;
 use crate::rustc_middle::ty::fast_reject::{self, SimplifiedType, TreatParams};
-use crate::rustc_middle::ty::{self, Ident, Interner, RestrictionKind, Ty, TyCtxt, VisitorResult, try_visit};
+use crate::rustc_middle::ty::{
+    self, Ident, Interner, RestrictionKind, Ty, TyCtxt, VisitorResult, try_visit,
+};
 
 /// A trait's definition with type information.
 #[derive(StableHash, Encodable, Decodable)]
@@ -290,10 +288,9 @@ impl<'tcx> TyCtxt<'tcx> {
         let impls = self.trait_impls_of(trait_def_id);
         if let Some(simp) =
             fast_reject::simplify_type(self, self_ty, TreatParams::InstantiateWithInfer)
+            && let Some(impls) = impls.non_blanket_impls.get(&simp)
         {
-            if let Some(impls) = impls.non_blanket_impls.get(&simp) {
-                return impls.iter().copied();
-            }
+            return impls.iter().copied();
         }
 
         [].iter().copied()

@@ -1,4 +1,4 @@
- //! A bunch of methods and structures more or less related to resolving imports.
+//! A bunch of methods and structures more or less related to resolving imports.
 
 mod round;
 
@@ -6,7 +6,6 @@ mod round;
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -30,13 +29,13 @@ use crate::rustc_lint_defs::builtin::{
     PUB_USE_OF_PRIVATE_EXTERN_CRATE, REDUNDANT_IMPORTS, UNUSED_IMPORTS,
 };
 use crate::rustc_middle::metadata::{AmbigModChild, ModChild, Reexport};
-use crate::span_bug;
 use crate::rustc_middle::ty::Visibility;
-use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_session::config::Input;
+use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::edit_distance::find_best_match_for_name;
 use crate::rustc_span::hygiene::LocalExpnId;
 use crate::rustc_span::{Ident, Span, Symbol, kw, sym};
+use crate::span_bug;
 use tracing::debug;
 
 use crate::rustc_resolve::Namespace::{self, *};
@@ -58,7 +57,7 @@ use crate::rustc_resolve::{
 /// A potential import declaration in the process of being planted into a module.
 /// Also used for lazily planting names from `--extern` flags to extern prelude.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
-pub(crate) enum PendingDecl<'ra> {
+pub(super) enum PendingDecl<'ra> {
     Ready(Option<Decl<'ra>>),
     #[default]
     Pending,
@@ -70,13 +69,13 @@ enum ImportResolutionKind<'ra> {
     Glob(Vec<(Decl<'ra>, BindingKey, Span /* orig_ident_span */)>),
 }
 
-pub(crate) struct ImportResolution<'ra> {
+pub(super) struct ImportResolution<'ra> {
     kind: ImportResolutionKind<'ra>,
     imported_module: ModuleOrUniformRoot<'ra>,
 }
 
 impl<'ra> PendingDecl<'ra> {
-    pub(crate) fn decl(self) -> Option<Decl<'ra>> {
+    pub(super) fn decl(self) -> Option<Decl<'ra>> {
         match self {
             PendingDecl::Ready(decl) => decl,
             PendingDecl::Pending => None,
@@ -85,7 +84,7 @@ impl<'ra> PendingDecl<'ra> {
 }
 
 /// Contains data for specific kinds of imports.
-pub(crate) enum ImportKind<'ra> {
+pub(super) enum ImportKind<'ra> {
     Single {
         /// `source` in `use prefix::source as target`.
         source: Ident,
@@ -173,7 +172,7 @@ impl<'ra> core::fmt::Debug for ImportKind<'ra> {
 
 /// One import.
 #[derive(Debug)]
-pub(crate) struct ImportData<'ra> {
+pub(super) struct ImportData<'ra> {
     pub kind: ImportKind<'ra>,
 
     /// Node ID of the "root" use item -- this is always the same as `ImportKind`'s `id`
@@ -228,21 +227,21 @@ pub(crate) struct ImportData<'ra> {
 
 /// `Interned` is used because values of this type have "identity" and compare as unequal even if
 /// they have the same contents.
-pub(crate) type Import<'ra> = Interned<'ra, ImportData<'ra>>;
+pub(super) type Import<'ra> = Interned<'ra, ImportData<'ra>>;
 
 impl<'ra> ImportData<'ra> {
-    pub(crate) fn is_glob(&self) -> bool {
+    pub(super) fn is_glob(&self) -> bool {
         matches!(self.kind, ImportKind::Glob { .. })
     }
 
-    pub(crate) fn is_nested(&self) -> bool {
+    pub(super) fn is_nested(&self) -> bool {
         match self.kind {
             ImportKind::Single { nested, .. } => nested,
             _ => false,
         }
     }
 
-    pub(crate) fn id(&self) -> Option<NodeId> {
+    pub(super) fn id(&self) -> Option<NodeId> {
         match self.kind {
             ImportKind::Single { id, .. }
             | ImportKind::Glob { id, .. }
@@ -251,7 +250,7 @@ impl<'ra> ImportData<'ra> {
         }
     }
 
-    pub(crate) fn def_id(&self) -> Option<LocalDefId> {
+    pub(super) fn def_id(&self) -> Option<LocalDefId> {
         match self.kind {
             ImportKind::Single { def_id, .. }
             | ImportKind::Glob { def_id, .. }
@@ -260,7 +259,7 @@ impl<'ra> ImportData<'ra> {
         }
     }
 
-    pub(crate) fn simplify(&self) -> Reexport {
+    pub(super) fn simplify(&self) -> Reexport {
         match self.kind {
             ImportKind::Single { def_id, .. } => Reexport::Single(def_id.to_def_id()),
             ImportKind::Glob { def_id, .. } => Reexport::Glob(def_id.to_def_id()),
@@ -283,7 +282,7 @@ impl<'ra> ImportData<'ra> {
 
 /// Records information about the resolution of a name in a namespace of a module.
 #[derive(Debug)]
-pub(crate) struct NameResolution<'ra> {
+pub(super) struct NameResolution<'ra> {
     /// Single imports that may define the name in the namespace.
     /// Imports are arena-allocated, so it's ok to use pointers as keys.
     pub single_imports: FxIndexSet<Import<'ra>>,
@@ -296,10 +295,10 @@ pub(crate) struct NameResolution<'ra> {
 
 /// `Interned` is used because values of this type have "identity" and compare as unequal even if
 /// they have the same contents.
-pub(crate) type NameResolutionRef<'ra> = Interned<'ra, CmRefCell<NameResolution<'ra>>>;
+pub(super) type NameResolutionRef<'ra> = Interned<'ra, CmRefCell<NameResolution<'ra>>>;
 
 impl<'ra> NameResolution<'ra> {
-    pub(crate) fn new(orig_ident_span: Span) -> Self {
+    pub(super) fn new(orig_ident_span: Span) -> Self {
         NameResolution {
             single_imports: FxIndexSet::default(),
             non_glob_decl: None,
@@ -316,7 +315,7 @@ impl<'ra> NameResolution<'ra> {
     /// `unexpanded_invocations` here and avoiding glob overwriting entirely, if it doesn't cause
     /// code breakage in practice.
     /// FIXME: relationship between this function and similar `DeclData::determined` is unclear.
-    pub(crate) fn determined_decl(&self) -> Option<Decl<'ra>> {
+    pub(super) fn determined_decl(&self) -> Option<Decl<'ra>> {
         if self.non_glob_decl.is_some() {
             self.non_glob_decl
         } else if self.glob_decl.is_some() && self.single_imports.is_empty() {
@@ -326,13 +325,13 @@ impl<'ra> NameResolution<'ra> {
         }
     }
 
-    pub(crate) fn best_decl(&self) -> Option<Decl<'ra>> {
+    pub(super) fn best_decl(&self) -> Option<Decl<'ra>> {
         self.non_glob_decl.or(self.glob_decl)
     }
 }
 
 // module to keep the TLS private and only accessible through the function `enter_cycle_detector`.
-pub(crate) mod cycle_detection {
+pub(super) mod cycle_detection {
     use alloc::vec::Vec;
     use core::ptr;
     // A nested inline module does not inherit the file's `use` items, so this is imported here.
@@ -355,7 +354,7 @@ pub(crate) mod cycle_detection {
     /// is supplied per access rather than at the declaration.
     static ACTIVE_RESOLUTIONS: ThreadLocal<Vec<(*const (), BindingKey)>> = ThreadLocal::new();
 
-    pub(crate) struct ActiveResolutionGuard {
+    pub(in crate::rustc_resolve) struct ActiveResolutionGuard {
         key: (*const (), BindingKey),
     }
 
@@ -375,7 +374,7 @@ pub(crate) mod cycle_detection {
 
     /// Returns `Err(())` if a cycle is detected, otherwise this returns a
     /// guard that will remove the resolution when dropped.
-    pub(crate) fn enter_cycle_detector<'ra>(
+    pub(in crate::rustc_resolve) fn enter_cycle_detector<'ra>(
         module: LocalModule<'ra>,
         binding_key: BindingKey,
     ) -> Result<ActiveResolutionGuard, ()> {
@@ -399,17 +398,17 @@ pub(crate) mod cycle_detection {
 /// An error that may be transformed into a diagnostic later. Used to combine multiple unresolved
 /// import errors within the same use tree into a single diagnostic.
 #[derive(Debug)]
-pub(crate) struct UnresolvedImportError {
-    pub(crate) span: Span,
-    pub(crate) label: Option<String>,
-    pub(crate) note: Option<String>,
-    pub(crate) suggestion: Option<Suggestion>,
-    pub(crate) help: Option<String>,
-    pub(crate) candidates: Option<Vec<ImportSuggestion>>,
-    pub(crate) segment: Option<Ident>,
+pub(super) struct UnresolvedImportError {
+    pub(super) span: Span,
+    pub(super) label: Option<String>,
+    pub(super) note: Option<String>,
+    pub(super) suggestion: Option<Suggestion>,
+    pub(super) help: Option<String>,
+    pub(super) candidates: Option<Vec<ImportSuggestion>>,
+    pub(super) segment: Option<Ident>,
     /// comes from `PathRes::Failed { module }`
-    pub(crate) module: Option<DefId>,
-    pub(crate) on_unknown_attr: Option<OnUnknownData>,
+    pub(super) module: Option<DefId>,
+    pub(super) on_unknown_attr: Option<OnUnknownData>,
 }
 
 // Reexports of the form `pub use foo as bar;` where `foo` is `extern crate foo;`
@@ -449,11 +448,11 @@ fn remove_same_import<'ra>(d1: Decl<'ra>, d2: Decl<'ra>) -> (Decl<'ra>, Decl<'ra
 }
 
 impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
-    pub(crate) fn import_decl_vis(&self, decl: Decl<'ra>, import: ImportSummary) -> Visibility {
+    pub(super) fn import_decl_vis(&self, decl: Decl<'ra>, import: ImportSummary) -> Visibility {
         self.import_decl_vis_ext(decl, import, false)
     }
 
-    pub(crate) fn import_decl_vis_ext(
+    pub(super) fn import_decl_vis_ext(
         &self,
         decl: Decl<'ra>,
         import: ImportSummary,
@@ -492,7 +491,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     /// Given an import and the declaration that it points to,
     /// create the corresponding import declaration.
-    pub(crate) fn new_import_decl(&self, decl: Decl<'ra>, import: Import<'ra>) -> Decl<'ra> {
+    pub(super) fn new_import_decl(&self, decl: Decl<'ra>, import: Import<'ra>) -> Decl<'ra> {
         let vis = self.import_decl_vis(decl, import.summary());
 
         if let ImportKind::Glob { ref max_vis, .. } = import.kind
@@ -653,7 +652,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     /// Attempt to put the declaration with the given name and namespace into the module,
     /// and return existing declaration if there is a collision.
-    pub(crate) fn try_plant_decl_into_local_module(
+    pub(super) fn try_plant_decl_into_local_module(
         &mut self,
         ident: IdentKey,
         orig_ident_span: Span,
@@ -809,7 +808,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
     /// Resolves all imports for the crate. This method performs the fixed-
     /// point iteration.
-    pub(crate) fn resolve_imports(&mut self) {
+    pub(super) fn resolve_imports(&mut self) {
         let mut prev_indeterminate_count = usize::MAX;
         let mut indeterminate_count = self.indeterminate_imports.len() * 3;
         while indeterminate_count < prev_indeterminate_count {
@@ -840,17 +839,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
             self.write_import_resolutions(&imports_to_resolve);
 
-            let pending_counts =
-                imports_to_resolve.iter().map(|(_, _, count)| *count).collect();
+            let pending_counts = imports_to_resolve.iter().map(|(_, _, count)| *count).collect();
             let deltas = round::stage_deltas(pending_counts);
             let mut next_round = Vec::with_capacity(imports_to_resolve.len());
-            for ((import, resolution, count), delta) in
-                imports_to_resolve.into_iter().zip(deltas)
-            {
-                assert_eq!(
-                    delta.indeterminate_count, count,
-                    "rs3_import_round_delta"
-                );
+            for ((import, resolution, count), delta) in imports_to_resolve.into_iter().zip(deltas) {
+                assert_eq!(delta.indeterminate_count, count, "rs3_import_round_delta");
                 indeterminate_count += delta.indeterminate_count;
                 if delta.indeterminate_count > 0 {
                     next_round.push((import, resolution, count));
@@ -953,14 +946,13 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
                     for (binding, key, orig_ident_span) in imported_decls {
                         let import_decl = self.new_import_decl(*binding, import);
-                        let _ = self
-                            .try_plant_decl_into_local_module(
-                                key.ident,
-                                *orig_ident_span,
-                                key.ns,
-                                import_decl,
-                            )
-                            .expect("planting a glob cannot fail");
+                        self.try_plant_decl_into_local_module(
+                            key.ident,
+                            *orig_ident_span,
+                            key.ns,
+                            import_decl,
+                        )
+                        .expect("planting a glob cannot fail");
                     }
 
                     self.record_partial_res(*id, PartialRes::new(module.res().unwrap()));
@@ -972,7 +964,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn finalize_imports(&mut self) {
+    pub(super) fn finalize_imports(&mut self) {
         let mut module_children = Default::default();
         let mut ambig_module_children = Default::default();
         for module in &self.local_modules {
@@ -1063,7 +1055,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         }
     }
 
-    pub(crate) fn lint_reexports(&mut self, exported_ambiguities: FxHashSet<Decl<'ra>>) {
+    pub(super) fn lint_reexports(&mut self, exported_ambiguities: FxHashSet<Decl<'ra>>) {
         for module in &self.local_modules {
             for (key, resolution) in self.resolutions(module.to_module()).iter() {
                 let resolution = resolution.borrow_checked(self);
@@ -1116,34 +1108,32 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
 
                 if let Some(glob_decl) = resolution.glob_decl
                     && resolution.non_glob_decl.is_some()
+                    && binding.res() != Res::Err
+                    && glob_decl.res() != Res::Err
+                    && let DeclKind::Import { import: glob_import, .. } = glob_decl.kind
+                    && let Some(glob_import_def_id) = glob_import.def_id()
+                    && self.effective_visibilities.is_exported(glob_import_def_id)
+                    && glob_decl.vis().is_public()
+                    && !binding.vis().is_public()
                 {
-                    if binding.res() != Res::Err
-                        && glob_decl.res() != Res::Err
-                        && let DeclKind::Import { import: glob_import, .. } = glob_decl.kind
-                        && let Some(glob_import_def_id) = glob_import.def_id()
-                        && self.effective_visibilities.is_exported(glob_import_def_id)
-                        && glob_decl.vis().is_public()
-                        && !binding.vis().is_public()
-                    {
-                        let binding_id = match binding.kind {
-                            DeclKind::Def(res) => {
-                                Some(self.def_id_to_node_id(res.def_id().expect_local()))
-                            }
-                            DeclKind::Import { import, .. } => import.id(),
-                        };
-                        if let Some(binding_id) = binding_id {
-                            self.lint_buffer.buffer_lint(
-                                HIDDEN_GLOB_REEXPORTS,
-                                binding_id,
-                                binding.span,
-                                diagnostics::HiddenGlobReexports {
-                                    name: key.ident.name.to_string(),
-                                    namespace: key.ns.descr().to_owned(),
-                                    glob_reexport: glob_decl.span,
-                                    private_item: binding.span,
-                                },
-                            );
+                    let binding_id = match binding.kind {
+                        DeclKind::Def(res) => {
+                            Some(self.def_id_to_node_id(res.def_id().expect_local()))
                         }
+                        DeclKind::Import { import, .. } => import.id(),
+                    };
+                    if let Some(binding_id) = binding_id {
+                        self.lint_buffer.buffer_lint(
+                            HIDDEN_GLOB_REEXPORTS,
+                            binding_id,
+                            binding.span,
+                            diagnostics::HiddenGlobReexports {
+                                name: key.ident.name.to_string(),
+                                namespace: key.ns.descr().to_owned(),
+                                glob_reexport: glob_decl.span,
+                                private_item: binding.span,
+                            },
+                        );
                     }
                 }
 
@@ -1693,7 +1683,11 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
             full_path.push(Segment::from_ident(ident));
             self.per_ns_mut(|this, ns| {
                 if let Some(binding) = bindings[ns].get().decl().map(|b| b.import_source()) {
-                    this.cm_mut().lint_if_path_starts_with_module(finalize, &full_path, Some(binding));
+                    this.cm_mut().lint_if_path_starts_with_module(
+                        finalize,
+                        &full_path,
+                        Some(binding),
+                    );
                 }
             });
         }
@@ -1718,16 +1712,15 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         ident: Ident,
         ns: Namespace,
     ) -> Option<BufferedEarlyLint> {
-        let crate_private_reexport = match decl.vis() {
-            Visibility::Restricted(mod_id) if mod_id.is_top_level_module() => true,
-            _ => false,
-        };
+        let crate_private_reexport =
+            matches!(decl.vis(), Visibility::Restricted(mod_id) if mod_id.is_top_level_module());
 
         if let Some(extern_crate_id) = pub_use_of_private_extern_crate_hack(import.summary(), decl)
         {
             let ImportKind::Single { id, .. } = import.kind else { unreachable!() };
             let sugg = self.tcx.source_span(extern_crate_id).shrink_to_lo();
-            let diagnostic = crate::rustc_resolve::diagnostics::PrivateExternCrateReexport { ident, sugg };
+            let diagnostic =
+                crate::rustc_resolve::diagnostics::PrivateExternCrateReexport { ident, sugg };
             return Some(BufferedEarlyLint {
                 lint_id: LintId::of(PUB_USE_OF_PRIVATE_EXTERN_CRATE),
                 node_id: id,
@@ -1768,7 +1761,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
         None
     }
 
-    pub(crate) fn check_for_redundant_imports(&mut self, import: Import<'ra>) -> bool {
+    pub(super) fn check_for_redundant_imports(&mut self, import: Import<'ra>) -> bool {
         // This function is only called for single imports.
         let ImportKind::Single { source, target, ref decls, id, def_id, .. } = import.kind else {
             unreachable!()
@@ -2016,7 +2009,7 @@ impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     }
 }
 
-pub(crate) fn import_path_to_string(
+pub(super) fn import_path_to_string(
     names: &[Ident],
     import_kind: &ImportKind<'_>,
     span: Span,

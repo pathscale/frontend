@@ -1,17 +1,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_data_structures::thin_vec::ThinVec;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_index::IndexVec;
-use crate::rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
+use crate::rustc_middle::mir::visit::{
+    MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor,
+};
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use tracing::{debug, trace};
@@ -49,8 +47,8 @@ pub(crate) enum BorrowedFieldProjectionMode {
 ///   The AssertKind must be a panic with `#[rustc_nounwind]`. The condition
 ///   should always return the boolean `is_ok`, so evaluate to true in case of
 ///   success and fail the check otherwise.
-/// This utility will insert a terminator block that asserts on the condition
-/// and panics on failure.
+///   This utility will insert a terminator block that asserts on the condition
+///   and panics on failure.
 pub(crate) fn check_pointers<'tcx, F>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
@@ -170,21 +168,20 @@ impl<'a, 'tcx> PointerFinder<'a, 'tcx> {
     /// We generally only visit Reads/Writes to a place and only Borrows if
     /// requested.
     fn should_visit_place(&self, context: PlaceContext) -> bool {
-        match context {
+        matches!(
+            context,
             PlaceContext::MutatingUse(
                 MutatingUseContext::Store
-                | MutatingUseContext::Call
-                | MutatingUseContext::Yield
-                | MutatingUseContext::Drop
-                | MutatingUseContext::Borrow,
-            ) => true,
-            PlaceContext::NonMutatingUse(
+                    | MutatingUseContext::Call
+                    | MutatingUseContext::Yield
+                    | MutatingUseContext::Drop
+                    | MutatingUseContext::Borrow,
+            ) | PlaceContext::NonMutatingUse(
                 NonMutatingUseContext::Copy
-                | NonMutatingUseContext::Move
-                | NonMutatingUseContext::SharedBorrow,
-            ) => true,
-            _ => false,
-        }
+                    | NonMutatingUseContext::Move
+                    | NonMutatingUseContext::SharedBorrow,
+            )
+        )
     }
 }
 

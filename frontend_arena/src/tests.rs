@@ -105,10 +105,10 @@ fn dropless_allocations_are_aligned_and_hold_their_values() {
     let wide: Vec<&mut u128> = (0..PAST_SEVERAL_CHUNKS).map(|n| arena.alloc(n as u128)).collect();
     assert!(bytes.iter().enumerate().all(|(n, byte)| **byte == n as u8));
     assert!(wide.iter().enumerate().all(|(n, word)| **word == n as u128
-        && core::ptr::from_ref::<u128>(word).addr() % align_of::<u128>() == 0));
+        && core::ptr::from_ref::<u128>(word).addr().is_multiple_of(align_of::<u128>())));
     for align in [1, 2, 8, 16, 64, 4096] {
         let raw = arena.alloc_raw(Layout::from_size_align(24, align).unwrap());
-        assert_eq!(raw.addr() % align, 0, "alloc_raw ignored alignment {align}");
+        assert!(raw.addr().is_multiple_of(align), "alloc_raw ignored alignment {align}");
     }
 }
 
@@ -123,4 +123,20 @@ fn dropless_slices_and_strings_are_copies_of_their_input() {
     assert_eq!(arena.alloc_str(text), text);
     let from_iter = arena.alloc_from_iter((0..1000_u64).map(|n| n * n));
     assert!(from_iter.iter().copied().eq((0..1000_u64).map(|n| n * n)));
+}
+
+#[test]
+fn empty_dropless_inputs_do_not_allocate() {
+    let arena = DroplessArena::default();
+    let start = arena.start.get();
+    let end = arena.end.get();
+    assert!(arena.alloc_slice::<u64>(&[]).is_empty());
+    assert_eq!(arena.alloc_str(""), "");
+    assert!(arena.alloc_from_iter(core::iter::empty::<u64>()).is_empty());
+    assert!(arena.alloc_from_iter((0..4_u64).filter(|_| false)).is_empty());
+    assert!(arena.try_alloc_from_iter(core::iter::empty::<Result<u64, ()>>()).unwrap().is_empty());
+    assert_eq!(arena.start.get(), start);
+    assert_eq!(arena.end.get(), end);
+    assert!(arena.chunks.borrow().is_empty());
+    assert_eq!(*arena.alloc(37_u64), 37);
 }

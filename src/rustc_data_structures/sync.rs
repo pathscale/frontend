@@ -27,11 +27,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use core::hash::{BuildHasher, Hash};
 use hashbrown::HashMap;
@@ -49,6 +44,7 @@ pub use self::mode::{
     FromDyn, SessionMode, check_dyn_thread_safe, enter_session_width, is_dyn_thread_safe,
     is_parallel_here, set_dyn_thread_safe_mode,
 };
+pub use self::owned_stage::run_owned_stage;
 #[cfg(feature = "parallel")]
 pub use self::pool::set_parallel_executor;
 #[cfg(feature = "parallel")]
@@ -56,7 +52,6 @@ pub(crate) use self::pool::{parse_pool_width, retry_parse_serial, speculate_pars
 pub use self::stage::{
     Chain, ReadySlot, Slots, StageScope, cost, run_stage, run_stage_weighted, stages,
 };
-pub use self::owned_stage::run_owned_stage;
 
 pub use self::vec::{AppendOnlyIndexVec, AppendOnlyVec, LockFreeAppendOnlyVec};
 pub use self::worker_local::{Registry, RegistryScope, RegistrySlot, WorkerLocal};
@@ -327,6 +322,10 @@ impl<T> RwLock<T> {
     }
 
     #[inline(always)]
+    #[expect(
+        clippy::result_unit_err,
+        reason = "contention is the only failure and callers only branch on it"
+    )]
     pub fn try_write(&self) -> Result<WriteGuard<'_, T>, ()> {
         self.0.try_write().ok_or(())
     }

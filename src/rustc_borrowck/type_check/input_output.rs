@@ -10,21 +10,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::assert_matches;
 
-use itertools::Itertools;
 use crate::rustc_hir as hir;
 use crate::rustc_infer::infer::{BoundRegionConversionTime, RegionVariableOrigin};
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::Span;
+use itertools::Itertools;
 use tracing::{debug, instrument};
 
 use super::{Locations, TypeChecker};
@@ -242,8 +237,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         // However, in most cases normalizing is unnecessary so we only do so if it may be
         // necessary for type equality to hold. This leads to some (very minor) performance
         // wins.
-        if let Err(_) =
-            self.eq_types(a, b, Locations::All(span), ConstraintCategory::BoringNoLocation)
+        if self.eq_types(a, b, Locations::All(span), ConstraintCategory::BoringNoLocation).is_err()
         {
             let b = self.normalize(ty::Unnormalized::new(b), Locations::All(span));
             self.eq_types(a, b, Locations::All(span), ConstraintCategory::BoringNoLocation)

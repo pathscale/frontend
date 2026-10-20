@@ -42,19 +42,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::cmp::max;
 use core::sync::atomic::Ordering;
-use alloc::sync::Arc;
-use eko::thread::OnceLock;
 use core::{iter, mem};
+use eko::thread::OnceLock;
 
 use crate::rustc_data_structures::fingerprint::{Fingerprint, PackedFingerprint};
 use crate::rustc_data_structures::fx::FxHashMap;
@@ -64,7 +61,9 @@ use crate::rustc_data_structures::sync::{AtomicU64, Lock, Registry, WorkerLocal}
 use crate::rustc_data_structures::unhash::UnhashMap;
 use crate::rustc_index::{IndexSlice, IndexVec};
 use crate::rustc_serialize::opaque::mem_encoder::MemEncoder;
-use crate::rustc_serialize::opaque::{FileEncodeResult, FileEncoder, IntEncodedWithFixedSize, MemDecoder};
+use crate::rustc_serialize::opaque::{
+    FileEncodeResult, FileEncoder, IntEncodedWithFixedSize, MemDecoder,
+};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use crate::rustc_session::Session;
 use tracing::{debug, instrument};
@@ -312,7 +311,7 @@ impl EdgeHeader {
 
 #[inline]
 fn mask(bits: usize) -> usize {
-    usize::MAX >> ((size_of::<usize>() * 8) - bits)
+    usize::MAX >> (usize::BITS as usize - bits)
 }
 
 impl SerializedDepGraph {
@@ -832,7 +831,7 @@ impl EncoderState {
 
         debug!(?node_max, ?node_count, ?edge_count);
         debug!("position: {:?}", encoder.position());
-        IntEncodedWithFixedSize(node_max.try_into().unwrap()).encode(&mut encoder);
+        IntEncodedWithFixedSize(node_max.into()).encode(&mut encoder);
         IntEncodedWithFixedSize(node_count.try_into().unwrap()).encode(&mut encoder);
         IntEncodedWithFixedSize(edge_count.try_into().unwrap()).encode(&mut encoder);
         debug!("position: {:?}", encoder.position());
@@ -877,13 +876,18 @@ impl EncoderState {
                 let total_duplicate_read_count =
                     current.total_duplicate_read_count.load(Ordering::Relaxed);
                 eko::eprintln!("[incremental] Total Edge Reads: {total_read_count}");
-                eko::eprintln!("[incremental] Total Duplicate Edge Reads: {total_duplicate_read_count}");
+                eko::eprintln!(
+                    "[incremental] Total Duplicate Edge Reads: {total_duplicate_read_count}"
+                );
             }
 
             eko::eprintln!("[incremental]");
             eko::eprintln!(
                 "[incremental]  {:<36}| {:<17}| {:<12}| {:<17}|",
-                "Node Kind", "Node Frequency", "Node Count", "Avg. Edge Count"
+                "Node Kind",
+                "Node Frequency",
+                "Node Count",
+                "Avg. Edge Count"
             );
             eko::eprintln!("{SEPARATOR}");
 
@@ -944,9 +948,9 @@ impl GraphEncoder {
         let _prof_timer = self.profiler.generic_activity("incr_comp_encode_dep_graph");
         let node = NodeInfo { node, value_fingerprint, edges };
         let mut local = self.status.local.borrow_mut();
-        let index = self.status.next_index(&mut *local);
-        self.status.bump_index(&mut *local);
-        self.status.encode_node(index, &node, &self.retained_graph, &mut *local);
+        let index = self.status.next_index(&mut local);
+        self.status.bump_index(&mut local);
+        self.status.encode_node(index, &node, &self.retained_graph, &mut local);
         index
     }
 
@@ -967,7 +971,7 @@ impl GraphEncoder {
 
         let mut local = self.status.local.borrow_mut();
 
-        let index = self.status.next_index(&mut *local);
+        let index = self.status.next_index(&mut local);
         let color = if is_green { DesiredColor::Green { index } } else { DesiredColor::Red };
 
         // Use `try_set_color` to avoid racing when `send_promoted` is called concurrently
@@ -978,8 +982,8 @@ impl GraphEncoder {
             TrySetColorResult::AlreadyGreen { index } => return index,
         }
 
-        self.status.bump_index(&mut *local);
-        self.status.encode_node(index, &node, &self.retained_graph, &mut *local);
+        self.status.bump_index(&mut local);
+        self.status.encode_node(index, &node, &self.retained_graph, &mut local);
         index
     }
 
@@ -999,18 +1003,18 @@ impl GraphEncoder {
         let _prof_timer = self.profiler.generic_activity("incr_comp_encode_dep_graph");
 
         let mut local = self.status.local.borrow_mut();
-        let index = self.status.next_index(&mut *local);
+        let index = self.status.next_index(&mut local);
 
         // Use `try_set_color` to avoid racing when `send_promoted` or `send_and_color`
         // is called concurrently on the same index.
         match colors.try_set_color(prev_index, DesiredColor::Green { index }) {
             TrySetColorResult::Success => {
-                self.status.bump_index(&mut *local);
+                self.status.bump_index(&mut local);
                 self.status.encode_promoted_node(
                     index,
                     prev_index,
                     &self.retained_graph,
-                    &mut *local,
+                    &mut local,
                     edges,
                 );
                 Some(index)

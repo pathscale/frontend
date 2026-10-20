@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use alloc::borrow::Borrow;
 use core::hash::{Hash, Hasher};
@@ -159,6 +154,10 @@ impl<K: Eq, V> ShardedHashMap<K, V> {
     pub fn len(&self) -> usize {
         self.lock_shards().map(|shard| shard.len()).sum()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<K: Eq + Hash, V> ShardedHashMap<K, V> {
@@ -221,10 +220,10 @@ impl<K: Eq + Hash, V> ShardedHashMap<K, V> {
 
 impl<K: Eq + Hash + Copy> ShardedHashMap<K, ()> {
     #[inline]
-    pub fn intern_ref<Q: ?Sized>(&self, value: &Q, make: impl FnOnce() -> K) -> K
+    pub fn intern_ref<Q>(&self, value: &Q, make: impl FnOnce() -> K) -> K
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         let hash = make_hash(value);
         let mut shard = self.lock_shard_by_hash(hash);
@@ -261,6 +260,10 @@ impl<K: Eq + Hash + Copy> ShardedHashMap<K, ()> {
 
 pub trait IntoPointer {
     /// Returns a pointer which outlives `self`.
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "the borrowed value remains owned by its caller"
+    )]
     fn into_pointer(&self) -> *const ();
 }
 
@@ -420,10 +423,8 @@ impl<K: InternKey> InternSet<K> {
         // At most half full once `per_shard_cap` keys are in, but no more than
         // `INTERN_FIRST_MAX_SLOTS`: a session is often one file, whose keys would scatter over
         // every page of a table sized for a whole crate. Growth only copies (the hash is kept).
-        let first_len = per_shard_cap
-            .saturating_mul(2)
-            .clamp(16, INTERN_FIRST_MAX_SLOTS)
-            .next_power_of_two();
+        let first_len =
+            per_shard_cap.saturating_mul(2).clamp(16, INTERN_FIRST_MAX_SLOTS).next_power_of_two();
         InternSet {
             tables: InternTables((0..n).map(|_| AtomicPtr::new(ptr::null_mut())).collect()),
             locks: (0..n).map(|_| CacheAligned(Lock::new(0))).collect(),
@@ -541,10 +542,10 @@ impl<K: InternKey> InternSet<K> {
 
     /// The key equal to `*value`, making and inserting it with `make` when absent.
     #[inline]
-    pub fn intern_ref<Q: ?Sized>(&self, value: &Q, make: impl FnOnce() -> K) -> K
+    pub fn intern_ref<Q>(&self, value: &Q, make: impl FnOnce() -> K) -> K
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         let hash = make_hash(value);
         let shard = self.shard_of(hash);
@@ -580,6 +581,10 @@ impl<K: InternKey> InternSet<K> {
     /// The number of keys, counted under every shard's lock.
     pub fn len(&self) -> usize {
         self.locks.iter().map(|lock| *lock.0.lock()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Call `f` on every key, one shard at a time under its lock (so `f` must not intern into

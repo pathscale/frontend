@@ -7,22 +7,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::fmt::Debug;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use crate::rustc_errors::{Diag, EmissionGuarantee};
 use crate::rustc_hir::def_id::{CRATE_DEF_ID, DefId};
 use crate::rustc_infer::infer::{DefineOpaqueTypes, InferCtxt, TyCtxtInferExt};
 use crate::rustc_infer::traits::{PredicateObligations, TraitErrors};
-use rustc_macros::{TypeFoldable, TypeVisitable};
-use crate::bug;
 use crate::rustc_middle::traits::query::NoSolution;
 use crate::rustc_middle::traits::solve::{CandidateSource, Certainty, Goal};
 use crate::rustc_middle::traits::specialization_graph::OverlapMode;
@@ -34,13 +29,18 @@ use crate::rustc_middle::ty::{
 pub use crate::rustc_next_trait_solver::coherence::*;
 use crate::rustc_next_trait_solver::solve::SolverDelegateEvalExt;
 use crate::rustc_span::{DUMMY_SP, Span};
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument, warn};
 
 use super::ObligationCtxt;
 use crate::rustc_trait_selection::error_reporting::traits::suggest_new_overflow_limit;
 use crate::rustc_trait_selection::infer::InferOk;
-use crate::rustc_trait_selection::solve::inspect::{InferCtxtProofTreeExt, InspectGoal, ProofTreeVisitor};
-use crate::rustc_trait_selection::solve::{SolverDelegate, deeply_normalize_for_diagnostics, inspect};
+use crate::rustc_trait_selection::solve::inspect::{
+    InferCtxtProofTreeExt, InspectGoal, ProofTreeVisitor,
+};
+use crate::rustc_trait_selection::solve::{
+    SolverDelegate, deeply_normalize_for_diagnostics, inspect,
+};
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use crate::rustc_trait_selection::traits::select::IntercrateAmbiguityCause;
 use crate::rustc_trait_selection::traits::{
@@ -255,17 +255,16 @@ fn overlap<'tcx>(
     overlap_mode: OverlapMode,
     is_of_trait: bool,
 ) -> Option<OverlapResult<'tcx>> {
-    if overlap_mode.use_negative_impl() {
-        if impl_intersection_has_negative_obligation(tcx, impl1_def_id, impl2_def_id, is_of_trait)
+    if overlap_mode.use_negative_impl()
+        && (impl_intersection_has_negative_obligation(tcx, impl1_def_id, impl2_def_id, is_of_trait)
             || impl_intersection_has_negative_obligation(
                 tcx,
                 impl2_def_id,
                 impl1_def_id,
                 is_of_trait,
-            )
-        {
-            return None;
-        }
+            ))
+    {
+        return None;
     }
 
     let infcx = tcx
@@ -514,7 +513,7 @@ fn impl_intersection_has_negative_obligation(
 
     // N.B. We need to unify impl headers *with* `TypingMode::Coherence`,
     // even if proving negative predicates doesn't need `TypingMode::Coherence`.
-    let ref infcx = tcx
+    let infcx = &tcx
         .infer_ctxt()
         .with_next_trait_solver(true)
         .enable_next_solver_overflow_fcw(false)
@@ -583,7 +582,7 @@ fn plug_infer_with_placeholders<'tcx>(
     impl<'tcx> PlugInferWithPlaceholder<'_, 'tcx> {
         fn next_var(&mut self) -> ty::BoundVar {
             let var = self.var;
-            self.var = self.var + 1;
+            self.var += 1;
             var
         }
     }
@@ -694,7 +693,7 @@ fn try_prove_negated_where_clause<'tcx>(
     // impl candidates do exist.
     // FIXME(#132279): `TypingMode::non_body_analysis` is a bit questionable here as it
     // would cause us to reveal opaque types to leak their auto traits.
-    let ref infcx = root_infcx.fork_with_typing_mode(TypingMode::non_body_analysis());
+    let infcx = &root_infcx.fork_with_typing_mode(TypingMode::non_body_analysis());
     let ocx = ObligationCtxt::new(infcx);
     ocx.register_obligation(Obligation::new(
         infcx.tcx,
@@ -840,7 +839,7 @@ impl<'a, 'tcx> ProofTreeVisitor<'tcx> for AmbiguityCausesVisitor<'a, 'tcx> {
             // Normalize the trait ref for diagnostics, ignoring any errors if this fails.
             let trait_ref = deeply_normalize_for_diagnostics(infcx, param_env, trait_ref);
             let self_ty = trait_ref.self_ty();
-            let self_ty = self_ty.has_concrete_skeleton().then(|| self_ty);
+            let self_ty = self_ty.has_concrete_skeleton().then_some(self_ty);
             self.causes.insert(match conflict {
                 Conflict::Upstream => {
                     IntercrateAmbiguityCause::UpstreamCrateUpdate { trait_ref, self_ty }

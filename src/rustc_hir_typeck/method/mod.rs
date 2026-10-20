@@ -5,10 +5,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -517,24 +514,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // Check if we have an enum variant.
         let mut struct_variant = None;
-        if let ty::Adt(adt_def, _) = self_ty.kind() {
-            if adt_def.is_enum() {
-                let variant_def = adt_def
-                    .variants()
-                    .iter()
-                    .find(|vd| tcx.hygienic_eq(method_name, vd.ident(tcx), adt_def.did()));
-                if let Some(variant_def) = variant_def {
-                    if let Some((ctor_kind, ctor_def_id)) = variant_def.ctor {
-                        tcx.check_stability(
-                            ctor_def_id,
-                            Some(expr_id),
-                            span,
-                            Some(method_name.span),
-                        );
-                        return Ok((DefKind::Ctor(CtorOf::Variant, ctor_kind), ctor_def_id));
-                    } else {
-                        struct_variant = Some((DefKind::Variant, variant_def.def_id));
-                    }
+        if let ty::Adt(adt_def, _) = self_ty.kind()
+            && adt_def.is_enum()
+        {
+            let variant_def = adt_def
+                .variants()
+                .iter()
+                .find(|vd| tcx.hygienic_eq(method_name, vd.ident(tcx), adt_def.did()));
+            if let Some(variant_def) = variant_def {
+                if let Some((ctor_kind, ctor_def_id)) = variant_def.ctor {
+                    tcx.check_stability(ctor_def_id, Some(expr_id), span, Some(method_name.span));
+                    return Ok((DefKind::Ctor(CtorOf::Variant, ctor_kind), ctor_def_id));
+                } else {
+                    struct_variant = Some((DefKind::Variant, variant_def.def_id));
                 }
             }
         }

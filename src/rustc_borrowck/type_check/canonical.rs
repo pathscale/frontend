@@ -1,19 +1,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 
+use crate::bug;
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_infer::infer::canonical::Canonical;
 use crate::rustc_infer::infer::outlives::env::RegionBoundPairs;
-use crate::bug;
 use crate::rustc_middle::mir::{Body, ConstraintCategory};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable, Unnormalized, Upcast};
 use crate::rustc_span::Span;
@@ -29,6 +23,10 @@ use crate::rustc_borrowck::type_check::{MirTypeckRegionConstraints, constraint_c
 use crate::rustc_borrowck::universal_regions::UniversalRegions;
 
 #[instrument(skip(infcx, constraints, op), level = "trace")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+)]
 pub(crate) fn fully_perform_op_raw<'tcx, R: fmt::Debug, Op>(
     infcx: &BorrowckInferCtxt<'tcx>,
     body: &Body<'tcx>,

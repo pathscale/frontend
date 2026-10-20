@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::cell::Cell;
 use core::fmt;
 use core::iter::once;
@@ -9,7 +9,9 @@ use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, Integer, VariantIdx};
 use crate::rustc_arena::DroplessArena;
 use crate::rustc_hir::HirId;
 use crate::rustc_index::{Idx, IndexVec};
-use crate::rustc_lint_defs::builtin::{NON_CONTIGUOUS_RANGE_ENDPOINTS, OVERLAPPING_RANGE_ENDPOINTS};
+use crate::rustc_lint_defs::builtin::{
+    NON_CONTIGUOUS_RANGE_ENDPOINTS, OVERLAPPING_RANGE_ENDPOINTS,
+};
 use crate::rustc_middle::middle::stability::EvalResult;
 use crate::rustc_middle::thir::{self, Pat, PatKind, PatRange, PatRangeBoundary};
 use crate::rustc_middle::ty::layout::IntegerExt;
@@ -32,16 +34,21 @@ use crate::rustc_pattern_analysis::{PatCx, PrivateUninhabitedField, diagnostics}
 mod print;
 
 // Re-export rustc-specific versions of all these types.
-pub type Constructor<'p, 'tcx> = crate::rustc_pattern_analysis::constructor::Constructor<RustcPatCtxt<'p, 'tcx>>;
-pub type ConstructorSet<'p, 'tcx> = crate::rustc_pattern_analysis::constructor::ConstructorSet<RustcPatCtxt<'p, 'tcx>>;
-pub type DeconstructedPat<'p, 'tcx> = crate::rustc_pattern_analysis::pat::DeconstructedPat<RustcPatCtxt<'p, 'tcx>>;
+pub type Constructor<'p, 'tcx> =
+    crate::rustc_pattern_analysis::constructor::Constructor<RustcPatCtxt<'p, 'tcx>>;
+pub type ConstructorSet<'p, 'tcx> =
+    crate::rustc_pattern_analysis::constructor::ConstructorSet<RustcPatCtxt<'p, 'tcx>>;
+pub type DeconstructedPat<'p, 'tcx> =
+    crate::rustc_pattern_analysis::pat::DeconstructedPat<RustcPatCtxt<'p, 'tcx>>;
 pub type MatchArm<'p, 'tcx> = crate::rustc_pattern_analysis::MatchArm<'p, RustcPatCtxt<'p, 'tcx>>;
 pub type RedundancyExplanation<'p, 'tcx> =
     crate::rustc_pattern_analysis::usefulness::RedundancyExplanation<'p, RustcPatCtxt<'p, 'tcx>>;
-pub type Usefulness<'p, 'tcx> = crate::rustc_pattern_analysis::usefulness::Usefulness<'p, RustcPatCtxt<'p, 'tcx>>;
+pub type Usefulness<'p, 'tcx> =
+    crate::rustc_pattern_analysis::usefulness::Usefulness<'p, RustcPatCtxt<'p, 'tcx>>;
 pub type UsefulnessReport<'p, 'tcx> =
     crate::rustc_pattern_analysis::usefulness::UsefulnessReport<'p, RustcPatCtxt<'p, 'tcx>>;
-pub type WitnessPat<'p, 'tcx> = crate::rustc_pattern_analysis::pat::WitnessPat<RustcPatCtxt<'p, 'tcx>>;
+pub type WitnessPat<'p, 'tcx> =
+    crate::rustc_pattern_analysis::pat::WitnessPat<RustcPatCtxt<'p, 'tcx>>;
 
 /// A type which has gone through `cx.reveal_opaque_ty`, i.e. if it was opaque it was replaced by
 /// the hidden type if allowed in the current body. This ensures we consistently inspect the hidden
@@ -234,7 +241,7 @@ impl<'p, 'tcx: 'p> RustcPatCtxt<'p, 'tcx> {
         &self,
         ctor: &Constructor<'p, 'tcx>,
         ty: RevealedTy<'tcx>,
-    ) -> impl Iterator<Item = (RevealedTy<'tcx>, PrivateUninhabitedField)> + ExactSizeIterator {
+    ) -> impl ExactSizeIterator<Item = (RevealedTy<'tcx>, PrivateUninhabitedField)> {
         fn reveal_and_alloc<'a, 'tcx>(
             cx: &'a RustcPatCtxt<'_, 'tcx>,
             iter: impl Iterator<Item = Ty<'tcx>>,
@@ -249,7 +256,7 @@ impl<'p, 'tcx: 'p> RustcPatCtxt<'p, 'tcx> {
             Struct | Variant(_) | UnionField => match ty.kind() {
                 ty::Tuple(fs) => reveal_and_alloc(cx, fs.iter()),
                 ty::Adt(adt, _) => {
-                    let variant = &adt.variant(RustcPatCtxt::variant_index_for_adt(&ctor, *adt));
+                    let variant = &adt.variant(RustcPatCtxt::variant_index_for_adt(ctor, *adt));
                     let tys = cx.variant_sub_tys(ty, variant).map(|(field, ty)| {
                         let is_visible =
                             adt.is_enum() || field.vis.is_accessible_from(cx.module, cx.tcx);
@@ -289,7 +296,7 @@ impl<'p, 'tcx: 'p> RustcPatCtxt<'p, 'tcx> {
             Struct | Variant(_) | UnionField => match ty.kind() {
                 ty::Tuple(fs) => fs.len(),
                 ty::Adt(adt, ..) => {
-                    let variant_idx = RustcPatCtxt::variant_index_for_adt(&ctor, *adt);
+                    let variant_idx = RustcPatCtxt::variant_index_for_adt(ctor, *adt);
                     adt.variant(variant_idx).fields.len()
                 }
                 _ => bug!("Unexpected type for constructor `{ctor:?}`: {ty:?}"),
@@ -676,7 +683,7 @@ impl<'p, 'tcx: 'p> RustcPatCtxt<'p, 'tcx> {
                 fields = prefix
                     .iter()
                     .chain(suffix.iter())
-                    .map(|p| self.lower_pat(&*p))
+                    .map(|p| self.lower_pat(p))
                     .enumerate()
                     .map(|(i, p)| p.at_index(i))
                     .collect();
@@ -789,7 +796,7 @@ impl<'p, 'tcx: 'p> RustcPatCtxt<'p, 'tcx> {
         match pat.ctor() {
             Bool(b) => b.to_string(),
             Str(s) => s.to_string(),
-            IntRange(range) => return self.print_pat_range(range, *pat.ty()),
+            IntRange(range) => self.print_pat_range(range, *pat.ty()),
             Struct | Variant(_) | UnionField => {
                 let enum_info = match *pat.ty().kind() {
                     ty::Adt(adt_def, _) if adt_def.is_enum() => EnumInfo::Enum {
@@ -862,7 +869,7 @@ impl<'p, 'tcx: 'p> RustcPatCtxt<'p, 'tcx> {
             }
             Never if self.tcx.features().never_patterns() => "!".to_string(),
             Never | Wildcard | NonExhaustive | Hidden | PrivateUninhabited => "_".to_string(),
-            Missing { .. } => bug!(
+            Missing => bug!(
                 "trying to convert a `Missing` constructor into a `Pat`; this is probably a bug,
                 `Missing` should have been processed in `apply_constructors`"
             ),
@@ -901,14 +908,18 @@ impl<'p, 'tcx: 'p> PatCx for RustcPatCtxt<'p, 'tcx> {
         self.tcx.features().exhaustive_patterns()
     }
 
-    fn ctor_arity(&self, ctor: &crate::rustc_pattern_analysis::constructor::Constructor<Self>, ty: &Self::Ty) -> usize {
+    fn ctor_arity(
+        &self,
+        ctor: &crate::rustc_pattern_analysis::constructor::Constructor<Self>,
+        ty: &Self::Ty,
+    ) -> usize {
         self.ctor_arity(ctor, *ty)
     }
     fn ctor_sub_tys(
         &self,
         ctor: &crate::rustc_pattern_analysis::constructor::Constructor<Self>,
         ty: &Self::Ty,
-    ) -> impl Iterator<Item = (Self::Ty, PrivateUninhabitedField)> + ExactSizeIterator {
+    ) -> impl ExactSizeIterator<Item = (Self::Ty, PrivateUninhabitedField)> {
         self.ctor_sub_tys(ctor, *ty)
     }
     fn ctors_for_ty(

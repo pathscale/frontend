@@ -3,12 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 use core::panic::Location;
@@ -43,20 +38,18 @@ fn opt_span_bug_fmt<S: Into<MultiSpan>>(
     // Upstream marks this closure `#[track_caller]` (`closure_track_caller`, unstable). Without
     // it the message is unchanged, since it names `location` explicitly; only the location
     // recorded by the `dcx().bug` call inside points at this closure.
-    tls::with_opt(
-        move |tcx| {
-            let msg = format!("{location}: {args}");
-            match (tcx, span) {
-                (Some(tcx), Some(span)) => tcx.dcx().span_bug(span, msg),
-                (Some(tcx), None) => tcx.dcx().bug(msg),
-                // Was `panic_any(msg)`, which carried the `String` as the panic payload for a
-                // catcher to downcast. **CONTAINMENT DROPPED, `panic = "abort"`:** nothing can
-                // catch a payload any more, so the message is formatted into the panic instead
-                // of being carried as one.
-                (None, _) => panic!("{msg}"),
-            }
-        },
-    )
+    tls::with_opt(move |tcx| {
+        let msg = format!("{location}: {args}");
+        match (tcx, span) {
+            (Some(tcx), Some(span)) => tcx.dcx().span_bug(span, msg),
+            (Some(tcx), None) => tcx.dcx().bug(msg),
+            // Was `panic_any(msg)`, which carried the `String` as the panic payload for a
+            // catcher to downcast. **CONTAINMENT DROPPED, `panic = "abort"`:** nothing can
+            // catch a payload any more, so the message is formatted into the panic instead
+            // of being carried as one.
+            (None, _) => panic!("{msg}"),
+        }
+    })
 }
 
 /// A query to trigger a delayed bug. Clearly, if one has a `tcx` one can already trigger a

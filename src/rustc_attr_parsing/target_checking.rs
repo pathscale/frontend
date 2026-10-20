@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::Cow;
+use alloc::vec::Vec;
 
 use crate::rustc_ast::{AttrStyle, Safety};
 use crate::rustc_attr_ir::target::{AssocCtxt, MethodKind, Target};
@@ -286,6 +286,10 @@ impl<'sess> AttributeParser<'sess> {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "source-map failures mean no following item and stay inline"
+    )]
     fn first_line_of_next_item(&self, span: Span) -> Option<Span> {
         // We can't exactly call `tcx.hir_free_items()` here because it's too early and querying
         // this would create a circular dependency. Instead, we resort to getting the original

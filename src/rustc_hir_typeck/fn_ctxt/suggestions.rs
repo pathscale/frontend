@@ -3,7 +3,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -12,8 +11,6 @@ use alloc::vec::Vec;
 use core::cmp::min;
 use core::iter;
 
-use hir::def_id::LocalDefId;
-use itertools::Itertools;
 use crate::rustc_ast::util::parser::ExprPrecedence;
 use crate::rustc_data_structures::packed::Pu128;
 use crate::rustc_errors::{Applicability, Diag, MultiSpan, listify, msg};
@@ -28,7 +25,6 @@ use crate::rustc_hir::{
 use crate::rustc_hir_analysis::hir_ty_lowering::HirTyLowerer;
 use crate::rustc_hir_analysis::suggest_impl_trait;
 use crate::rustc_middle::middle::stability::EvalResult;
-use crate::span_bug;
 use crate::rustc_middle::ty::print::{with_no_trimmed_paths, with_types_for_suggestion};
 use crate::rustc_middle::ty::{
     self, Article, Binder, IsSuggestable, Ty, TyCtxt, TypeVisitableExt, Unnormalized, Upcast,
@@ -41,13 +37,18 @@ use crate::rustc_trait_selection::error_reporting::traits::suggestions::ReturnsV
 use crate::rustc_trait_selection::infer::InferCtxtExt;
 use crate::rustc_trait_selection::traits;
 use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+use crate::span_bug;
+use hir::def_id::LocalDefId;
+use itertools::Itertools;
 use tracing::{debug, instrument};
 
 use super::FnCtxt;
-use crate::rustc_hir_typeck::diagnostics::{self, ExprParenthesesNeeded, SuggestBoxingForReturnImplTrait};
-use crate::rustc_span::BytePos;
+use crate::rustc_hir_typeck::diagnostics::{
+    self, ExprParenthesesNeeded, SuggestBoxingForReturnImplTrait,
+};
 use crate::rustc_hir_typeck::method::probe;
 use crate::rustc_hir_typeck::method::probe::{IsSuggestion, Mode, ProbeScope};
+use crate::rustc_span::BytePos;
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     pub(crate) fn fn_sig(&self) -> Option<ty::FnSig<'tcx>> {
@@ -599,6 +600,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// If `ty` is `Option<T>`, returns `T, T, None`.
     /// If `ty` is `Result<T, E>`, returns `T, T, Some(E, E)`.
     /// Otherwise, returns `None`.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+    )]
     fn deconstruct_option_or_result(
         &self,
         found_ty: Ty<'tcx>,
@@ -1037,7 +1042,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         .segments
                         .last()
                         .and_then(|seg| seg.args)
-                        .map_or(false, |args| !args.constraints.is_empty())
+                        .is_some_and(|args| !args.constraints.is_empty())
                 {
                     // Use the path to get the trait name string
                     let trait_name = trait_ref
@@ -1071,7 +1076,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                         let body = self.tcx.hir_body_owned_by(fn_id);
                         let mut visitor = ReturnsVisitor::default();
-                        visitor.visit_body(&body);
+                        visitor.visit_body(body);
 
                         if !visitor.returns.is_empty() {
                             let starts: Vec<Span> = visitor
@@ -1319,6 +1324,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(in super::super) fn suggest_missing_break_or_return_expr(
         &self,
         err: &mut Diag<'_>,
@@ -1717,6 +1726,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     // Suggest to change `Option<&Vec<T>>::unwrap_or(&[])` to `Option::map_or(&[], |v| v)`.
     #[instrument(level = "trace", skip(self, err, provided_expr))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(crate) fn suggest_deref_unwrap_or(
         &self,
         err: &mut Diag<'_>,
@@ -1794,34 +1807,33 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         blk_ty: Ty<'tcx>,
         expected_ty: Ty<'tcx>,
     ) {
-        if let ty::Slice(elem_ty) | ty::Array(elem_ty, _) = expected_ty.kind() {
-            if self.may_coerce(blk_ty, *elem_ty)
-                && blk.stmts.is_empty()
-                && blk.rules == hir::BlockCheckMode::DefaultBlock
-                && let source_map = self.tcx.sess.source_map()
-                && let Ok(snippet) = source_map.span_to_snippet(blk.span)
-                && snippet.starts_with('{')
-                && snippet.ends_with('}')
-            {
-                diag.multipart_suggestion(
-                    "to create an array, use square brackets instead of curly braces",
-                    vec![
-                        (
-                            blk.span
-                                .shrink_to_lo()
-                                .with_hi(crate::rustc_span::BytePos(blk.span.lo().0 + 1)),
-                            "[".to_string(),
-                        ),
-                        (
-                            blk.span
-                                .shrink_to_hi()
-                                .with_lo(crate::rustc_span::BytePos(blk.span.hi().0 - 1)),
-                            "]".to_string(),
-                        ),
-                    ],
-                    Applicability::MachineApplicable,
-                );
-            }
+        if let ty::Slice(elem_ty) | ty::Array(elem_ty, _) = expected_ty.kind()
+            && self.may_coerce(blk_ty, *elem_ty)
+            && blk.stmts.is_empty()
+            && blk.rules == hir::BlockCheckMode::DefaultBlock
+            && let source_map = self.tcx.sess.source_map()
+            && let Ok(snippet) = source_map.span_to_snippet(blk.span)
+            && snippet.starts_with('{')
+            && snippet.ends_with('}')
+        {
+            diag.multipart_suggestion(
+                "to create an array, use square brackets instead of curly braces",
+                vec![
+                    (
+                        blk.span
+                            .shrink_to_lo()
+                            .with_hi(crate::rustc_span::BytePos(blk.span.lo().0 + 1)),
+                        "[".to_string(),
+                    ),
+                    (
+                        blk.span
+                            .shrink_to_hi()
+                            .with_lo(crate::rustc_span::BytePos(blk.span.hi().0 - 1)),
+                        "]".to_string(),
+                    ),
+                ],
+                Applicability::MachineApplicable,
+            );
         }
     }
 
@@ -1920,7 +1932,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         // Provided expression needs to be a literal `0`.
-        let ExprKind::Lit(Spanned { node: crate::rustc_ast::LitKind::Int(Pu128(0), _), span }) = expr.kind
+        let ExprKind::Lit(Spanned { node: crate::rustc_ast::LitKind::Int(Pu128(0), _), span }) =
+            expr.kind
         else {
             return false;
         };
@@ -2228,7 +2241,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         match expr.peel_blocks().kind {
             hir::ExprKind::Path(hir::QPath::Resolved(
                 None,
-                hir::Path { segments: [_], res: crate::rustc_hir_typeck::Res::Local(binding), .. },
+                hir::Path {
+                    segments: [_], res: crate::rustc_hir_typeck::Res::Local(binding), ..
+                },
             )) => {
                 let hir::Node::Pat(hir::Pat { hir_id, .. }) = self.tcx.hir_node(*binding) else {
                     return expr;
@@ -2276,8 +2291,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             hir::ExprKind::Call(Expr { kind: call_expr_kind, .. }, _) => {
                 if let hir::ExprKind::Path(hir::QPath::Resolved(None, call_expr_path)) =
                     call_expr_kind
-                    && let hir::Path { segments: [_], res: crate::rustc_hir_typeck::Res::Local(binding), .. } =
-                        call_expr_path
+                    && let hir::Path {
+                        segments: [_],
+                        res: crate::rustc_hir_typeck::Res::Local(binding),
+                        ..
+                    } = call_expr_path
                     && let hir::Node::Pat(hir::Pat { hir_id, .. }) = self.tcx.hir_node(*binding)
                     && let hir::Node::LetStmt(hir::LetStmt { init: Some(init), .. }) =
                         self.tcx.parent_hir_node(*hir_id)
@@ -2672,40 +2690,35 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 if let hir::Node::Block(&hir::Block { span: block_span, expr: Some(e), .. }) =
                     self.tcx.hir_node(parent)
+                    && e.hir_id == id
+                    && let Some(span) = expr.span.find_ancestor_inside(block_span)
                 {
-                    if e.hir_id == id {
-                        if let Some(span) = expr.span.find_ancestor_inside(block_span) {
-                            let return_suggestions = if self
-                                .tcx
-                                .is_diagnostic_item(sym::Result, expected_adt.did())
-                            {
-                                vec!["Ok(())"]
-                            } else if self.tcx.is_diagnostic_item(sym::Option, expected_adt.did()) {
-                                vec!["None", "Some(())"]
-                            } else {
-                                return false;
-                            };
-                            if let Some(indent) =
-                                self.tcx.sess.source_map().indentation_before(span.shrink_to_lo())
-                            {
-                                // Add a semicolon, except after `}`.
-                                let semicolon =
-                                    match self.tcx.sess.source_map().span_to_snippet(span) {
-                                        Ok(s) if s.ends_with('}') => "",
-                                        _ => ";",
-                                    };
-                                err.span_suggestions(
-                                    span.shrink_to_hi(),
-                                    "try adding an expression at the end of the block",
-                                    return_suggestions
-                                        .into_iter()
-                                        .map(|r| format!("{semicolon}\n{indent}{r}")),
-                                    Applicability::MaybeIncorrect,
-                                );
-                            }
-                            return true;
-                        }
+                    let return_suggestions =
+                        if self.tcx.is_diagnostic_item(sym::Result, expected_adt.did()) {
+                            vec!["Ok(())"]
+                        } else if self.tcx.is_diagnostic_item(sym::Option, expected_adt.did()) {
+                            vec!["None", "Some(())"]
+                        } else {
+                            return false;
+                        };
+                    if let Some(indent) =
+                        self.tcx.sess.source_map().indentation_before(span.shrink_to_lo())
+                    {
+                        // Add a semicolon, except after `}`.
+                        let semicolon = match self.tcx.sess.source_map().span_to_snippet(span) {
+                            Ok(s) if s.ends_with('}') => "",
+                            _ => ";",
+                        };
+                        err.span_suggestions(
+                            span.shrink_to_hi(),
+                            "try adding an expression at the end of the block",
+                            return_suggestions
+                                .into_iter()
+                                .map(|r| format!("{semicolon}\n{indent}{r}")),
+                            Applicability::MaybeIncorrect,
+                        );
                     }
+                    return true;
                 }
             }
 
@@ -2956,6 +2969,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// In addition of this check, it also checks between references mutability state. If the
     /// expected is mutable but the provided isn't, maybe we could just say "Hey, try with
     /// `&mut`!".
+    #[expect(
+        clippy::type_complexity,
+        reason = "This diagnostic helper returns the exact replacement spans and applicability as one result."
+    )]
     pub(crate) fn suggest_deref_or_ref(
         &self,
         expr: &hir::Expr<'tcx>,
@@ -3077,7 +3094,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         // The `then` of a `Expr::If` always contains a block, and that block may have a final expression that we can borrow
                         // If the block does not have a final expression, it will return () and we do not make a suggestion to borrow that.
                         let ExprKind::Block(then, _) = then.kind else { return None };
-                        let Some(then) = then.expr else { return None };
+                        let then = then.expr?;
                         let (mut suggs, help, app, mutref) =
                             self.suggest_deref_or_ref(then, checked_ty, expected)?;
 
@@ -3109,11 +3126,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                     if let hir::Node::Expr(hir::Expr { kind: hir::ExprKind::Assign(..), .. }) =
                         self.tcx.parent_hir_node(expr.hir_id)
+                        && mutability.is_mut()
                     {
-                        if mutability.is_mut() {
-                            // Suppressing this diagnostic, we'll properly print it in `check_expr_assign`
-                            return None;
-                        }
+                        // Suppressing this diagnostic, we'll properly print it in `check_expr_assign`
+                        return None;
                     }
 
                     let make_sugg = |expr: &Expr<'_>, span: Span, sugg: &str| {
@@ -3425,27 +3441,26 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // `expr` is a conversion like `u32::from(val)`, do not suggest anything (#63697).
             && let (hir::TyKind::Path(hir::QPath::Resolved(None, base_ty_path)), sym::from) =
                 (&base_ty.kind, path_segment.ident.name)
+            && let Some(ident) = &base_ty_path.segments.iter().map(|s| s.ident).next()
         {
-            if let Some(ident) = &base_ty_path.segments.iter().map(|s| s.ident).next() {
-                match ident.name {
-                    sym::i128
-                    | sym::i64
-                    | sym::i32
-                    | sym::i16
-                    | sym::i8
-                    | sym::u128
-                    | sym::u64
-                    | sym::u32
-                    | sym::u16
-                    | sym::u8
-                    | sym::isize
-                    | sym::usize
-                        if base_ty_path.segments.len() == 1 =>
-                    {
-                        return false;
-                    }
-                    _ => {}
+            match ident.name {
+                sym::i128
+                | sym::i64
+                | sym::i32
+                | sym::i16
+                | sym::i8
+                | sym::u128
+                | sym::u64
+                | sym::u32
+                | sym::u16
+                | sym::u8
+                | sym::isize
+                | sym::usize
+                    if base_ty_path.segments.len() == 1 =>
+                {
+                    return false;
                 }
+                _ => {}
             }
         }
 
@@ -3718,7 +3733,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         format!(
                             "{}, producing the floating point representation of the integer, \
                                 rounded if necessary",
-                            &msg,
+                            msg,
                         ),
                         cast_suggestion,
                         Applicability::MaybeIncorrect, // lossy conversion

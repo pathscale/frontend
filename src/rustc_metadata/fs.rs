@@ -1,16 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use eko::path::{Path, PathBuf};
 use eko::file as fs;
 use eko::file as io;
+use eko::path::{Path, PathBuf};
 
 use crate::rustc_data_structures::temp_dir::MaybeTempDir;
 use crate::rustc_fs_util::TempDirBuilder;
@@ -76,7 +70,7 @@ pub fn encode_and_write_metadata(tcx: TyCtxt<'_>) -> EncodedMetadata {
         });
         if let Some(metadata_stub_filename) = &metadata_stub_filename {
             eko::file::File::create(metadata_stub_filename).unwrap_or_else(|err| {
-                tcx.dcx().emit_fatal(FailedCreateFile { filename: &metadata_stub_filename, err });
+                tcx.dcx().emit_fatal(FailedCreateFile { filename: metadata_stub_filename, err });
             });
         }
     }
@@ -114,13 +108,11 @@ pub fn encode_and_write_metadata(tcx: TyCtxt<'_>) -> EncodedMetadata {
     };
 
     // Load metadata back to memory: codegen may need to include it in object files.
-    let metadata =
-        EncodedMetadata::from_path(metadata_filename, metadata_stub_filename, metadata_tmpdir)
-            .unwrap_or_else(|err| {
-                tcx.dcx().emit_fatal(FailedCreateEncodedMetadata { err });
-            });
 
-    metadata
+    EncodedMetadata::from_path(metadata_filename, metadata_stub_filename, metadata_tmpdir)
+        .unwrap_or_else(|err| {
+            tcx.dcx().emit_fatal(FailedCreateEncodedMetadata { err });
+        })
 }
 
 #[cfg(not(target_os = "linux"))]

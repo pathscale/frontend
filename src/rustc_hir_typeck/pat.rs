@@ -2,15 +2,14 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hashbrown::hash_map::Entry::{Occupied, Vacant};
-use core::cmp;
 use crate::assert_matches;
+use core::cmp;
+use hashbrown::hash_map::Entry::{Occupied, Vacant};
 
 use crate::rustc_abi::FieldIdx;
 use crate::rustc_ast as ast;
@@ -272,6 +271,10 @@ enum PinnednessCap {
 /// from matching a reference type with a non-reference pattern. E.g. when `Some(x)` matches on
 /// `&mut Option<&T>`, `x` gets type `&mut &T` and the outer `&mut` is considered "inherited".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Eat` prefix names the three pattern reference-consumption rules."
+)]
 enum InheritedRefMatchRule {
     /// Reference patterns consume only the inherited reference if possible, regardless of whether
     /// the underlying type being matched against is a reference type. If there is no inherited
@@ -388,7 +391,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ///
     /// Otherwise, `Some(span)` represents the span of a type expression
     /// which originated the `expected` type.
-    pub(crate) fn check_pat_top(
+    pub(super) fn check_pat_top(
         &self,
         pat: &'tcx Pat<'tcx>,
         expected: Ty<'tcx>,
@@ -721,6 +724,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         PatInfo { binding_mode, max_pinnedness, max_ref_mutbl, ..pat_info }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_deref_pattern(
         &self,
         pat: &'tcx Pat<'tcx>,
@@ -1153,6 +1160,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err.emit()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_pat_ident(
         &self,
         pat: &'tcx Pat<'tcx>,
@@ -1548,6 +1559,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_pat_struct(
         &self,
         pat: &'tcx Pat<'tcx>,
@@ -1702,7 +1717,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         };
         if let [hir::PathSegment { ident, args: None, .. }] = segments
-            && e.suggestions.len() == 0
+            && e.suggestions.is_empty()
         {
             e.span_label(span, format!("{} defined here", res.descr()));
             e.span_label(
@@ -1820,6 +1835,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         Ok(ResolvedPat { ty: pat_ty, kind: ResolvedPatKind::TupleStruct { res, variant } })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn check_pat_tuple_struct(
         &self,
         pat: &'tcx Pat<'tcx>,
@@ -1883,6 +1902,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         pat_ty
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn emit_err_pat_wrong_number_of_fields(
         &self,
         pat_span: Span,
@@ -3088,13 +3111,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // If the pattern is irrefutable and `expected` is an infer ty, we try to equate it
         // to an array if the given pattern allows it. See issue #76342
-        if self.pat_is_irrefutable(pat_info.decl_origin) && expected.is_ty_var() {
-            if let Some(resolved_arr_ty) =
+        if self.pat_is_irrefutable(pat_info.decl_origin)
+            && expected.is_ty_var()
+            && let Some(resolved_arr_ty) =
                 self.try_resolve_slice_ty_to_array_ty(before, slice, span)
-            {
-                debug!(?resolved_arr_ty);
-                let _ = self.demand_eqtype(span, expected, resolved_arr_ty);
-            }
+        {
+            debug!(?resolved_arr_ty);
+            self.demand_eqtype(span, expected, resolved_arr_ty);
         }
 
         let expected = self.structurally_resolve_type(span, expected);

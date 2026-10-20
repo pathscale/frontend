@@ -1,11 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::{Scalar, Size, TagEncoding, Variants, WrappingRange};
@@ -267,6 +263,7 @@ fn split_block(
 }
 
 /// Inserts the cast of an operand (any type) to a u128 value that holds the discriminant value.
+#[expect(clippy::too_many_arguments, reason = "the cast inputs are independent MIR rewrite state")]
 fn insert_discr_cast_to_u128<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_decls: &mut IndexVec<Local, LocalDecl<'tcx>>,
@@ -348,6 +345,7 @@ fn insert_discr_cast_to_u128<'tcx>(
     discr
 }
 
+#[expect(clippy::too_many_arguments, reason = "the check inputs are independent MIR block and discriminant state")]
 fn insert_direct_enum_check<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_decls: &mut IndexVec<Local, LocalDecl<'tcx>>,
@@ -476,6 +474,7 @@ fn insert_uninhabited_enum_check<'tcx>(
     });
 }
 
+#[expect(clippy::too_many_arguments, reason = "the check inputs are independent MIR block and niche state")]
 fn insert_niche_check<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_decls: &mut IndexVec<Local, LocalDecl<'tcx>>,

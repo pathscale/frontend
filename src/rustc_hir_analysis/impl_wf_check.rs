@@ -11,16 +11,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::debug_assert_matches;
 
-use min_specialization::check_min_specialization;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::Applicability;
 use crate::rustc_errors::codes::*;
@@ -28,6 +24,7 @@ use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt, Unnormalized};
 use crate::rustc_span::{ErrorGuaranteed, kw};
+use min_specialization::check_min_specialization;
 
 use crate::rustc_hir_analysis::constrained_generic_params as cgp;
 use crate::rustc_hir_analysis::diagnostics::UnconstrainedGenericParameter;
@@ -254,7 +251,7 @@ pub(crate) fn enforce_impl_non_lifetime_params_are_constrained(
                 const_param_note2: const_param_note,
             });
             diag.code(E0207);
-            suggest_to_remove_or_use_generic(tcx, &mut diag, impl_def_id, &param, false);
+            suggest_to_remove_or_use_generic(tcx, &mut diag, impl_def_id, param, false);
             res = Err(diag.emit());
         }
     }

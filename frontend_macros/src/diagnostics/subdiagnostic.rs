@@ -1,4 +1,3 @@
-
 #![deny(unused_must_use)]
 use std::collections::HashSet;
 
@@ -16,9 +15,9 @@ use crate::diagnostics::error::{
 use crate::diagnostics::message::Message;
 use crate::diagnostics::utils::{
     AllowMultipleAlternatives, FieldInfo, FieldInnerTy, FieldMap, SetOnce, SpannedOption,
-    SubdiagnosticKind, build_field_mapping, build_suggestion_code, is_doc_comment, new_code_ident,
-    report_error_if_not_applied_to_applicability, report_error_if_not_applied_to_span,
-    should_generate_arg,
+    SubdiagnosticKind, build_field_mapping, build_suggestion_code, is_doc_comment, is_lint_attr,
+    new_code_ident, report_error_if_not_applied_to_applicability,
+    report_error_if_not_applied_to_span, should_generate_arg,
 };
 
 /// The central struct for constructing the `add_to_diag` method from an annotated struct.
@@ -51,7 +50,7 @@ impl SubdiagnosticDerive {
             if is_enum {
                 for attr in &ast.attrs {
                     // Always allow documentation comments.
-                    if is_doc_comment(attr) {
+                    if is_doc_comment(attr) || is_lint_attr(attr) {
                         continue;
                     }
 
@@ -80,7 +79,7 @@ impl SubdiagnosticDerive {
                     is_enum,
                     used_fields: &mut used_fields,
                 };
-                builder.into_tokens().unwrap_or_else(|v| v.to_compile_error())
+                builder.generate_tokens().unwrap_or_else(|v| v.into_compile_error())
             });
 
             quote! {
@@ -92,7 +91,7 @@ impl SubdiagnosticDerive {
 
         let diag = &self.diag;
 
-        let ret = structure.gen_impl(quote! {
+        structure.gen_impl(quote! {
             gen impl frontend::rustc_errors::Subdiagnostic for @Self {
                 fn add_to_diag<__G>(
                     self,
@@ -103,9 +102,7 @@ impl SubdiagnosticDerive {
                     #implementation
                 }
             }
-        });
-
-        ret
+        })
     }
 }
 
@@ -195,7 +192,7 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
 
         for attr in self.variant.ast().attrs {
             let Some(SubdiagnosticVariant { kind, message }) =
-                SubdiagnosticVariant::from_attr(attr, &self.fields, &mut self.used_fields)?
+                SubdiagnosticVariant::from_attr(attr, &self.fields, self.used_fields)?
             else {
                 // Some attributes aren't errors - like documentation comments - but also aren't
                 // subdiagnostics.
@@ -246,7 +243,7 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
         kind_stats: KindsStatistics,
     ) -> TokenStream {
         let ast = binding.ast();
-        assert!(ast.attrs.len() > 0, "field without attributes generating attr code");
+        assert!(!ast.attrs.is_empty(), "field without attributes generating attr code");
 
         // Abstract over `Vec<T>` and `Option<T>` fields using `FieldInnerTy`, which will
         // apply the generated code on each element in the `Vec` or `Option`.
@@ -255,7 +252,7 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
             .iter()
             .map(|attr| {
                 // Always allow documentation comments.
-                if is_doc_comment(attr) {
+                if is_doc_comment(attr) || is_lint_attr(attr) {
                     return quote! {};
                 }
 
@@ -263,7 +260,7 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
 
                 let generated = self
                     .generate_field_code_inner(kind_stats, attr, info, inner_ty.will_iterate())
-                    .unwrap_or_else(|v| v.to_compile_error());
+                    .unwrap_or_else(|v| v.into_compile_error());
 
                 inner_ty.with(binding, generated)
             })
@@ -505,7 +502,7 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
         binding.ast().ident.as_ref().is_some_and(|ident| self.used_fields.contains(ident))
     }
 
-    pub(crate) fn into_tokens(&mut self) -> Result<TokenStream, DiagnosticDeriveError> {
+    pub(crate) fn generate_tokens(&mut self) -> Result<TokenStream, DiagnosticDeriveError> {
         let kind_messages = self.identify_kind()?;
 
         let kind_stats: KindsStatistics = kind_messages.iter().map(|(kind, _msg)| kind).collect();
@@ -576,7 +573,9 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
                         .value()
                         .map(|a| quote! { #a })
                         .or_else(|| self.applicability.take().value())
-                        .unwrap_or_else(|| quote! { frontend::rustc_errors::Applicability::Unspecified });
+                        .unwrap_or_else(
+                            || quote! { frontend::rustc_errors::Applicability::Unspecified },
+                        );
 
                     if let Some(span) = span_field {
                         let style = suggestion_kind.to_suggestion_style();
@@ -591,7 +590,9 @@ impl<'parent, 'a> SubdiagnosticDeriveVariantBuilder<'parent, 'a> {
                         .value()
                         .map(|a| quote! { #a })
                         .or_else(|| self.applicability.take().value())
-                        .unwrap_or_else(|| quote! { frontend::rustc_errors::Applicability::Unspecified });
+                        .unwrap_or_else(
+                            || quote! { frontend::rustc_errors::Applicability::Unspecified },
+                        );
 
                     if !self.has_suggestion_parts {
                         span_err(

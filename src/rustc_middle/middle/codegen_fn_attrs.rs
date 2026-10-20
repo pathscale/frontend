@@ -1,21 +1,19 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 
 use crate::rustc_abi::Align;
-use crate::rustc_hir::attrs::{InlineAttr, InstructionSetAttr, Linkage, OptimizeAttr, RtsanSetting};
+use crate::rustc_hir::attrs::{
+    InlineAttr, InstructionSetAttr, Linkage, OptimizeAttr, RtsanSetting,
+};
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 use crate::rustc_span::Symbol;
 use crate::rustc_target::spec::SanitizerSet;
+use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 
 use crate::rustc_middle::mono::Visibility;
 use crate::rustc_middle::ty::{InstanceKind, ShimKind, TyCtxt};
@@ -31,10 +29,10 @@ impl<'tcx> TyCtxt<'tcx> {
 
         // Drop the `#[naked]` attribute on non-item `InstanceKind`s, like the shims that
         // are generated for indirect function calls.
-        if !matches!(instance_kind, InstanceKind::Item(_)) {
-            if attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
-                attrs.to_mut().flags.remove(CodegenFnAttrFlags::NAKED);
-            }
+        if !matches!(instance_kind, InstanceKind::Item(_))
+            && attrs.flags.contains(CodegenFnAttrFlags::NAKED)
+        {
+            attrs.to_mut().flags.remove(CodegenFnAttrFlags::NAKED);
         }
 
         // A shim created by `#[track_caller]` should not inherit any attributes
@@ -135,22 +133,19 @@ pub struct CodegenFnAttrs {
 }
 
 #[derive(Copy, Clone, TyEncodable, TyDecodable, StableHash, Debug)]
+#[derive(Default)]
 pub enum InstrumentFnAttr {
     /// Always instrument function
     On,
     /// Never instrument function
     Off,
     /// Instrument based on command line options, if any.
+    #[default]
     Default,
 }
 
 // Not `const impl` (`const_trait_impl`, unstable); `CodegenFnAttrs::new` names the variant
 // directly to stay a `const fn`.
-impl Default for InstrumentFnAttr {
-    fn default() -> Self {
-        InstrumentFnAttr::Default
-    }
-}
 
 #[derive(Copy, Clone, Debug, TyEncodable, TyDecodable, StableHash, PartialEq, Eq)]
 pub enum TargetFeatureKind {
@@ -263,6 +258,12 @@ bitflags::bitflags! {
     }
 }
 crate::external_bitflags_debug! { CodegenFnAttrFlags }
+
+impl Default for CodegenFnAttrs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CodegenFnAttrs {
     pub const EMPTY: &'static Self = &Self::new();

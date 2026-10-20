@@ -1,9 +1,11 @@
-use alloc::vec::Vec;
 use crate::rustc_index::IndexVec;
 use crate::rustc_type_ir::RegionVid;
+use alloc::vec::Vec;
 
 use crate::rustc_infer::infer::SubregionOrigin;
-use crate::rustc_infer::infer::region_constraints::{Constraint, ConstraintKind, RegionConstraintData};
+use crate::rustc_infer::infer::region_constraints::{
+    Constraint, ConstraintKind, RegionConstraintData,
+};
 
 /// Selects either out-edges or in-edges for [`IndexedConstraintEdges::adjacent_edges`].
 #[derive(Clone, Copy, Debug)]

@@ -6,19 +6,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::iter;
 
+use crate::bug;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_infer::traits::{ObligationCauseCode, PredicateObligation, PredicateObligations};
-use crate::bug;
 use crate::rustc_middle::ty::{
     self, DelayedSet, GenericArgsRef, Term, TermKind, Ty, TyCtxt, TypeSuperVisitable,
     TypeVisitable, TypeVisitableExt, TypeVisitor,
@@ -480,12 +475,11 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                 .map(|(i, term)| {
                     let mut cause = traits::ObligationCause::misc(self.span, self.body_def_id);
                     // The first arg is the self ty - use the correct span for it.
-                    if i == 0 {
-                        if let Some(hir::ItemKind::Impl(hir::Impl { self_ty, .. })) =
+                    if i == 0
+                        && let Some(hir::ItemKind::Impl(hir::Impl { self_ty, .. })) =
                             item.map(|i| &i.kind)
-                        {
-                            cause.span = self_ty.span;
-                        }
+                    {
+                        cause.span = self_ty.span;
                     }
                     traits::Obligation::with_depth(
                         tcx,
@@ -742,21 +736,19 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                             ty::ClauseKind::ConstArgHasType(c, base_ty),
                         )),
                     ));
-                    if !tcx.features().generic_pattern_types() {
-                        if c.has_param() {
-                            if self.span.is_dummy() {
-                                self.tcx()
-                                    .dcx()
-                                    .delayed_bug("feature error should be reported elsewhere, too");
-                            } else {
-                                feature_err(
-                                    &self.tcx().sess,
-                                    sym::generic_pattern_types,
-                                    self.span,
-                                    "wraparound pattern type ranges cause monomorphization time errors",
-                                )
-                                .emit();
-                            }
+                    if !tcx.features().generic_pattern_types() && c.has_param() {
+                        if self.span.is_dummy() {
+                            self.tcx()
+                                .dcx()
+                                .delayed_bug("feature error should be reported elsewhere, too");
+                        } else {
+                            feature_err(
+                                self.tcx().sess,
+                                sym::generic_pattern_types,
+                                self.span,
+                                "wraparound pattern type ranges cause monomorphization time errors",
+                            )
+                            .emit();
                         }
                     }
                 };

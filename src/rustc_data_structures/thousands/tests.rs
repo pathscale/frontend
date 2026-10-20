@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 use super::*;
 
@@ -57,6 +52,6 @@ fn test_f64p1_with_underscores() {
     assert_eq!("-1.0", f64p1_with_underscores(-0.9999999));
     assert_eq!("345.5", f64p1_with_underscores(345.4999999));
     assert_eq!("-100_000.0", f64p1_with_underscores(-100_000f64));
-    assert_eq!("123_456_789.1", f64p1_with_underscores(123456789.123456789));
-    assert_eq!("-123_456_789.1", f64p1_with_underscores(-123456789.123456789));
+    assert_eq!("123_456_789.1", f64p1_with_underscores(123456789.12345679));
+    assert_eq!("-123_456_789.1", f64p1_with_underscores(-123456789.12345679));
 }

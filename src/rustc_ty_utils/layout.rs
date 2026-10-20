@@ -1,6 +1,9 @@
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::range::{RangeFrom, RangeToInclusive};
 
+use crate::bug;
+use crate::find_attr;
 use crate::rustc_abi as abi;
 use crate::rustc_abi::Integer::{I8, I32};
 use crate::rustc_abi::Primitive::{self, Float, Int, Pointer};
@@ -10,9 +13,7 @@ use crate::rustc_abi::{
     WrappingRange,
 };
 use crate::rustc_hashes::Hash64;
-use crate::find_attr;
 use crate::rustc_index::{Idx as _, IndexVec};
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::traits::ObligationCause;
 use crate::rustc_middle::ty::layout::{
@@ -327,9 +328,7 @@ fn layout_of_uncached<'tcx>(
                                 .collect();
                             let mut variants = variants?;
                             if !scalar.is_signed() {
-                                let guar = tcx.dcx().err(format!(
-                                    "only signed integer base types are allowed for or-pattern pattern types at present"
-                                ));
+                                let guar = tcx.dcx().err("only signed integer base types are allowed for or-pattern pattern types at present".to_string());
 
                                 return Err(error(cx, LayoutError::ReferencesError(guar)));
                             }
@@ -337,7 +336,7 @@ fn layout_of_uncached<'tcx>(
                             if variants.len() != 2 {
                                 let guar = tcx
                                 .dcx()
-                                .err(format!("the only or-pattern types allowed are two range patterns that are directly connected at their overflow site"));
+                                .err("the only or-pattern types allowed are two range patterns that are directly connected at their overflow site".to_string());
 
                                 return Err(error(cx, LayoutError::ReferencesError(guar)));
                             }
@@ -353,9 +352,7 @@ fn layout_of_uncached<'tcx>(
 
                             if layout.size.sign_extend(first.1) >= layout.size.sign_extend(second.0)
                             {
-                                let guar = tcx.dcx().err(format!(
-                                    "only non-overlapping pattern type ranges are allowed at present"
-                                ));
+                                let guar = tcx.dcx().err("only non-overlapping pattern type ranges are allowed at present".to_string());
 
                                 return Err(error(cx, LayoutError::ReferencesError(guar)));
                             }
@@ -604,7 +601,7 @@ fn layout_of_uncached<'tcx>(
 
         ty::Tuple(tys) => {
             let kind =
-                if tys.len() == 0 { StructKind::AlwaysSized } else { StructKind::MaybeUnsized };
+                if tys.is_empty() { StructKind::AlwaysSized } else { StructKind::MaybeUnsized };
 
             univariant(tys, kind)?
         }
@@ -664,14 +661,15 @@ fn layout_of_uncached<'tcx>(
             if let Some(limit) = find_attr!(
                 tcx, def.did(),
                 RustcSimdMonomorphizeLaneLimit(limit) => limit
-            ) {
-                if !limit.value_within_limit(e_len as usize) {
-                    return Err(map_error(
-                        &cx,
-                        ty,
-                        crate::rustc_abi::LayoutCalculatorError::OversizedSimdType { max_lanes: limit.0 },
-                    ));
-                }
+            ) && !limit.value_within_limit(e_len as usize)
+            {
+                return Err(map_error(
+                    cx,
+                    ty,
+                    crate::rustc_abi::LayoutCalculatorError::OversizedSimdType {
+                        max_lanes: limit.0,
+                    },
+                ));
             }
 
             map_layout(cx.calc.simd_type(e_ly, e_len, def.repr().packed()))?

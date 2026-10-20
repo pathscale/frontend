@@ -9,12 +9,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt::{self, Debug};
 use core::marker::PhantomData;
@@ -301,7 +295,8 @@ impl<K: Idx, V, I> Drop for VecCache<K, V, I> {
         for (idx, bucket) in BucketIndex::enumerate_buckets(&self.present) {
             let bucket = bucket.load(Ordering::Acquire);
             if !bucket.is_null() {
-                let layout = core::alloc::Layout::array::<Slot<()>>(ENTRIES_BY_BUCKET[idx]).unwrap();
+                let layout =
+                    core::alloc::Layout::array::<Slot<()>>(ENTRIES_BY_BUCKET[idx]).unwrap();
                 unsafe {
                     alloc::alloc::dealloc(bucket.cast(), layout);
                 }
@@ -320,10 +315,7 @@ where
     pub fn lookup(&self, key: &K) -> Option<(V, I)> {
         let key = u32::try_from(key.index()).unwrap();
         let slot_idx = SlotIndex::from_index(key);
-        match unsafe { slot_idx.get(&self.buckets) } {
-            Some((value, idx)) => Some((value, I::new(idx as usize))),
-            None => None,
-        }
+        unsafe { slot_idx.get(&self.buckets) }.map(|(value, idx)| (value, I::new(idx as usize)))
     }
 
     #[inline]
@@ -361,6 +353,10 @@ where
 
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Acquire)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -427,16 +423,16 @@ impl BucketIndex {
     const fn from_raw(raw: usize) -> Self {
         match raw {
             // tidy-alphabetical-start
-            00 => Self::Bucket00,
-            01 => Self::Bucket01,
-            02 => Self::Bucket02,
-            03 => Self::Bucket03,
-            04 => Self::Bucket04,
-            05 => Self::Bucket05,
-            06 => Self::Bucket06,
-            07 => Self::Bucket07,
-            08 => Self::Bucket08,
-            09 => Self::Bucket09,
+            0 => Self::Bucket00,
+            1 => Self::Bucket01,
+            2 => Self::Bucket02,
+            3 => Self::Bucket03,
+            4 => Self::Bucket04,
+            5 => Self::Bucket05,
+            6 => Self::Bucket06,
+            7 => Self::Bucket07,
+            8 => Self::Bucket08,
+            9 => Self::Bucket09,
             10 => Self::Bucket10,
             11 => Self::Bucket11,
             12 => Self::Bucket12,

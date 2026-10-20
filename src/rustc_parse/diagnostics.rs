@@ -1,11 +1,9 @@
 // ignore-tidy-file-filelength
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::Cow;
-use eko::path::PathBuf;
+use alloc::vec::Vec;
 
 use crate::rustc_ast::token::{self, InvisibleOrigin, MetaVarKind, Token};
 use crate::rustc_ast_pretty::pprust;
@@ -14,9 +12,9 @@ use crate::rustc_errors::{
     Applicability, Diag, DiagArgValue, DiagCtxtHandle, Diagnostic, EmissionGuarantee, IntoDiagArg,
     Level, Subdiagnostic, SuggestionStyle, msg,
 };
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::edition::{Edition, LATEST_STABLE_EDITION};
 use crate::rustc_span::{Ident, Span, Symbol};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("ambiguous `+` in a type")]
@@ -308,6 +306,10 @@ pub(crate) struct NotAsNegationOperator {
 }
 
 #[derive(Subdiagnostic)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "variant names are the established identifiers for the two negation suggestions"
+)]
 pub(crate) enum NotAsNegationOperatorSub {
     #[suggestion(
         "use `!` to perform logical negation or bitwise not",
@@ -4680,7 +4682,6 @@ pub(crate) struct FoundPathInGenerics {
     applicability = "maybe-incorrect",
     code = "T: "
 )]
-
 pub(crate) struct SuggestBindTypeParameter {
     #[primary_span]
     pub span: Span,

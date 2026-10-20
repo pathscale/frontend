@@ -9,12 +9,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::hash::{Hash, Hasher};
 
@@ -254,7 +248,8 @@ impl<'tcx, E: TyEncoder<'tcx>> Encodable<E> for ty::ParamEnv<'tcx> {
     }
 }
 
-impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {    fn decode(decoder: &mut D) -> Ty<'tcx> {
+impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {
+    fn decode(decoder: &mut D) -> Ty<'tcx> {
         // Handle shorthands first, if we have a usize > 0x80.
         if decoder.positioned_at_shorthand() {
             let pos = decoder.read_usize();
@@ -534,7 +529,7 @@ macro_rules! __impl_decoder_methods {
 macro_rules! implement_ty_decoder {
     ($DecoderName:ident <$($typaram:tt),*> $(, { $($own:tt)* })?) => {
         mod __ty_decoder_impl {
-            use crate::rustc_serialize::Decoder;
+            use $crate::rustc_serialize::Decoder;
 
             use super::$DecoderName;
 

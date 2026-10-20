@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 // Coherence phase
 //
 // The job of the coherence phase of typechecking is to ensure that
@@ -8,21 +9,16 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_errors::codes::*;
-use crate::struct_span_code_err;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt, elaborate};
 use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::{ErrorGuaranteed, sym};
+use crate::struct_span_code_err;
 use tracing::debug;
 
 use crate::rustc_hir_analysis::check::always_applicable;
@@ -71,12 +67,12 @@ fn enforce_trait_manually_implementable(
 
     if tcx.is_lang_item(trait_def_id, LangItem::Freeze) && !tcx.features().freeze_impls() {
         feature_err(
-            &tcx.sess,
+            tcx.sess,
             sym::freeze_impls,
             impl_header_span,
             "explicit impls for the `Freeze` trait are not permitted",
         )
-        .with_span_label(impl_header_span, format!("impl of `Freeze` not allowed"))
+        .with_span_label(impl_header_span, "impl of `Freeze` not allowed".to_string())
         .emit();
     }
 
@@ -101,16 +97,14 @@ fn enforce_trait_manually_implementable(
     }
 
     if let ty::trait_def::TraitSpecializationKind::AlwaysApplicable = trait_def.specialization_kind
+        && !tcx.features().specialization()
+        && !tcx.features().min_specialization()
+        && !impl_header_span.allows_unstable(sym::specialization)
+        && !impl_header_span.allows_unstable(sym::min_specialization)
     {
-        if !tcx.features().specialization()
-            && !tcx.features().min_specialization()
-            && !impl_header_span.allows_unstable(sym::specialization)
-            && !impl_header_span.allows_unstable(sym::min_specialization)
-        {
-            return Err(tcx
-                .dcx()
-                .emit_err(diagnostics::SpecializationTrait { span: impl_header_span }));
-        }
+        return Err(tcx
+            .dcx()
+            .emit_err(diagnostics::SpecializationTrait { span: impl_header_span }));
     }
 
     if !trait_def.impl_restriction.is_allowed_in(impl_def_id.to_def_id(), tcx) {

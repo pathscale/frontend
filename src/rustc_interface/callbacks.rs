@@ -12,12 +12,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 
@@ -83,7 +77,10 @@ fn track_feature(feature: Symbol) {
 
 /// This is a callback from `rustc_hir` as it cannot access the implicit state
 /// in `rustc_middle` otherwise.
-fn def_id_debug(def_id: crate::rustc_hir::def_id::DefId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn def_id_debug(
+    def_id: crate::rustc_hir::def_id::DefId,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     write!(f, "DefId({}:{}", def_id.krate, def_id.index.index())?;
     tls::with_opt(|opt_tcx| {
         if let Some(tcx) = opt_tcx {
@@ -98,7 +95,8 @@ fn def_id_debug(def_id: crate::rustc_hir::def_id::DefId, f: &mut fmt::Formatter<
 /// TyCtxt in.
 pub fn setup_callbacks() {
     crate::rustc_span::SPAN_TRACK.swap(&(track_span_parent as fn(_)));
-    crate::rustc_hir::def_id::DEF_ID_DEBUG.swap(&(def_id_debug as fn(_, &mut fmt::Formatter<'_>) -> _));
+    crate::rustc_hir::def_id::DEF_ID_DEBUG
+        .swap(&(def_id_debug as fn(_, &mut fmt::Formatter<'_>) -> _));
     crate::rustc_errors::TRACK_DIAGNOSTIC.swap(&(track_diagnostic as _));
     crate::rustc_feature::TRACK_FEATURE.swap(&(track_feature as _));
 }

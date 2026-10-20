@@ -20,11 +20,11 @@ use crate::rustc_span::{FileName, Ident, LocalExpnId, Span, Symbol};
 use rustc_macros::{BlobDecodable, Encodable};
 
 use crate::rustc_expand::base::{self, *};
-use crate::rustc_expand::{diagnostics, mbe, proc_macro_server};
 use crate::rustc_expand::proc_macro_schema::{
     ExactPart, ProcMacroSchema, RewrittenSchemaTemplate, SchemaBindingSource, SchemaGuard,
     SchemaRule, SchemaVariable,
 };
+use crate::rustc_expand::{diagnostics, mbe, proc_macro_server};
 
 fn exec_strategy(sess: &Session) -> impl pm::bridge::server::ExecutionStrategy + 'static {
     // This is only the published library compatibility field, no longer an
@@ -104,16 +104,12 @@ impl UnrunProcMacro {
         )?;
         if output.is_some() {
             ecx.sess.mark_schema_transcriber_expansion(expansion);
-            if rewritten
-                .variables
-                .iter()
-                .any(|variable| {
-                    matches!(
-                        &variable.hole,
-                        crate::rustc_expand::proc_macro_schema::SchemaHole::Opaque { .. }
-                    )
-                })
-            {
+            if rewritten.variables.iter().any(|variable| {
+                matches!(
+                    &variable.hole,
+                    crate::rustc_expand::proc_macro_schema::SchemaHole::Opaque { .. }
+                )
+            }) {
                 ecx.sess.record_loss();
             }
         }
@@ -135,11 +131,8 @@ fn schema_item(item: &ast::Item) -> Option<SchemaItem<'_>> {
             (*ident, generics, data.fields().iter().collect())
         }
         ast::ItemKind::Enum(ident, generics, data) => {
-            let fields = data
-                .variants
-                .iter()
-                .flat_map(|variant| variant.data.fields().iter())
-                .collect();
+            let fields =
+                data.variants.iter().flat_map(|variant| variant.data.fields().iter()).collect();
             (*ident, generics, fields)
         }
         _ => return None,
@@ -194,20 +187,20 @@ fn generic_parts(ecx: &ExtCtxt<'_>, generics: &ast::Generics) -> Option<[String;
         Vec::new()
     } else {
         let source = ecx.sess.source_map().span_to_snippet(generics.span).ok()?;
-        let parameters = crate::rustc_expand::proc_macro_schema::generic_parameter_sources(&source)?;
+        let parameters =
+            crate::rustc_expand::proc_macro_schema::generic_parameter_sources(&source)?;
         if parameters.len() != generics.params.len() {
             return None;
         }
         parameters
             .iter()
-            .map(|parameter| crate::rustc_expand::proc_macro_schema::remove_generic_default(parameter))
+            .map(|parameter| {
+                crate::rustc_expand::proc_macro_schema::remove_generic_default(parameter)
+            })
             .collect()
     };
-    let type_params = generics
-        .params
-        .iter()
-        .map(|param| param.ident.to_string())
-        .collect::<Vec<_>>();
+    let type_params =
+        generics.params.iter().map(|param| param.ident.to_string()).collect::<Vec<_>>();
     let impl_generics = if generics.params.is_empty() {
         String::new()
     } else {
@@ -221,10 +214,7 @@ fn generic_parts(ecx: &ExtCtxt<'_>, generics: &ast::Generics) -> Option<[String;
     let where_clause = if generics.where_clause.is_empty() {
         String::new()
     } else {
-        ecx.sess
-            .source_map()
-            .span_to_snippet(generics.where_clause.span)
-            .ok()?
+        ecx.sess.source_map().span_to_snippet(generics.where_clause.span).ok()?
     };
     Some([impl_generics, type_generics, where_clause])
 }
@@ -289,7 +279,8 @@ fn schema_bindings(
     variables
         .into_iter()
         .map(|variable| {
-            let crate::rustc_expand::proc_macro_schema::SchemaHole::Exact(part) = &variable.hole else {
+            let crate::rustc_expand::proc_macro_schema::SchemaHole::Exact(part) = &variable.hole
+            else {
                 return None;
             };
             let values = match part {
@@ -301,15 +292,14 @@ fn schema_bindings(
                     } else {
                         let index = match variable.source {
                             Some(SchemaBindingSource::Parameter(index)) => index,
-                            _ => rule.parameters.iter().position(|parameter| parameter == &variable.name)?,
+                            _ => rule
+                                .parameters
+                                .iter()
+                                .position(|parameter| parameter == &variable.name)?,
                         };
                         let input = arguments.get(index)?.clone();
                         if variable.repeated && !rule.loop_repetition {
-                            input
-                                .iter()
-                                .cloned()
-                                .map(|tree| TokenStream::new(vec![tree]))
-                                .collect()
+                            input.iter().cloned().map(|tree| TokenStream::new(vec![tree])).collect()
                         } else {
                             repeated_static_value(input, &variable, rule, field_count)?
                         }
@@ -379,11 +369,7 @@ fn schema_bindings(
                     }
                 }
             };
-            Some(mbe::SchemaBinding {
-                name: variable.name,
-                values,
-                repeated: variable.repeated,
-            })
+            Some(mbe::SchemaBinding { name: variable.name, values, repeated: variable.repeated })
         })
         .collect()
 }
@@ -435,12 +421,7 @@ impl base::AttrProcMacro for UnrunProcMacro {
     ) -> Result<TokenStream, ErrorGuaranteed> {
         let parsed_item = parse_schema_item(ecx, &annotated);
         let arguments = [annotation, annotated.clone()];
-        if let Some(output) = self.transcribe_schema(
-            ecx,
-            span,
-            &arguments,
-            parsed_item.as_ref(),
-        )? {
+        if let Some(output) = self.transcribe_schema(ecx, span, &arguments, parsed_item.as_ref())? {
             return Ok(output);
         }
         ecx.sess.record_loss();
@@ -460,12 +441,8 @@ impl MultiItemModifier for UnrunProcMacro {
     ) -> ExpandResult<Vec<Annotatable>, Annotatable> {
         let is_stmt = matches!(item, Annotatable::Stmt(..));
         let input = item.to_tokens();
-        let output = match self.transcribe_schema(
-            ecx,
-            span,
-            &[input],
-            item_from_annotatable(&item),
-        ) {
+        let output = match self.transcribe_schema(ecx, span, &[input], item_from_annotatable(&item))
+        {
             Ok(output) => output,
             Err(_) => return ExpandResult::Ready(vec![]),
         };

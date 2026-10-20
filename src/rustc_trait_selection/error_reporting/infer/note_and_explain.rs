@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -69,7 +67,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                             snippet,
                         ) = tcx.sess.source_map().span_to_snippet(sp) =>
                     {
-                        if snippet.chars().all(|c| c.is_digit(10) || c == '-' || c == '_') {
+                        if snippet.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '_') {
                             diag.span_suggestion_verbose(
                                 sp.shrink_to_hi(),
                                 "use a float literal",
@@ -203,7 +201,7 @@ impl<'tcx> TypeErrCtxt<'_, 'tcx> {
                                         let args_span = end_of_args.and_then(|args| args.span());
                                         matched_end_of_args = args_span.is_some();
                                         matching_span = args_span
-                                            .or_else(|| Some(end_of_trait))
+                                            .or(Some(end_of_trait))
                                             .map(|span| span.shrink_to_hi());
                                         break;
                                     }
@@ -370,7 +368,7 @@ impl<T> Trait<T> for X {
                                     values.expected,
                                 ) || self.suggest_constraint(
                                     diag,
-                                    &msg,
+                                    msg,
                                     body_owner_def_id,
                                     proj_ty,
                                     values.expected,
@@ -479,7 +477,8 @@ impl<T> Trait<T> for X {
                                 crate::rustc_hir::OpaqueTyOrigin::FnReturn { .. } => {}
                                 crate::rustc_hir::OpaqueTyOrigin::AsyncFn { .. } => {}
                                 crate::rustc_hir::OpaqueTyOrigin::TyAlias {
-                                    in_assoc_ty: false, ..
+                                    in_assoc_ty: false,
+                                    ..
                                 } => {
                                     diag.span_note(
                                         sp,
@@ -488,7 +487,8 @@ impl<T> Trait<T> for X {
                                     );
                                 }
                                 crate::rustc_hir::OpaqueTyOrigin::TyAlias {
-                                    in_assoc_ty: true, ..
+                                    in_assoc_ty: true,
+                                    ..
                                 } => {}
                             }
                         }
@@ -565,12 +565,12 @@ impl<T> Trait<T> for X {
                     }
                     (ty::FnPtr(_, hdr), ty::FnDef(def_id, _))
                     | (ty::FnDef(def_id, _), ty::FnPtr(_, hdr)) => {
-                        if tcx.fn_sig(def_id).skip_binder().safety() < hdr.safety() {
-                            if !tcx.codegen_fn_attrs(def_id).safe_target_features {
-                                diag.note(
+                        if tcx.fn_sig(def_id).skip_binder().safety() < hdr.safety()
+                            && !tcx.codegen_fn_attrs(def_id).safe_target_features
+                        {
+                            diag.note(
                                 "unsafe functions cannot be coerced into safe function pointers",
-                                );
-                            }
+                            );
                         }
                     }
                     (ty::Adt(_, _), ty::Adt(def, args))
@@ -782,14 +782,14 @@ impl<T> Trait<T> for X {
             };
             // Possibly suggest constraining the associated type to conform to the
             // found type.
-            if self.suggest_constraint(diag, &msg, body_owner_def_id, proj_ty, values.found)
+            if self.suggest_constraint(diag, msg, body_owner_def_id, proj_ty, values.found)
                 || point_at_assoc_fn
             {
                 return;
             }
         }
 
-        self.suggest_constraining_opaque_associated_type(diag, &msg, proj_ty, values.found);
+        self.suggest_constraining_opaque_associated_type(diag, msg, proj_ty, values.found);
 
         if self.point_at_associated_type(diag, body_owner_def_id, values.found) {
             return;
@@ -989,6 +989,10 @@ fn foo(&self) -> Self::T { String::new() }
     /// inside `bounds`. If that's the case then we can consider `bounds` containing only one
     /// trait bound as the one we're looking for. This can help in cases where the associated
     /// type is defined on a supertrait of the one present in the bounds.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn constrain_generic_bound_associated_type_structured_suggestion(
         &self,
         diag: &mut Diag<'_>,
@@ -1014,9 +1018,9 @@ fn foo(&self) -> Self::T { String::new() }
             .filter(|ptr| ptr.trait_ref.trait_def_id() == Some(trait_ref.def_id))
             .collect::<Vec<_>>();
 
-        let span = match &matching_trait_bounds[..] {
-            &[ptr] => ptr.span,
-            &[] if is_bound_surely_present => match &trait_bounds.collect::<Vec<_>>()[..] {
+        let span = match matching_trait_bounds[..] {
+            [ptr] => ptr.span,
+            [] if is_bound_surely_present => match &trait_bounds.collect::<Vec<_>>()[..] {
                 &[ptr] => ptr.span,
                 _ => return false,
             },

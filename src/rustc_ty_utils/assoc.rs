@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, DefIdMap, LocalDefId};
 use crate::rustc_hir::definitions::{DefPathData, PerParentDisambiguatorState};
@@ -9,6 +8,7 @@ use crate::rustc_middle::ty::{self, ImplTraitInTraitData, TyCtxt};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::Ident;
 use crate::rustc_span::symbol::kw;
+use alloc::vec::Vec;
 
 pub(crate) fn provide(providers: &mut Providers) {
     *providers = Providers {
@@ -141,7 +141,7 @@ impl<'tcx> Visitor<'tcx> for RPITVisitor<'_, 'tcx> {
             self.tcx,
             opaque.def_id,
             self.data,
-            &mut self.disambiguator,
+            self.disambiguator,
         ));
         intravisit::walk_opaque_ty(self, opaque)
     }

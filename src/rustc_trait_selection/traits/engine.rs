@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::RefCell;
@@ -18,7 +13,9 @@ use crate::rustc_infer::infer::at::ToTrace;
 use crate::rustc_infer::infer::canonical::{
     Canonical, CanonicalQueryResponse, CanonicalVarValues, QueryResponse,
 };
-use crate::rustc_infer::infer::{DefineOpaqueTypes, InferCtxt, InferOk, RegionResolutionError, TypeTrace};
+use crate::rustc_infer::infer::{
+    DefineOpaqueTypes, InferCtxt, InferOk, RegionResolutionError, TypeTrace,
+};
 use crate::rustc_infer::traits::{PredicateObligations, TraitErrors};
 use crate::rustc_middle::arena::ArenaAllocatable;
 use crate::rustc_middle::traits::query::NoSolution;
@@ -30,7 +27,9 @@ use thin_vec::ThinVec;
 use super::{FromSolverError, FulfillmentContext, ScrubbedTraitError, TraitEngine};
 use crate::rustc_trait_selection::error_reporting::InferCtxtErrorExt;
 use crate::rustc_trait_selection::regions::InferCtxtRegionExt;
-use crate::rustc_trait_selection::solve::{FulfillmentCtxt as NextFulfillmentCtxt, NextSolverError};
+use crate::rustc_trait_selection::solve::{
+    FulfillmentCtxt as NextFulfillmentCtxt, NextSolverError,
+};
 use crate::rustc_trait_selection::traits::fulfill::OldSolverError;
 use crate::rustc_trait_selection::traits::{
     FulfillmentError, NormalizeExt, Obligation, ObligationCause, PredicateObligation,
@@ -41,6 +40,10 @@ use crate::rustc_trait_selection::traits::{
 /// `dyn TraitEngine` because some of its holders (e.g. [`ObligationCtxt`])
 /// are created very often (once per candidate probe during method
 /// resolution), so the heap allocation would be expensive.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the established engine representation without adding indirection."
+)]
 pub enum FulfillmentEngine<'tcx, E> {
     Old(FulfillmentContext<'tcx, E>),
     Next(NextFulfillmentCtxt<'tcx, E>),
@@ -320,7 +323,6 @@ where
     /// Err: remove the obligation from the list and return an error
     ///
     /// Returns a list of errors from obligations that evaluated to Err.
-    #[must_use]
     pub fn try_evaluate_obligations(&self) -> TraitErrors<E> {
         self.engine.borrow_mut().try_evaluate_obligations(self.infcx)
     }
@@ -333,7 +335,6 @@ where
     /// Err: remove the obligation from the list and return an error
     ///
     /// Returns a list of errors from obligations that evaluated to Ambiguous or Err.
-    #[must_use]
     pub fn evaluate_obligations_error_on_ambiguity(&self) -> TraitErrors<E> {
         self.engine.borrow_mut().evaluate_obligations_error_on_ambiguity(self.infcx)
     }

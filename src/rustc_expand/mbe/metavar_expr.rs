@@ -1,14 +1,14 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::ToString;
 use crate::rustc_ast::token::{self, Delimiter, IdentIsRaw, Lit, Token, TokenKind};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenStreamIter, TokenTree};
 use crate::rustc_ast::{LitIntType, LitKind};
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_errors::{Applicability, PResult};
-use rustc_macros::{Decodable, Encodable};
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::{Ident, Span, Symbol, sym};
+use alloc::boxed::Box;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use rustc_macros::{Decodable, Encodable};
 
 use crate::rustc_expand::diagnostics;
 

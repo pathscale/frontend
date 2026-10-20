@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -88,7 +84,7 @@ fn test_range() {
     map.insert(6, 6);
     map.insert(9, 9);
 
-    let keys = |s: &[(_, _)]| s.into_iter().map(|e| e.0).collect::<Vec<u32>>();
+    let keys = |s: &[(_, _)]| s.iter().map(|e| e.0).collect::<Vec<u32>>();
 
     for start in 0..11 {
         for end in 0..11 {

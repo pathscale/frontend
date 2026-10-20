@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use crate::exp;
 use crate::rustc_ast::token::Token;
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::{AttrStyle, NodeId, token};
@@ -8,10 +8,10 @@ use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::{Diagnostic, MultiSpan};
 use crate::rustc_feature::Features;
 use crate::rustc_lint_defs::builtin::UNREACHABLE_CFG_SELECT_PREDICATES;
-use crate::exp;
 use crate::rustc_parse::parser::{Parser, Recovery};
 use crate::rustc_session::Session;
 use crate::rustc_span::{ErrorGuaranteed, Span, Symbol, sym};
+use alloc::vec::Vec;
 
 use crate::rustc_attr_parsing::attributes::AttributeSafety;
 use crate::rustc_attr_parsing::parser::{AllowExprMetavar, MetaItemOrLitParser};

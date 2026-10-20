@@ -4,12 +4,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_abi::{
     BackendRepr, HasDataLayout, Primitive, Reg, RegKind, Size, TyAbiInterface, TyAndLayout,
@@ -173,10 +167,10 @@ fn cast_target(cls: &[Option<Class>], size: Size) -> CastTarget {
     let lo = reg_component(cls, &mut i, size).unwrap();
     let offset = Size::from_bytes(8) * (i as u64);
     let mut target = CastTarget::from(lo);
-    if size > offset {
-        if let Some(hi) = reg_component(cls, &mut i, size - offset) {
-            target = CastTarget::pair(lo, hi);
-        }
+    if size > offset
+        && let Some(hi) = reg_component(cls, &mut i, size - offset)
+    {
+        target = CastTarget::pair(lo, hi);
     }
     assert_eq!(reg_component(cls, &mut i, Size::ZERO), None);
     target
@@ -206,30 +200,28 @@ where
         }
         let mut cls_or_mem = classify_arg(cx, arg);
 
-        if is_arg {
-            if let Ok(cls) = cls_or_mem {
-                let mut needed_int = 0;
-                let mut needed_sse = 0;
-                for c in cls {
-                    match c {
-                        Some(Class::Int) => needed_int += 1,
-                        Some(Class::Sse) => needed_sse += 1,
-                        _ => {}
-                    }
+        if is_arg && let Ok(cls) = cls_or_mem {
+            let mut needed_int = 0;
+            let mut needed_sse = 0;
+            for c in cls {
+                match c {
+                    Some(Class::Int) => needed_int += 1,
+                    Some(Class::Sse) => needed_sse += 1,
+                    _ => {}
                 }
-                match (int_regs.checked_sub(needed_int), sse_regs.checked_sub(needed_sse)) {
-                    (Some(left_int), Some(left_sse)) => {
-                        int_regs = left_int;
-                        sse_regs = left_sse;
-                    }
-                    _ => {
-                        // Not enough registers for this argument, so it will be
-                        // passed on the stack, but we only mark aggregates
-                        // explicitly as indirect `byval` arguments, as LLVM will
-                        // automatically put immediates on the stack itself.
-                        if arg.layout.is_aggregate() {
-                            cls_or_mem = Err(Memory);
-                        }
+            }
+            match (int_regs.checked_sub(needed_int), sse_regs.checked_sub(needed_sse)) {
+                (Some(left_int), Some(left_sse)) => {
+                    int_regs = left_int;
+                    sse_regs = left_sse;
+                }
+                _ => {
+                    // Not enough registers for this argument, so it will be
+                    // passed on the stack, but we only mark aggregates
+                    // explicitly as indirect `byval` arguments, as LLVM will
+                    // automatically put immediates on the stack itself.
+                    if arg.layout.is_aggregate() {
+                        cls_or_mem = Err(Memory);
                     }
                 }
             }

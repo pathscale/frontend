@@ -17,12 +17,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::graph;
 use crate::rustc_data_structures::graph::iterate::DepthFirstSearch;
@@ -121,20 +115,18 @@ where
     G: graph::StartNode + graph::Successors,
 {
     fn successors(&self, node: Self::Node) -> impl Iterator<Item = Self::Node> {
-        let real_edges;
-        let sink_edge;
 
-        if node == self.sink {
+
+
+        let (real_edges, sink_edge) = if node == self.sink {
             // The sink node has no real out-edges, and one synthetic out-edge
             // to the start node.
-            real_edges = None;
-            sink_edge = Some(self.graph.start_node());
+            (None, Some(self.graph.start_node()))
         } else {
             // Real nodes have their real out-edges, and possibly one synthetic
             // out-edge to the sink node.
-            real_edges = Some(self.graph.successors(node));
-            sink_edge = self.sink_edge_nodes.contains(node).then_some(self.sink);
-        }
+            (Some(self.graph.successors(node)), self.sink_edge_nodes.contains(node).then_some(self.sink))
+        };
 
         real_edges.into_iter().flatten().chain(sink_edge)
     }

@@ -1,12 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 use core::{cmp, fmt};
 
@@ -22,12 +18,12 @@ use crate::rustc_errors::{
 use crate::rustc_hir as hir;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def_id::DefId;
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, extension};
 use crate::rustc_session::config::OptLevel;
 use crate::rustc_span::{DUMMY_SP, ErrorGuaranteed, Span, Symbol, sym};
 use crate::rustc_structures::Limit;
 use crate::rustc_target::callconv::FnAbi;
 use crate::rustc_target::spec::{HasTargetSpec, HasX86AbiOpt, Target, X86Abi};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, extension};
 use tracing::debug;
 
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
@@ -376,12 +372,13 @@ impl<'tcx> SizeSkeleton<'tcx> {
                 Limit(0) => Limit(2),
                 limit => limit * 2,
             };
-            let reported =
-                tcx.dcx().emit_err(crate::rustc_middle::diagnostics::RecursionLimitReachedSizeSkeleton {
+            let reported = tcx.dcx().emit_err(
+                crate::rustc_middle::diagnostics::RecursionLimitReachedSizeSkeleton {
                     span,
                     ty,
                     suggested_limit,
-                });
+                },
+            );
             return Err(tcx.arena.alloc(LayoutError::ReferencesError(reported)));
         }
 
@@ -444,7 +441,7 @@ impl<'tcx> SizeSkeleton<'tcx> {
                     }
                     ty::Error(guar) => {
                         // Fixes ICE #124031
-                        return Err(tcx.arena.alloc(LayoutError::ReferencesError(*guar)));
+                        Err(tcx.arena.alloc(LayoutError::ReferencesError(*guar)))
                     }
                     _ => bug!(
                         "SizeSkeleton::compute({ty}): layout errored ({err:?}), yet \
@@ -1021,7 +1018,7 @@ where
                         // Discriminant field for enums (where applicable).
                         Variants::Multiple { tag, .. } => {
                             assert_eq!(i, 0);
-                            return TyMaybeWithLayout::TyAndLayout(tag_layout(tag));
+                            TyMaybeWithLayout::TyAndLayout(tag_layout(tag))
                         }
                     }
                 }
@@ -1177,9 +1174,8 @@ where
                             result = field.to_result().ok().and_then(|field| {
                                 if ptr_end <= field_start + field.size {
                                     // We found the right field, look inside it.
-                                    let field_info =
-                                        field.pointee_info_at(cx, offset - field_start);
-                                    field_info
+
+                                    field.pointee_info_at(cx, offset - field_start)
                                 } else {
                                     None
                                 }
@@ -1218,7 +1214,7 @@ where
     }
 
     fn is_unit(this: TyAndLayout<'tcx>) -> bool {
-        matches!(this.ty.kind(), ty::Tuple(list) if list.len() == 0)
+        matches!(this.ty.kind(), ty::Tuple(list) if list.is_empty())
     }
 
     fn is_transparent(this: TyAndLayout<'tcx>) -> bool {

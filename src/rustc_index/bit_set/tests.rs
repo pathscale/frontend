@@ -1,6 +1,6 @@
+use super::*;
 #[allow(unused_imports)]
 use {alloc::boxed::Box, alloc::vec::Vec};
-use super::*;
 
 #[test]
 fn test_new_filled() {
@@ -173,8 +173,36 @@ fn chunked_bitset() {
             words: Rc::new([
                 0b11111111_11111111_11111110_11111111_11111111_11101111_11111111_11111111,
                 0b00000000_00000000_00000000_00000111_11111111_11111111_11111111_11111111,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
             ])
         }],
     );
@@ -250,16 +278,46 @@ fn chunked_bitset() {
                 chunk_domain_size: 2048,
                 ones_count: 1,
                 words: Rc::new([
-                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0
                 ])
             },
             Mixed {
                 chunk_domain_size: 2048,
                 ones_count: 1,
                 words: Rc::new([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x8000_0000_0000_0000
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0x8000_0000_0000_0000
                 ])
             },
         ],
@@ -296,16 +354,46 @@ fn chunked_bitset() {
                 chunk_domain_size: 2048,
                 ones_count: 1,
                 words: Rc::new([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0100_0000_0000_0000, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0x0100_0000_0000_0000,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
                 ])
             },
             Mixed {
                 chunk_domain_size: 2048,
                 ones_count: 1,
                 words: Rc::new([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0100, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0,
                 ])
             },
             Zeros { chunk_domain_size: 2048 },
@@ -347,16 +435,44 @@ fn chunked_bitset() {
     assert_eq!(
         b64.chunks(),
         // `#[rustfmt::skip]` dropped: `stmt_expr_attributes` is unstable.
-        vec![
-            Mixed {
-                chunk_domain_size: 64,
-                ones_count: 63,
-                words: Rc::new([
-                    0xfffffffffffffffe, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                ])
-            },
-        ],
+        vec![Mixed {
+            chunk_domain_size: 64,
+            ones_count: 63,
+            words: Rc::new([
+                0xfffffffffffffffe,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+        },],
     );
 }
 
@@ -388,6 +504,10 @@ fn chunked_bulk_ops() {
     struct ChunkedBulkOp {
         name: &'static str,
         op_fn: fn(&mut ChunkedBitSet<usize>, &ChunkedBitSet<usize>) -> bool,
+        #[expect(
+            clippy::type_complexity,
+            reason = "the test compares a predicate with two bit accessors"
+        )]
         spec_fn: fn(fn(usize) -> bool, fn(usize) -> bool, usize) -> bool,
     }
     let ops = &[
@@ -478,8 +598,7 @@ fn chunked_bitset_iter() {
     fn check_iter(bit: &ChunkedBitSet<usize>, vec: &Vec<usize>) {
         // Test collecting via both `.next()` and `.fold()` calls, to make sure both are correct
         let mut collect_next = Vec::new();
-        let mut bit_iter = bit.iter();
-        while let Some(item) = bit_iter.next() {
+        for item in bit.iter() {
             collect_next.push(item);
         }
         assert_eq!(vec, &collect_next);

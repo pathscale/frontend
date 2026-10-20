@@ -127,11 +127,7 @@ impl<T: EqUnifyValue> UnifyValue for T {
     type Error = (T, T);
 
     fn unify_values(value1: &Self, value2: &Self) -> Result<Self, Self::Error> {
-        if value1 == value2 {
-            Ok(value1.clone())
-        } else {
-            Err((value1.clone(), value2.clone()))
-        }
+        if value1 == value2 { Ok(value1.clone()) } else { Err((value1.clone(), value2.clone())) }
     }
 }
 
@@ -198,9 +194,9 @@ impl<K: UnifyKey> VarValue<K> {
 
     fn new(parent: K, value: K::Value, rank: u32) -> VarValue<K> {
         VarValue {
-            parent: parent, // this is a root
-            value: value,
-            rank: rank,
+            parent, // this is a root
+            value,
+            rank,
         }
     }
 
@@ -220,18 +216,14 @@ where
 {
     /// Creates a `UnificationTable` using an external `undo_log`, allowing mutating methods to be
     /// called if `L` does not implement `UndoLogs`
-    pub fn with_log<'a, L>(
-        &'a mut self,
+    pub fn with_log<L>(
+        &mut self,
         undo_log: L,
-    ) -> UnificationTable<InPlace<K, &'a mut UnificationStorage<K>, L>>
+    ) -> UnificationTable<InPlace<K, &mut UnificationStorage<K>, L>>
     where
         L: UndoLogs<sv::UndoLog<Delegate<K>>>,
     {
-        UnificationTable {
-            values: InPlace {
-                values: self.values.values.with_log(undo_log),
-            },
-        }
+        UnificationTable { values: InPlace { values: self.values.values.with_log(undo_log) } }
     }
 }
 
@@ -250,10 +242,7 @@ impl<S: UnificationStore> UnificationTable<S> {
     /// Starts a new snapshot. Each snapshot must be either
     /// rolled back or committed in a "LIFO" (stack) order.
     pub fn snapshot(&mut self) -> Snapshot<S> {
-        Snapshot {
-            marker: marker::PhantomData::<S>,
-            snapshot: self.values.start_snapshot(),
-        }
+        Snapshot { marker: marker::PhantomData::<S>, snapshot: self.values.start_snapshot() }
     }
 
     /// Reverses all changes since the last snapshot. Also
@@ -281,6 +270,10 @@ impl<S: UnificationStoreBase> UnificationTable<S> {
     /// Returns the number of keys created so far.
     pub fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 
     /// Obtains the current value for a particular key.
@@ -311,7 +304,7 @@ impl<S: UnificationStoreMut> UnificationTable<S> {
     /// the closure.
     pub fn reset_unifications(&mut self, mut value: impl FnMut(S::Key) -> S::Value) {
         self.values.reset_unifications(|i| {
-            let key = UnifyKey::from_index(i as u32);
+            let key = UnifyKey::from_index(i);
             let value = value(key);
             VarValue::new_var(key, value)
         });
@@ -371,29 +364,18 @@ impl<S: UnificationStoreMut> UnificationTable<S> {
 
         let rank_a = self.value(key_a).rank;
         let rank_b = self.value(key_b).rank;
-        if let Some((new_root, redirected)) = S::Key::order_roots(
-            key_a,
-            &self.value(key_a).value,
-            key_b,
-            &self.value(key_b).value,
-        ) {
+        if let Some((new_root, redirected)) =
+            S::Key::order_roots(key_a, &self.value(key_a).value, key_b, &self.value(key_b).value)
+        {
             // compute the new rank for the new root that they chose;
             // this may not be the optimal choice.
             let new_rank = if new_root == key_a {
                 debug_assert!(redirected == key_b);
-                if rank_a > rank_b {
-                    rank_a
-                } else {
-                    rank_b + 1
-                }
+                if rank_a > rank_b { rank_a } else { rank_b + 1 }
             } else {
                 debug_assert!(new_root == key_b);
                 debug_assert!(redirected == key_a);
-                if rank_b > rank_a {
-                    rank_b
-                } else {
-                    rank_a + 1
-                }
+                if rank_b > rank_a { rank_b } else { rank_a + 1 }
             };
             self.redirect_root(new_rank, redirected, new_root, new_value);
         } else if rank_a > rank_b {
@@ -432,7 +414,6 @@ impl<S: UnificationStoreMut> UnificationTable<S> {
 
 /// ////////////////////////////////////////////////////////////////////////
 /// Public API
-
 impl<S, K, V> UnificationTable<S>
 where
     S: UnificationStoreBase<Key = K, Value = V>,
@@ -442,9 +423,9 @@ where
     /// Obtains current value for key without any pointer chasing; may return `None` if key has been union'd.
     #[inline]
     pub fn try_probe_value<'a, K1>(&'a self, id: K1) -> Option<&'a V>
-        where
-            K1: Into<K>,
-            K: 'a,
+    where
+        K1: Into<K>,
+        K: 'a,
     {
         let id = id.into();
         let v = self.value(id);
@@ -522,7 +503,8 @@ where
 
         let combined = V::unify_values(&self.value(root_a).value, &self.value(root_b).value)?;
 
-        Ok(self.unify_roots(root_a, root_b, combined))
+        self.unify_roots(root_a, root_b, combined);
+        Ok(())
     }
 
     /// Sets the value of the key `a_id` to `b`, attempting to merge
@@ -588,7 +570,7 @@ impl<V: UnifyValue> UnifyValue for Option<V> {
         match (a, b) {
             (&None, &None) => Ok(None),
             (&Some(ref v), &None) | (&None, &Some(ref v)) => Ok(Some(v.clone())),
-            (&Some(ref a), &Some(ref b)) => match V::unify_values(a, b) {
+            (Some(a), Some(b)) => match V::unify_values(a, b) {
                 Ok(v) => Ok(Some(v)),
                 Err(err) => Err(err),
             },

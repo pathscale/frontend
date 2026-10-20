@@ -2,16 +2,15 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use hashbrown::hash_map::Entry;
 use core::fmt::Debug;
 use core::mem;
 use core::ops::{ControlFlow, Deref};
+use hashbrown::hash_map::Entry;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use crate::rustc_hir::CRATE_HIR_ID;
@@ -35,14 +34,18 @@ use crate::rustc_middle::ty::{
     self, CanonicalizerState, MayBeErased, Ty, TyCtxt, TypeFlags, TypeFoldable, TypeSuperVisitable,
     TypeVisitable, TypeVisitableExt, TypeVisitor, TypingMode,
 };
-use crate::rustc_next_trait_solver::solve::{GoalStalledOn, GoalStalledOnOpaques, TyOrConstInferVar};
+use crate::rustc_next_trait_solver::solve::{
+    GoalStalledOn, GoalStalledOnOpaques, TyOrConstInferVar,
+};
 use crate::rustc_span::{DUMMY_SP, Span};
 use crate::rustc_structures::Limit;
 use thin_vec::{ThinVec, thin_vec};
 
 use super::inspect::InferCtxtProofTreeExt;
 use crate::rustc_trait_selection::solve::inspect::{self, InspectConfig, ProofTreeVisitor};
-use crate::rustc_trait_selection::traits::{EvaluateConstErr, ObligationCause, sizedness_fast_path, specialization_graph};
+use crate::rustc_trait_selection::traits::{
+    EvaluateConstErr, ObligationCause, sizedness_fast_path, specialization_graph,
+};
 
 #[repr(transparent)]
 pub struct SolverDelegate<'tcx>(InferCtxt<'tcx>);
@@ -347,7 +350,12 @@ impl<'tcx> crate::rustc_next_trait_solver::delegate::SolverDelegate for SolverDe
     ) -> Result<Option<ty::Const<'tcx>>, E> {
         let ct = ty::Const::new_alias(self.tcx, ty::IsRigid::No, alias_const);
 
-        match crate::rustc_trait_selection::traits::try_evaluate_const(&self.0, ct, param_env, normalize_ty) {
+        match crate::rustc_trait_selection::traits::try_evaluate_const(
+            &self.0,
+            ct,
+            param_env,
+            normalize_ty,
+        ) {
             Ok(ct) => Ok(Some(ct)),
             Err(EvaluateConstErr::EvaluationFailure(e)) => {
                 Ok(Some(ty::Const::new_error(self.tcx, e)))
@@ -507,9 +515,13 @@ impl<'tcx> crate::rustc_next_trait_solver::delegate::SolverDelegate for SolverDe
         };
 
         // FIXME(transmutability): This really should be returning nested goals for `Answer::If*`
-        match crate::rustc_transmute::TransmuteTypeEnv::new(self.0.tcx).is_transmutable(src, dst, assume) {
+        match crate::rustc_transmute::TransmuteTypeEnv::new(self.0.tcx)
+            .is_transmutable(src, dst, assume)
+        {
             crate::rustc_transmute::Answer::Yes => Ok(Certainty::Yes),
-            crate::rustc_transmute::Answer::No(_) | crate::rustc_transmute::Answer::If(_) => Err(NoSolution),
+            crate::rustc_transmute::Answer::No(_) | crate::rustc_transmute::Answer::If(_) => {
+                Err(NoSolution)
+            }
         }
     }
 

@@ -1,11 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::num::{NonZero, ParseIntError};
@@ -18,9 +15,9 @@ use crate::rustc_errors::{
     MultiSpan, StashKey,
 };
 use crate::rustc_feature::{GateIssue, find_feature_issue};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Span, Symbol};
 use crate::rustc_target::spec::{SplitDebuginfo, StackProtector, TargetTuple};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 use crate::rustc_session::Session;
 use crate::rustc_session::lint::builtin::UNSTABLE_SYNTAX_PRE_EXPANSION;
@@ -158,10 +155,10 @@ pub fn feature_err_unstable_feature_bound(
     let span = span.into();
 
     // Cancel an earlier warning for this same error, if it exists.
-    if let Some(span) = span.primary_span() {
-        if let Some(err) = sess.dcx().steal_non_err(span, StashKey::EarlySyntaxWarning) {
-            err.cancel()
-        }
+    if let Some(span) = span.primary_span()
+        && let Some(err) = sess.dcx().steal_non_err(span, StashKey::EarlySyntaxWarning)
+    {
+        err.cancel()
     }
 
     let mut err = sess.dcx().create_err(FeatureGateError { span, explain: explain.into() });
@@ -574,7 +571,7 @@ pub fn create_lit_error(psess: &ParseSess, err: LitError, lit: token::Lit, span:
             && chars
                 .filter(|c| *c != '_')
                 .take_while(|c| *c != 'i' && *c != 'u')
-                .all(|c| c.to_digit(base).is_some());
+                .all(|c| c.is_digit(base));
 
         valid.then(|| format!("0{}{}", base_char.to_ascii_lowercase(), &suffix[1..]))
     }

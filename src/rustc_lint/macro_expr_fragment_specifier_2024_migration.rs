@@ -3,12 +3,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast::token::{Token, TokenKind};
 use crate::rustc_ast::tokenstream::{TokenStream, TokenTree};
@@ -111,11 +106,9 @@ impl Expr2024 {
                             continue;
                         }
                     }
-                    TokenKind::Colon => {
-                        if prev_dollar && prev_identifier {
-                            prev_colon = true;
-                            continue;
-                        }
+                    TokenKind::Colon if prev_dollar && prev_identifier => {
+                        prev_colon = true;
+                        continue;
                     }
                     _ => {}
                 },
@@ -143,7 +136,7 @@ impl Expr2024 {
 
         debug!("emitting lint");
         cx.builder.emit_span_lint(
-            &EDITION_2024_EXPR_FRAGMENT_SPECIFIER,
+            EDITION_2024_EXPR_FRAGMENT_SPECIFIER,
             token.span.into(),
             MacroExprFragment2024 { suggestion: token.span },
         );
@@ -151,7 +144,11 @@ impl Expr2024 {
 }
 
 impl EarlyLintPass for Expr2024 {
-    fn check_mac_def(&mut self, cx: &crate::rustc_lint::EarlyContext<'_>, mc: &crate::rustc_ast::MacroDef) {
+    fn check_mac_def(
+        &mut self,
+        cx: &crate::rustc_lint::EarlyContext<'_>,
+        mc: &crate::rustc_ast::MacroDef,
+    ) {
         self.check_tokens(cx, &mc.body.tokens);
     }
 }

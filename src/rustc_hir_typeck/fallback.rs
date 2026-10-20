@@ -1,11 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::ops::ControlFlow;
@@ -158,7 +153,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
         unresolved_root_variables: &[ty::FloatVid],
     ) -> UnordSet<FloatVid> {
         // Short-circuit: if no unresolved variable is a float, no f32 fallback can apply,
-        // so we can skip the (potentially very expensive) work in `from_float_for_f32_root_vids`.
+        // so we can skip the (potentially very expensive) work in `float_root_vids_for_from_trait`.
         // Under the new solver, that function walks `visit_proof_tree` for every pending
         // obligation, which is O(N × proof_tree_size) and can dominate type-checking on crates
         // with many large pending obligations and no f32 involvement.
@@ -166,7 +161,7 @@ impl<'tcx> FnCtxt<'_, 'tcx> {
             return UnordSet::new();
         }
 
-        let roots: UnordSet<ty::FloatVid> = self.from_float_for_f32_root_vids();
+        let roots: UnordSet<ty::FloatVid> = self.float_root_vids_for_from_trait();
         if roots.is_empty() {
             // Most functions have no `f32: From<{float}>` predicates, so short-circuit and return
             // an empty set when this is the case.
@@ -659,7 +654,7 @@ fn compute_unsafe_infer_vars<'a, 'tcx>(
         }
     }
 
-    UnsafeInferVarsVisitor { fcx, res: &mut res }.visit_expr(&body.value);
+    UnsafeInferVarsVisitor { fcx, res: &mut res }.visit_expr(body.value);
 
     debug!(?res, "collected the following unsafe vars for {body_def_id:?}");
 

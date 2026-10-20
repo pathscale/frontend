@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -27,7 +25,9 @@ use smallvec::SmallVec;
 use tracing::{debug, instrument};
 
 use super::{HirTyLowerer, IsMethodCall};
-use crate::rustc_hir_analysis::diagnostics::wrong_number_of_generic_args::{GenericArgsInfo, WrongNumberOfGenericArgs};
+use crate::rustc_hir_analysis::diagnostics::wrong_number_of_generic_args::{
+    GenericArgsInfo, WrongNumberOfGenericArgs,
+};
 use crate::rustc_hir_analysis::hir_ty_lowering::errors::prohibit_assoc_item_constraint;
 use crate::rustc_hir_analysis::hir_ty_lowering::{
     ExplicitLateBound, GenericArgCountMismatch, GenericArgCountResult, GenericArgPosition,
@@ -120,7 +120,7 @@ fn generic_arg_mismatch_err(
         (GenericArg::Const(cnst), GenericParamDefKind::Type { .. }) => {
             if let hir::ConstArgKind::Path(qpath) = cnst.kind
                 && let crate::rustc_hir::QPath::Resolved(_, path) = qpath
-                && let Res::Def(DefKind::Fn { .. }, id) = path.res
+                && let Res::Def(DefKind::Fn, id) = path.res
             {
                 err.help(format!("`{}` is a function item, not a type", tcx.item_name(id)));
                 err.help("function item types cannot be named directly");
@@ -128,7 +128,7 @@ fn generic_arg_mismatch_err(
                 && let body = tcx.hir_body(anon.body)
                 && let crate::rustc_hir::ExprKind::Path(crate::rustc_hir::QPath::Resolved(_, path)) =
                     body.value.kind
-                && let Res::Def(DefKind::Fn { .. }, id) = path.res
+                && let Res::Def(DefKind::Fn, id) = path.res
             {
                 // FIXME(mgca): this branch is dead once new const path lowering
                 // (for single-segment paths) is no longer gated
@@ -226,20 +226,18 @@ pub fn lower_generic_args<'tcx: 'a, 'a>(
         }
 
         // `Self` is handled first, unless it's been handled in `parent_args`.
-        if has_self {
-            if let Some(&param) = params.peek() {
-                if param.index == 0 {
-                    if let GenericParamDefKind::Type { .. } = param.kind {
-                        assert_eq!(&args[..], &[]);
-                        args.push(
-                            self_ty
-                                .map(|ty| ty.into())
-                                .unwrap_or_else(|| ctx.inferred_kind(&args, param, true)),
-                        );
-                        params.next();
-                    }
-                }
-            }
+        if has_self
+            && let Some(&param) = params.peek()
+            && param.index == 0
+            && let GenericParamDefKind::Type { .. } = param.kind
+        {
+            assert_eq!(&args[..], &[]);
+            args.push(
+                self_ty
+                    .map(|ty| ty.into())
+                    .unwrap_or_else(|| ctx.inferred_kind(&args, param, true)),
+            );
+            params.next();
         }
 
         // Check whether this segment takes generic arguments and the user has provided any.

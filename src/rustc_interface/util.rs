@@ -2,11 +2,8 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::num::NonZero;
 use eko::env;
@@ -24,7 +21,7 @@ use crate::rustc_session::config::{Cfg, Jobs, OutFileName, OutputFilenames, Outp
 use crate::rustc_session::{EarlyDiagCtxt, Session};
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::source_map::SourceMapInputs;
-use crate::rustc_span::{SessionGlobals, Symbol, sym};
+use crate::rustc_span::{Symbol, sym};
 use crate::rustc_target::spec::Target;
 
 use crate::rustc_interface::diagnostics;
@@ -56,7 +53,7 @@ pub(crate) fn add_configuration(
                     None
                 }
             })
-            .filter(|feature| target_config.internal_target_features.contains(&feature))
+            .filter(|feature| target_config.internal_target_features.contains(feature))
             .map(|feature| (sym::target_feature, Some(feature))),
     );
 
@@ -185,27 +182,21 @@ pub(crate) fn run_in_thread_pool_with_globals<F: FnOnce(CurrentGcx) -> R + Send,
     // The compiler context and all arena-dependent walks stay on the caller. Owned parsing
     // and frozen resolver decisions can use nagoya's pool when this session asks for width.
     // This function creates no pool, captures no worker context and starts no thread.
-    run_on_current_thread_with_globals(
-        edition,
-        sm_inputs,
-        extra_symbols,
-        |current_gcx| {
-            // One registry per session, with this caller holding slot zero. Compiler
-            // WorkerLocal values never enter owned parser tasks; the registry still sizes the
-            // session's arenas, and each later session gets its own registry.
-            //
-            // It replaced a registry kept on the thread across requests, sized by whichever
-            // session came first: a cache of the first request's shape, and wrong once sessions
-            // with different widths share threads.
-            let registry = sync::Registry::new(width);
-            let slot = registry.lease().expect("a new registry has a free slot");
-            let _in_registry = slot.enter();
+    run_on_current_thread_with_globals(edition, sm_inputs, extra_symbols, |current_gcx| {
+        // One registry per session, with this caller holding slot zero. Compiler
+        // WorkerLocal values never enter owned parser tasks; the registry still sizes the
+        // session's arenas, and each later session gets its own registry.
+        //
+        // It replaced a registry kept on the thread across requests, sized by whichever
+        // session came first: a cache of the first request's shape, and wrong once sessions
+        // with different widths share threads.
+        let registry = sync::Registry::new(width);
+        let slot = registry.lease().expect("a new registry has a free slot");
+        let _in_registry = slot.enter();
 
-            f(current_gcx)
-        },
-    )
+        f(current_gcx)
+    })
 }
-
 
 /// Target facts the Rust frontend needs before it can build `cfg(target_feature)`.
 ///

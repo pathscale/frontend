@@ -1,16 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use alloc::borrow::Borrow;
-use core::ops::Deref;
 use alloc::sync::Arc;
+use core::ops::Deref;
 
 /// An owned slice.
 ///
@@ -70,7 +64,8 @@ where
     F: FnOnce(&O) -> &[u8],
 {
     // The error type is uninhabited, so the empty match is `into_ok` without the gate.
-    try_slice_owned(owner, |x| Ok::<_, crate::Never>(slicer(x))).unwrap_or_else(|never| match never {})
+    try_slice_owned(owner, |x| Ok::<_, crate::Never>(slicer(x)))
+        .unwrap_or_else(|never| match never {})
 }
 
 /// Makes an [`OwnedSlice`] out of an `owner` and a `slicer` function that can fail.

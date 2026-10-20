@@ -4,7 +4,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -13,7 +12,6 @@ use alloc::vec::Vec;
 use crate::debug_assert_matches;
 use alloc::borrow::Cow;
 use core::iter;
-use eko::path::PathBuf;
 
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_data_structures::fx::FxHashSet;
@@ -97,7 +95,7 @@ impl<'a, 'tcx> CoroutineData<'a, 'tcx> {
                 let upvar_ty = self.0.node_type(*upvar_id);
                 let upvar_ty = infer_context.resolve_vars_if_possible(upvar_ty);
                 ty_matches(ty::Binder::dummy(upvar_ty))
-                    .then(|| CoroutineInteriorOrUpvar::Upvar(upvar.span))
+                    .then_some(CoroutineInteriorOrUpvar::Upvar(upvar.span))
             })
         })
     }
@@ -133,6 +131,10 @@ fn predicate_constraint(generics: &hir::Generics<'_>, pred: ty::Predicate<'_>) -
 /// Type parameter needs more bounds. The trivial case is `T` `where T: Bound`, but
 /// it can also be an `impl Trait` param that needs to be decomposed to a type
 /// param for cleaner code.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+)]
 pub fn suggest_restriction<'tcx, G: EmissionGuarantee>(
     tcx: TyCtxt<'tcx>,
     item_id: LocalDefId,
@@ -522,7 +524,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         None,
                         projection,
                         trait_pred,
-                        Some((&ident, bounds)),
+                        Some((ident, bounds)),
                     );
                     return;
                 }
@@ -929,7 +931,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     } else {
                         vec![(
                             expr.span.with_lo(prefix_span.hi()).shrink_to_lo(),
-                            format!("{derefs}"),
+                            derefs.to_string(),
                         )]
                     };
                     // Empty suggestions with empty spans ICE with debug assertions
@@ -1467,117 +1469,117 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         found: Ty<'tcx>,
     ) -> Option<(DefIdOrName, Ty<'tcx>, Vec<Ty<'tcx>>)> {
         // Autoderef is useful here because sometimes we box callables, etc.
-        let Some((def_id_or_name, output, inputs)) =
-            (self.autoderef_steps)(found).into_iter().find_map(|(found, _)| match *found.kind() {
-                ty::FnPtr(sig_tys, _) => Some((
-                    DefIdOrName::Name("function pointer"),
-                    sig_tys.output(),
-                    sig_tys.inputs(),
-                )),
-                ty::FnDef(def_id, _) => {
-                    let fn_sig = found.fn_sig(self.tcx);
-                    Some((DefIdOrName::DefId(def_id), fn_sig.output(), fn_sig.inputs()))
-                }
-                ty::Closure(def_id, args) => {
-                    let fn_sig = args.as_closure().sig();
-                    Some((
-                        DefIdOrName::DefId(def_id),
-                        fn_sig.output(),
-                        fn_sig.inputs().map_bound(|inputs| inputs[0].tuple_fields().as_slice()),
-                    ))
-                }
-                ty::CoroutineClosure(def_id, args) => {
-                    let sig_parts = args.as_coroutine_closure().coroutine_closure_sig();
-                    Some((
-                        DefIdOrName::DefId(def_id),
-                        sig_parts.map_bound(|sig| {
-                            sig.to_coroutine(
-                                self.tcx,
-                                args.as_coroutine_closure().parent_args(),
-                                // Just use infer vars here, since we  don't really care
-                                // what these types are, just that we're returning a coroutine.
-                                self.next_ty_var(DUMMY_SP),
-                                self.tcx.coroutine_for_closure(def_id),
-                                self.next_ty_var(DUMMY_SP),
-                            )
-                        }),
-                        sig_parts.map_bound(|sig| sig.tupled_inputs_ty.tuple_fields().as_slice()),
-                    ))
-                }
-                ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, args, .. }) => {
-                    self.tcx
-                        .item_self_bounds(def_id)
-                        .instantiate(self.tcx, args)
-                        .skip_norm_wip()
-                        .iter()
-                        .find_map(|pred| {
-                            if let ty::ClauseKind::Projection(proj) = pred.kind().skip_binder()
+        let (def_id_or_name, output, inputs) =
+            (self.autoderef_steps)(found).into_iter().find_map(|(found, _)| {
+                match *found.kind() {
+                    ty::FnPtr(sig_tys, _) => Some((
+                        DefIdOrName::Name("function pointer"),
+                        sig_tys.output(),
+                        sig_tys.inputs(),
+                    )),
+                    ty::FnDef(def_id, _) => {
+                        let fn_sig = found.fn_sig(self.tcx);
+                        Some((DefIdOrName::DefId(def_id), fn_sig.output(), fn_sig.inputs()))
+                    }
+                    ty::Closure(def_id, args) => {
+                        let fn_sig = args.as_closure().sig();
+                        Some((
+                            DefIdOrName::DefId(def_id),
+                            fn_sig.output(),
+                            fn_sig.inputs().map_bound(|inputs| inputs[0].tuple_fields().as_slice()),
+                        ))
+                    }
+                    ty::CoroutineClosure(def_id, args) => {
+                        let sig_parts = args.as_coroutine_closure().coroutine_closure_sig();
+                        Some((
+                            DefIdOrName::DefId(def_id),
+                            sig_parts.map_bound(|sig| {
+                                sig.to_coroutine(
+                                    self.tcx,
+                                    args.as_coroutine_closure().parent_args(),
+                                    // Just use infer vars here, since we  don't really care
+                                    // what these types are, just that we're returning a coroutine.
+                                    self.next_ty_var(DUMMY_SP),
+                                    self.tcx.coroutine_for_closure(def_id),
+                                    self.next_ty_var(DUMMY_SP),
+                                )
+                            }),
+                            sig_parts
+                                .map_bound(|sig| sig.tupled_inputs_ty.tuple_fields().as_slice()),
+                        ))
+                    }
+                    ty::Alias(_, ty::AliasTy { kind: ty::Opaque { def_id }, args, .. }) => {
+                        self.tcx
+                            .item_self_bounds(def_id)
+                            .instantiate(self.tcx, args)
+                            .skip_norm_wip()
+                            .iter()
+                            .find_map(|pred| {
+                                if let ty::ClauseKind::Projection(proj) = pred.kind().skip_binder()
                             && self
                                 .tcx
                                 .is_lang_item(proj.def_id(), LangItem::FnOnceOutput)
                             // args tuple will always be args[1]
                             && let ty::Tuple(args) = proj.projection_term.args.type_at(1).kind()
-                            {
-                                Some((
-                                    DefIdOrName::DefId(def_id),
-                                    pred.kind().rebind(proj.term.expect_type()),
-                                    pred.kind().rebind(args.as_slice()),
-                                ))
-                            } else {
-                                None
-                            }
-                        })
-                }
-                ty::Dynamic(data, _) => data.iter().find_map(|pred| {
-                    if let ty::ExistentialPredicate::Projection(proj) = pred.skip_binder()
+                                {
+                                    Some((
+                                        DefIdOrName::DefId(def_id),
+                                        pred.kind().rebind(proj.term.expect_type()),
+                                        pred.kind().rebind(args.as_slice()),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                    }
+                    ty::Dynamic(data, _) => data.iter().find_map(|pred| {
+                        if let ty::ExistentialPredicate::Projection(proj) = pred.skip_binder()
                         && self.tcx.is_lang_item(proj.def_id, LangItem::FnOnceOutput)
                         // for existential projection, args are shifted over by 1
                         && let ty::Tuple(args) = proj.args.type_at(0).kind()
-                    {
-                        Some((
-                            DefIdOrName::Name("trait object"),
-                            pred.rebind(proj.term.expect_type()),
-                            pred.rebind(args.as_slice()),
-                        ))
-                    } else {
-                        None
-                    }
-                }),
-                ty::Param(param) => {
-                    let generics = self.tcx.generics_of(body_def_id);
-                    let name = if generics.count() > param.index as usize
-                        && let def = generics.param_at(param.index as usize, self.tcx)
-                        && matches!(def.kind, ty::GenericParamDefKind::Type { .. })
-                        && def.name == param.name
-                    {
-                        DefIdOrName::DefId(def.def_id)
-                    } else {
-                        DefIdOrName::Name("type parameter")
-                    };
-                    param_env.caller_bounds().find_map(|clause| {
-                        if let ty::ClauseKind::Projection(proj) = clause.kind().skip_binder()
+                        {
+                            Some((
+                                DefIdOrName::Name("trait object"),
+                                pred.rebind(proj.term.expect_type()),
+                                pred.rebind(args.as_slice()),
+                            ))
+                        } else {
+                            None
+                        }
+                    }),
+                    ty::Param(param) => {
+                        let generics = self.tcx.generics_of(body_def_id);
+                        let name = if generics.count() > param.index as usize
+                            && let def = generics.param_at(param.index as usize, self.tcx)
+                            && matches!(def.kind, ty::GenericParamDefKind::Type { .. })
+                            && def.name == param.name
+                        {
+                            DefIdOrName::DefId(def.def_id)
+                        } else {
+                            DefIdOrName::Name("type parameter")
+                        };
+                        param_env.caller_bounds().find_map(|clause| {
+                            if let ty::ClauseKind::Projection(proj) = clause.kind().skip_binder()
                             && self
                                 .tcx
                                 .is_lang_item(proj.def_id(), LangItem::FnOnceOutput)
                             && proj.projection_term.self_ty() == found
                             // args tuple will always be args[1]
                             && let ty::Tuple(args) = proj.projection_term.args.type_at(1).kind()
-                        {
-                            Some((
-                                name,
-                                clause.kind().rebind(proj.term.expect_type()),
-                                clause.kind().rebind(args.as_slice()),
-                            ))
-                        } else {
-                            None
-                        }
-                    })
+                            {
+                                Some((
+                                    name,
+                                    clause.kind().rebind(proj.term.expect_type()),
+                                    clause.kind().rebind(args.as_slice()),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    _ => None,
                 }
-                _ => None,
-            })
-        else {
-            return None;
-        };
+            })?;
 
         let output = self.instantiate_binder_with_fresh_vars(
             DUMMY_SP,
@@ -1799,10 +1801,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                             );
                             if point_at_relevant_args(
                                 pred_ty,
-                                args.into_iter()
-                                    .zip(fn_sig.inputs())
-                                    .map(|(e, t)| (*e, *t))
-                                    .collect(),
+                                args.iter().zip(fn_sig.inputs()).map(|(e, t)| (*e, *t)).collect(),
                             ) {
                                 return false;
                             }
@@ -1841,7 +1840,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     pred_ty,
                     [rcvr]
                         .into_iter()
-                        .chain(args.into_iter())
+                        .chain(args)
                         .zip(fn_sig.inputs())
                         .map(|(e, t)| (*e, *t))
                         .collect(),
@@ -2072,10 +2071,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 }
             });
             err.multipart_suggestions(sugg_msg, suggestions, Applicability::MaybeIncorrect);
-            return true;
+            true
         };
 
-        if let ObligationCauseCode::ImplDerived(cause) = &*code {
+        if let ObligationCauseCode::ImplDerived(cause) = code {
             try_borrowing(cause.derived.parent_trait_pred, &[])
         } else if let ObligationCauseCode::WhereClause(..)
         | ObligationCauseCode::WhereClauseInExpr(..) = code
@@ -2829,10 +2828,9 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             // fn foo() -> impl T { .. }
             err.span_note(self.tcx.def_span(def_id), "this type alias is unsized");
             err.multipart_suggestion(
-                format!(
-                    "consider boxing the return type, and wrapping all of the returned values in \
-                    `Box::new`",
-                ),
+                "consider boxing the return type, and wrapping all of the returned values in \
+                    `Box::new`"
+                    .to_string(),
                 vec![
                     (ty.span.shrink_to_lo(), "Box<".to_string()),
                     (ty.span.shrink_to_hi(), ">".to_string()),
@@ -2877,7 +2875,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
 
         let mut visitor = ReturnsVisitor::default();
-        visitor.visit_body(&body);
+        visitor.visit_body(body);
 
         let (pre, impl_span) = if let Ok(snip) = self.tcx.sess.source_map().span_to_snippet(span)
             && snip.starts_with("dyn ")
@@ -2923,10 +2921,9 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }));
 
         err.multipart_suggestion(
-            format!(
-                "alternatively, box the return type, and wrap all of the returned values in \
-                 `Box::new`",
-            ),
+            "alternatively, box the return type, and wrap all of the returned values in \
+                 `Box::new`"
+                .to_string(),
             sugg,
             Applicability::MaybeIncorrect,
         );
@@ -2934,6 +2931,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         true
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     pub(super) fn report_closure_arg_mismatch(
         &self,
         span: Span,
@@ -3408,7 +3409,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             coroutine_did.as_local().and_then(|def_id| self.tcx.hir_maybe_body_owned_by(def_id));
         let mut visitor = AwaitsVisitor::default();
         if let Some(body) = coroutine_body {
-            visitor.visit_body(&body);
+            visitor.visit_body(body);
         }
         debug!(awaits = ?visitor.awaits);
 
@@ -3513,6 +3514,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
     /// Unconditionally adds the diagnostic note described in
     /// `maybe_note_obligation_cause_for_async_await`'s documentation comment.
     #[instrument(level = "debug", skip_all)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn note_obligation_cause_for_async_await<G: EmissionGuarantee>(
         &self,
         err: &mut Diag<'_, G>,
@@ -3747,6 +3752,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     pub(super) fn note_obligation_cause_code<G: EmissionGuarantee, T>(
         &self,
         body_def_id: LocalDefId,
@@ -3845,12 +3854,12 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         && let hir::ExprKind::Call(_, args) = expr.kind
                         && let Some(expr) = args.get(*pos)
                     {
-                        suggest_remove_deref(err, &expr);
+                        suggest_remove_deref(err, expr);
                     } else if let Node::Expr(expr) = self.tcx.hir_node(*hir_id)
                         && let hir::ExprKind::MethodCall(_, _, args, _) = expr.kind
                         && let Some(expr) = args.get(*pos)
                     {
-                        suggest_remove_deref(err, &expr);
+                        suggest_remove_deref(err, expr);
                     }
                 }
                 let item_name = tcx.def_path_str(item_def_id);
@@ -4104,7 +4113,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                     Node::LetStmt(hir::LetStmt { init: Some(expr), .. }) => {
                         // When encountering an assignment of an unsized trait, like `let x = *"";`,
                         // we check if the RHS is a deref operation, to suggest removing it.
-                        suggest_remove_deref(err, &expr);
+                        suggest_remove_deref(err, expr);
                     }
                     Node::Param(param) => {
                         err.span_suggestion_verbose(
@@ -4506,7 +4515,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                                 if data.span.in_derive_expansion() {
                                     format!("type parameter would need to implement `{trait_name}`")
                                 } else {
-                                    format!("unsatisfied trait bound")
+                                    "unsatisfied trait bound".to_string()
                                 },
                             );
                         } else if !data.span.is_dummy() && !data.span.overlaps(self_ty.span) {
@@ -4553,8 +4562,8 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                             &self_ty_str,
                             &trait_name,
                             predicate,
-                            &generics,
-                            &data,
+                            generics,
+                            data,
                         );
                     }
                     _ => {
@@ -4819,7 +4828,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         "return type was inferred to be `{expr_ty_string}` here",
                     )),
                 );
-                suggest_remove_deref(err, &expr);
+                suggest_remove_deref(err, expr);
             }
             ObligationCauseCode::UnsizedNonPlaceExpr(span) => {
                 err.span_note(
@@ -5041,6 +5050,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn note_function_argument_obligation<G: EmissionGuarantee>(
         &self,
         body_def_id: LocalDefId,
@@ -5248,30 +5261,25 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         let call_node = tcx.hir_node(call_hir_id);
         if let Node::Expr(hir::Expr { kind: hir::ExprKind::MethodCall(path, rcvr, ..), .. }) =
             call_node
+            && Some(rcvr.span) == err.span.primary_span()
         {
-            if Some(rcvr.span) == err.span.primary_span() {
-                err.replace_span_with(path.ident.span, true);
-            }
+            err.replace_span_with(path.ident.span, true);
         }
 
         if let Node::Expr(expr) = call_node {
             if let hir::ExprKind::Call(hir::Expr { span, .. }, _)
-            | hir::ExprKind::MethodCall(
-                hir::PathSegment { ident: Ident { span, .. }, .. },
-                ..,
-            ) = expr.kind
+            | hir::ExprKind::MethodCall(hir::PathSegment { ident: Ident { span, .. }, .. }, ..) =
+                expr.kind
+                && Some(*span) != err.span.primary_span()
             {
-                if Some(*span) != err.span.primary_span() {
-                    let msg = if span.is_desugaring(DesugaringKind::FormatLiteral { source: true })
-                    {
-                        "required by this formatting parameter"
-                    } else if span.is_desugaring(DesugaringKind::FormatLiteral { source: false }) {
-                        "required by a formatting parameter in this expression"
-                    } else {
-                        "required by a bound introduced by this call"
-                    };
-                    err.span_label(*span, msg);
-                }
+                let msg = if span.is_desugaring(DesugaringKind::FormatLiteral { source: true }) {
+                    "required by this formatting parameter"
+                } else if span.is_desugaring(DesugaringKind::FormatLiteral { source: false }) {
+                    "required by a formatting parameter in this expression"
+                } else {
+                    "required by a bound introduced by this call"
+                };
+                err.span_label(*span, msg);
             }
 
             if let hir::ExprKind::MethodCall(_, expr, ..) = expr.kind {
@@ -5355,6 +5363,10 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Trait-selection helper keeps its established context arguments across compiler call sites."
+    )]
     fn look_for_iterator_item_mistakes<G: EmissionGuarantee>(
         &self,
         assocs_in_this_method: &[Option<(Span, (DefId, Ty<'tcx>))>],
@@ -5389,7 +5401,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         ),
                         *ty,
                     )
-                    && let [] = args
+                    && args.is_empty()
                 {
                     // Used `.iter()` when `.into_iter()` was likely meant.
                     err.span_suggestion_verbose(
@@ -5406,7 +5418,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                         expected_found.found,
                         Ty::new_ref(tcx, tcx.lifetimes.re_erased, *ty, ty::Mutability::Not),
                     )
-                    && let [] = args
+                    && args.is_empty()
                 {
                     // Used `.into_iter()` when `.iter()` was likely meant.
                     err.span_suggestion_verbose(
@@ -5625,14 +5637,14 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 break;
             };
             for (entry, prev_entry) in
-                assocs_in_method.into_iter().zip(prev_assoc_in_method.into_iter())
+                assocs_in_method.iter().copied().zip(prev_assoc_in_method.iter().copied())
             {
                 match (entry, prev_entry) {
                     (Some((span, (assoc, ty))), Some((_, (_, prev_ty)))) => {
                         let ty_str = with_forced_trimmed_paths!(self.ty_to_string(ty));
 
                         let assoc = with_forced_trimmed_paths!(self.tcx.def_path_str(assoc));
-                        if !self.can_eq(param_env, ty, *prev_ty) {
+                        if !self.can_eq(param_env, ty, prev_ty) {
                             if type_diffs.iter().any(|diff| {
                                 let TypeError::Sorts(expected_found) = diff else {
                                     return false;
@@ -5952,7 +5964,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
         if self.predicate_must_hold_modulo_regions(&obligation) {
             let arg_span = self.tcx.hir_span(*arg_hir_id);
             err.multipart_suggestion(
-                format!("use a unary tuple instead"),
+                "use a unary tuple instead".to_string(),
                 vec![(arg_span.shrink_to_lo(), "(".into()), (arg_span.shrink_to_hi(), ",)".into())],
                 Applicability::MaybeIncorrect,
             );
@@ -6325,7 +6337,7 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
                 ));
             }
             err.multipart_suggestion(
-                format!("consider adding return type"),
+                "consider adding return type".to_string(),
                 sugg_spans,
                 Applicability::MaybeIncorrect,
             );
@@ -6380,21 +6392,17 @@ impl<'a, 'tcx> TypeErrCtxt<'a, 'tcx> {
             return;
         }
         debug!(?param);
-        match node {
-            hir::Node::Item(
-                item @ hir::Item {
-                    // Only suggest indirection for uses of type parameters in ADTs.
-                    kind:
-                        hir::ItemKind::Enum(..) | hir::ItemKind::Struct(..) | hir::ItemKind::Union(..),
-                    ..
-                },
-            ) => {
-                if self.suggest_indirection_for_unsized(err, item, param) {
-                    return;
-                }
-            }
-            _ => {}
-        };
+        if let hir::Node::Item(
+            item @ hir::Item {
+                // Only suggest indirection for uses of type parameters in ADTs.
+                kind: hir::ItemKind::Enum(..) | hir::ItemKind::Struct(..) | hir::ItemKind::Union(..),
+                ..
+            },
+        ) = node
+            && self.suggest_indirection_for_unsized(err, item, param)
+        {
+            return;
+        }
 
         // Didn't add an indirection suggestion, so add a general suggestion to relax `Sized`.
         let (span, separator, open_paren_sp) =
@@ -6814,15 +6822,14 @@ impl<'a, 'hir> hir::intravisit::Visitor<'hir> for ReplaceImplTraitVisitor<'a> {
             None,
             hir::Path { res: Res::Def(_, segment_did), .. },
         )) = t.kind
+            && self.param_did == *segment_did
         {
-            if self.param_did == *segment_did {
-                // `fn foo(t: impl Trait)`
-                //            ^^^^^^^^^^ get this to suggest `T` instead
+            // `fn foo(t: impl Trait)`
+            //            ^^^^^^^^^^ get this to suggest `T` instead
 
-                // There might be more than one `impl Trait`.
-                self.ty_spans.push(t.span);
-                return;
-            }
+            // There might be more than one `impl Trait`.
+            self.ty_spans.push(t.span);
+            return;
         }
 
         hir::intravisit::walk_ty(self, t);
@@ -6884,10 +6891,10 @@ struct ReplaceImplTraitFolder<'tcx> {
 
 impl<'tcx> TypeFolder<TyCtxt<'tcx>> for ReplaceImplTraitFolder<'tcx> {
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
-        if let ty::Param(ty::ParamTy { index, .. }) = t.kind() {
-            if self.param.index == *index {
-                return self.replace_ty;
-            }
+        if let ty::Param(ty::ParamTy { index, .. }) = t.kind()
+            && self.param.index == *index
+        {
+            return self.replace_ty;
         }
         t.super_fold_with(self)
     }
@@ -6997,8 +7004,8 @@ fn point_at_assoc_type_restriction<G: EmissionGuarantee>(
         let hir::WherePredicateKind::BoundPredicate(pred) = pred.kind else {
             continue;
         };
-        let mut bounds = pred.bounds.iter();
-        while let Some(bound) = bounds.next() {
+        let bounds = pred.bounds.iter();
+        for bound in bounds {
             let Some(trait_ref) = bound.trait_ref() else {
                 continue;
             };
@@ -7169,9 +7176,8 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ParamFinder {
     type Result = ();
 
     fn visit_ty(&mut self, t: Ty<'tcx>) -> Self::Result {
-        match t.kind() {
-            ty::Param(p) => self.params.push(p.name),
-            _ => {}
+        if let ty::Param(p) = t.kind() {
+            self.params.push(p.name)
         }
         t.super_visit_with(self)
     }

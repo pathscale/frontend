@@ -3,12 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::unord::UnordSet;
 use crate::rustc_hir::def_id::DefId;
@@ -157,9 +151,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Only needed for the `From<{float}>` for `f32` type fallback.
     #[instrument(skip(self), level = "debug")]
-    pub(crate) fn from_float_for_f32_root_vids(&self) -> UnordSet<ty::FloatVid> {
+    pub(crate) fn float_root_vids_for_from_trait(&self) -> UnordSet<ty::FloatVid> {
         if self.next_trait_solver() {
-            self.from_float_for_f32_root_vids_next()
+            self.float_root_vids_for_from_trait_next()
         } else {
             let Some(from_trait) = self.tcx.lang_items().from_trait() else {
                 return UnordSet::new();
@@ -197,7 +191,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
-    fn from_float_for_f32_root_vids_next(&self) -> UnordSet<ty::FloatVid> {
+    fn float_root_vids_for_from_trait_next(&self) -> UnordSet<ty::FloatVid> {
         let Some(from_trait) = self.tcx.lang_items().from_trait() else {
             return UnordSet::new();
         };

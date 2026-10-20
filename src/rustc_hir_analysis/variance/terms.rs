@@ -12,10 +12,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -35,6 +31,10 @@ pub(crate) type VarianceTermPtr<'a> = &'a VarianceTerm<'a>;
 pub(crate) struct InferredIndex(pub usize);
 
 #[derive(Copy, Clone)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "The `Term` suffix identifies the variants of the variance-term representation."
+)]
 pub(crate) enum VarianceTerm<'a> {
     ConstantTerm(ty::Variance),
     TransformTerm(VarianceTermPtr<'a>, VarianceTermPtr<'a>),

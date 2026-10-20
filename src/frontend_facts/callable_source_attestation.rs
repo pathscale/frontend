@@ -112,6 +112,10 @@ pub(super) fn attest_callable_definition(
 /// Attest a compiler-selected generic definition through rustc's metadata-verified SourceMap.
 /// The caller chooses a semantic source kind; this function validates its DefKind and does not
 /// inspect or special-case the definition's name.
+#[expect(
+    clippy::result_large_err,
+    reason = "source-map failures retain their structured error without another allocation"
+)]
 pub(super) fn attest_definition(
     tcx: TyCtxt<'_>,
     def_id: DefId,
@@ -334,9 +338,7 @@ fn external_item_range(
     // Keep the parsed AST and its symbols inside this temporary source-only session.
     let edition = tcx.cstore_untracked().crate_edition(def_id.krate);
     crate::rustc_span::with_source_edition_globals(edition, || {
-        let expected_name = expected_name
-            .as_deref()
-            .map(crate::rustc_span::Symbol::intern);
+        let expected_name = expected_name.as_deref().map(crate::rustc_span::Symbol::intern);
         let sm = Arc::new(SourceMap::new(FilePathMapping::empty()));
         let mut psess =
             ParseSess::with_dcx(DiagCtxt::new(Box::new(SilentEmitter)), Arc::clone(&sm));
@@ -484,10 +486,10 @@ impl DefinitionFinder {
         };
         if kind_matches {
             if matches!(self.kind, DefinitionSourceKind::TraitImplementation) {
-                if let ItemKind::Impl(imp) = &item.kind {
-                    if self.anchor(ast_impl_header_span(item, imp), self.own_anchor) {
-                        self.item_matches(None, item.span);
-                    }
+                if let ItemKind::Impl(imp) = &item.kind
+                    && self.anchor(ast_impl_header_span(item, imp), self.own_anchor)
+                {
+                    self.item_matches(None, item.span);
                 }
             } else {
                 self.item_matches(ident, item.span);
@@ -531,13 +533,13 @@ impl<'ast> Visitor<'ast> for DefinitionFinder {
     }
 
     fn visit_assoc_item(&mut self, item: &'ast AssocItem, ctxt: AssocCtxt) {
-        let kind_matches = match (self.kind, &item.kind) {
+        let kind_matches = matches!(
+            (self.kind, &item.kind),
             (DefinitionSourceKind::Callable, AssocItemKind::Fn(_))
-            | (DefinitionSourceKind::TraitMethod, AssocItemKind::Fn(_))
-            | (DefinitionSourceKind::ImplementationMethod, AssocItemKind::Fn(_)) => true,
-            (DefinitionSourceKind::AssociatedType, AssocItemKind::Type(_)) => true,
-            _ => false,
-        };
+                | (DefinitionSourceKind::TraitMethod, AssocItemKind::Fn(_))
+                | (DefinitionSourceKind::ImplementationMethod, AssocItemKind::Fn(_))
+                | (DefinitionSourceKind::AssociatedType, AssocItemKind::Type(_))
+        );
         if kind_matches {
             self.item_matches(item.kind.ident(), item.span);
         }

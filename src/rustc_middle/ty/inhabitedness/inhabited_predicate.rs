@@ -1,15 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use rustc_macros::StableHash;
 use crate::rustc_span::def_id::{LocalModId, ModId};
+use rustc_macros::StableHash;
 use smallvec::SmallVec;
 use tracing::instrument;
 
@@ -81,10 +75,13 @@ impl<'tcx> InhabitedPredicate<'tcx> {
     /// Same as `apply`, but `NotInModule(_)` predicates yield `false`. That is,
     /// privately uninhabited types are considered always uninhabited.
     pub fn apply_ignore_module(self, tcx: TyCtxt<'tcx>, typing_env: TypingEnv<'tcx>) -> bool {
-        let Ok(result) =
-            self.apply_inner::<crate::Never>(tcx, typing_env, &mut Default::default(), &|_| Ok(true), &|_| {
-                None
-            });
+        let Ok(result) = self.apply_inner::<crate::Never>(
+            tcx,
+            typing_env,
+            &mut Default::default(),
+            &|_| Ok(true),
+            &|_| None,
+        );
         result
     }
 
@@ -205,10 +202,8 @@ impl<'tcx> InhabitedPredicate<'tcx> {
             (Self::And(&[a, b]), c) | (c, Self::And(&[a, b])) => {
                 if let Some(ac) = a.reduce_and(tcx, c) {
                     Some(ac.and(tcx, b))
-                } else if let Some(bc) = b.reduce_and(tcx, c) {
-                    Some(Self::And(tcx.arena.alloc([a, bc])))
                 } else {
-                    None
+                    b.reduce_and(tcx, c).map(|bc| Self::And(tcx.arena.alloc([a, bc])))
                 }
             }
             _ => None,
@@ -231,10 +226,8 @@ impl<'tcx> InhabitedPredicate<'tcx> {
             (Self::Or(&[a, b]), c) | (c, Self::Or(&[a, b])) => {
                 if let Some(ac) = a.reduce_or(tcx, c) {
                     Some(ac.or(tcx, b))
-                } else if let Some(bc) = b.reduce_or(tcx, c) {
-                    Some(Self::Or(tcx.arena.alloc([a, bc])))
                 } else {
-                    None
+                    b.reduce_or(tcx, c).map(|bc| Self::Or(tcx.arena.alloc([a, bc])))
                 }
             }
             _ => None,

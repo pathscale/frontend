@@ -1,6 +1,6 @@
+use core::convert::Infallible;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
-use core::convert::Infallible;
 use std::fmt;
 use std::str::FromStr;
 
@@ -23,7 +23,7 @@ use crate::diagnostics::error::{
 use crate::diagnostics::message::Message;
 
 thread_local! {
-    pub(crate) static CODE_IDENT_COUNT: RefCell<u32> = RefCell::new(0);
+    pub(crate) static CODE_IDENT_COUNT: RefCell<u32> = const { RefCell::new(0) };
 }
 
 /// Returns an ident of the form `__code_N` where `N` is incremented once with every call.
@@ -530,7 +530,7 @@ impl fmt::Display for SuggestionKind {
 }
 
 impl SuggestionKind {
-    pub(crate) fn to_suggestion_style(&self) -> TokenStream {
+    pub(crate) fn to_suggestion_style(self) -> TokenStream {
         match self {
             SuggestionKind::Normal => {
                 quote! { frontend::rustc_errors::SuggestionStyle::ShowCode }
@@ -609,7 +609,7 @@ impl SubdiagnosticVariant {
         used_fields: &mut HashSet<proc_macro2::Ident>,
     ) -> Result<Option<SubdiagnosticVariant>, DiagnosticDeriveError> {
         // Always allow documentation comments.
-        if is_doc_comment(attr) {
+        if is_doc_comment(attr) || is_lint_attr(attr) {
             return Ok(None);
         }
 
@@ -738,8 +738,8 @@ impl SubdiagnosticVariant {
                 match (arg_name.require_ident()?.to_string().as_str(), &mut kind) {
                     ("code", SubdiagnosticKind::Suggestion { code_field, .. }) => {
                         let code_init = build_suggestion_code(
-                            &code_field,
-                            &input,
+                            code_field,
+                            input,
                             fields,
                             AllowMultipleAlternatives::Yes,
                         )?;
@@ -869,9 +869,14 @@ impl quote::IdentFragment for SubdiagnosticKind {
 /// call (like `span_label`).
 pub(super) fn should_generate_arg(field: &Field) -> bool {
     // Perhaps this should be an exhaustive list...
-    field.attrs.iter().all(|attr| is_doc_comment(attr))
+    field.attrs.iter().all(|attr| is_doc_comment(attr) || is_lint_attr(attr))
 }
 
 pub(super) fn is_doc_comment(attr: &Attribute) -> bool {
     attr.path().segments.last().unwrap().ident == "doc"
+}
+
+/// Compiler lint attributes remain on the input item and need no diagnostic expansion.
+pub(super) fn is_lint_attr(attr: &Attribute) -> bool {
+    ["allow", "expect", "warn", "deny", "forbid"].iter().any(|name| attr.path().is_ident(*name))
 }

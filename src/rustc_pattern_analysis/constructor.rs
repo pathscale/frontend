@@ -38,7 +38,7 @@
 //! constructors:
 //! - Whose union covers the whole type, and
 //! - That have no non-trivial intersection with any of the constructors in the column (i.e. they're
-//!     each either disjoint with or covered by any given column constructor).
+//!   each either disjoint with or covered by any given column constructor).
 //!
 //! We compute this in two steps: first [`PatCx::ctors_for_ty`] determines the
 //! set of all possible constructors for the type. Then [`ConstructorSet::split`] looks at the
@@ -168,14 +168,13 @@
 
 #![cfg_attr(feature = "rustc", cfg_attr(bootstrap, doc = "#![feature(never_type)]"))]
 use alloc::vec::Vec;
-use alloc::string::String;
 use core::cmp::{self, Ordering, max, min};
 use core::fmt;
 use core::iter::once;
 
-use rustc_apfloat::ieee::{DoubleS, HalfS, IeeeFloat, QuadS, SingleS};
 use crate::rustc_index::IndexVec;
 use crate::rustc_index::bit_set::{DenseBitSet, GrowableBitSet};
+use rustc_apfloat::ieee::{DoubleS, HalfS, IeeeFloat, QuadS, SingleS};
 use smallvec::SmallVec;
 
 use self::Constructor::*;
@@ -572,7 +571,7 @@ impl Slice {
         column_slices: impl Iterator<Item = Slice>,
     ) -> impl Iterator<Item = (Presence, Slice)> {
         // Range of lengths below `L`.
-        let smaller_lengths;
+
         let arity = self.arity();
         let mut max_slice = self.kind;
         // Tracks the smallest variable-length slice we've seen. Any slice arity above it is
@@ -580,7 +579,7 @@ impl Slice {
         let mut min_var_len = usize::MAX;
         // Tracks the fixed-length slices we've seen, to mark them as `Presence::Seen`.
         let mut seen_fixed_lens = GrowableBitSet::new_empty();
-        match &mut max_slice {
+        let smaller_lengths = match &mut max_slice {
             VarLen(max_prefix_len, max_suffix_len) => {
                 // A length larger than any fixed-length slice encountered.
                 // We start at 1 in case the subtype is empty because in that case the zero-length
@@ -615,7 +614,7 @@ impl Slice {
                     _ => {}
                 }
 
-                smaller_lengths = match self.array_len {
+                match self.array_len {
                     // The only admissible fixed-length slice is one of the array size. Whether `max_slice`
                     // is fixed-length or variable-length, it will be the only relevant slice to output
                     // here.
@@ -625,7 +624,7 @@ impl Slice {
                     // independently as fixed-lengths slices, and lengths above are captured by
                     // `max_slice`.
                     None => self.arity()..max_slice.arity(),
-                };
+                }
             }
             FixedLen(_) => {
                 // No need to split here. We only track presence.
@@ -641,7 +640,7 @@ impl Slice {
                         }
                     }
                 }
-                smaller_lengths = 0..0;
+                0..0
             }
         };
 
@@ -660,6 +659,12 @@ impl Slice {
 /// A globally unique id to distinguish `Opaque` patterns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpaqueId(u32);
+
+impl Default for OpaqueId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl OpaqueId {
     pub fn new() -> Self {
@@ -813,7 +818,7 @@ impl<Cx: PatCx> Constructor<Cx> {
             // `PrivateUninhabited` skips everything.
             (PrivateUninhabited, _) => true,
             // Only a wildcard pattern can match these special constructors.
-            (Missing { .. } | NonExhaustive | Hidden, _) => false,
+            (Missing | NonExhaustive | Hidden, _) => false,
 
             (Struct, Struct) => true,
             (Ref, Ref) => true,

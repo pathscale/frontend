@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 
@@ -67,7 +67,8 @@ impl TypingModeErasedStatus for MayBeErased {}
 #[cfg_attr(
     feature = "nightly",
     derive(Encodable_NoContext, Decodable_NoContext, StableHash_NoContext)
-)]pub enum TypingMode<I: Interner, S: TypingModeErasedStatus = MayBeErased> {
+)]
+pub enum TypingMode<I: Interner, S: TypingModeErasedStatus = MayBeErased> {
     /// When checking whether impls overlap, we check whether any obligations
     /// are guaranteed to never hold when unifying the impls. This requires us
     /// to be complete: we must never fail to prove something which may actually
@@ -548,12 +549,24 @@ pub trait InferCtxtLike: Sized {
 
     type OpaqueTypeStorageEntries: OpaqueTypeStorageEntries;
     fn opaque_types_storage_num_entries(&self) -> Self::OpaqueTypeStorageEntries;
+    #[expect(
+        clippy::type_complexity,
+        reason = "the result maps opaque keys to their interned hidden types"
+    )]
     fn clone_opaque_types_lookup_table(
         &self,
     ) -> Vec<(ty::OpaqueTypeKey<Self::Interner>, <Self::Interner as Interner>::Ty)>;
+    #[expect(
+        clippy::type_complexity,
+        reason = "the result maps opaque keys to their interned hidden types"
+    )]
     fn clone_duplicate_opaque_types(
         &self,
     ) -> Vec<(ty::OpaqueTypeKey<Self::Interner>, <Self::Interner as Interner>::Ty)>;
+    #[expect(
+        clippy::type_complexity,
+        reason = "the result maps opaque keys to their interned hidden types"
+    )]
     fn clone_opaque_types_added_since(
         &self,
         prev_entries: Self::OpaqueTypeStorageEntries,
@@ -579,8 +592,8 @@ pub trait InferCtxtLike: Sized {
     fn reset_opaque_types(&self);
 }
 
-pub fn may_use_unstable_feature<'a, I: Interner, Infcx>(
-    infcx: &'a Infcx,
+pub fn may_use_unstable_feature<I: Interner, Infcx>(
+    infcx: &Infcx,
     param_env: I::ParamEnv,
     symbol: I::Symbol,
 ) -> bool
@@ -589,10 +602,10 @@ where
 {
     // Iterate through all goals in param_env to find the one that has the same symbol.
     for clause in param_env.caller_bounds() {
-        if let ty::ClauseKind::UnstableFeature(sym) = clause.kind().skip_binder() {
-            if sym == symbol {
-                return true;
-            }
+        if let ty::ClauseKind::UnstableFeature(sym) = clause.kind().skip_binder()
+            && sym == symbol
+        {
+            return true;
         }
     }
 

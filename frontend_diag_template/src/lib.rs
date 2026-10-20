@@ -63,7 +63,10 @@ pub enum Expression {
     Inline(Inline),
     /// `{$selector -> [key] value *[key] value}`. The parser guarantees exactly one variant is
     /// marked default, which is what makes rendering total.
-    Select { selector: Inline, variants: Vec<Variant> },
+    Select {
+        selector: Inline,
+        variants: Vec<Variant>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,7 +473,7 @@ impl<'s> Parser<'s> {
                     };
                     let mut value = &self.src[start..end];
                     if i == last_non_blank {
-                        value = value.trim_end_matches(|c| c == ' ' || c == '\r' || c == '\n');
+                        value = value.trim_end_matches([' ', '\r', '\n']);
                     }
                     Element::Text(value.to_string())
                 }
@@ -916,9 +919,9 @@ fn resolve(inline: &Inline, args: &dyn Args, out: &mut Rendered) -> Selector {
 /// Fluent asked `intl_pluralrules` which CLDR category a number falls in and compared that to a
 /// keyword key. The bundle only ever held `en-US`, and English cardinal plurals are one rule:
 /// `one` when the integer part is 1 and there are no fraction digits, `other` for everything
-/// else. Arguments are `i32`, so there are never fraction digits, and the rule is `n.abs() == 1`
-/// - which is also why `[zero]`, `[two]`, `[few]` and `[many]` never matched in this tree and do
-/// not match here either.
+/// else. Arguments are `i32`, so there are never fraction digits, and the rule is `n.abs() == 1`.
+/// Consequently, `[zero]`, `[two]`, `[few]` and `[many]` never matched in this tree and do not
+/// match here either.
 fn key_matches(key: &Key, selector: &Selector) -> bool {
     match (key, selector) {
         (Key::Name(name), Selector::Str(value)) => name == value,

@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -98,11 +94,10 @@ impl<'a, 'tcx> Iterator for Autoderef<'a, 'tcx> {
             if let Some(ty) = self.state.cur_ty.builtin_deref(self.include_raw_pointers) {
                 debug_assert_eq!(ty, self.infcx.resolve_vars_if_possible(ty));
                 (AutoderefKind::Builtin, ty)
-            } else if let Some(ty) = self.overloaded_deref_ty(self.state.cur_ty) {
+            } else {
+                let ty = self.overloaded_deref_ty(self.state.cur_ty)?;
                 // The overloaded deref check already normalizes the pointee type.
                 (AutoderefKind::Overloaded, ty)
-            } else {
-                return None;
             };
 
         self.state.steps.push((self.state.cur_ty, kind));

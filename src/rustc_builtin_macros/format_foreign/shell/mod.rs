@@ -1,12 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
+use core::fmt;
 
 use crate::rustc_span::InnerSpan;
 
@@ -19,12 +16,12 @@ pub(crate) enum Substitution<'a> {
     Escape((usize, usize)),
 }
 
-impl ToString for Substitution<'_> {
-    fn to_string(&self) -> String {
+impl fmt::Display for Substitution<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Substitution::Ordinal(n, _) => format!("${n}"),
-            Substitution::Name(n, _) => format!("${n}"),
-            Substitution::Escape(_) => "$$".into(),
+            Substitution::Ordinal(n, _) => write!(f, "${n}"),
+            Substitution::Name(n, _) => write!(f, "${n}"),
+            Substitution::Escape(_) => f.write_str("$$"),
         }
     }
 }

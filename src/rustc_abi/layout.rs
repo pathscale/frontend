@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::num::NonZero;
 use core::ops::Deref;
@@ -287,52 +287,51 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             // Don't try to calculate an end-biased layout for unsizable structs,
             // otherwise we could end up with different layouts for
             // Foo<Type> and Foo<dyn Trait> which would break unsizing.
-            if !matches!(kind, StructKind::MaybeUnsized) {
-                if let Some(niche) = layout.largest_niche {
-                    let head_space = niche.offset.bytes();
-                    let niche_len = niche.value.size(dl).bytes();
-                    let tail_space = layout.size.bytes() - head_space - niche_len;
+            if !matches!(kind, StructKind::MaybeUnsized)
+                && let Some(niche) = layout.largest_niche
+            {
+                let head_space = niche.offset.bytes();
+                let niche_len = niche.value.size(dl).bytes();
+                let tail_space = layout.size.bytes() - head_space - niche_len;
 
-                    // This may end up doing redundant work if the niche is already in the last
-                    // field (e.g. a trailing bool) and there is tail padding. But it's non-trivial
-                    // to get the unpadded size so we try anyway.
-                    if fields.len() > 1 && head_space != 0 && tail_space > 0 {
-                        let alt_layout = self
-                            .univariant_biased(fields, repr, kind, NicheBias::End)
-                            .expect("alt layout should always work");
-                        let alt_niche = alt_layout
-                            .largest_niche
-                            .expect("alt layout should have a niche like the regular one");
-                        let alt_head_space = alt_niche.offset.bytes();
-                        let alt_niche_len = alt_niche.value.size(dl).bytes();
-                        let alt_tail_space =
-                            alt_layout.size.bytes() - alt_head_space - alt_niche_len;
+                // This may end up doing redundant work if the niche is already in the last
+                // field (e.g. a trailing bool) and there is tail padding. But it's non-trivial
+                // to get the unpadded size so we try anyway.
+                if fields.len() > 1 && head_space != 0 && tail_space > 0 {
+                    let alt_layout = self
+                        .univariant_biased(fields, repr, kind, NicheBias::End)
+                        .expect("alt layout should always work");
+                    let alt_niche = alt_layout
+                        .largest_niche
+                        .expect("alt layout should have a niche like the regular one");
+                    let alt_head_space = alt_niche.offset.bytes();
+                    let alt_niche_len = alt_niche.value.size(dl).bytes();
+                    let alt_tail_space = alt_layout.size.bytes() - alt_head_space - alt_niche_len;
 
-                        debug_assert_eq!(layout.size.bytes(), alt_layout.size.bytes());
+                    debug_assert_eq!(layout.size.bytes(), alt_layout.size.bytes());
 
-                        let prefer_alt_layout =
-                            alt_head_space > head_space && alt_head_space > tail_space;
+                    let prefer_alt_layout =
+                        alt_head_space > head_space && alt_head_space > tail_space;
 
-                        debug!(
-                            "sz: {}, default_niche_at: {}+{}, default_tail_space: {}, alt_niche_at/head_space: {}+{}, alt_tail: {}, num_fields: {}, better: {}\n\
+                    debug!(
+                        "sz: {}, default_niche_at: {}+{}, default_tail_space: {}, alt_niche_at/head_space: {}+{}, alt_tail: {}, num_fields: {}, better: {}\n\
                             layout: {}\n\
                             alt_layout: {}\n",
-                            layout.size.bytes(),
-                            head_space,
-                            niche_len,
-                            tail_space,
-                            alt_head_space,
-                            alt_niche_len,
-                            alt_tail_space,
-                            layout.fields.count(),
-                            prefer_alt_layout,
-                            self.format_field_niches(layout, fields),
-                            self.format_field_niches(&alt_layout, fields),
-                        );
+                        layout.size.bytes(),
+                        head_space,
+                        niche_len,
+                        tail_space,
+                        alt_head_space,
+                        alt_niche_len,
+                        alt_tail_space,
+                        layout.fields.count(),
+                        prefer_alt_layout,
+                        self.format_field_niches(layout, fields),
+                        self.format_field_niches(&alt_layout, fields),
+                    );
 
-                        if prefer_alt_layout {
-                            return Ok(alt_layout);
-                        }
+                    if prefer_alt_layout {
+                        return Ok(alt_layout);
                     }
                 }
             }
@@ -340,6 +339,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         layout
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub fn layout_of_struct_or_enum<
         'a,
         FieldIdx: Idx,
@@ -1355,41 +1358,39 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 // Two non-ZST fields, and they're both scalars.
                 (Some((i, a)), Some((j, b)), None) => {
-                    match (a.backend_repr, b.backend_repr) {
-                        (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
-                            // Order by the memory placement, not source order.
-                            let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
-                                ((i, a), (j, b))
-                            } else {
-                                ((j, b), (i, a))
-                            };
-                            let pair =
-                                LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
-                            let pair_offsets = match pair.fields {
-                                FieldsShape::Arbitrary { ref offsets, ref in_memory_order } => {
-                                    assert_eq!(
-                                        in_memory_order.raw,
-                                        [FieldIdx::new(0), FieldIdx::new(1)]
-                                    );
-                                    offsets
-                                }
-                                FieldsShape::Primitive
-                                | FieldsShape::Array { .. }
-                                | FieldsShape::Union(..) => {
-                                    panic!("encountered a non-arbitrary layout during enum layout")
-                                }
-                            };
-                            if offsets[i] == pair_offsets[FieldIdx::new(0)]
-                                && offsets[j] == pair_offsets[FieldIdx::new(1)]
-                                && align == pair.align.abi
-                                && size == pair.size
-                            {
-                                // We can use `ScalarPair` only when it matches our
-                                // already computed layout (including `#[repr(C)]`).
-                                abi = pair.backend_repr;
+                    if let (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) =
+                        (a.backend_repr, b.backend_repr)
+                    {
+                        // Order by the memory placement, not source order.
+                        let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
+                            ((i, a), (j, b))
+                        } else {
+                            ((j, b), (i, a))
+                        };
+                        let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
+                        let pair_offsets = match pair.fields {
+                            FieldsShape::Arbitrary { ref offsets, ref in_memory_order } => {
+                                assert_eq!(
+                                    in_memory_order.raw,
+                                    [FieldIdx::new(0), FieldIdx::new(1)]
+                                );
+                                offsets
                             }
+                            FieldsShape::Primitive
+                            | FieldsShape::Array { .. }
+                            | FieldsShape::Union(..) => {
+                                panic!("encountered a non-arbitrary layout during enum layout")
+                            }
+                        };
+                        if offsets[i] == pair_offsets[FieldIdx::new(0)]
+                            && offsets[j] == pair_offsets[FieldIdx::new(1)]
+                            && align == pair.align.abi
+                            && size == pair.size
+                        {
+                            // We can use `ScalarPair` only when it matches our
+                            // already computed layout (including `#[repr(C)]`).
+                            abi = pair.backend_repr;
                         }
-                        _ => {}
                     }
                 }
 

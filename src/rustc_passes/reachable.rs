@@ -22,14 +22,12 @@
 //! codegen everything called by this function -- but that's a very different graph from what we are
 //! considering here as at that point, everything is monomorphic.
 
-use alloc::vec::Vec;
-use hir::def_id::LocalDefIdSet;
+use crate::bug;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::Node;
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::intravisit::{self, Visitor};
-use crate::bug;
 use crate::rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use crate::rustc_middle::middle::privacy::{self, Level};
 use crate::rustc_middle::mir::interpret::{ConstAllocation, ErrorHandled, GlobalAlloc};
@@ -37,6 +35,8 @@ use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::{self, ExistentialTraitRef, TyCtxt};
 use crate::rustc_privacy::DefIdVisitor;
 use crate::rustc_structures::CrateType;
+use alloc::vec::Vec;
+use hir::def_id::LocalDefIdSet;
 use tracing::debug;
 
 /// Determines whether this item is recursive for reachability. See `is_recursively_reachable_local`
@@ -358,15 +358,15 @@ impl<'tcx> ReachableContext<'tcx> {
             DefKind::Static { nested: true, .. } => {
                 // This is the main purpose of this function: add the def_id we find
                 // to `reachable_symbols`.
-                if self.reachable_symbols.insert(def_id) {
-                    if let Ok(alloc) = self.tcx.eval_static_initializer(def_id) {
-                        // This cannot cause infinite recursion, because we abort by inserting into the
-                        // work list once we hit a normal static. Nested statics, even if they somehow
-                        // become recursive, are also not infinitely recursing, because of the
-                        // `reachable_symbols` check above.
-                        // We still need to protect against stack overflow due to deeply nested statics.
-                        self.propagate_from_alloc(alloc);
-                    }
+                if self.reachable_symbols.insert(def_id)
+                    && let Ok(alloc) = self.tcx.eval_static_initializer(def_id)
+                {
+                    // This cannot cause infinite recursion, because we abort by inserting into the
+                    // work list once we hit a normal static. Nested statics, even if they somehow
+                    // become recursive, are also not infinitely recursing, because of the
+                    // `reachable_symbols` check above.
+                    // We still need to protect against stack overflow due to deeply nested statics.
+                    self.propagate_from_alloc(alloc);
                 }
             }
             // Reachable constants and reachable statics can have their contents inlined

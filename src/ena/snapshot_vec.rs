@@ -72,6 +72,9 @@ where
 {
     fn push(&mut self, item: D::Value);
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn reserve(&mut self, size: usize);
 }
 
@@ -149,11 +152,7 @@ pub trait SnapshotVecDelegate {
 // HACK(eddyb) manual impl avoids `Default` bound on `D`.
 impl<D: SnapshotVecDelegate, V: VecLike<D> + Default, L: Default> Default for SnapshotVec<D, V, L> {
     fn default() -> Self {
-        SnapshotVec {
-            values: V::default(),
-            undo_log: Default::default(),
-            _marker: PhantomData,
-        }
+        SnapshotVec { values: V::default(), undo_log: Default::default(), _marker: PhantomData }
     }
 }
 
@@ -167,18 +166,14 @@ impl<D: SnapshotVecDelegate, V: VecLike<D> + Default, L: Default> SnapshotVec<D,
 
 impl<D: SnapshotVecDelegate> SnapshotVecStorage<D> {
     /// Creates a `SnapshotVec` using the `undo_log`, allowing mutating methods to be called
-    pub fn with_log<'a, L>(
-        &'a mut self,
+    pub fn with_log<L>(
+        &mut self,
         undo_log: L,
-    ) -> SnapshotVec<D, &'a mut Vec<<D as SnapshotVecDelegate>::Value>, L>
+    ) -> SnapshotVec<D, &mut Vec<<D as SnapshotVecDelegate>::Value>, L>
     where
         L: UndoLogs<UndoLog<D>>,
     {
-        SnapshotVec {
-            values: &mut self.values,
-            undo_log,
-            _marker: PhantomData,
-        }
+        SnapshotVec { values: &mut self.values, undo_log, _marker: PhantomData }
     }
 }
 
@@ -195,6 +190,10 @@ impl<D: SnapshotVecDelegate, L: Default> SnapshotVec<D, Vec<D::Value>, L> {
 impl<V: VecLike<D>, D: SnapshotVecDelegate, U> SnapshotVec<D, V, U> {
     pub fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 
     pub fn get(&self, index: usize) -> &D::Value {
@@ -280,10 +279,7 @@ where
     L: Snapshots<UndoLog<D>>,
 {
     pub fn start_snapshot(&mut self) -> Snapshot<L::Snapshot> {
-        Snapshot {
-            value_count: self.values.len(),
-            snapshot: self.undo_log.start_snapshot(),
-        }
+        Snapshot { value_count: self.values.len(), snapshot: self.undo_log.start_snapshot() }
     }
 
     pub fn actions_since_snapshot(&self, snapshot: &Snapshot<L::Snapshot>) -> &[UndoLog<D>] {
@@ -340,8 +336,7 @@ impl<D: SnapshotVecDelegate, V: VecLike<D> + Extend<D::Value>> Extend<D::Value>
         let final_len = self.values.len();
 
         if self.in_snapshot() {
-            self.undo_log
-                .extend((initial_len..final_len).map(|len| NewElem(len)));
+            self.undo_log.extend((initial_len..final_len).map(|len| NewElem(len)));
         }
     }
 }
@@ -380,4 +375,3 @@ impl SnapshotVecDelegate for i32 {
 
     fn reverse(_: &mut Vec<i32>, _: ()) {}
 }
-

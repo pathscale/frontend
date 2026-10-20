@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_data_structures::graph::scc::Sccs;
 use crate::rustc_data_structures::graph::{DirectedGraph, Successors};
@@ -7,6 +6,7 @@ use crate::rustc_hir::def_id::DefId;
 use crate::rustc_index::{Idx, IndexVec, newtype_index};
 use crate::rustc_middle::mono::MonoItem;
 use crate::rustc_middle::ty::TyCtxt;
+use alloc::vec::Vec;
 
 use crate::rustc_monomorphize::collector::UsageMap;
 use crate::rustc_monomorphize::diagnostics;
@@ -63,10 +63,10 @@ impl<'a, 'tcx> Successors for StaticRefGraph<'a, 'tcx> {
     }
 }
 
-pub(super) fn check_static_initializers_are_acyclic<'tcx, 'a, 'b>(
+pub(super) fn check_static_initializers_are_acyclic<'tcx>(
     tcx: TyCtxt<'tcx>,
-    mono_items: &'a [MonoItem<'tcx>],
-    usage_map: &'b UsageMap<'tcx>,
+    mono_items: &[MonoItem<'tcx>],
+    usage_map: &UsageMap<'tcx>,
 ) {
     // Collect statics
     let statics: FxIndexSet<DefId> = mono_items

@@ -5,7 +5,6 @@ use crate::rustc_ast::{Attribute, attr};
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Diag, PResult, msg};
 use crate::rustc_span::{BytePos, Span};
-use thin_vec::ThinVec;
 use tracing::debug;
 
 use super::{
@@ -50,7 +49,7 @@ impl<'a> Parser<'a> {
 
     #[inline(never)]
     fn parse_outer_attributes_present(&mut self) -> PResult<'a, AttrWrapper> {
-        let mut outer_attrs = ast::AttrVec::new();
+        let mut outer_attrs = smallvec::SmallVec::<[_; 8]>::new();
         let mut just_parsed_doc_comment = false;
         let start_pos = self.num_bump_calls;
         loop {
@@ -119,7 +118,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(AttrWrapper::new(outer_attrs, start_pos))
+        Ok(AttrWrapper::new(outer_attrs.into(), start_pos))
     }
 
     /// Matches `attribute = # ! [ meta_item ]`.
@@ -387,7 +386,7 @@ impl<'a> Parser<'a> {
 
     #[inline(never)]
     fn parse_inner_attributes_present(&mut self) -> PResult<'a, ast::AttrVec> {
-        let mut attrs = ast::AttrVec::new();
+        let mut attrs = smallvec::SmallVec::<[_; 8]>::new();
         loop {
             let start_pos = self.num_bump_calls;
             // Only try to parse if it is an inner attribute (has `!`).
@@ -423,7 +422,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(attrs)
+        Ok(attrs.into())
     }
 
     // Note: must be unsuffixed.
@@ -439,16 +438,22 @@ impl<'a> Parser<'a> {
     }
 
     /// Matches `COMMASEP(meta_item_inner)`.
-    pub fn parse_meta_seq_top(&mut self) -> PResult<'a, ThinVec<ast::MetaItemInner>> {
-        // Presumably, the majority of the time there will only be one attr.
-        let mut nmis = ThinVec::with_capacity(1);
+    pub fn parse_meta_seq_top(&mut self) -> PResult<'a, ast::ArenaVec<ast::MetaItemInner>> {
+        let start = self.list_scratch.get_mut().meta_items.len();
         while self.token != token::Eof {
-            nmis.push(self.parse_meta_item_inner()?);
+            let item = match self.parse_meta_item_inner() {
+                Ok(item) => item,
+                Err(err) => {
+                    self.list_scratch.get_mut().meta_items.truncate(start);
+                    return Err(err);
+                }
+            };
+            self.list_scratch.get_mut().meta_items.push(item);
             if !self.eat(exp!(Comma)) {
                 break;
             }
         }
-        Ok(nmis)
+        Ok(super::take_arena_vec(&mut self.list_scratch.get_mut().meta_items, start))
     }
 
     /// Parse a meta item per RFC 1559.
@@ -484,7 +489,11 @@ impl<'a> Parser<'a> {
         Ok(if self.eat(exp!(Eq)) {
             ast::MetaItemKind::NameValue(self.parse_unsuffixed_meta_item_lit()?)
         } else if self.check(exp!(OpenParen)) {
-            let (list, _) = self.parse_paren_comma_seq(|p| p.parse_meta_item_inner())?;
+            let (list, _) = self.parse_delim_comma_seq_with::<_, ast::ArenaVec<_>>(
+                exp!(OpenParen),
+                exp!(CloseParen),
+                |p| p.parse_meta_item_inner(),
+            )?;
             ast::MetaItemKind::List(list)
         } else {
             ast::MetaItemKind::Word

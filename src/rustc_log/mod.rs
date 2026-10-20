@@ -135,15 +135,14 @@ impl LoggerConfig {
 pub fn init_logger(cfg: LoggerConfig) -> Result<(), Error> {
     // The configuration is still checked, so an invalid value is still an error rather than
     // being silently accepted by a function that ignores it.
-    match &cfg.color_logs {
-        Some(value) => match value.as_ref() {
+    if let Some(value) = &cfg.color_logs {
+        match value.as_ref() {
             // Behaviour change: a non-UTF-8 value used to be `Error::NonUnicodeColorValue`.
             // `eko::env::var` reports it as `None`, indistinguishable from unset, so it
             // is no longer reachable.
             "always" | "never" | "auto" => {}
             _ => return Err(Error::InvalidColorValue(value.clone())),
-        },
-        None => {}
+        }
     }
 
     if let Some(v) = &cfg.wraptree

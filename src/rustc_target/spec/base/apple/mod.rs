@@ -1,12 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use alloc::borrow::Cow;
 use core::fmt::{Display, from_fn};
@@ -18,9 +13,9 @@ use crate::rustc_target::spec::{
     RustcAbi, SplitDebuginfo, StackProbeType, StaticCow, Target, TargetOptions, cvs,
 };
 
-
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, PartialEq)]
+#[expect(dead_code, reason = "retains Apple architecture descriptors used by target definitions")]
 pub(crate) enum Arch {
     Armv7k,
     Armv7s,
@@ -95,6 +90,7 @@ impl Arch {
 }
 
 #[derive(Copy, Clone, PartialEq)]
+#[expect(dead_code, reason = "retains Apple simulator and Mac Catalyst environment descriptors")]
 pub(crate) enum TargetEnv {
     Normal,
     Simulator,

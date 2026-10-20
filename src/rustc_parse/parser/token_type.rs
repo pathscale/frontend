@@ -1,8 +1,7 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_ast::token::TokenKind;
 use crate::rustc_span::symbol::{Symbol, kw, sym};
+use alloc::string::String;
+use alloc::string::ToString;
 
 /// Used in "expected"/"expected one of" error messages. Tokens are added here
 /// as necessary. Tokens with values (e.g. literals, identifiers) are
@@ -173,7 +172,7 @@ macro_rules! from_u32_match {
 
 impl TokenType {
     fn from_u32(val: u32) -> TokenType {
-        let token_type = from_u32_match! { val;
+        from_u32_match! { val;
             Eq,
             Lt,
             Le,
@@ -290,8 +289,7 @@ impl TokenType {
             SymPure,
             SymReadonly,
             SymSym,
-        };
-        token_type
+        }
     }
 
     pub(super) fn is_keyword(&self) -> Option<Symbol> {
@@ -374,6 +372,11 @@ impl TokenType {
 
     // The output should be the same as that produced by
     // `crate::rustc_ast_pretty::pprust::token_to_string`.
+    #[expect(
+        clippy::wrong_self_convention,
+        clippy::inherent_to_string,
+        reason = "preserves parser diagnostic wording through its existing on-demand string helper"
+    )]
     pub(super) fn to_string(&self) -> String {
         match self {
             TokenType::Eq => "`=`",
@@ -450,15 +453,11 @@ pub struct ExpKeywordPair {
 //
 // The name is short because it's used a lot.
 #[macro_export]
-// We don't use the normal `#[rustfmt::skip]` here because that triggers a
-// bogus "macro-expanded `macro_export` macros from the current crate cannot be
-// referred to by absolute paths" error, ugh. See #52234.
-#[cfg_attr(rustfmt, rustfmt::skip)]
 macro_rules! exp {
     // `ExpTokenPair` helper rules.
     (@tok, $tok:ident) => {
         $crate::rustc_parse::parser::token_type::ExpTokenPair {
-            tok: crate::rustc_ast::token::$tok,
+            tok: $crate::rustc_ast::token::$tok,
             token_type: $crate::rustc_parse::parser::token_type::TokenType::$tok
         }
     };
@@ -466,127 +465,127 @@ macro_rules! exp {
     // `ExpKeywordPair` helper rules.
     (@kw, $kw:ident, $token_type:ident) => {
         $crate::rustc_parse::parser::token_type::ExpKeywordPair {
-            kw: crate::rustc_span::symbol::kw::$kw,
+            kw: $crate::rustc_span::symbol::kw::$kw,
             token_type: $crate::rustc_parse::parser::token_type::TokenType::$token_type,
         }
     };
     (@sym, $kw:ident, $token_type:ident) => {
         $crate::rustc_parse::parser::token_type::ExpKeywordPair {
-            kw: crate::rustc_span::symbol::sym::$kw,
+            kw: $crate::rustc_span::symbol::sym::$kw,
             token_type: $crate::rustc_parse::parser::token_type::TokenType::$token_type,
         }
     };
 
-    (Eq)             => { exp!(@tok, Eq) };
-    (Lt)             => { exp!(@tok, Lt) };
-    (Le)             => { exp!(@tok, Le) };
-    (EqEq)           => { exp!(@tok, EqEq) };
-    (Gt)             => { exp!(@tok, Gt) };
-    (AndAnd)         => { exp!(@tok, AndAnd) };
-    (OrOr)           => { exp!(@tok, OrOr) };
-    (Bang)           => { exp!(@tok, Bang) };
-    (Tilde)          => { exp!(@tok, Tilde) };
-    (Plus)           => { exp!(@tok, Plus) };
-    (Minus)          => { exp!(@tok, Minus) };
-    (Star)           => { exp!(@tok, Star) };
-    (And)            => { exp!(@tok, And) };
-    (Or)             => { exp!(@tok, Or) };
-    (At)             => { exp!(@tok, At) };
-    (Dot)            => { exp!(@tok, Dot) };
-    (DotDot)         => { exp!(@tok, DotDot) };
-    (DotDotDot)      => { exp!(@tok, DotDotDot) };
-    (DotDotEq)       => { exp!(@tok, DotDotEq) };
-    (Comma)          => { exp!(@tok, Comma) };
-    (Semi)           => { exp!(@tok, Semi) };
-    (Colon)          => { exp!(@tok, Colon) };
-    (PathSep)        => { exp!(@tok, PathSep) };
-    (RArrow)         => { exp!(@tok, RArrow) };
-    (FatArrow)       => { exp!(@tok, FatArrow) };
-    (Pound)          => { exp!(@tok, Pound) };
-    (Question)       => { exp!(@tok, Question) };
-    (Eof)            => { exp!(@tok, Eof) };
+    (Eq)             => { $crate::exp!(@tok, Eq) };
+    (Lt)             => { $crate::exp!(@tok, Lt) };
+    (Le)             => { $crate::exp!(@tok, Le) };
+    (EqEq)           => { $crate::exp!(@tok, EqEq) };
+    (Gt)             => { $crate::exp!(@tok, Gt) };
+    (AndAnd)         => { $crate::exp!(@tok, AndAnd) };
+    (OrOr)           => { $crate::exp!(@tok, OrOr) };
+    (Bang)           => { $crate::exp!(@tok, Bang) };
+    (Tilde)          => { $crate::exp!(@tok, Tilde) };
+    (Plus)           => { $crate::exp!(@tok, Plus) };
+    (Minus)          => { $crate::exp!(@tok, Minus) };
+    (Star)           => { $crate::exp!(@tok, Star) };
+    (And)            => { $crate::exp!(@tok, And) };
+    (Or)             => { $crate::exp!(@tok, Or) };
+    (At)             => { $crate::exp!(@tok, At) };
+    (Dot)            => { $crate::exp!(@tok, Dot) };
+    (DotDot)         => { $crate::exp!(@tok, DotDot) };
+    (DotDotDot)      => { $crate::exp!(@tok, DotDotDot) };
+    (DotDotEq)       => { $crate::exp!(@tok, DotDotEq) };
+    (Comma)          => { $crate::exp!(@tok, Comma) };
+    (Semi)           => { $crate::exp!(@tok, Semi) };
+    (Colon)          => { $crate::exp!(@tok, Colon) };
+    (PathSep)        => { $crate::exp!(@tok, PathSep) };
+    (RArrow)         => { $crate::exp!(@tok, RArrow) };
+    (FatArrow)       => { $crate::exp!(@tok, FatArrow) };
+    (Pound)          => { $crate::exp!(@tok, Pound) };
+    (Question)       => { $crate::exp!(@tok, Question) };
+    (Eof)            => { $crate::exp!(@tok, Eof) };
 
-    (OpenParen)      => { exp!(@tok, OpenParen) };
-    (OpenBrace)      => { exp!(@tok, OpenBrace) };
-    (OpenBracket)    => { exp!(@tok, OpenBracket) };
-    (CloseParen)     => { exp!(@tok, CloseParen) };
-    (CloseBrace)     => { exp!(@tok, CloseBrace) };
-    (CloseBracket)   => { exp!(@tok, CloseBracket) };
+    (OpenParen)      => { $crate::exp!(@tok, OpenParen) };
+    (OpenBrace)      => { $crate::exp!(@tok, OpenBrace) };
+    (OpenBracket)    => { $crate::exp!(@tok, OpenBracket) };
+    (CloseParen)     => { $crate::exp!(@tok, CloseParen) };
+    (CloseBrace)     => { $crate::exp!(@tok, CloseBrace) };
+    (CloseBracket)   => { $crate::exp!(@tok, CloseBracket) };
 
-    (As)             => { exp!(@kw, As,         KwAs) };
-    (Async)          => { exp!(@kw, Async,      KwAsync) };
-    (Auto)           => { exp!(@kw, Auto,       KwAuto) };
-    (Await)          => { exp!(@kw, Await,      KwAwait) };
-    (Become)         => { exp!(@kw, Become,     KwBecome) };
-    (Box)            => { exp!(@kw, Box,        KwBox) };
-    (Break)          => { exp!(@kw, Break,      KwBreak) };
-    (Catch)          => { exp!(@kw, Catch,      KwCatch) };
-    (Const)          => { exp!(@kw, Const,      KwConst) };
-    (Continue)       => { exp!(@kw, Continue,   KwContinue) };
-    (ContractEnsures)  => { exp!(@kw, ContractEnsures, KwContractEnsures) };
-    (ContractRequires) => { exp!(@kw, ContractRequires, KwContractRequires) };
-    (Crate)          => { exp!(@kw, Crate,      KwCrate) };
-    (Default)        => { exp!(@kw, Default,    KwDefault) };
-    (Dyn)            => { exp!(@kw, Dyn,        KwDyn) };
-    (Else)           => { exp!(@kw, Else,       KwElse) };
-    (Enum)           => { exp!(@kw, Enum,       KwEnum) };
-    (Extern)         => { exp!(@kw, Extern,     KwExtern) };
-    (Fn)             => { exp!(@kw, Fn,         KwFn) };
-    (For)            => { exp!(@kw, For,        KwFor) };
-    (Final)          => { exp!(@kw, Final,      KwFinal) };
-    (Gen)            => { exp!(@kw, Gen,        KwGen) };
-    (If)             => { exp!(@kw, If,         KwIf) };
-    (Impl)           => { exp!(@kw, Impl,       KwImpl) };
-    (In)             => { exp!(@kw, In,         KwIn) };
-    (Let)            => { exp!(@kw, Let,        KwLet) };
-    (Loop)           => { exp!(@kw, Loop,       KwLoop) };
-    (Macro)          => { exp!(@kw, Macro,      KwMacro) };
-    (MacroRules)     => { exp!(@kw, MacroRules, KwMacroRules) };
-    (Match)          => { exp!(@kw, Match,      KwMatch) };
-    (Mod)            => { exp!(@kw, Mod,        KwMod) };
-    (Move)           => { exp!(@kw, Move,       KwMove) };
-    (Mut)            => { exp!(@kw, Mut,        KwMut) };
-    (Pin)            => { exp!(@kw, Pin,        KwMut) };
-    (Pub)            => { exp!(@kw, Pub,        KwPub) };
-    (Raw)            => { exp!(@kw, Raw,        KwRaw) };
-    (Ref)            => { exp!(@kw, Ref,        KwRef) };
-    (Return)         => { exp!(@kw, Return,     KwReturn) };
-    (Reuse)          => { exp!(@kw, Reuse,      KwReuse) };
-    (Safe)           => { exp!(@kw, Safe,       KwSafe) };
-    (SelfUpper)      => { exp!(@kw, SelfUpper,  KwSelfUpper) };
-    (Static)         => { exp!(@kw, Static,     KwStatic) };
-    (Struct)         => { exp!(@kw, Struct,     KwStruct) };
-    (Super)          => { exp!(@kw, Super,      KwSuper) };
-    (Trait)          => { exp!(@kw, Trait,      KwTrait) };
-    (Try)            => { exp!(@kw, Try,        KwTry) };
-    (Type)           => { exp!(@kw, Type,       KwType) };
-    (Underscore)     => { exp!(@kw, Underscore, KwUnderscore) };
-    (Unsafe)         => { exp!(@kw, Unsafe,     KwUnsafe) };
-    (Use)            => { exp!(@kw, Use,        KwUse) };
-    (Where)          => { exp!(@kw, Where,      KwWhere) };
-    (While)          => { exp!(@kw, While,      KwWhile) };
-    (Yield)          => { exp!(@kw, Yield,      KwYield) };
+    (As)             => { $crate::exp!(@kw, As,         KwAs) };
+    (Async)          => { $crate::exp!(@kw, Async,      KwAsync) };
+    (Auto)           => { $crate::exp!(@kw, Auto,       KwAuto) };
+    (Await)          => { $crate::exp!(@kw, Await,      KwAwait) };
+    (Become)         => { $crate::exp!(@kw, Become,     KwBecome) };
+    (Box)            => { $crate::exp!(@kw, Box,        KwBox) };
+    (Break)          => { $crate::exp!(@kw, Break,      KwBreak) };
+    (Catch)          => { $crate::exp!(@kw, Catch,      KwCatch) };
+    (Const)          => { $crate::exp!(@kw, Const,      KwConst) };
+    (Continue)       => { $crate::exp!(@kw, Continue,   KwContinue) };
+    (ContractEnsures)  => { $crate::exp!(@kw, ContractEnsures, KwContractEnsures) };
+    (ContractRequires) => { $crate::exp!(@kw, ContractRequires, KwContractRequires) };
+    (Crate)          => { $crate::exp!(@kw, Crate,      KwCrate) };
+    (Default)        => { $crate::exp!(@kw, Default,    KwDefault) };
+    (Dyn)            => { $crate::exp!(@kw, Dyn,        KwDyn) };
+    (Else)           => { $crate::exp!(@kw, Else,       KwElse) };
+    (Enum)           => { $crate::exp!(@kw, Enum,       KwEnum) };
+    (Extern)         => { $crate::exp!(@kw, Extern,     KwExtern) };
+    (Fn)             => { $crate::exp!(@kw, Fn,         KwFn) };
+    (For)            => { $crate::exp!(@kw, For,        KwFor) };
+    (Final)          => { $crate::exp!(@kw, Final,      KwFinal) };
+    (Gen)            => { $crate::exp!(@kw, Gen,        KwGen) };
+    (If)             => { $crate::exp!(@kw, If,         KwIf) };
+    (Impl)           => { $crate::exp!(@kw, Impl,       KwImpl) };
+    (In)             => { $crate::exp!(@kw, In,         KwIn) };
+    (Let)            => { $crate::exp!(@kw, Let,        KwLet) };
+    (Loop)           => { $crate::exp!(@kw, Loop,       KwLoop) };
+    (Macro)          => { $crate::exp!(@kw, Macro,      KwMacro) };
+    (MacroRules)     => { $crate::exp!(@kw, MacroRules, KwMacroRules) };
+    (Match)          => { $crate::exp!(@kw, Match,      KwMatch) };
+    (Mod)            => { $crate::exp!(@kw, Mod,        KwMod) };
+    (Move)           => { $crate::exp!(@kw, Move,       KwMove) };
+    (Mut)            => { $crate::exp!(@kw, Mut,        KwMut) };
+    (Pin)            => { $crate::exp!(@kw, Pin,        KwMut) };
+    (Pub)            => { $crate::exp!(@kw, Pub,        KwPub) };
+    (Raw)            => { $crate::exp!(@kw, Raw,        KwRaw) };
+    (Ref)            => { $crate::exp!(@kw, Ref,        KwRef) };
+    (Return)         => { $crate::exp!(@kw, Return,     KwReturn) };
+    (Reuse)          => { $crate::exp!(@kw, Reuse,      KwReuse) };
+    (Safe)           => { $crate::exp!(@kw, Safe,       KwSafe) };
+    (SelfUpper)      => { $crate::exp!(@kw, SelfUpper,  KwSelfUpper) };
+    (Static)         => { $crate::exp!(@kw, Static,     KwStatic) };
+    (Struct)         => { $crate::exp!(@kw, Struct,     KwStruct) };
+    (Super)          => { $crate::exp!(@kw, Super,      KwSuper) };
+    (Trait)          => { $crate::exp!(@kw, Trait,      KwTrait) };
+    (Try)            => { $crate::exp!(@kw, Try,        KwTry) };
+    (Type)           => { $crate::exp!(@kw, Type,       KwType) };
+    (Underscore)     => { $crate::exp!(@kw, Underscore, KwUnderscore) };
+    (Unsafe)         => { $crate::exp!(@kw, Unsafe,     KwUnsafe) };
+    (Use)            => { $crate::exp!(@kw, Use,        KwUse) };
+    (Where)          => { $crate::exp!(@kw, Where,      KwWhere) };
+    (While)          => { $crate::exp!(@kw, While,      KwWhile) };
+    (Yield)          => { $crate::exp!(@kw, Yield,      KwYield) };
 
-    (AttSyntax)      => { exp!(@sym, att_syntax,      SymAttSyntax) };
-    (Bikeshed)       => { exp!(@sym, bikeshed,        SymBikeshed) };
-    (ClobberAbi)     => { exp!(@sym, clobber_abi,     SymClobberAbi) };
-    (Inlateout)      => { exp!(@sym, inlateout,       SymInlateout) };
-    (Inout)          => { exp!(@sym, inout,           SymInout) };
-    (Is)             => { exp!(@sym, is,              SymIs) };
-    (Label)          => { exp!(@sym, label,           SymLabel) };
-    (Lateout)        => { exp!(@sym, lateout,         SymLateout) };
-    (MayUnwind)      => { exp!(@sym, may_unwind,      SymMayUnwind) };
-    (Nomem)          => { exp!(@sym, nomem,           SymNomem) };
-    (Noreturn)       => { exp!(@sym, noreturn,        SymNoreturn) };
-    (Nostack)        => { exp!(@sym, nostack,         SymNostack) };
-    (Null)           => { exp!(@sym, null,            SymNull) };
-    (Options)        => { exp!(@sym, options,         SymOptions) };
-    (Out)            => { exp!(@sym, out,             SymOut) };
-    (Pin)            => { exp!(@sym, pin,             SymPin) };
-    (PreservesFlags) => { exp!(@sym, preserves_flags, SymPreservesFlags) };
-    (Pure)           => { exp!(@sym, pure,            SymPure) };
-    (Readonly)       => { exp!(@sym, readonly,        SymReadonly) };
-    (Sym)            => { exp!(@sym, sym,             SymSym) };
+    (AttSyntax)      => { $crate::exp!(@sym, att_syntax,      SymAttSyntax) };
+    (Bikeshed)       => { $crate::exp!(@sym, bikeshed,        SymBikeshed) };
+    (ClobberAbi)     => { $crate::exp!(@sym, clobber_abi,     SymClobberAbi) };
+    (Inlateout)      => { $crate::exp!(@sym, inlateout,       SymInlateout) };
+    (Inout)          => { $crate::exp!(@sym, inout,           SymInout) };
+    (Is)             => { $crate::exp!(@sym, is,              SymIs) };
+    (Label)          => { $crate::exp!(@sym, label,           SymLabel) };
+    (Lateout)        => { $crate::exp!(@sym, lateout,         SymLateout) };
+    (MayUnwind)      => { $crate::exp!(@sym, may_unwind,      SymMayUnwind) };
+    (Nomem)          => { $crate::exp!(@sym, nomem,           SymNomem) };
+    (Noreturn)       => { $crate::exp!(@sym, noreturn,        SymNoreturn) };
+    (Nostack)        => { $crate::exp!(@sym, nostack,         SymNostack) };
+    (Null)           => { $crate::exp!(@sym, null,            SymNull) };
+    (Options)        => { $crate::exp!(@sym, options,         SymOptions) };
+    (Out)            => { $crate::exp!(@sym, out,             SymOut) };
+    (Pin)            => { $crate::exp!(@sym, pin,             SymPin) };
+    (PreservesFlags) => { $crate::exp!(@sym, preserves_flags, SymPreservesFlags) };
+    (Pure)           => { $crate::exp!(@sym, pure,            SymPure) };
+    (Readonly)       => { $crate::exp!(@sym, readonly,        SymReadonly) };
+    (Sym)            => { $crate::exp!(@sym, sym,             SymSym) };
 }
 
 /// A bitset type designed specifically for `Parser::expected_token_types`,

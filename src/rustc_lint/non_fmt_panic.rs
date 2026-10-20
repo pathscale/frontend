@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -67,30 +63,29 @@ impl<'tcx> LateLintPass<'tcx> for NonPanicFmt {
                 || cx.tcx.is_lang_item(def_id, LangItem::Panic)
                 || f_diagnostic_name == Some(sym::panic_str_2015)
             {
-                if let Some(id) = f.span.ctxt().outer_expn_data().macro_def_id {
-                    if matches!(
+                if let Some(id) = f.span.ctxt().outer_expn_data().macro_def_id
+                    && matches!(
                         cx.tcx.get_diagnostic_name(id),
                         Some(sym::core_panic_2015_macro | sym::std_panic_2015_macro)
-                    ) {
-                        check_panic(cx, f, arg);
-                    }
-                }
-            } else if f_diagnostic_name == Some(sym::unreachable_display) {
-                if let Some(id) = f.span.ctxt().outer_expn_data().macro_def_id
-                    && cx.tcx.is_diagnostic_item(sym::unreachable_2015_macro, id)
+                    )
                 {
-                    check_panic(
-                        cx,
-                        f,
-                        // This is safe because we checked above that the callee is indeed
-                        // unreachable_display
-                        match &arg.kind {
-                            // Get the borrowed arg not the borrow
-                            hir::ExprKind::AddrOf(ast::BorrowKind::Ref, _, arg) => arg,
-                            _ => bug!("call to unreachable_display without borrow"),
-                        },
-                    );
+                    check_panic(cx, f, arg);
                 }
+            } else if f_diagnostic_name == Some(sym::unreachable_display)
+                && let Some(id) = f.span.ctxt().outer_expn_data().macro_def_id
+                && cx.tcx.is_diagnostic_item(sym::unreachable_2015_macro, id)
+            {
+                check_panic(
+                    cx,
+                    f,
+                    // This is safe because we checked above that the callee is indeed
+                    // unreachable_display
+                    match &arg.kind {
+                        // Get the borrowed arg not the borrow
+                        hir::ExprKind::AddrOf(ast::BorrowKind::Ref, _, arg) => arg,
+                        _ => bug!("call to unreachable_display without borrow"),
+                    },
+                );
             }
         }
     }
@@ -180,27 +175,25 @@ impl<'a, 'b, 'tcx> Diagnostic<'a, ()> for PanicMessageNotLiteral<'b, 'tcx> {
                 );
             }
 
-            if suggest_panic_any {
-                if let Some((open, close, del)) = find_delimiters(cx, span) {
-                    lint.arg("already_suggested", suggest_display || suggest_debug);
-                    lint.multipart_suggestion(
-                        msg!(
-                            "{$already_suggested ->
+            if suggest_panic_any && let Some((open, close, del)) = find_delimiters(cx, span) {
+                lint.arg("already_suggested", suggest_display || suggest_debug);
+                lint.multipart_suggestion(
+                    msg!(
+                        "{$already_suggested ->
                                 [true] or use
                                 *[false] use
                             } std::panic::panic_any instead"
-                        ),
-                        if del == '(' {
-                            vec![(span.until(open), "std::panic::panic_any".into())]
-                        } else {
-                            vec![
-                                (span.until(open.shrink_to_hi()), "std::panic::panic_any(".into()),
-                                (close, ")".into()),
-                            ]
-                        },
-                        Applicability::MachineApplicable,
-                    );
-                }
+                    ),
+                    if del == '(' {
+                        vec![(span.until(open), "std::panic::panic_any".into())]
+                    } else {
+                        vec![
+                            (span.until(open.shrink_to_hi()), "std::panic::panic_any(".into()),
+                            (close, ")".into()),
+                        ]
+                    },
+                    Applicability::MachineApplicable,
+                );
             }
         }
         lint
@@ -208,12 +201,12 @@ impl<'a, 'b, 'tcx> Diagnostic<'a, ()> for PanicMessageNotLiteral<'b, 'tcx> {
 }
 
 fn check_panic<'tcx>(cx: &LateContext<'tcx>, f: &'tcx hir::Expr<'tcx>, arg: &'tcx hir::Expr<'tcx>) {
-    if let hir::ExprKind::Lit(lit) = &arg.kind {
-        if let ast::LitKind::Str(sym, _) = lit.node {
-            // The argument is a string literal.
-            check_panic_str(cx, f, arg, sym.as_str());
-            return;
-        }
+    if let hir::ExprKind::Lit(lit) = &arg.kind
+        && let ast::LitKind::Str(sym, _) = lit.node
+    {
+        // The argument is a string literal.
+        check_panic_str(cx, f, arg, sym.as_str());
+        return;
     }
 
     // The argument is *not* a string literal.
@@ -255,7 +248,7 @@ fn check_panic_str<'tcx>(
     arg: &'tcx hir::Expr<'tcx>,
     fmt: &str,
 ) {
-    if !fmt.contains(&['{', '}']) {
+    if !fmt.contains(['{', '}']) {
         // No brace, no problem.
         return;
     }

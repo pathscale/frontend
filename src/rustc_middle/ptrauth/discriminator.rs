@@ -78,11 +78,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::ExternAbi;
@@ -203,10 +199,10 @@ pub fn ptrauth_clone_discriminated_schema_for<'tcx, S>(
 where
     S: FnPtrDiscriminatorSource<'tcx>,
 {
-    if let Some(ref mut s) = schema {
-        if let Some(disc) = ptrauth_compute_fn_ptr_type_discriminator_for(tcx, source) {
-            s.constant_discriminator = disc;
-        }
+    if let Some(ref mut s) = schema
+        && let Some(disc) = ptrauth_compute_fn_ptr_type_discriminator_for(tcx, source)
+    {
+        s.constant_discriminator = disc;
     }
 
     schema
@@ -292,9 +288,7 @@ fn compute_fn_ptr_type_discriminator<'tcx>(
 
     enc.push(b'E');
 
-    let hash = enc.finish();
-
-    hash.into()
+    enc.finish()
 }
 
 // Clang disc type.
@@ -376,7 +370,7 @@ fn canonicalize_c_type<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
 /// - SIMD types are encoded only by total byte size (no lane semantics).
 /// - No attempt is made to recognize user-defined representations of C
 ///   `_Complex` types.
-/// This must remain in sync with Clang's `encodeTypeForFunctionPointerAuth`.
+///   This must remain in sync with Clang's `encodeTypeForFunctionPointerAuth`.
 fn to_clang_disc_ty<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> ClangDiscTy<'tcx> {
     let ty = canonicalize_c_type(tcx, ty);
     match ty.kind() {

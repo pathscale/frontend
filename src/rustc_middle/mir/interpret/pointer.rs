@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 use core::num::NonZero;
@@ -123,7 +117,7 @@ impl fmt::Debug for CtfeProvenance {
 
 const IMMUTABLE_MASK: u64 = 1 << 63; // the highest bit
 const SHARED_REF_MASK: u64 = 1 << 62;
-const ALLOC_ID_MASK: u64 = u64::MAX & !IMMUTABLE_MASK & !SHARED_REF_MASK;
+const ALLOC_ID_MASK: u64 = !IMMUTABLE_MASK & !SHARED_REF_MASK;
 
 impl CtfeProvenance {
     /// Returns the `AllocId` of this provenance.

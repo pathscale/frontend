@@ -3,6 +3,9 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use super::flat::{FlatTokenBuffer, FlatTokenCursor};
+use super::indexed_tape::IndexedSourceTape;
+#[cfg(any(feature = "parallel", test))]
+use super::on_demand::EnclosingGroupInfo;
 use super::on_demand::OnDemandCursor;
 use super::{DelimSpan, FrameSpare, Spacing, TokenStream, TokenTree, TreeTokenCursor};
 use crate::rustc_ast::token::{Delimiter, Token};
@@ -45,6 +48,59 @@ impl TokenCursor {
         Some(Self { inner: Cursor::Source(cursor) })
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retains construction from a prebuilt indexed source tape")
+    )]
+    pub(crate) fn from_indexed_tape(tape: Arc<IndexedSourceTape>) -> Self {
+        Self { inner: Cursor::Source(OnDemandCursor::from_tape(tape)) }
+    }
+
+    #[cfg(any(feature = "parallel", test))]
+    pub(crate) fn can_parallel_parse(&self) -> bool {
+        match &self.inner {
+            Cursor::Source(_) => true,
+            Cursor::Flat(cursor) => cursor.can_parallel_parse(),
+            Cursor::Trees(_) => false,
+        }
+    }
+
+    #[cfg(any(feature = "parallel", test))]
+    pub(crate) fn enclosing_group_info(&self) -> Option<EnclosingGroupInfo> {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor.enclosing_group_info(),
+            Cursor::Flat(cursor) => cursor.enclosing_group_info(),
+            Cursor::Trees(_) => None,
+        }
+    }
+
+    #[cfg(any(feature = "parallel", test))]
+    pub(crate) fn detached_for_group(&self, group_idx: u32) -> Option<Self> {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor
+                .detached_for_group(group_idx)
+                .map(|cursor| Self { inner: Cursor::Source(cursor) }),
+            Cursor::Flat(cursor) => cursor
+                .detached_for_group(group_idx)
+                .map(|cursor| Self { inner: Cursor::Flat(cursor) }),
+            Cursor::Trees(_) => None,
+        }
+    }
+
+    pub(crate) fn depth_zero_item_cuts(&self) -> &[u32] {
+        match &self.inner {
+            Cursor::Source(cursor) => cursor.depth_zero_cuts(),
+            Cursor::Flat(_) | Cursor::Trees(_) => &[],
+        }
+    }
+
+    pub(crate) fn indexed_tape(&self) -> Option<&Arc<IndexedSourceTape>> {
+        match &self.inner {
+            Cursor::Source(cursor) => Some(cursor.tape()),
+            Cursor::Flat(_) | Cursor::Trees(_) => None,
+        }
+    }
+
     #[cfg(feature = "parallel")]
     pub(crate) fn source_stream(&self) -> Option<&TokenStream> {
         match &self.inner {
@@ -74,8 +130,10 @@ impl TokenCursor {
 
     /// Skip whole trees, returning a group's opening token without its body.
     pub(crate) fn look_ahead_tree_token(&self, n: usize) -> Option<Token> {
-        if let Cursor::Source(cursor) = &self.inner {
-            return cursor.look_ahead_tree_token(n);
+        match &self.inner {
+            Cursor::Source(cursor) => return cursor.look_ahead_tree_token(n),
+            Cursor::Flat(cursor) => return cursor.look_ahead_tree_token(n),
+            Cursor::Trees(_) => {}
         }
         self.look_ahead(n).map(|tree| match tree.as_ref() {
             TokenTree::Token(token, _) => *token,

@@ -1,13 +1,4 @@
-/// Used as a return value to signify a fatal error occurred.
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
-// search cannot see them - and a `#[derive]` can use them without the name appearing
-// in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 #[derive(Copy, Clone, Debug)]
 #[must_use]
@@ -63,10 +54,9 @@ pub fn catch_fatal_errors<F: FnOnce() -> R, R>(f: F) -> Result<R, FatalError> {
     match crate::unwind_janky::catch(f) {
         Ok(r) => Ok(r),
         Err(payload) => {
-            let fatal = payload
-                .downcast_ref::<&'static str>()
-                .is_some_and(|s| *s == FATAL_SENTINEL)
-                || payload.downcast_ref::<String>().is_some_and(|s| s == FATAL_SENTINEL);
+            let fatal =
+                payload.downcast_ref::<&'static str>().is_some_and(|s| *s == FATAL_SENTINEL)
+                    || payload.downcast_ref::<String>().is_some_and(|s| s == FATAL_SENTINEL);
             if fatal {
                 Err(FatalError)
             } else {

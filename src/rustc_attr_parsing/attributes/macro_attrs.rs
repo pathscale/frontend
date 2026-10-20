@@ -18,7 +18,7 @@ impl NoArgsAttributeParser for MacroEscapeParser {
 /// `#[macro_use]` attributes can either:
 /// - Use all macros from a crate, if provided without arguments
 /// - Use specific macros from a crate, if provided with arguments `#[macro_use(macro1, macro2)]`
-/// A warning should be provided if an use all is combined with specific uses, or if multiple use-alls are used.
+///   A warning should be provided if an use all is combined with specific uses, or if multiple use-alls are used.
 #[derive(Default)]
 pub(crate) struct MacroUseParser {
     state: MacroUseArgs,

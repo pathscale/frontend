@@ -1,9 +1,9 @@
-use alloc::string::String;
-use alloc::string::ToString;
 use crate::rustc_attr_ir::AttrPath;
 use crate::rustc_feature::AttributeStability;
 use crate::rustc_session::diagnostics::feature_err;
 use crate::rustc_span::{Span, sym};
+use alloc::string::String;
+use alloc::string::ToString;
 
 use crate::rustc_attr_parsing::{AttributeParser, ShouldEmit};
 
@@ -11,8 +11,8 @@ use crate::rustc_attr_parsing::{AttributeParser, ShouldEmit};
 macro_rules! unstable {
     ($feat: ident $(, $notes:expr)*) => {
         AttributeStability::Unstable {
-            gate_name: crate::rustc_span::sym::$feat,
-            gate_check: crate::rustc_feature::Features::$feat,
+            gate_name: $crate::rustc_span::sym::$feat,
+            gate_check: $crate::rustc_feature::Features::$feat,
             notes: &[$($notes),*],
         }
     };

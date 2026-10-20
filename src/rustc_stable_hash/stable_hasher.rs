@@ -134,9 +134,7 @@ impl<H: ExtendedHasher + Default> Default for StableHasher<H> {
     /// To be used with the [`Hasher`] implementation and [`StableHasher::finish`].
     #[inline]
     fn default() -> Self {
-        StableHasher {
-            state: Default::default(),
-        }
+        StableHasher { state: Default::default() }
     }
 }
 

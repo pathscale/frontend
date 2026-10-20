@@ -33,8 +33,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -51,7 +49,9 @@ use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_hir::{self as hir, HirId, find_attr};
 use crate::rustc_lint_defs::builtin::RUST_2021_INCOMPATIBLE_CLOSURE_CAPTURES;
-use crate::rustc_middle::hir::place::{Place, PlaceBase, PlaceWithHirId, Projection, ProjectionKind};
+use crate::rustc_middle::hir::place::{
+    Place, PlaceBase, PlaceWithHirId, Projection, ProjectionKind,
+};
 use crate::rustc_middle::mir::FakeReadCause;
 use crate::rustc_middle::traits::ObligationCauseCode;
 use crate::rustc_middle::ty::{
@@ -154,13 +154,12 @@ impl<'a, 'tcx> Visitor<'tcx> for InferBorrowKindVisitor<'a, 'tcx> {
     type NestedFilter = intravisit::IgnoreNested;
     type Result = ();
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
-        match expr.kind {
-            hir::ExprKind::Closure(&hir::Closure { capture_clause, body: body_id, .. }) => {
-                let body = self.fcx.tcx.hir_body(body_id);
-                self.visit_body(body);
-                self.fcx.analyze_closure(expr.hir_id, expr.span, body_id, body, capture_clause);
-            }
-            _ => {}
+        if let hir::ExprKind::Closure(&hir::Closure { capture_clause, body: body_id, .. }) =
+            expr.kind
+        {
+            let body = self.fcx.tcx.hir_body(body_id);
+            self.visit_body(body);
+            self.fcx.analyze_closure(expr.hir_id, expr.span, body_id, body, capture_clause);
         }
 
         intravisit::walk_expr(self, expr);
@@ -1861,52 +1860,50 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     fn log_closure_min_capture_info(&self, closure_def_id: LocalDefId, closure_span: Span) {
-        if self.should_log_capture_analysis(closure_def_id) {
-            if let Some(min_captures) =
+        if self.should_log_capture_analysis(closure_def_id)
+            && let Some(min_captures) =
                 self.typeck_results.borrow().closure_min_captures.get(&closure_def_id)
-            {
-                let mut diag =
-                    self.dcx().struct_span_err(closure_span, "Min Capture analysis includes:");
+        {
+            let mut diag =
+                self.dcx().struct_span_err(closure_span, "Min Capture analysis includes:");
 
-                for (_, min_captures_for_var) in min_captures {
-                    for capture in min_captures_for_var {
-                        let place = &capture.place;
-                        let capture_info = &capture.info;
+            for (_, min_captures_for_var) in min_captures {
+                for capture in min_captures_for_var {
+                    let place = &capture.place;
+                    let capture_info = &capture.info;
 
-                        let capture_str =
-                            construct_capture_info_string(self.tcx, place, capture_info);
-                        let output_str = format!("Min Capture {capture_str}");
+                    let capture_str = construct_capture_info_string(self.tcx, place, capture_info);
+                    let output_str = format!("Min Capture {capture_str}");
 
-                        if capture.info.path_expr_id != capture.info.capture_kind_expr_id {
-                            let path_span = capture_info
-                                .path_expr_id
-                                .map_or(closure_span, |e| self.tcx.hir_span(e));
-                            let capture_kind_span = capture_info
-                                .capture_kind_expr_id
-                                .map_or(closure_span, |e| self.tcx.hir_span(e));
+                    if capture.info.path_expr_id != capture.info.capture_kind_expr_id {
+                        let path_span = capture_info
+                            .path_expr_id
+                            .map_or(closure_span, |e| self.tcx.hir_span(e));
+                        let capture_kind_span = capture_info
+                            .capture_kind_expr_id
+                            .map_or(closure_span, |e| self.tcx.hir_span(e));
 
-                            let mut multi_span: MultiSpan =
-                                MultiSpan::from_spans(vec![path_span, capture_kind_span]);
+                        let mut multi_span: MultiSpan =
+                            MultiSpan::from_spans(vec![path_span, capture_kind_span]);
 
-                            let capture_kind_label =
-                                construct_capture_kind_reason_string(self.tcx, place, capture_info);
-                            let path_label = construct_path_string(self.tcx, place);
+                        let capture_kind_label =
+                            construct_capture_kind_reason_string(self.tcx, place, capture_info);
+                        let path_label = construct_path_string(self.tcx, place);
 
-                            multi_span.push_span_label(path_span, path_label);
-                            multi_span.push_span_label(capture_kind_span, capture_kind_label);
+                        multi_span.push_span_label(path_span, path_label);
+                        multi_span.push_span_label(capture_kind_span, capture_kind_label);
 
-                            diag.span_note(multi_span, output_str);
-                        } else {
-                            let span = capture_info
-                                .path_expr_id
-                                .map_or(closure_span, |e| self.tcx.hir_span(e));
+                        diag.span_note(multi_span, output_str);
+                    } else {
+                        let span = capture_info
+                            .path_expr_id
+                            .map_or(closure_span, |e| self.tcx.hir_span(e));
 
-                            diag.span_note(span, output_str);
-                        };
-                    }
+                        diag.span_note(span, output_str);
+                    };
                 }
-                diag.emit();
             }
+            diag.emit();
         }
     }
 

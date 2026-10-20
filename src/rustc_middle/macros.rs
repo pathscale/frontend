@@ -1,24 +1,3 @@
-/// A macro for triggering an ICE.
-/// Calling `bug` instead of panicking will result in a nicer error message and should
-/// therefore be preferred over `panic`/`unreachable` or others.
-///
-/// If you have a span available, you should use [`span_bug`] instead.
-///
-/// If the bug should only be emitted when compilation didn't fail,
-/// [`DiagCtxtHandle::span_delayed_bug`] may be useful.
-///
-/// [`DiagCtxtHandle::span_delayed_bug`]: crate::rustc_errors::DiagCtxtHandle::span_delayed_bug
-/// [`span_bug`]: crate::span_bug
-// `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
-// search cannot see them - and a `#[derive]` can use them without the name appearing
-// in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-
 #[macro_export]
 macro_rules! bug {
     () => (

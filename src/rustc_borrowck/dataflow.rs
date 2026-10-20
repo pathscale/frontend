@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -20,7 +16,9 @@ use crate::rustc_mir_dataflow::impls::{
 use crate::rustc_mir_dataflow::{Analysis, GenKill, JoinSemiLattice};
 use tracing::debug;
 
-use crate::rustc_borrowck::{BorrowSet, PlaceConflictBias, PlaceExt, RegionInferenceContext, places_conflict};
+use crate::rustc_borrowck::{
+    BorrowSet, PlaceConflictBias, PlaceExt, RegionInferenceContext, places_conflict,
+};
 
 // This analysis is different to most others. Its results aren't computed with
 // `iterate_to_fixpoint`, but are instead composed from the results of three sub-analyses that are
@@ -519,7 +517,7 @@ impl<'tcx> crate::rustc_mir_dataflow::Analysis<'tcx> for Borrows<'_, 'tcx> {
                     if place.ignore_borrow(
                         self.tcx,
                         self.body,
-                        &self.borrow_set.locals_state_at_exit(),
+                        self.borrow_set.locals_state_at_exit(),
                     ) {
                         return;
                     }

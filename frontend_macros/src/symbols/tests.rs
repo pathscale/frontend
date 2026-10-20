@@ -27,9 +27,10 @@ fn test_symbols() {
 
     let body_tokens = m.mac.tokens.clone();
 
-    // The current symbols table contains no `env!(...)` entries. Keep this smoke test
-    // focused on parsing and expansion of the tracked-in source file.
-    test_symbols_macro(body_tokens, &[]);
+    // The table includes an environment-backed release symbol. Unit tests cannot access
+    // proc-macro environment tracking, so verify expansion reports that guard while still
+    // producing parseable output for the rest of the table.
+    test_symbols_macro(body_tokens, &["proc_macro::tracked_env is not available in unit test"]);
 }
 
 #[test]

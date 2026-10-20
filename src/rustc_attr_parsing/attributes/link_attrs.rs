@@ -1,4 +1,3 @@
-use alloc::string::ToString;
 use crate::rustc_attr_ir::AttributeKind::{LinkName, LinkOrdinal, LinkSection};
 use crate::rustc_attr_ir::*;
 use crate::rustc_errors::msg;
@@ -10,6 +9,7 @@ use crate::rustc_span::edition::Edition::Edition2024;
 use crate::rustc_span::kw;
 use crate::rustc_structures::NativeLibKind;
 use crate::rustc_target::spec::{Arch, BinaryFormat};
+use alloc::string::ToString;
 
 use super::prelude::*;
 use super::util::parse_single_integer;
@@ -234,10 +234,10 @@ impl CombineAttributeParser for LinkParser {
             }
         }
 
-        if let Some((_, span)) = wasm_import_module {
-            if name.is_some() || kind.is_some() || modifiers.is_some() || cfg.is_some() {
-                cx.emit_err(IncompatibleWasmLink { span });
-            }
+        if let Some((_, span)) = wasm_import_module
+            && (name.is_some() || kind.is_some() || modifiers.is_some() || cfg.is_some())
+        {
+            cx.emit_err(IncompatibleWasmLink { span });
         }
 
         if wasm_import_module.is_some() {
@@ -249,10 +249,10 @@ impl CombineAttributeParser for LinkParser {
         };
 
         // Do this outside of the loop so that `import_name_type` can be specified before `kind`.
-        if let Some((_, span)) = import_name_type {
-            if !matches!(kind, Some(NativeLibKind::RawDylib { .. })) {
-                cx.emit_err(ImportNameTypeRaw { span });
-            }
+        if let Some((_, span)) = import_name_type
+            && !matches!(kind, Some(NativeLibKind::RawDylib { .. }))
+        {
+            cx.emit_err(ImportNameTypeRaw { span });
         }
 
         Some(LinkEntry {

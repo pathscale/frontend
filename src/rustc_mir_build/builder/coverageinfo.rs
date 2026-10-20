@@ -1,11 +1,13 @@
+use crate::assert_matches;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use alloc::borrow::ToOwned;
-use crate::assert_matches;
 use hashbrown::hash_map::Entry;
 
 use crate::rustc_data_structures::fx::FxHashMap;
-use crate::rustc_middle::mir::coverage::{BlockMarkerId, BranchSpan, CoverageEarlyInfo, CoverageKind};
+use crate::rustc_middle::mir::coverage::{
+    BlockMarkerId, BranchSpan, CoverageEarlyInfo, CoverageKind,
+};
 use crate::rustc_middle::mir::{self, BasicBlock, SourceInfo, UnOp};
 use crate::rustc_middle::thir::{ExprId, ExprKind, Pat, Thir};
 use crate::rustc_middle::ty::TyCtxt;

@@ -2,12 +2,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 pub fn llvm_pointer_auth_stable_siphash(data: &[u8]) -> u16 {
     let raw = llvm_siphash_2_4_64(data);
@@ -21,7 +15,7 @@ const SIPHASH_KEY: [u8; 16] = [
 
 #[inline(always)]
 fn rotl(x: u64, b: u32) -> u64 {
-    (x << b) | (x >> (64 - b))
+    x.rotate_left(b)
 }
 
 #[inline(always)]

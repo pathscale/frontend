@@ -1,9 +1,9 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::rustc_data_structures::fx::FxHashSet;
 pub use crate::rustc_middle::ty::elaborate::*;
 use crate::rustc_middle::ty::{self, TyCtxt, Unnormalized};
 use crate::rustc_span::{Ident, Span};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 use crate::rustc_infer::traits::{self, Obligation, ObligationCauseCode, PredicateObligation};
 

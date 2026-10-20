@@ -33,7 +33,6 @@
 // tidy-alphabetical-start
 // tidy-alphabetical-end
 
-
 // ---------------------------------------------------------------------------------------------
 // STD IS BANNED IN THIS CRATE.
 //
@@ -55,8 +54,8 @@ use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::mem;
 use alloc::sync::Arc;
+use core::mem;
 
 use crate::rustc_ast::mut_visit::{self, MutVisitor};
 use crate::rustc_ast::node_id::NodeMap;
@@ -81,20 +80,21 @@ use crate::rustc_hir::{
     LifetimeSyntax, MissingLifetimeKind, ParamName, Target, TraitCandidate, find_attr,
 };
 use crate::rustc_index::{Idx, IndexVec};
-use rustc_macros::extension;
 use crate::rustc_middle::queries::Providers;
-use crate::span_bug;
 use crate::rustc_middle::ty::{
     DesugaringAllowLists, PerOwnerResolverData, ResolverAstLowering, TyCtxt,
 };
 use crate::rustc_session::diagnostics::add_feature_diagnostics;
 use crate::rustc_span::symbol::{Ident, Symbol, kw, sym};
 use crate::rustc_span::{DUMMY_SP, DesugaringKind, Span};
+use crate::span_bug;
+use rustc_macros::extension;
 use smallvec::{SmallVec, smallvec};
-use thin_vec::ThinVec;
 use tracing::{debug, instrument, trace};
 
-use crate::rustc_ast_lowering::diagnostics::{AssocTyParentheses, AssocTyParenthesesSub, MisplacedImplTrait};
+use crate::rustc_ast_lowering::diagnostics::{
+    AssocTyParentheses, AssocTyParenthesesSub, MisplacedImplTrait,
+};
 
 macro_rules! arena_vec {
     ($this:expr; $($x:expr),*) => (
@@ -146,7 +146,7 @@ pub(crate) mod re_lowering {
             }
         }
 
-        pub(crate) fn allow_relowering<'a, 'hir, TRes>(
+        pub(super) fn allow_relowering<'a, 'hir, TRes>(
             ctx: &mut LoweringContext<'a, 'hir>,
             op: impl FnOnce(&mut LoweringContext<'a, 'hir>) -> TRes,
         ) -> TRes {
@@ -543,7 +543,6 @@ fn index_ast<'tcx>(
         ) -> Item<K> {
             use crate::rustc_ast::token::Delimiter;
             use crate::rustc_ast::tokenstream::DelimSpan;
-            use thin_vec::thin_vec;
 
             Item {
                 attrs: AttrVec::default(),
@@ -1446,7 +1445,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         {
                             add_feature_diagnostics(
                                 &mut err,
-                                &self.tcx.sess,
+                                self.tcx.sess,
                                 sym::return_type_notation,
                             );
                         }
@@ -2175,7 +2174,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         };
 
         let fn_decl_kind = hir::FnDeclFlags::default()
-            .set_implicit_self(decl.inputs.get(0).map_or(hir::ImplicitSelfKind::None, |arg| {
+            .set_implicit_self(decl.inputs.first().map_or(hir::ImplicitSelfKind::None, |arg| {
                 let is_mutable_pat = matches!(
                     arg.pat.kind,
                     PatKind::Ident(hir::BindingMode(_, Mutability::Mut), ..)
@@ -2379,7 +2378,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     assert_eq!(ident.name, kw::UnderscoreLifetime);
                     hir::LifetimeKind::Infer
                 }
-                LifetimeRes::Static { .. } => {
+                LifetimeRes::Static => {
                     assert!(matches!(ident.name, kw::StaticLifetime | kw::UnderscoreLifetime));
                     hir::LifetimeKind::Static
                 }
@@ -2826,10 +2825,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
             (Some(body), ConstItemKind::TypeConst) => {
                 hir::ConstItemRhs::TypeConst(self.arena.alloc(
                     match self.can_lower_expr_to_const_arg_direct(
-                        &body,
+                        body,
                         DirectConstArgContext::MacrolessMinGenericConstArgs,
                     ) {
-                        Ok(()) => self.lower_expr_to_const_arg_direct(&body, None),
+                        Ok(()) => self.lower_expr_to_const_arg_direct(body, None),
                         Err(err) => err.emit(self),
                     },
                 ))

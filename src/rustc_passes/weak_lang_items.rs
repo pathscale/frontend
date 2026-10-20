@@ -7,7 +7,9 @@ use crate::rustc_middle::middle::lang_items::required;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_structures::CrateType;
 
-use crate::rustc_passes::diagnostics::{MissingLangItem, MissingPanicHandler, PanicUnwindWithoutStd};
+use crate::rustc_passes::diagnostics::{
+    MissingLangItem, MissingPanicHandler, PanicUnwindWithoutStd,
+};
 
 /// Checks the crate for usage of weak lang items. Erroring on all the
 /// lang items required by this crate, but not defined yet.

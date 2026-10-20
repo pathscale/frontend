@@ -4,11 +4,13 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 
 #[cfg(feature = "nightly")]
-use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher, StableOrd};
-#[cfg(feature = "nightly")]
-use rustc_macros::{Decodable, Encodable};
+use crate::rustc_data_structures::stable_hash::{
+    StableHash, StableHashCtxt, StableHasher, StableOrd,
+};
 #[cfg(feature = "nightly")]
 use crate::rustc_span::Symbol;
+#[cfg(feature = "nightly")]
+use rustc_macros::{Decodable, Encodable};
 
 use crate::rustc_abi::AbiFromStrErr;
 

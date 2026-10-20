@@ -25,15 +25,8 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use hir::ConstContext;
-use required_consts::RequiredConstsVisitor;
 use crate::rustc_const_eval::check_consts::{self, ConstCx};
 use crate::rustc_const_eval::util;
 use crate::rustc_data_structures::fx::FxIndexSet;
@@ -43,14 +36,16 @@ use crate::rustc_hir::def::{CtorKind, DefKind};
 use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_index::IndexVec;
 use crate::rustc_middle::mir::{
-    AnalysisPhase, Body, CallSource, ClearCrossCrate, ConstOperand, ConstQualifs, LocalDecl,
-    MirPhase, Operand, Place, ProjectionElem, Promoted, RuntimePhase, Rvalue, START_BLOCK,
-    SourceInfo, Statement, StatementKind, TerminatorKind, WithRetag,
+    AnalysisPhase, Body, CallSource, ClearCrossCrate, ConstQualifs, LocalDecl, MirPhase, Operand,
+    Place, ProjectionElem, Promoted, RuntimePhase, Rvalue, START_BLOCK, SourceInfo, Statement,
+    StatementKind, TerminatorKind, WithRetag,
 };
 use crate::rustc_middle::ty::{self, TyCtxt, TypeVisitableExt};
 use crate::rustc_middle::util::Providers;
 use crate::rustc_middle::{bug, query, span_bug};
 use crate::rustc_span::{DUMMY_SP, Spanned, sym};
+use hir::ConstContext;
+use required_consts::RequiredConstsVisitor;
 use tracing::debug;
 
 #[macro_use]
@@ -174,7 +169,7 @@ declare_passes! {
     mod elaborate_box_derefs : ElaborateBoxDerefs;
     mod elaborate_drops : ElaborateDrops;
     mod function_item_references : FunctionItemReferences;
-    mod gvn : GVN;
+    mod gvn : Gvn;
     // Made public so that `mir_drops_elaborated_and_const_checked` can be overridden
     // by custom rustc drivers, running all the steps by themselves. See #114628.
     pub mod inline : Inline, ForceInline;
@@ -776,7 +771,7 @@ pub(crate) fn run_optimization_passes<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'
             &sroa::ScalarReplacementOfAggregates,
             &simplify::SimplifyLocals::BeforeConstProp,
             &dead_store_elimination::DeadStoreElimination::Initial,
-            &gvn::GVN,
+            &gvn::Gvn,
             &simplify::SimplifyLocals::AfterGVN,
             &ssa_range_prop::SsaRangePropagation,
             &match_branches::MatchBranchSimplification,

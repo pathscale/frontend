@@ -1,10 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -13,13 +11,10 @@ use crate::rustc_errors::{
     Applicability, Diag, DiagCtxtHandle, DiagSymbolList, Diagnostic, EmissionGuarantee, Level,
     Subdiagnostic, msg,
 };
-use crate::rustc_lint_defs::Lint;
-use crate::rustc_lint_defs::builtin::{ARITHMETIC_OVERFLOW, UNCONDITIONAL_PANIC};
-use rustc_macros::{Diagnostic, Subdiagnostic};
-use crate::rustc_middle::mir::AssertKind;
 use crate::rustc_middle::ty::{Ty, TyCtxt};
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::{Ident, Span, Symbol};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("function cannot return without recursing")]
@@ -95,53 +90,6 @@ pub(crate) struct UnknownPassName<'a> {
 #[diag("valid MIR pass names are: {$valid_passes}")]
 pub(crate) struct ValidPassNames<'a> {
     pub(crate) valid_passes: DiagSymbolList<&'a str>,
-}
-
-pub(crate) struct AssertLint<P> {
-    pub span: Span,
-    pub assert_kind: AssertKind<P>,
-    pub lint_kind: AssertLintKind,
-}
-
-pub(crate) enum AssertLintKind {
-    ArithmeticOverflow,
-    UnconditionalPanic,
-}
-
-impl<'a, P: core::fmt::Debug> Diagnostic<'a, ()> for AssertLint<P> {
-    fn into_diag(self, dcx: DiagCtxtHandle<'a>, level: Level) -> Diag<'a, ()> {
-        let mut diag = Diag::new(
-            dcx,
-            level,
-            match self.lint_kind {
-                AssertLintKind::ArithmeticOverflow => {
-                    msg!("this arithmetic operation will overflow")
-                }
-                AssertLintKind::UnconditionalPanic => {
-                    msg!("this operation will panic at runtime")
-                }
-            },
-        );
-        diag.span_label(self.span, self.assert_kind.to_string());
-        diag
-    }
-}
-
-impl AssertLintKind {
-    pub(crate) fn lint(&self) -> &'static Lint {
-        match self {
-            AssertLintKind::ArithmeticOverflow => ARITHMETIC_OVERFLOW,
-            AssertLintKind::UnconditionalPanic => UNCONDITIONAL_PANIC,
-        }
-    }
-}
-
-#[derive(Diagnostic)]
-#[diag("this operation will panic at runtime")]
-pub(crate) struct ConstNIsZero {
-    #[label("const parameter `{$const_param_name}` is zero")]
-    pub const_param_span: Span,
-    pub const_param_name: Symbol,
 }
 
 #[derive(Diagnostic)]

@@ -1,10 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -295,6 +291,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn point_at_expr_if_possible(
         &self,
         error: &mut traits::FulfillmentError<'tcx>,
@@ -673,6 +673,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// `blame_specific_arg_if_possible` will find the most-specific expression anywhere inside
     /// the provided function call expression, and mark it as responsible for the fulfillment
     /// error.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn blame_specific_arg_if_possible(
         &self,
         error: &mut traits::FulfillmentError<'tcx>,
@@ -716,7 +720,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 parent_code,
             });
             return true;
-        } else if args_referencing_param.len() > 0 {
+        } else if !args_referencing_param.is_empty() {
             // If more than one argument applies, then point to the callee span at least...
             // We have chance to fix this up further in `point_at_generics_if_possible`
             error.obligation.cause.span = callee_span;
@@ -818,7 +822,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // If this cannot be done, then we are already stuck, so we stop early (hence the use
         // of the `?` try operator here).
         let expr = self.blame_specific_expr_if_possible_for_obligation_cause_code(
-            &*obligation.derived.parent_code,
+            &obligation.derived.parent_code,
             expr,
         )?;
 
@@ -1066,7 +1070,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                     self.tcx.parent(expr_ctor_def_id)
                 }
-                DefKind::Ctor(hir::def::CtorOf::Variant, hir::def::CtorKind::Fn) => {
+                DefKind::Ctor(hir::def::CtorOf::Variant, hir::def::CtorKind::Fn)
                     // For a typical enum like
                     // `enum Blah<T> { Variant(T) }`
                     // we get the following resolutions:
@@ -1079,15 +1083,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     // together; this resolution is handled automatically by `qpath_res`.
 
                     // FIXME: Deal with type aliases?
-                    if in_ty_adt.did() == self.tcx.parent(self.tcx.parent(expr_ctor_def_id)) {
+                    if in_ty_adt.did() == self.tcx.parent(self.tcx.parent(expr_ctor_def_id)) => {
                         // The constructor definition refers to the "constructor" of the variant:
                         // For example, `Some(5)` triggers this case.
                         self.tcx.parent(expr_ctor_def_id)
-                    } else {
-                        // FIXME: Deal with type aliases?
-                        return Err(expr);
                     }
-                }
                 _ => {
                     return Err(expr);
                 }

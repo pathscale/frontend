@@ -1,9 +1,9 @@
 #[allow(unused_imports)]
 use crate::rustc_ast::ptr::P;
-use {alloc::boxed::Box, alloc::string::String};
-use ast::StaticItem;
 use crate::rustc_ast::{self as ast, EiiImpl, ModKind, Safety, TraitAlias};
 use crate::rustc_span::Ident;
+use alloc::string::String;
+use ast::StaticItem;
 
 use crate::rustc_ast_pretty::pp::BoxMarker;
 use crate::rustc_ast_pretty::pp::Breaks::Inconsistent;
@@ -36,7 +36,7 @@ impl<'a> State<'a> {
         self.print_outer_attributes(attrs);
         match kind {
             ast::ForeignItemKind::Fn(func) => {
-                self.print_fn_full(vis, attrs, &*func);
+                self.print_fn_full(vis, attrs, func);
             }
             ast::ForeignItemKind::Static(st) => {
                 let ast::StaticItem {
@@ -62,14 +62,8 @@ impl<'a> State<'a> {
                 )
             }
             ast::ForeignItemKind::TyAlias(ta) => {
-                let ast::TyAlias {
-                    defaultness,
-                    ident,
-                    generics,
-                    after_where_clause,
-                    bounds,
-                    ty,
-                } = &**ta;
+                let ast::TyAlias { defaultness, ident, generics, after_where_clause, bounds, ty } =
+                    &**ta;
                 self.print_associated_type(
                     *ident,
                     generics,
@@ -90,6 +84,10 @@ impl<'a> State<'a> {
         self.ann.post(self, AnnNode::SubItem(id))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn print_item_const(
         &mut self,
         ident: Ident,
@@ -134,6 +132,10 @@ impl<'a> State<'a> {
         self.end(cb);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn print_associated_type(
         &mut self,
         ident: Ident,
@@ -160,7 +162,7 @@ impl<'a> State<'a> {
             self.word_space("=");
             self.print_type(ty);
         }
-        self.print_where_clause(&after_where_clause);
+        self.print_where_clause(after_where_clause);
         self.word(";");
         self.end(ib);
         self.end(cb);
@@ -255,7 +257,7 @@ impl<'a> State<'a> {
                 );
             }
             ast::ItemKind::Fn(func) => {
-                self.print_fn_full(&item.vis, &item.attrs, &*func);
+                self.print_fn_full(&item.vis, &item.attrs, func);
             }
             ast::ItemKind::Mod(safety, ident, mod_kind) => {
                 let (cb, ib) = self.head(Self::to_string(|s| {
@@ -306,14 +308,8 @@ impl<'a> State<'a> {
                 self.end(cb);
             }
             ast::ItemKind::TyAlias(ta) => {
-                let ast::TyAlias {
-                    defaultness,
-                    ident,
-                    generics,
-                    after_where_clause,
-                    bounds,
-                    ty,
-                } = &**ta;
+                let ast::TyAlias { defaultness, ident, generics, after_where_clause, bounds, ty } =
+                    &**ta;
                 self.print_associated_type(
                     *ident,
                     generics,
@@ -439,7 +435,7 @@ impl<'a> State<'a> {
                 }
             }
             ast::ItemKind::MacroDef(ident, macro_def) => {
-                self.print_mac_def(macro_def, &ident, item.span, |state| {
+                self.print_mac_def(macro_def, ident, item.span, |state| {
                     state.print_visibility(&item.vis)
                 });
             }
@@ -546,6 +542,10 @@ impl<'a> State<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn print_struct(
         &mut self,
         struct_def: &ast::VariantData,
@@ -625,7 +625,7 @@ impl<'a> State<'a> {
         self.print_outer_attributes(attrs);
         match kind {
             ast::AssocItemKind::Fn(func) => {
-                self.print_fn_full(vis, attrs, &*func);
+                self.print_fn_full(vis, attrs, func);
             }
             ast::AssocItemKind::Const(c) => {
                 let ast::ConstItem {
@@ -651,14 +651,8 @@ impl<'a> State<'a> {
                 );
             }
             ast::AssocItemKind::Type(ta) => {
-                let ast::TyAlias {
-                    defaultness,
-                    ident,
-                    generics,
-                    after_where_clause,
-                    bounds,
-                    ty,
-                } = &**ta;
+                let ast::TyAlias { defaultness, ident, generics, after_where_clause, bounds, ty } =
+                    &**ta;
                 self.print_associated_type(
                     *ident,
                     generics,
@@ -928,11 +922,9 @@ impl<'a> State<'a> {
                 if items.is_empty() {
                     self.word("{}");
                 } else if let [(item, _)] = items.as_slice()
-                    && !item
-                        .prefix
-                        .segments
-                        .first()
-                        .is_some_and(|seg| seg.ident.name == crate::rustc_span::symbol::kw::SelfLower)
+                    && !item.prefix.segments.first().is_some_and(|seg| {
+                        seg.ident.name == crate::rustc_span::symbol::kw::SelfLower
+                    })
                 {
                     self.print_use_tree(item);
                 } else {

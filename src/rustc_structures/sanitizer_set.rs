@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use alloc::string::String;
 use core::fmt;
 use core::str::FromStr;
@@ -93,7 +92,7 @@ impl SanitizerSet {
 
     pub fn mutually_exclusive(self) -> Option<(SanitizerSet, SanitizerSet)> {
         Self::MUTUALLY_EXCLUSIVE
-            .into_iter()
+            .iter()
             .find(|&(a, b)| self.contains(*a) && self.contains(*b))
             .copied()
     }

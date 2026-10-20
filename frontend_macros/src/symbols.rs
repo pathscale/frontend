@@ -38,6 +38,7 @@ mod tests;
 mod kw {
     syn::custom_keyword!(Keywords);
     syn::custom_keyword!(Symbols);
+    syn::custom_keyword!(ExtraSymbols);
 }
 
 struct Keyword {
@@ -102,6 +103,7 @@ impl Parse for Value {
 struct Input {
     keywords: Punctuated<Keyword, Token![,]>,
     symbols: Punctuated<Symbol, Token![,]>,
+    extra_symbols: Punctuated<Ident, Token![,]>,
 }
 
 impl Parse for Input {
@@ -116,7 +118,16 @@ impl Parse for Input {
         braced!(content in input);
         let symbols = Punctuated::parse_terminated(&content)?;
 
-        Ok(Input { keywords, symbols })
+        let extra_symbols = if input.peek(kw::ExtraSymbols) {
+            input.parse::<kw::ExtraSymbols>()?;
+            let content;
+            braced!(content in input);
+            Punctuated::parse_terminated(&content)?
+        } else {
+            Punctuated::new()
+        };
+
+        Ok(Input { keywords, symbols, extra_symbols })
     }
 }
 
@@ -182,7 +193,11 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
             // This allows us to display errors at the proper span, while minimizing
             // unrelated errors caused by bailing out (and not generating code).
             errors.list.push(e);
-            Input { keywords: Default::default(), symbols: Default::default() }
+            Input {
+                keywords: Default::default(),
+                symbols: Default::default(),
+                extra_symbols: Default::default(),
+            }
         }
     };
 
@@ -276,11 +291,7 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
         let env_value = std::env::var(env_var.value()).or_else(|err| {
             // Keep the release symbol in the environment-symbol tail even when the
             // embedding build does not nominate a compiler release.
-            if env_var.value() == "CFG_RELEASE" {
-                Ok("0.0.0".to_owned())
-            } else {
-                Err(err)
-            }
+            if env_var.value() == "CFG_RELEASE" { Ok("0.0.0".to_owned()) } else { Err(err) }
         });
 
         let value = match env_value {
@@ -301,6 +312,17 @@ fn symbols_with_errors(input: TokenStream) -> (TokenStream, Vec<syn::Error>) {
         };
 
         let name = &symbol.name;
+        symbols_stream.extend(quote! {
+            pub const #name: Symbol = Symbol::new(#idx);
+        });
+    }
+
+    // Frontend additions follow every upstream entry, including generated ASCII and env symbols.
+    // Metadata stores predefined IDs directly, so inserting before that tail changes its meaning.
+    for name in &input.extra_symbols {
+        let value = name.to_string();
+        let idx = entries.insert(name.span(), &value, &mut errors);
+        prefill_stream.extend(quote! { #value, });
         symbols_stream.extend(quote! {
             pub const #name: Symbol = Symbol::new(#idx);
         });

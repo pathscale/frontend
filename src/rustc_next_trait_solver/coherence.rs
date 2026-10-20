@@ -1,15 +1,14 @@
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::ControlFlow;
 
-use derive_where::derive_where;
 use crate::rustc_type_ir::inherent::*;
 use crate::rustc_type_ir::lang_items::SolverAdtLangItem;
 use crate::rustc_type_ir::{
     self as ty, InferCtxtLike, Interner, Region, TrivialTypeTraversalImpls, TypeVisitable,
     TypeVisitableExt, TypeVisitor,
 };
+use derive_where::derive_where;
 use tracing::instrument;
 
 /// Whether we do the orphan check relative to this crate or to some remote crate.
@@ -221,7 +220,7 @@ pub struct UncoveredTyParams<I: Interner, T> {
 /// Note that this function is never called for types that have both type
 /// parameters and inference variables.
 #[instrument(level = "trace", skip(infcx, lazily_normalize_ty), ret)]
-pub fn orphan_check_trait_ref<Infcx, I, E: Debug>(
+pub fn orphan_check_trait_ref<Infcx, I, E>(
     infcx: &Infcx,
     trait_ref: ty::TraitRef<I>,
     in_crate: InCrate,

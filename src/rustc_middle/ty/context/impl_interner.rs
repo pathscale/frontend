@@ -3,15 +3,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
-use core::fmt;
 use crate::debug_assert_matches;
+use core::fmt;
 
 use crate::rustc_data_structures::intern::Interned;
 use crate::rustc_errors::ErrorGuaranteed;
@@ -20,7 +15,9 @@ use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::{CtorKind, DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_span::{DUMMY_SP, Span, Symbol};
-use crate::rustc_type_ir::lang_items::{SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem};
+use crate::rustc_type_ir::lang_items::{
+    SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem,
+};
 use crate::rustc_type_ir::{
     BoundVar, CollectAndApply, DebruijnIndex, Interner, TypeFoldable, Unnormalized, VisitorResult,
     search_graph, try_visit,
@@ -150,14 +147,14 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
     }
 
     fn with_global_cache<R>(self, f: impl FnOnce(&mut search_graph::GlobalCache<Self>) -> R) -> R {
-        f(&mut *self.caches.new_solver_evaluation_cache.lock())
+        f(&mut self.caches.new_solver_evaluation_cache.lock())
     }
 
     fn with_canonical_param_env_cache<R>(
         self,
         f: impl FnOnce(&mut ty::CanonicalParamEnvCache<Self>) -> R,
     ) -> R {
-        f(&mut *self.caches.new_solver_canonical_param_env_cache.lock())
+        f(&mut self.caches.new_solver_canonical_param_env_cache.lock())
     }
 
     fn assert_evaluation_is_concurrent(&self) {
@@ -228,7 +225,8 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
             let hir::ExprKind::Path(hir::QPath::Resolved(_, path)) = expr.kind else {
                 return None;
             };
-            let Res::Def(DefKind::Const { .. } | DefKind::AssocConst { .. }, named) = path.res else {
+            let Res::Def(DefKind::Const { .. } | DefKind::AssocConst { .. }, named) = path.res
+            else {
                 return None;
             };
             Some(named)
@@ -450,14 +448,14 @@ impl<'tcx> Interner for TyCtxt<'tcx> {
         self,
         def_id: DefId,
     ) -> ty::EarlyBinder<'tcx, impl IntoIterator<Item = (ty::Clause<'tcx>, Span)>> {
-        self.explicit_super_clauses_of(def_id).map_bound(|preds| preds.into_iter().copied())
+        self.explicit_super_clauses_of(def_id).map_bound(|preds| preds.iter().copied())
     }
 
     fn explicit_implied_clauses_of(
         self,
         def_id: DefId,
     ) -> ty::EarlyBinder<'tcx, impl IntoIterator<Item = (ty::Clause<'tcx>, Span)>> {
-        self.explicit_implied_clauses_of(def_id).map_bound(|preds| preds.into_iter().copied())
+        self.explicit_implied_clauses_of(def_id).map_bound(|preds| preds.iter().copied())
     }
 
     fn impl_super_outlives(

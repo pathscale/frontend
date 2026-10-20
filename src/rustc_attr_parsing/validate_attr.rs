@@ -18,7 +18,9 @@ use crate::rustc_session::diagnostics::report_lit_error;
 use crate::rustc_session::parse::ParseSess;
 use crate::rustc_span::{Span, Symbol, sym};
 
-use crate::rustc_attr_parsing::{AttributeParser, AttributeTemplate, diagnostics as errors, template};
+use crate::rustc_attr_parsing::{
+    AttributeParser, AttributeTemplate, diagnostics as errors, template,
+};
 
 pub fn check_attr(psess: &ParseSess, attr: &Attribute) {
     use ast::SyntheticAttr::*;
@@ -216,8 +218,12 @@ pub fn emit_malformed_attribute(
             span,
             ast::CRATE_NODE_ID,
             move |dcx, level| {
-                crate::rustc_attr_parsing::diagnostics::IllFormedAttributeInput::new(&suggestions, template.docs, None)
-                    .into_diag(dcx, level)
+                crate::rustc_attr_parsing::diagnostics::IllFormedAttributeInput::new(
+                    &suggestions,
+                    template.docs,
+                    None,
+                )
+                .into_diag(dcx, level)
             },
         );
     } else {

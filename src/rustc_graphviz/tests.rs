@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use eko::file as io;
 
 use NodeLabels::*;
@@ -55,7 +55,7 @@ enum NodeLabels<L> {
 type Trivial = NodeLabels<&'static str>;
 
 impl NodeLabels<&'static str> {
-    fn to_opt_strs(self) -> Vec<Option<&'static str>> {
+    fn into_opt_strs(self) -> Vec<Option<&'static str>> {
         match self {
             UnlabelledNodes(len) => vec![None; len],
             AllNodesLabelled(lbls) => lbls.into_iter().map(Some).collect(),
@@ -82,7 +82,7 @@ impl LabelledGraph {
         let count = node_labels.len();
         LabelledGraph {
             name,
-            node_labels: node_labels.to_opt_strs(),
+            node_labels: node_labels.into_opt_strs(),
             edges,
             node_styles: match node_styles {
                 Some(nodes) => nodes,
@@ -405,8 +405,5 @@ fn simple_id_construction() {
 #[test]
 fn badly_formatted_id() {
     let id2 = Id::new("Weird { struct : ure } !!!");
-    match id2 {
-        Ok(_) => panic!("graphviz id suddenly allows spaces, brackets and stuff"),
-        Err(..) => {}
-    }
+    assert!(id2.is_err(), "graphviz id suddenly allows spaces, brackets and stuff");
 }

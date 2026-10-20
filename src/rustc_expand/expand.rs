@@ -1,13 +1,13 @@
 use crate::rustc_ast::ptr::P;
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::borrow::ToOwned;
-use eko::path::PathBuf;
-use alloc::rc::Rc;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::{iter, mem, slice};
+use eko::path::PathBuf;
 
 use crate::rustc_ast::mut_visit::*;
 use crate::rustc_ast::tokenstream::TokenStream;
@@ -637,6 +637,10 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
     /// them with "placeholders" - dummy macro invocations with specially crafted `NodeId`s.
     /// Then call into resolver that builds a skeleton ("reduced graph") of the fragment and
     /// prepares data for resolving paths of macro invocations.
+    #[expect(
+        clippy::type_complexity,
+        reason = "returns the rewritten fragment with the invocations discovered during that walk"
+    )]
     fn collect_invocations(
         &mut self,
         mut fragment: AstFragment,
@@ -810,7 +814,10 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                         // Fake tokens when we are invoking an inner attribute, and
                         // we are invoking it on an out-of-line module or crate.
                         Annotatable::Crate(krate) => {
-                            crate::rustc_parse::fake_token_stream_for_crate(&self.cx.sess.psess, krate)
+                            crate::rustc_parse::fake_token_stream_for_crate(
+                                &self.cx.sess.psess,
+                                krate,
+                            )
                         }
                         Annotatable::Item(item_inner)
                             if matches!(attr.style, AttrStyle::Inner)
@@ -1049,9 +1056,11 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     DelegationSource::Glob,
                 );
                 // `-Zmacro-stats` ignores these because they don't seem important.
-                fragment_kind.expect_from_annotatables(single_delegations.map(|item| {
-                    Annotatable::AssocItem(P::new(item), AssocCtxt::Impl { of_trait })
-                }))
+                fragment_kind.expect_from_annotatables(
+                    single_delegations.map(|item| {
+                        Annotatable::AssocItem(P::new(item), AssocCtxt::Impl { of_trait })
+                    }),
+                )
             }
         })
     }
@@ -1249,7 +1258,7 @@ pub(crate) fn ensure_complete_parse<'a>(
 /// All other `NodeId`s are assigned by `visit_id`.
 /// * `self` is the 'self' parameter for the current method,
 /// * `id` is a mutable reference to the `NodeId` field
-///    of the current AST node.
+///   of the current AST node.
 /// * `closure` is a closure that executes the
 ///   `walk_*` / `walk_flat_map_*` method
 ///   for the current AST node.
@@ -1301,6 +1310,10 @@ trait InvocationCollectorNode: HasAttrs + HasNodeId + Sized + DeclaredIdents {
     fn delegation(&self) -> Option<(&ast::DelegationMac, &ast::Item<Self::ItemKind>)> {
         None
     }
+    #[expect(
+        clippy::boxed_local,
+        reason = "matches the recursive AST mapping trait signature while this unconfigured case stays unreachable"
+    )]
     fn delegation_item_kind(_deleg: Box<ast::Delegation>) -> Self::ItemKind {
         unreachable!()
     }
@@ -1921,10 +1934,10 @@ impl InvocationCollectorNode for ast::Stmt {
     fn post_flat_map_node_collect_bang(stmts: &mut Self::OutputTy, add_semicolon: AddSemicolon) {
         // If this is a macro invocation with a semicolon, then apply that
         // semicolon to the final statement produced by expansion.
-        if matches!(add_semicolon, AddSemicolon::Yes) {
-            if let Some(stmt) = stmts.pop() {
-                stmts.push(stmt.add_trailing_semicolon());
-            }
+        if matches!(add_semicolon, AddSemicolon::Yes)
+            && let Some(stmt) = stmts.pop()
+        {
+            stmts.push(stmt.add_trailing_semicolon());
         }
     }
     fn as_target(&self) -> Target {

@@ -412,19 +412,19 @@ fn byte_skipping_scans() {
 #[test]
 fn swar_masks_match_byte_predicates() {
     // Every byte value at every lane, among neighbours that pass and neighbours that do not:
-    // the lane's high bit is the scalar answer and no other bit is set.
+    // each mask bit is the scalar answer for the corresponding byte.
     for filler in [b'a', b' ', b'!', 0xC3, 0x00, 0x7F] {
         for lane in 0..8 {
             for b in 0..=255u8 {
                 let mut bytes = [filler; 8];
                 bytes[lane] = b;
-                let x = u64::from_le_bytes(bytes);
-                let id = swar_id_continue(x);
-                let ws = swar_whitespace(x);
-                assert_eq!(id & !SWAR_HIGH, 0);
-                assert_eq!(ws & !SWAR_HIGH, 0);
+                let masks = simd_classify::classify_partial(&bytes);
+                let id = masks.ident_cont;
+                let ws = masks.whitespace;
+                assert_eq!(id >> bytes.len(), 0);
+                assert_eq!(ws >> bytes.len(), 0);
                 for (k, &byte) in bytes.iter().enumerate() {
-                    let bit = 1u64 << (8 * k + 7);
+                    let bit = 1u64 << k;
                     let want_id = byte.is_ascii_alphanumeric() || byte == b'_';
                     let want_ws = byte < 0x80 && is_whitespace(byte as char);
                     assert_eq!(id & bit != 0, want_id, "id byte {byte:#x} lane {k}");
@@ -439,9 +439,31 @@ fn swar_masks_match_byte_predicates() {
 /// at the edges of identifier and whitespace runs.
 fn scan_inputs() -> alloc::vec::Vec<String> {
     let pieces = [
-        "a", "Z", "_", "9", "\u{e9}", "\u{431}", "\u{1F600}", " ", "\t", "\n", "\r", "\x0b",
-        "\x0c", "\u{85}", "\u{2028}", "\u{200e}", "\u{a0}", "-", "'", "\"", "#", "\0", "\x7f",
-        "\\", "`",
+        "a",
+        "Z",
+        "_",
+        "9",
+        "\u{e9}",
+        "\u{431}",
+        "\u{1F600}",
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\x0b",
+        "\x0c",
+        "\u{85}",
+        "\u{2028}",
+        "\u{200e}",
+        "\u{a0}",
+        "-",
+        "'",
+        "\"",
+        "#",
+        "\0",
+        "\x7f",
+        "\\",
+        "`",
     ];
     let mut inputs = alloc::vec::Vec::new();
     for lead in 0..12 {
@@ -492,9 +514,39 @@ fn ascii_dispatch_matches_general() {
     // Every ASCII first byte, followed by every continuation that changes an arm's choice,
     // lexes to the same tokens through the byte dispatch as through the char dispatch.
     let tails = [
-        "", "/", "*", "!", "=", "#", "\"", "'", "r", "r#", "r#x", "r\"a\"", "#\"a\"#", "x", "0",
-        "0x1f_u8", "0b", "1.5e+3f32", "1..2", ".x", "\u{e9}", "\u{1F600}", " ", "\n", "'a'",
-        "a'", "\\n'", "b'a'", "\"s\\\"t\"suf", "//x\n", "/**/ ", "/* /* */ */", "_",
+        "",
+        "/",
+        "*",
+        "!",
+        "=",
+        "#",
+        "\"",
+        "'",
+        "r",
+        "r#",
+        "r#x",
+        "r\"a\"",
+        "#\"a\"#",
+        "x",
+        "0",
+        "0x1f_u8",
+        "0b",
+        "1.5e+3f32",
+        "1..2",
+        ".x",
+        "\u{e9}",
+        "\u{1F600}",
+        " ",
+        "\n",
+        "'a'",
+        "a'",
+        "\\n'",
+        "b'a'",
+        "\"s\\\"t\"suf",
+        "//x\n",
+        "/**/ ",
+        "/* /* */ */",
+        "_",
     ];
     let mut inputs: alloc::vec::Vec<String> = scan_inputs();
     for b in 0..0x80u8 {
@@ -518,4 +570,211 @@ fn ascii_dispatch_matches_general() {
             }
         }
     }
+}
+
+#[test]
+fn r24_classify_dispatch_matches_swar_at_every_lane() {
+    use super::simd_classify::*;
+    assert_eq!(low_bits_mask(0), 0);
+    assert_eq!(low_bits_mask(63), u64::MAX >> 1);
+    assert_eq!(low_bits_mask(64), u64::MAX);
+    assert_eq!(low_bits_mask(65), u64::MAX);
+    for lane in 0..64 {
+        for byte in 0..=u8::MAX {
+            let mut block = [b'a'; 64];
+            block[lane] = byte;
+            let masks = classify_block(&block);
+            assert_eq!(masks, classify_block_swar(&block));
+            let bit = 1u64 << lane;
+            assert_eq!(masks.whitespace & bit != 0, matches!(byte, 9..=13 | 32));
+            assert_eq!(masks.ident_cont & bit != 0, byte.is_ascii_alphanumeric() || byte == b'_');
+            assert_eq!(masks.digit & bit != 0, byte.is_ascii_digit());
+            assert_eq!(masks.non_ascii & bit != 0, !byte.is_ascii());
+            assert_eq!(masks.bidi_lead & bit != 0, matches!(byte, 0xd8 | 0xe2));
+            assert_eq!(mask_ascii_whitespace_64(&block), (masks.whitespace, masks.non_ascii));
+            assert_eq!(mask_newline_and_bidi_64(&block), (masks.newline, masks.bidi_lead));
+            assert_eq!(
+                mask_string_body_64(&block),
+                (masks.quote, masks.backslash, masks.cr, masks.non_ascii)
+            );
+            assert_eq!(mask_ident_cont_64(&block), (masks.ident_cont, masks.non_ascii));
+            assert_eq!(
+                mask_digits_and_underscore_64(&block),
+                masks.digit | if byte == b'_' { bit } else { 0 }
+            );
+        }
+    }
+    for len in 0..=64 {
+        let masks = classify_partial(&[b' '; 64][..len]);
+        assert_eq!(masks.whitespace, low_bits_mask(len));
+        assert_eq!(masks.ident_cont, 0);
+        assert_eq!(masks.non_ascii, 0);
+    }
+}
+
+#[test]
+fn r24_scanners_cross_63_64_65_bytes() {
+    use super::simd_ident_num::*;
+    use super::simd_scan::*;
+    for n in [63, 64, 65] {
+        let padding = "a".repeat(n);
+        let whitespace = format!("{}\n\tx", " ".repeat(n));
+        let mut newlines = alloc::vec::Vec::new();
+        assert_eq!(scan_ascii_whitespace(whitespace.as_bytes()), n + 2);
+        assert_eq!(
+            scan_ascii_whitespace_with_newlines(whitespace.as_bytes(), 17, &mut newlines),
+            n + 2
+        );
+        assert_eq!(newlines, [17 + n as u32]);
+        assert_eq!(scan_ascii_ident_full(padding.as_bytes()), Some(IdentScan::AsciiOnly(n)));
+        assert_eq!(
+            scan_ascii_ident_tail(format!("{padding}é").as_bytes()),
+            IdentScan::NeedsUnicodeAt(n)
+        );
+        for scan in [scan_decimal_digits, scan_hex_digits, scan_octal_digits, scan_binary_digits] {
+            assert_eq!(scan(format!("{}!", "1".repeat(n)).as_bytes()), (n, true));
+            assert_eq!(scan("___!".as_bytes()), (3, false));
+        }
+        for bidi in ['\u{202e}', '\u{2066}', '\u{061c}'] {
+            let body = format!("{padding}{bidi}");
+            assert!(contains_text_flow_control_char(body.as_bytes()));
+            assert!(is_text_flow_control_at(body.as_bytes(), n));
+            assert!(!is_text_flow_control_at(body.as_bytes(), body.len()));
+            let line = format!("{body}\nnext");
+            assert_eq!(
+                scan_line_comment(line.as_bytes()),
+                LineCommentScan { len: body.len(), has_bidi: true, has_cr: false }
+            );
+            let nested = format!("{body}/* nested */tail*/rest");
+            let block = scan_block_comment(nested.as_bytes());
+            assert!(block.terminated && block.has_bidi);
+            assert!(!block.has_cr);
+            assert_eq!(block.len, nested.len() - 4);
+            let quoted = format!("{body}\\\"tail\r\"rest");
+            let string = scan_double_quoted_string(quoted.as_bytes());
+            assert_eq!(string.len, quoted.len() - 4);
+            assert!(string.terminated && string.has_bidi && string.has_cr);
+            assert!(!string.clean_ascii_no_escape);
+            let raw = format!("{body}\r\"#false\"###rest");
+            assert_eq!(scan_raw_string_body(raw.as_bytes(), 3), Some((raw.len() - 4, true, true)));
+            assert_eq!(scan_raw_string_body(body.as_bytes(), 3), None);
+        }
+        assert_eq!(scan_raw_string_body(b"\"", 256), None);
+        assert!(!scan_block_comment(padding.as_bytes()).terminated);
+        assert!(!scan_double_quoted_string(padding.as_bytes()).terminated);
+        assert_eq!(
+            scan_ascii_lifetime(b"a"),
+            LifetimeScan::Lifetime { len: 1, starts_with_number: false }
+        );
+        for fallback in ["r#name", "a'", "é", "aé"] {
+            assert_eq!(scan_ascii_lifetime(fallback.as_bytes()), LifetimeScan::CharOrOther);
+        }
+    }
+}
+
+#[test]
+fn w4_advance_token_with_meta_tracks_newlines_and_raw_strings() {
+    let source = " \r\n// comment\n/* block\r\n*/ \"str\\\"ing\" r#\"raw\r\ntext\"# 'a";
+    let mut cursor = Cursor::new(source, FrontmatterAllowed::No);
+    let mut tokens = alloc::vec::Vec::new();
+    let mut newlines = alloc::vec::Vec::new();
+    let mut pos = 0;
+    while !cursor.is_eof() {
+        let (token, meta) = cursor.advance_token_with_meta(pos, &mut newlines);
+        pos += token.len;
+        tokens.push((token, meta));
+    }
+    assert!(tokens.iter().any(|(token, _)| token.kind == TokenKind::Whitespace));
+    assert!(tokens.iter().any(|(token, _)| matches!(token.kind, TokenKind::LineComment { .. })));
+    assert!(tokens.iter().any(|(token, _)| matches!(token.kind, TokenKind::BlockComment { .. })));
+    assert!(tokens.iter().any(|(token, _)| matches!(
+        token.kind,
+        TokenKind::Literal { kind: LiteralKind::Str { .. }, .. }
+    )));
+    assert!(tokens.iter().any(|(token, meta)| matches!(
+        token.kind,
+        TokenKind::Literal { kind: LiteralKind::RawStr { .. }, .. }
+    ) && meta.has_cr));
+    assert!(tokens.iter().any(|(token, _)| matches!(token.kind, TokenKind::Lifetime { .. })));
+    let expected_newlines: alloc::vec::Vec<u32> = source
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, byte)| (byte == b'\n').then_some(i as u32))
+        .collect();
+    assert_eq!(newlines, expected_newlines);
+}
+
+#[test]
+fn r24_boundary_lexing_matches_general_and_structural_index() {
+    use super::structural_tape::*;
+    for n in [63, 64, 65] {
+        let padding = "x".repeat(n);
+        let source = format!(
+            "{{ /*{padding}/* nested {{ */\n*/ let {padding} = r###\"{{[\n\"#}}\"###; \"{padding}\\\"}}\"; [123_456] }}"
+        );
+        let mut fast = Cursor::new(&source, FrontmatterAllowed::No);
+        let mut slow = Cursor::new(&source, FrontmatterAllowed::No);
+        loop {
+            let a = fast.advance_token();
+            let b = slow.advance_token_general();
+            assert_eq!((a.kind, a.len), (b.kind, b.len));
+            if a.kind == TokenKind::Eof {
+                break;
+            }
+        }
+        let index = build_structural_index(&source);
+        assert!(index.balanced);
+        assert_eq!(index.groups.len(), 2);
+        assert_eq!(index.groups[0].delim, DelimKind::Brace);
+        assert_eq!(index.groups[0].parent, u32::MAX);
+        assert_eq!(index.groups[0].close_byte as usize, source.len() - 1);
+        assert_eq!(index.groups[1].delim, DelimKind::Bracket);
+        assert_eq!(index.groups[1].parent, 0);
+        let expected: alloc::vec::Vec<u32> = source
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| (b == b'\n').then_some(i as u32))
+            .collect();
+        assert_eq!(index.newlines, expected);
+        assert_eq!(scan_newline_offsets(&source), expected);
+        assert_eq!(index.depth_zero_cuts, [source.len() as u32]);
+    }
+    for invalid in ["{]", "{", "/* unterminated", "\"unterminated", "r#\"unterminated"] {
+        assert!(!build_structural_index(invalid).balanced, "{invalid:?}");
+    }
+}
+
+#[test]
+fn r24_keyword_lookup_is_exact_and_preinterned() {
+    use super::keyword_phf::*;
+    crate::rustc_span::create_default_session_globals_then(|| {
+        for text in ["fn", "mod", "async", "await", "self", "Self", "crate", "where", "yield"] {
+            assert_eq!(
+                classify_keyword_bytes(text.as_bytes()),
+                Some(crate::rustc_span::Symbol::intern(text))
+            );
+            assert!(is_strict_or_reserved_keyword(text.as_bytes()));
+            assert_eq!(classify_keyword_bytes(format!("{text}\0").as_bytes()), None);
+        }
+        for text in ["'static", "'_"] {
+            assert_eq!(
+                classify_lifetime_keyword_bytes(text.as_bytes()),
+                Some(crate::rustc_span::Symbol::intern(text))
+            );
+        }
+        for text in ["u32", "Box", "Drop"] {
+            assert_eq!(
+                classify_preinterned_ident_bytes(text.as_bytes()),
+                Some(crate::rustc_span::Symbol::intern(text))
+            );
+        }
+        assert_eq!(classify_keyword_bytes(b"r24_unknown_identifier"), None);
+        assert_eq!(classify_keyword_bytes("é".as_bytes()), None);
+        assert_eq!(pack_ascii_u64(b""), Some(0));
+        assert_eq!(pack_ascii_u64(b"ab"), Some(u64::from_le_bytes(*b"ab\0\0\0\0\0\0")));
+        assert_eq!(pack_ascii_u64(b"123456789"), None);
+        assert_eq!(pack_ascii_u128(b"12345678901234567"), None);
+        assert_eq!(pack_ascii_u128("é".as_bytes()), None);
+        assert_eq!(pack_ascii_u128(b"ab"), Some(0x6261));
+    });
 }

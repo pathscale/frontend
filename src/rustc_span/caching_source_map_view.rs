@@ -1,15 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
-use core::ops::Range;
 use alloc::sync::Arc;
+use core::ops::Range;
 
 use crate::rustc_span::source_map::SourceMap;
 use crate::rustc_span::{BytePos, Pos, RelativeBytePos, SourceFile, SpanData};
@@ -127,7 +121,7 @@ impl<'sm> CachingSourceMapView<'sm> {
             self.update(new_file, span_data.lo);
         }
         let lo_line_bounds = &self.line_bounds;
-        let lo_line_number = self.line_number.clone();
+        let lo_line_number = self.line_number;
 
         let (hi_line_bounds, hi_line_number) = if !self.line_bounds.contains(&span_data.hi) {
             // hi and lo are in different lines. We compute but don't cache the hi information.

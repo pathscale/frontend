@@ -1,13 +1,11 @@
-use alloc::boxed::Box;
-use alloc::rc::Rc;
-use core::iter;
 use crate::assert_matches;
+use core::iter;
 
+use crate::bug;
 use crate::rustc_abi::Primitive::Pointer;
 use crate::rustc_abi::{Align, BackendRepr, ExternAbi, PointerKind, Scalar, Size};
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::{self as hir, find_attr};
-use crate::bug;
 use crate::rustc_middle::middle::deduced_param_attrs::DeducedParamAttrs;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::ty::layout::{

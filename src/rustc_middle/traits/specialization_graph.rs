@@ -1,17 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::find_attr;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_errors::ErrorGuaranteed;
 use crate::rustc_hir::def_id::{DefId, DefIdMap};
-use crate::find_attr;
 use rustc_macros::{StableHash, TyDecodable, TyEncodable};
 
 use crate::rustc_middle::diagnostics::StrictCoherenceNeedsNegativeCoherence;
@@ -41,6 +36,12 @@ pub struct Graph {
 
     /// The "root" impls are found by looking up the trait's def_id.
     pub children: DefIdMap<Children>,
+}
+
+impl Default for Graph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Graph {

@@ -8,19 +8,16 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use eko::file::File;
 use eko::path::Path;
 
-use object::{Object, ObjectSection};
 use crate::rustc_data_structures::memmap::Mmap;
 use crate::rustc_data_structures::owned_slice::{OwnedSlice, try_slice_owned};
 use crate::rustc_target::spec::Target;
+use object::{Object, ObjectSection};
 use tracing::debug;
 
 use crate::rustc_metadata::creader::MetadataLoader;
@@ -61,9 +58,8 @@ impl MetadataLoader for DefaultMetadataLoader {
         })
     }
 
-    fn get_dylib_metadata(&self, _target: &Target, path: &Path) -> Result<OwnedSlice, String> {
-        debug!("getting dylib metadata for {}", path.display());
-        load_metadata_with(path, |data| section(path, data, ".rustc"))
+    fn get_dylib_metadata(&self, _target: &Target, _path: &Path) -> Result<OwnedSlice, String> {
+        Err("dynamic-library dependencies are disabled; use .rmeta or .rlib metadata".to_owned())
     }
 }
 

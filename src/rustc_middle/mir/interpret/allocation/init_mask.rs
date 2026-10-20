@@ -1,22 +1,18 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(test)]
 mod tests;
 
+use core::hash;
 use core::ops::Range;
-use core::{hash, iter};
 
 use crate::rustc_abi::Size;
-use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
 use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_macros::{Decodable_NoContext, Encodable_NoContext, StableHash};
 
 use super::AllocRange;
 
@@ -360,7 +356,7 @@ impl InitMaskMaterialized {
             // have to manually set them with another write.
             let block = if new_state { u64::MAX } else { 0 };
             self.blocks
-                .extend(iter::repeat(block).take(usize::try_from(additional_blocks).unwrap()));
+                .extend(core::iter::repeat_n(block, usize::try_from(additional_blocks).unwrap()));
         }
 
         // New blocks have already been set here, so we only need to set the unused trailing bits,
@@ -542,7 +538,9 @@ impl InitMaskMaterialized {
             end: Size,
             is_init: bool,
         ) -> Option<Size> {
-            (start.bytes()..end.bytes()).map(Size::from_bytes).find(|&i| init_mask.get(i) == is_init)
+            (start.bytes()..end.bytes())
+                .map(Size::from_bytes)
+                .find(|&i| init_mask.get(i) == is_init)
         }
 
         let result = find_bit_fast(self, start, end, is_init);
@@ -636,9 +634,7 @@ impl<'a> Iterator for InitChunkIter<'a> {
                 self.end
             }
             InitMaskBlocks::Materialized(ref blocks) => {
-                let end_of_chunk =
-                    blocks.find_bit(self.start, self.end, !self.is_init).unwrap_or(self.end);
-                end_of_chunk
+                blocks.find_bit(self.start, self.end, !self.is_init).unwrap_or(self.end)
             }
         };
         let range = self.start..end_of_chunk;

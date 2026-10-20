@@ -1,7 +1,7 @@
 use core::ops::Index;
 
-use derive_where::derive_where;
 use crate::rustc_index::IndexVec;
+use derive_where::derive_where;
 
 use crate::rustc_type_ir::search_graph::{
     AvailableDepth, CandidateHeadUsages, Cx, CycleHeads, HeadUsages, NestedGoals, PathKind,

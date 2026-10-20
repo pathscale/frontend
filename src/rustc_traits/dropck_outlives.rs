@@ -1,7 +1,7 @@
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_infer::infer::TyCtxtInferExt;
 use crate::rustc_infer::infer::canonical::{Canonical, QueryResponse};
-use crate::bug;
 use crate::rustc_middle::query::Providers;
 use crate::rustc_middle::traits::query::{DropckConstraint, DropckOutlivesResult};
 use crate::rustc_middle::ty::{self, GenericArgs, TyCtxt};

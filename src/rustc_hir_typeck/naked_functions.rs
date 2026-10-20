@@ -3,10 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -14,9 +10,9 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::def_id::LocalDefId;
 use crate::rustc_hir::intravisit::Visitor;
 use crate::rustc_hir::{ExprKind, HirIdSet, StmtKind, find_attr};
-use crate::span_bug;
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::Span;
+use crate::span_bug;
 
 use crate::rustc_hir_typeck::diagnostics::{
     NakedFunctionsAsmBlock, NakedFunctionsMustNakedAsm, NoPatterns, ParamsNotAllowed,
@@ -72,11 +68,10 @@ impl<'tcx> Visitor<'tcx> for CheckParameters<'tcx> {
             _,
             hir::Path { res: hir::def::Res::Local(var_hir_id), .. },
         )) = expr.kind
+            && self.params.contains(var_hir_id)
         {
-            if self.params.contains(var_hir_id) {
-                self.tcx.dcx().emit_err(ParamsNotAllowed { span: expr.span });
-                return;
-            }
+            self.tcx.dcx().emit_err(ParamsNotAllowed { span: expr.span });
+            return;
         }
         hir::intravisit::walk_expr(self, expr);
     }

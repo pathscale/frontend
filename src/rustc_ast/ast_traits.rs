@@ -2,10 +2,10 @@
 //! typically those used in AST fragments during macro expansion.
 //! The traits are not implemented exhaustively, only when actually necessary.
 
+use crate::rustc_ast::ptr::P;
 use alloc::boxed::Box;
 use core::fmt;
 use core::marker::PhantomData;
-use crate::rustc_ast::ptr::P;
 
 use crate::rustc_ast::tokenstream::{LazyAttrTokenStream, WithTokens};
 use crate::rustc_ast::{

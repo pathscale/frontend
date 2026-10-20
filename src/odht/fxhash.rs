@@ -18,22 +18,18 @@ impl HashFn for FxHashFn {
         }
 
         if bytes.len() >= 4 {
-            hash_value = add_to_hash(
-                hash_value,
-                u32::from_le_bytes(bytes[..4].try_into().unwrap()) as u64,
-            );
+            hash_value =
+                add_to_hash(hash_value, u32::from_le_bytes(bytes[..4].try_into().unwrap()) as u64);
             bytes = &bytes[4..];
         }
 
         if bytes.len() >= 2 {
-            hash_value = add_to_hash(
-                hash_value,
-                u16::from_le_bytes(bytes[..2].try_into().unwrap()) as u64,
-            );
+            hash_value =
+                add_to_hash(hash_value, u16::from_le_bytes(bytes[..2].try_into().unwrap()) as u64);
             bytes = &bytes[2..];
         }
 
-        if bytes.len() >= 1 {
+        if !bytes.is_empty() {
             hash_value = add_to_hash(hash_value, bytes[0] as u64);
         }
 

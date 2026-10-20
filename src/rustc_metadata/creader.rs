@@ -3,19 +3,18 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::collections::BTreeMap;
-use eko::path::Path;
 use core::str::FromStr;
 use core::{cmp, iter};
 use eko::env;
+use eko::path::Path;
 
+use crate::bug;
 use crate::rustc_ast::expand::allocator::{ALLOC_ERROR_HANDLER, AllocatorKind, global_fn_name};
 use crate::rustc_ast::{self as ast, *};
 use crate::rustc_crate_store::{CrateDepKind, CrateSource, ExternCrate, ExternCrateSource};
@@ -31,7 +30,6 @@ use crate::rustc_hir::definitions::Definitions;
 use crate::rustc_index::IndexVec;
 use crate::rustc_lint_defs as lint;
 use crate::rustc_lint_defs::builtin::UNUSED_CRATE_DEPENDENCIES;
-use crate::bug;
 use crate::rustc_middle::ty::data_structures::IndexSet;
 use crate::rustc_middle::ty::{TyCtxt, TyCtxtFeed};
 use crate::rustc_session::Session;
@@ -346,8 +344,9 @@ impl CStore {
         if !json_unused_externs.is_enabled() {
             return;
         }
-        let level =
-            tcx.lint_level_spec_at_node(UNUSED_CRATE_DEPENDENCIES, crate::rustc_hir::CRATE_HIR_ID).level();
+        let level = tcx
+            .lint_level_spec_at_node(UNUSED_CRATE_DEPENDENCIES, crate::rustc_hir::CRATE_HIR_ID)
+            .level();
         if level != lint::Level::Allow {
             let unused_externs =
                 self.unused_externs.iter().map(|ident| ident.to_ident_string()).collect::<Vec<_>>();
@@ -369,7 +368,7 @@ impl CStore {
                            opt_name: &String,
                            flag_local_value: Option<&String>,
                            flag_extern_value: Option<&String>| {
-            if allowed_flag_mismatches.contains(&opt_name) {
+            if allowed_flag_mismatches.contains(opt_name) {
                 return;
             }
             let extern_crate = data.name();
@@ -420,7 +419,7 @@ impl CStore {
             match (&left_name_val, &right_name_val) {
                 (Some(l), Some(r)) => match l.1.opt.cmp(&r.1.opt) {
                     cmp::Ordering::Equal => {
-                        if !l.1.consistent(&tcx.sess, Some(&r.1)) {
+                        if !l.1.consistent(tcx.sess, Some(&r.1)) {
                             report_diff(
                                 &l.0.prefix,
                                 &l.0.name,
@@ -432,26 +431,26 @@ impl CStore {
                         right_name_val = None;
                     }
                     cmp::Ordering::Greater => {
-                        if !r.1.consistent(&tcx.sess, None) {
+                        if !r.1.consistent(tcx.sess, None) {
                             report_diff(&r.0.prefix, &r.0.name, None, Some(&r.1.value_name));
                         }
                         right_name_val = None;
                     }
                     cmp::Ordering::Less => {
-                        if !l.1.consistent(&tcx.sess, None) {
+                        if !l.1.consistent(tcx.sess, None) {
                             report_diff(&l.0.prefix, &l.0.name, Some(&l.1.value_name), None);
                         }
                         left_name_val = None;
                     }
                 },
                 (Some(l), None) => {
-                    if !l.1.consistent(&tcx.sess, None) {
+                    if !l.1.consistent(tcx.sess, None) {
                         report_diff(&l.0.prefix, &l.0.name, Some(&l.1.value_name), None);
                     }
                     left_name_val = None;
                 }
                 (None, Some(r)) => {
-                    if !r.1.consistent(&tcx.sess, None) {
+                    if !r.1.consistent(tcx.sess, None) {
                         report_diff(&r.0.prefix, &r.0.name, None, Some(&r.1.value_name));
                     }
                     right_name_val = None;
@@ -594,6 +593,10 @@ impl CStore {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn register_crate<'tcx>(
         &mut self,
         tcx: TyCtxt<'tcx>,
@@ -606,13 +609,6 @@ impl CStore {
     ) -> Result<CrateNum, CrateError> {
         let _prof_timer =
             tcx.sess.prof.generic_activity_with_arg("metadata_register_crate", name.as_str());
-
-        let proc_macro_library = host_lib.as_ref().unwrap_or(&lib);
-        let proc_macro_dylib = proc_macro_library.source.dylib.clone();
-        let proc_macro_stable_crate_id = proc_macro_library
-            .metadata
-            .get_root()
-            .stable_crate_id();
 
         let Library { source, metadata } = lib;
         let crate_root = metadata.get_root();
@@ -650,23 +646,7 @@ impl CStore {
             private_dep,
         )?;
 
-        let raw_proc_macros = if crate_root.is_proc_macro_crate() {
-            let path = proc_macro_dylib.as_deref().ok_or_else(|| {
-                CrateError::ProcMacroDylibLoad(
-                    name,
-                    "host proc-macro crate has no dylib path".to_owned(),
-                )
-            })?;
-            Some(
-                crate::rustc_metadata::dylib::dlsym_proc_macros(
-                    path,
-                    proc_macro_stable_crate_id,
-                )
-                .map_err(|reason| CrateError::ProcMacroDylibLoad(name, reason))?,
-            )
-        } else {
-            None
-        };
+        let raw_proc_macros = None;
 
         let crate_metadata = CrateMetadata::new(
             tcx,
@@ -707,7 +687,7 @@ impl CStore {
 
             // Load the proc macro crate for the target
             let target_result =
-                match self.load(&mut proc_macro_locator, &mut CrateRejections::default())? {
+                match self.load(&proc_macro_locator, &mut CrateRejections::default())? {
                     Some(LoadResult::Previous(cnum)) => {
                         return Ok(Some((LoadResult::Previous(cnum), None)));
                     }
@@ -744,17 +724,9 @@ impl CStore {
             proc_macro_locator.for_proc_macro(sess, path_kind);
 
             if let Some(host_result) =
-                self.load(&mut proc_macro_locator, &mut CrateRejections::default())?
+                self.load(&proc_macro_locator, &mut CrateRejections::default())?
             {
                 Ok(Some((host_result, None)))
-            } else if sess.opts.unstable_opts.wasm_proc_macros {
-                // Load the proc macro crate for wasm
-                proc_macro_locator.for_wasm_proc_macro(sess, path_kind);
-
-                match self.load(&mut proc_macro_locator, &mut CrateRejections::default())? {
-                    Some(host_result) => Ok(Some((host_result, None))),
-                    None => Ok(None),
-                }
             } else {
                 Ok(None)
             }
@@ -813,7 +785,7 @@ impl CStore {
         let dep_root_for_errors = origin.dep_root_for_errors();
         let dep = origin.dep();
         let hash = dep.map(|d| d.hash);
-        let host_hash = dep.map(|d| d.host_hash).flatten();
+        let host_hash = dep.and_then(|d| d.host_hash);
         let extra_filename = dep.map(|d| &d.extra_filename[..]);
         let path_kind = if dep.is_some() { PathKind::Dependency } else { PathKind::Crate };
         let private_dep = origin.private_dep();
@@ -835,7 +807,7 @@ impl CStore {
             );
             let mut crate_rejections = CrateRejections::default();
 
-            match self.load(&mut locator, &mut crate_rejections)? {
+            match self.load(&locator, &mut crate_rejections)? {
                 Some(res) => (res, None),
                 None => {
                     info!("falling back to loading proc_macro");
@@ -876,8 +848,15 @@ impl CStore {
             }
             (LoadResult::Loaded(library), host_library) => {
                 info!("register newly loaded library for `{}`", name);
-                let registered = self
-                    .register_crate(tcx, host_library, origin, library, dep_kind, name, private_dep);
+                let registered = self.register_crate(
+                    tcx,
+                    host_library,
+                    origin,
+                    library,
+                    dep_kind,
+                    name,
+                    private_dep,
+                );
                 // Registration reserves the stable crate id before it resolves the dependencies,
                 // so a failure here leaves a claimed and empty entry that every later load of
                 // `name` trips over. Keep the reason: the later load has no other way to reach it,
@@ -918,6 +897,10 @@ impl CStore {
     }
 
     /// Go through the crate metadata and load any crates that it references.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn resolve_crate_deps(
         &mut self,
         tcx: TyCtxt<'_>,

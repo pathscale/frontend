@@ -1,7 +1,7 @@
 //! Conditional compilation stripping.
 
-use alloc::vec::Vec;
 use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
 use core::iter;
 
 use crate::rustc_ast::attr::data_structures::CfgEntry;
@@ -9,7 +9,9 @@ use crate::rustc_ast::token::{Delimiter, Token, TokenKind};
 use crate::rustc_ast::tokenstream::{
     AttrTokenStream, AttrTokenTree, LazyAttrTokenStream, Spacing, TokenTree, WithTokens,
 };
-use crate::rustc_ast::{self as ast, AttrStyle, Attribute, HasAttrs, HasTokens, NodeId, SyntheticAttr};
+use crate::rustc_ast::{
+    self as ast, AttrStyle, Attribute, HasAttrs, HasTokens, NodeId, SyntheticAttr,
+};
 use crate::rustc_attr_ir::target::Target;
 use crate::rustc_attr_ir::{self as attrs, AttributeKind};
 use crate::rustc_attr_parsing::parser::AllowExprMetavar;
@@ -17,7 +19,6 @@ use crate::rustc_attr_parsing::{
     self as attr, AttributeParser, AttributeSafety, CFG_TEMPLATE, EvalConfigResult, ShouldEmit,
     eval_config_entry, parse_cfg,
 };
-use crate::rustc_data_structures::flat_map_in_place::FlatMapInPlace;
 use crate::rustc_errors::msg;
 use crate::rustc_feature::{
     ACCEPTED_LANG_FEATURES, EnabledLangFeature, EnabledLibFeature, Features, REMOVED_LANG_FEATURES,
@@ -91,14 +92,14 @@ pub fn features(sess: &Session, krate_attrs: &[Attribute], crate_name: Symbol) -
             // If `-Z allow-features` is used and the enabled feature is
             // unstable and not also listed as one of the allowed features,
             // issue an error.
-            if let Some(allowed) = sess.opts.unstable_opts.allow_features.as_ref() {
-                if allowed.iter().all(|f| feature_ident.name.as_str() != f) {
-                    sess.dcx().emit_err(FeatureNotAllowed {
-                        span: feature_ident.span,
-                        name: feature_ident.name,
-                    });
-                    continue;
-                }
+            if let Some(allowed) = sess.opts.unstable_opts.allow_features.as_ref()
+                && allowed.iter().all(|f| feature_ident.name.as_str() != f)
+            {
+                sess.dcx().emit_err(FeatureNotAllowed {
+                    span: feature_ident.span,
+                    name: feature_ident.name,
+                });
+                continue;
             }
 
             // If the enabled feature is unstable, record it.
@@ -167,11 +168,11 @@ impl<'a> StripUnconfigured<'a> {
     }
 
     fn try_configure_tokens<T: HasTokens>(&self, node: &mut T) {
-        if self.config_tokens {
-            if let Some(Some(tokens)) = node.tokens_mut() {
-                let attr_stream = tokens.to_attr_token_stream();
-                *tokens = LazyAttrTokenStream::new_direct(self.configure_tokens(&attr_stream));
-            }
+        if self.config_tokens
+            && let Some(Some(tokens)) = node.tokens_mut()
+        {
+            let attr_stream = tokens.to_attr_token_stream();
+            *tokens = LazyAttrTokenStream::new_direct(self.configure_tokens(&attr_stream));
         }
     }
 

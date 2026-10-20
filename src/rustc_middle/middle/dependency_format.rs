@@ -10,18 +10,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_hir::def_id::CrateNum;
 use crate::rustc_index::IndexVec;
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_structures::CrateType;
+use rustc_macros::{Decodable, Encodable, StableHash};
 
 /// A list of dependencies for a certain crate type.
 pub type DependencyList = IndexVec<CrateNum, Linkage>;

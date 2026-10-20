@@ -16,7 +16,9 @@ use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::hygiene::Transparency;
 use crate::rustc_span::{ErrorGuaranteed, Ident, Span, Symbol};
-use crate::rustc_structures::{CollapseMacroDebuginfo, CrateType, Limit, NativeLibKind, SanitizerSet};
+use crate::rustc_structures::{
+    CollapseMacroDebuginfo, CrateType, Limit, NativeLibKind, SanitizerSet,
+};
 use thin_vec::ThinVec;
 
 /// This trait is used to print attributes in `rustc_hir_pretty`.

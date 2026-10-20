@@ -17,7 +17,6 @@
 
 #![forbid(missing_docs)]
 
-
 // `#![no_std]`: prelude names, invisible to a `std::` search.
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -33,12 +32,12 @@ mod map;
 mod treefrog;
 pub use crate::datafrog::join::JoinInput;
 pub use crate::datafrog::treefrog::{
+    Leaper, Leapers, RelationLeaper,
     extend_anti::ExtendAnti,
     extend_with::ExtendWith,
     filter_anti::FilterAnti,
     filter_with::FilterWith,
     filters::{PrefixFilter, ValueFilter},
-    Leaper, Leapers, RelationLeaper,
 };
 
 /// A static, ordered list of key-value pairs.
@@ -55,24 +54,16 @@ pub struct Relation<Tuple: Ord> {
 impl<Tuple: Ord> Relation<Tuple> {
     /// Merges two relations into their union.
     pub fn merge(self, other: Self) -> Self {
-        let Relation {
-            elements: mut elements1,
-        } = self;
-        let Relation {
-            elements: mut elements2,
-        } = other;
+        let Relation { elements: mut elements1 } = self;
+        let Relation { elements: mut elements2 } = other;
 
         // If one of the element lists is zero-length, we don't need to do any work
         if elements1.is_empty() {
-            return Relation {
-                elements: elements2,
-            };
+            return Relation { elements: elements2 };
         }
 
         if elements2.is_empty() {
-            return Relation {
-                elements: elements1,
-            };
+            return Relation { elements: elements1 };
         }
 
         // Make sure that elements1 starts with the lower element
@@ -83,11 +74,9 @@ impl<Tuple: Ord> Relation<Tuple> {
 
         // Fast path for when all the new elements are after the exiting ones
         if elements1[elements1.len() - 1] < elements2[0] {
-            elements1.extend(elements2.into_iter());
+            elements1.extend(elements2);
             // println!("fast path");
-            return Relation {
-                elements: elements1,
-            };
+            return Relation { elements: elements1 };
         }
 
         let mut elements = Vec::with_capacity(elements1.len() + elements2.len());
@@ -118,6 +107,10 @@ impl<Tuple: Ord> Relation<Tuple> {
     /// Creates a `Relation` from the elements of the `iterator`.
     ///
     /// Same as the `from_iter` method from `core::iter::FromIterator` trait.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "the inherent constructor preserves the existing Relation API alongside FromIterator"
+    )]
     pub fn from_iter<I>(iterator: I) -> Self
     where
         I: IntoIterator<Item = Tuple>,
@@ -211,6 +204,7 @@ impl<Tuple: Ord> core::ops::Deref for Relation<Tuple> {
 /// An `Iteration` tracks monotonic variables, and monitors their progress.
 /// It can inform the user if they have ceased changing, at which point the
 /// computation should be done.
+#[derive(Default)]
 pub struct Iteration {
     variables: Vec<Box<dyn VariableTrait>>,
 }
@@ -218,9 +212,7 @@ pub struct Iteration {
 impl Iteration {
     /// Create a new iterative context.
     pub fn new() -> Self {
-        Iteration {
-            variables: Vec::new(),
-        }
+        Iteration { variables: Vec::new() }
     }
     /// Reports whether any of the monitored variables have changed since
     /// the most recent call.
@@ -514,13 +506,7 @@ impl<Tuple: Ord> VariableTrait for Variable<Tuple> {
         if !self.recent.borrow().is_empty() {
             let mut recent =
                 ::core::mem::replace(&mut (*self.recent.borrow_mut()), Vec::new().into());
-            while self
-                .stable
-                .borrow()
-                .last()
-                .map(|x| x.len() <= 2 * recent.len())
-                == Some(true)
-            {
+            while self.stable.borrow().last().map(|x| x.len() <= 2 * recent.len()) == Some(true) {
                 let last = self.stable.borrow_mut().pop().unwrap();
                 recent = recent.merge(last);
             }

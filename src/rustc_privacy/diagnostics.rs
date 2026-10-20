@@ -1,9 +1,9 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{DiagArgFromDisplay, MultiSpan};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Span, Symbol};
+use alloc::string::String;
+use alloc::vec::Vec;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("{$len ->

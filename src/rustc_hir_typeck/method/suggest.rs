@@ -6,19 +6,17 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use crate::rustc_data_structures::iter_ext::IterExt as _;
-use alloc::boxed::Box;
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::ops::ControlFlow;
 use alloc::borrow::Cow;
-use eko::path::PathBuf;
+use core::ops::ControlFlow;
 
-use hir::Expr;
+use crate::bug;
 use crate::rustc_ast::ast::Mutability;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::sorted_map::SortedMap;
@@ -36,7 +34,6 @@ use crate::rustc_hir::{
     self as hir, ExprKind, HirId, Node, PathSegment, QPath, find_attr, is_range_literal,
 };
 use crate::rustc_infer::infer::{BoundRegionConversionTime, RegionVariableOrigin};
-use crate::bug;
 use crate::rustc_middle::ty::fast_reject::{DeepRejectCtxt, TreatParams, simplify_type};
 use crate::rustc_middle::ty::print::{
     PrintTraitRefExt as _, with_crate_prefix, with_forced_trimmed_paths,
@@ -56,6 +53,7 @@ use crate::rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtE
 use crate::rustc_trait_selection::traits::{
     FulfillmentError, Obligation, ObligationCauseCode, supertraits,
 };
+use hir::Expr;
 use tracing::{debug, info, instrument};
 
 use super::probe::{AutorefOrPtrAdjustment, IsSuggestion, Mode, ProbeScope};
@@ -459,35 +457,34 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         },
                     );
                 }
-                if let ty::Ref(region, t_type, mutability) = rcvr_ty.kind() {
-                    if needs_mut {
-                        let trait_type =
-                            Ty::new_ref(self.tcx, *region, *t_type, mutability.invert());
-                        let msg = format!("you need `{trait_type}` instead of `{rcvr_ty}`");
-                        let mut kind = &self_expr.kind;
-                        while let hir::ExprKind::AddrOf(_, _, expr)
-                        | hir::ExprKind::Unary(hir::UnOp::Deref, expr) = kind
-                        {
-                            kind = &expr.kind;
-                        }
-                        if let hir::ExprKind::Path(hir::QPath::Resolved(None, path)) = kind
-                            && let hir::def::Res::Local(hir_id) = path.res
-                            && let hir::Node::Pat(b) = self.tcx.hir_node(hir_id)
-                            && let hir::Node::Param(p) = self.tcx.parent_hir_node(b.hir_id)
-                            && let Some(decl) = self.tcx.parent_hir_node(p.hir_id).fn_decl()
-                            && let Some(ty) = decl.inputs.iter().find(|ty| ty.span == p.ty_span)
-                            && let hir::TyKind::Ref(_, mut_ty) = &ty.kind
-                            && let hir::Mutability::Not = mut_ty.mutbl
-                        {
-                            err.span_suggestion_verbose(
-                                mut_ty.ty.span.shrink_to_lo(),
-                                msg,
-                                "mut ",
-                                Applicability::MachineApplicable,
-                            );
-                        } else {
-                            err.help(msg);
-                        }
+                if let ty::Ref(region, t_type, mutability) = rcvr_ty.kind()
+                    && needs_mut
+                {
+                    let trait_type = Ty::new_ref(self.tcx, *region, *t_type, mutability.invert());
+                    let msg = format!("you need `{trait_type}` instead of `{rcvr_ty}`");
+                    let mut kind = &self_expr.kind;
+                    while let hir::ExprKind::AddrOf(_, _, expr)
+                    | hir::ExprKind::Unary(hir::UnOp::Deref, expr) = kind
+                    {
+                        kind = &expr.kind;
+                    }
+                    if let hir::ExprKind::Path(hir::QPath::Resolved(None, path)) = kind
+                        && let hir::def::Res::Local(hir_id) = path.res
+                        && let hir::Node::Pat(b) = self.tcx.hir_node(hir_id)
+                        && let hir::Node::Param(p) = self.tcx.parent_hir_node(b.hir_id)
+                        && let Some(decl) = self.tcx.parent_hir_node(p.hir_id).fn_decl()
+                        && let Some(ty) = decl.inputs.iter().find(|ty| ty.span == p.ty_span)
+                        && let hir::TyKind::Ref(_, mut_ty) = &ty.kind
+                        && let hir::Mutability::Not = mut_ty.mutbl
+                    {
+                        err.span_suggestion_verbose(
+                            mut_ty.ty.span.shrink_to_lo(),
+                            msg,
+                            "mut ",
+                            Applicability::MachineApplicable,
+                        );
+                    } else {
+                        err.help(msg);
                     }
                 }
                 err.emit()
@@ -526,6 +523,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn create_no_assoc_err(
         &self,
         rcvr_ty: Ty<'tcx>,
@@ -541,24 +542,23 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // implementation (#81576).
         let mut ty = rcvr_ty;
         let span = item_ident.span;
-        if let ty::Adt(def, generics) = rcvr_ty.kind() {
-            if generics.len() > 0 {
-                let mut autoderef = self.autoderef(span, rcvr_ty).silence_errors();
-                let candidate_found = autoderef.any(|(ty, _)| {
-                    if let ty::Adt(adt_def, _) = ty.kind() {
-                        self.tcx
-                            .inherent_impls(adt_def.did())
-                            .into_iter()
-                            .any(|def_id| self.associated_value(*def_id, item_ident).is_some())
-                    } else {
-                        false
-                    }
-                });
-                let has_deref = autoderef.step_count() > 0;
-                if !candidate_found && !has_deref && unsatisfied_predicates.is_empty() {
-                    ty =
-                        self.tcx.at(span).type_of(def.did()).instantiate_identity().skip_norm_wip();
+        if let ty::Adt(def, generics) = rcvr_ty.kind()
+            && !generics.is_empty()
+        {
+            let mut autoderef = self.autoderef(span, rcvr_ty).silence_errors();
+            let candidate_found = autoderef.any(|(ty, _)| {
+                if let ty::Adt(adt_def, _) = ty.kind() {
+                    self.tcx
+                        .inherent_impls(adt_def.did())
+                        .iter()
+                        .any(|def_id| self.associated_value(*def_id, item_ident).is_some())
+                } else {
+                    false
                 }
+            });
+            let has_deref = autoderef.step_count() > 0;
+            if !candidate_found && !has_deref && unsatisfied_predicates.is_empty() {
+                ty = self.tcx.at(span).type_of(def.did()).instantiate_identity().skip_norm_wip();
             }
         }
 
@@ -705,7 +705,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     self.sugg_let = Some(binding);
                     return true;
                 }
-                return false;
+                false
             }
         }
 
@@ -767,7 +767,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     method_name,
                     sugg_let: None,
                 };
-                let _ = let_visitor.visit_body(&body);
+                let _ = let_visitor.visit_body(body);
                 if let Some(sugg_let) = let_visitor.sugg_let
                     && let Some(self_ty) = self.node_ty_opt(sugg_let.init_hir_id)
                 {
@@ -794,6 +794,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_method_call_annotation(
         &self,
         err: &mut Diag<'_>,
@@ -840,6 +844,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_static_method_candidates(
         &self,
         err: &mut Diag<'_>,
@@ -900,6 +908,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         static_candidates
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
+    #[expect(
+        clippy::type_complexity,
+        reason = "The compiler query or diagnostic contract is clearest in its existing concrete types."
+    )]
     fn suggest_unsatisfied_ty_or_trait(
         &self,
         err: &mut Diag<'_>,
@@ -942,7 +958,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // The default branch below would suggest `.into_iter()`, but that still
             // fails: `Option<T>` yields `T` by value, not `&T`, so `.cloned()`/`.copied()`
             // can't resolve. Give a targeted diagnostic instead.
-            err.span_label(span, format!("this method is only available on `Option<&_>`"));
+            err.span_label(span, "this method is only available on `Option<&_>`".to_string());
             if let SelfSource::MethodCall(rcvr_expr) = source
                 && !span.in_external_macro(tcx.sess.source_map())
             {
@@ -1060,6 +1076,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn find_possible_candidates_for_method(
         &self,
         err: &mut Diag<'_>,
@@ -1114,6 +1134,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_confusable_or_similarly_named_method(
         &self,
         err: &mut Diag<'_>,
@@ -1251,6 +1275,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_no_match_method_error(
         &self,
         span: Span,
@@ -1360,7 +1388,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             source,
             args,
             sugg_span,
-            &no_match_data,
+            no_match_data,
         );
 
         let Ok((
@@ -1461,6 +1489,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err.emit()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn set_not_found_span_label(
         &self,
         err: &mut Diag<'_>,
@@ -1500,7 +1532,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let mut inherent_impls_candidate = self
                     .tcx
                     .inherent_impls(adt.did())
-                    .into_iter()
+                    .iter()
                     .copied()
                     .filter(|def_id| {
                         if let Some(assoc) = self.associated_value(*def_id, item_ident) {
@@ -1542,7 +1574,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                     .skip_norm_wip()
                                     .to_string(),
                             ),
-                            StringPart::normal(format!("`")),
+                            StringPart::normal("`".to_string()),
                         ]
                     }
                     candidates => {
@@ -1610,7 +1642,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         {
             let mut suggestion = vec![(span, var_name.to_string())];
             if let SelfSource::QPath(ty) = source
-                && let hir::Node::Expr(ref path_expr) = tcx.parent_hir_node(ty.hir_id)
+                && let hir::Node::Expr(path_expr) = tcx.parent_hir_node(ty.hir_id)
                 && let hir::ExprKind::Path(_) = path_expr.kind
                 && let hir::Node::Stmt(&hir::Stmt { kind: hir::StmtKind::Semi(parent), .. })
                 | hir::Node::Expr(parent) = tcx.parent_hir_node(path_expr.hir_id)
@@ -1723,6 +1755,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn handle_unsatisfied_predicates(
         &self,
         err: &mut Diag<'_>,
@@ -2355,7 +2391,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         tcx.def_span(similar_candidate.def_id),
                         format!(
                             "{msg}{}",
-                            if let None = args { "" } else { ", but with different arguments" },
+                            if args.is_none() { "" } else { ", but with different arguments" },
                         ),
                     );
                 }
@@ -2398,7 +2434,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         call_args: Option<Vec<Ty<'tcx>>>,
     ) -> Option<Symbol> {
         if let ty::Adt(adt, adt_args) = rcvr_ty.kind() {
-            for &inherent_impl_did in self.tcx.inherent_impls(adt.did()).into_iter() {
+            for &inherent_impl_did in self.tcx.inherent_impls(adt.did()).iter() {
                 for inherent_method in
                     self.tcx.associated_items(inherent_impl_did).in_definition_order()
                 {
@@ -2439,7 +2475,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 Applicability::MaybeIncorrect,
                             );
                             return Some(name);
-                        } else if let None = call_args {
+                        } else if call_args.is_none() {
                             err.span_note(
                                 self.tcx.def_span(inherent_method.def_id),
                                 format!("you might have meant to use method `{}`", name),
@@ -2452,6 +2488,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
         None
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn note_candidates_on_method_error(
         &self,
         rcvr_ty: Ty<'tcx>,
@@ -2708,6 +2748,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Suggest calling `Ty::method` if `.method()` isn't found because the method
     /// doesn't take a `self` receiver.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_associated_call_syntax(
         &self,
         err: &mut Diag<'_>,
@@ -2719,7 +2763,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         sugg_span: Span,
     ) {
         let mut has_unsuggestable_args = false;
-        let ty_str = if let Some(CandidateSource::Impl(impl_did)) = static_candidates.get(0) {
+        let ty_str = if let Some(CandidateSource::Impl(impl_did)) = static_candidates.first() {
             // When the "method" is resolved through dereferencing, we really want the
             // original type that has the associated function for accurate suggestions.
             // (#61411)
@@ -2758,7 +2802,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self.ty_to_value_string(rcvr_ty.peel_refs())
         };
         if let SelfSource::MethodCall(_) = source {
-            let first_arg = static_candidates.get(0).and_then(|candidate_source| {
+            let first_arg = static_candidates.first().and_then(|candidate_source| {
                 let (assoc_did, self_ty) = match candidate_source {
                     CandidateSource::Impl(impl_did) => (
                         *impl_did,
@@ -2775,7 +2819,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // for CandidateSource::Impl, `Self` will be instantiated to a concrete type
                 // but for CandidateSource::Trait, `Self` is still `Self`
                 let sig = self.tcx.fn_sig(assoc.def_id).instantiate_identity().skip_norm_wip();
-                sig.inputs().skip_binder().get(0).and_then(|first| {
+                sig.inputs().skip_binder().first().and_then(|first| {
                     // if the type of first arg is the same as the current impl type, we should take the first arg into assoc function
                     let first_ty = first.peel_refs();
                     if first_ty == self_ty || first_ty == self.tcx.types.self_param {
@@ -2993,6 +3037,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn report_failed_method_call_on_numerical_infer_var(
         &self,
         tcx: TyCtxt<'tcx>,
@@ -3127,7 +3175,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                         hir::Mutability::Not => type_annotation.push('&'),
                                     }
                                 }
-                                type_annotation.push_str(&concrete_type);
+                                type_annotation.push_str(concrete_type);
 
                                 err.span_suggestion_verbose(
                                     pat.span.shrink_to_hi(),
@@ -3350,25 +3398,24 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                 };
 
-                match &matching_variants[..] {
-                    [(_, field, pick)] => {
-                        let self_ty = field.ty(tcx, args).skip_norm_wip();
-                        err.span_note(
-                            tcx.def_span(pick.item.def_id),
-                            format!("the method `{item_name}` exists on the type `{self_ty}`"),
-                        );
-                        let (article, kind, variant, question) = if tcx.is_diagnostic_item(sym::Result, kind.did())
+                if let [(_, field, pick)] = &matching_variants[..] {
+                    let self_ty = field.ty(tcx, args).skip_norm_wip();
+                    err.span_note(
+                        tcx.def_span(pick.item.def_id),
+                        format!("the method `{item_name}` exists on the type `{self_ty}`"),
+                    );
+                    let (article, kind, variant, question) = if tcx.is_diagnostic_item(sym::Result, kind.did())
                             // Do not suggest `.expect()` in const context where it's not available. rust-lang/rust#149316
                             && !tcx.hir_is_inside_const_context(expr.hir_id)
-                        {
-                            ("a", "Result", "Err", ret_ty_matches(sym::Result))
-                        } else if tcx.is_diagnostic_item(sym::Option, kind.did()) {
-                            ("an", "Option", "None", ret_ty_matches(sym::Option))
-                        } else {
-                            return;
-                        };
-                        if question {
-                            err.span_suggestion_verbose(
+                    {
+                        ("a", "Result", "Err", ret_ty_matches(sym::Result))
+                    } else if tcx.is_diagnostic_item(sym::Option, kind.did()) {
+                        ("an", "Option", "None", ret_ty_matches(sym::Option))
+                    } else {
+                        return;
+                    };
+                    if question {
+                        err.span_suggestion_verbose(
                                 expr.span.shrink_to_hi(),
                                 format!(
                                     "use the `?` operator to extract the `{self_ty}` value, propagating \
@@ -3377,20 +3424,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 "?",
                                 Applicability::MachineApplicable,
                             );
-                        } else {
-                            err.span_suggestion_verbose(
-                                expr.span.shrink_to_hi(),
-                                format!(
-                                    "consider using `{kind}::expect` to unwrap the `{self_ty}` value, \
+                    } else {
+                        err.span_suggestion_verbose(
+                            expr.span.shrink_to_hi(),
+                            format!(
+                                "consider using `{kind}::expect` to unwrap the `{self_ty}` value, \
                                     panicking if the value is {article} `{kind}::{variant}`"
-                                ),
-                                ".expect(\"REASON\")",
-                                Applicability::HasPlaceholders,
-                            );
-                        }
+                            ),
+                            ".expect(\"REASON\")",
+                            Applicability::HasPlaceholders,
+                        );
                     }
-                    // FIXME(compiler-errors): Support suggestions for other matching enum variants
-                    _ => {}
                 }
             }
             // Target wrapper types - types that wrap or pretend to wrap another type,
@@ -3716,11 +3760,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let mut derives_grouped = Vec::<(String, Span, String)>::new();
         for (self_name, self_span, trait_name) in derives.into_iter() {
-            if let Some((last_self_name, _, last_trait_names)) = derives_grouped.last_mut() {
-                if last_self_name == &self_name {
-                    last_trait_names.push_str(format!(", {trait_name}").as_str());
-                    continue;
-                }
+            if let Some((last_self_name, _, last_trait_names)) = derives_grouped.last_mut()
+                && last_self_name == &self_name
+            {
+                last_trait_names.push_str(format!(", {trait_name}").as_str());
+                continue;
             }
             derives_grouped.push((self_name, self_span, trait_name.to_string()));
         }
@@ -3763,7 +3807,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     // just changing the path.
                     && pick.item.is_method()
                     && let Some(self_ty) =
-                        self.tcx.fn_sig(pick.item.def_id).instantiate_identity().skip_norm_wip().inputs().skip_binder().get(0)
+                        self.tcx.fn_sig(pick.item.def_id).instantiate_identity().skip_norm_wip().inputs().skip_binder().first()
                     && self_ty.is_ref()
                 {
                     let suggested_path = match deref_ty.kind() {
@@ -3842,7 +3886,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let source_map = self.tcx.sess.source_map();
         let range_type = if is_inclusive { "RangeInclusive" } else { "Range" };
-        let Some(end_field) = fields.iter().find(|f| f.ident.name == crate::rustc_span::sym::end) else {
+        let Some(end_field) = fields.iter().find(|f| f.ident.name == crate::rustc_span::sym::end)
+        else {
             return;
         };
 
@@ -3910,6 +3955,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn set_label_for_method_error(
         &self,
         err: &mut Diag<'_>,
@@ -4157,6 +4206,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+    )]
     fn suggest_traits_to_import(
         &self,
         err: &mut Diag<'_>,
@@ -4511,7 +4564,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                     if !fn_sig.decl.implicit_self().has_implicit_self()
                                         && self_first_arg
                                     {
-                                        if let Some(ty) = fn_sig.decl.inputs.get(0) {
+                                        if let Some(ty) = fn_sig.decl.inputs.first() {
                                             arbitrary_rcvr.push(ty.span);
                                         }
                                         return false;
@@ -4991,6 +5044,10 @@ pub(crate) fn all_traits(tcx: TyCtxt<'_>) -> Vec<TraitInfo> {
     tcx.all_traits_including_private().map(|def_id| TraitInfo { def_id }).collect()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Type-checking helper keeps its established context arguments across compiler call sites."
+)]
 fn print_disambiguation_help<'tcx>(
     tcx: TyCtxt<'tcx>,
     err: &mut Diag<'_>,
@@ -5015,7 +5072,7 @@ fn print_disambiguation_help<'tcx>(
             let def_kind_descr = tcx.def_kind_descr(item.as_def_kind(), item.def_id);
             let item_name = item.ident(tcx);
             let first_input =
-                tcx.fn_sig(item.def_id).instantiate_identity().skip_binder().inputs().get(0);
+                tcx.fn_sig(item.def_id).instantiate_identity().skip_binder().inputs().first();
             let (first_arg_type, rcvr_ref) = (
                 first_input.map(|first| first.peel_refs()),
                 first_input

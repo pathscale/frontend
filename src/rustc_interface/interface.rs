@@ -1,11 +1,9 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::sync::Arc;
@@ -217,7 +215,11 @@ pub(crate) fn parse_check_cfg(sess: &Session, specs: Vec<String>) -> CheckCfg {
                     error!("`cfg()` names cannot be after values");
                 }
                 names.push(crate::rustc_span::Ident::new(
-                    if boolean { crate::rustc_span::kw::True } else { crate::rustc_span::kw::False },
+                    if boolean {
+                        crate::rustc_span::kw::True
+                    } else {
+                        crate::rustc_span::kw::False
+                    },
                     arg.span(),
                 ));
             } else if arg.has_name(sym::any)
@@ -291,8 +293,8 @@ pub(crate) fn parse_check_cfg(sess: &Session, specs: Vec<String>) -> CheckCfg {
                     .expecteds
                     .entry(name.name)
                     .and_modify(|v| match v {
-                        ExpectedValues::Some(v) if !values_any_specified =>
-                        {                            v.extend(values.clone())
+                        ExpectedValues::Some(v) if !values_any_specified => {
+                            v.extend(values.clone())
                         }
                         ExpectedValues::Some(_) => *v = ExpectedValues::Any,
                         ExpectedValues::Any => {}
@@ -323,6 +325,10 @@ pub struct Config {
     pub opts: config::Options,
     pub input: Input,
     /// Called when the parse session exists so a consumer can install its diagnostic sink.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the callback retains its consuming Send contract over a borrowed parse session"
+    )]
     pub psess_created: Option<Box<dyn FnOnce(&mut ParseSess) + Send>>,
     pub using_internal_features: &'static core::sync::atomic::AtomicBool,
     /// `--cfg` specs, as the command line writes them: `feature="std"`, `tokio_unstable`. A
@@ -332,6 +338,10 @@ pub struct Config {
 }
 
 // JUSTIFICATION: before session exists, only config
+#[expect(
+    clippy::arc_with_non_send_sync,
+    reason = "the lint store stays on the caller thread and is never transferred as a task input"
+)]
 pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Send) -> R {
     trace!("run_compiler");
 
@@ -345,8 +355,9 @@ pub fn run_compiler<R: Send>(config: Config, f: impl FnOnce(&Compiler) -> R + Se
     //
     // Parallel means `jobs.frontend` of two or more, with the `parallel` feature built; see
     // `util::session_width`.
-    let _session_mode =
-        crate::rustc_data_structures::sync::enter_session_width(util::session_width(config.opts.jobs));
+    let _session_mode = crate::rustc_data_structures::sync::enter_session_width(
+        util::session_width(config.opts.jobs),
+    );
 
     // **No jobserver.** The GNU make token protocol coordinates parallelism with an outer
     // `make`/`cargo`, and nothing in this compiler draws on it: the only consumer was

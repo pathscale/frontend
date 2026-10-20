@@ -23,12 +23,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::ToString;
 
 use core::hash::Hash;
 use core::iter;
@@ -425,7 +421,9 @@ impl CheckCfg {
             crate::rustc_target::target_features::all_rust_features()
                 .filter(|(_, s)| s.in_cfg())
                 .map(|(f, _s)| f)
-                .chain(crate::rustc_target::target_features::RUSTC_SPECIFIC_FEATURES.iter().cloned())
+                .chain(
+                    crate::rustc_target::target_features::RUSTC_SPECIFIC_FEATURES.iter().cloned(),
+                )
                 .map(Symbol::intern),
         );
 

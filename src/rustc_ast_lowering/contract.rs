@@ -1,12 +1,10 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
 
 use alloc::sync::Arc;
 
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use thin_vec::thin_vec;
 
 use crate::rustc_ast_lowering::LoweringContext;
 
@@ -121,7 +119,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 // Flatten the body into precond check, then body.
                 let wrapped_body = self.block_all(
                     body.span,
-                    self.arena.alloc_from_iter([precond_check].into_iter()),
+                    self.arena.alloc_from_iter([precond_check]),
                     Some(body),
                 );
                 self.expr_block(wrapped_body)
@@ -130,13 +128,16 @@ impl<'hir> LoweringContext<'_, 'hir> {
         }
     }
 
-    fn lower_decls(&mut self, contract: &crate::rustc_ast::FnContract) -> &'hir [crate::rustc_hir::Stmt<'hir>] {
+    fn lower_decls(
+        &mut self,
+        contract: &crate::rustc_ast::FnContract,
+    ) -> &'hir [crate::rustc_hir::Stmt<'hir>] {
         let (decls, decls_tail) = self.lower_stmts(&contract.declarations);
 
         if let Some(e) = decls_tail {
             // include the tail expression in the declaration statements
             let tail = self.stmt_expr(e.span, *e);
-            self.arena.alloc_from_iter(decls.into_iter().map(|d| *d).chain([tail].into_iter()))
+            self.arena.alloc_from_iter(decls.iter().copied().chain([tail]))
         } else {
             decls
         }
@@ -144,7 +145,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
     /// Lower the precondition check intrinsic.
     fn lower_precond(&mut self, req: &P<crate::rustc_ast::Expr>) -> crate::rustc_hir::Stmt<'hir> {
-        let lowered_req = self.lower_expr_mut(&req);
+        let lowered_req = self.lower_expr_mut(req);
         let req_span = self.mark_span_with_reason(
             crate::rustc_span::DesugaringKind::Contract,
             lowered_req.span,
@@ -168,7 +169,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             ens_span,
             Some(Arc::clone(&self.allow.contracts)),
         );
-        let lowered_ens = self.lower_expr_mut(&ens);
+        let lowered_ens = self.lower_expr_mut(ens);
         self.expr_call_lang_item_fn(
             ens_span,
             LangItem::ContractBuildCheckEnsures,
@@ -181,12 +182,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
         contract_decls: &'hir [crate::rustc_hir::Stmt<'hir>],
         precond: crate::rustc_hir::Stmt<'hir>,
     ) -> crate::rustc_hir::Stmt<'hir> {
-        let stmts = self
-            .arena
-            .alloc_from_iter(contract_decls.into_iter().map(|d| *d).chain([precond].into_iter()));
+        let stmts = self.arena.alloc_from_iter(contract_decls.iter().copied().chain([precond]));
 
         let then_block_stmts = self.block_all(precond.span, stmts, None);
-        let then_block = self.arena.alloc(self.expr_block(&then_block_stmts));
+        let then_block = self.arena.alloc(self.expr_block(then_block_stmts));
 
         let precond_check = crate::rustc_hir::ExprKind::If(
             self.arena.alloc(self.expr_bool_literal(precond.span, self.tcx.sess.contract_checks())),
@@ -204,9 +203,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         precond: Option<crate::rustc_hir::Stmt<'hir>>,
         postcond_checker: &'hir crate::rustc_hir::Expr<'hir>,
     ) -> &'hir crate::rustc_hir::Expr<'hir> {
-        let stmts = self
-            .arena
-            .alloc_from_iter(contract_decls.into_iter().map(|d| *d).chain(precond.into_iter()));
+        let stmts = self.arena.alloc_from_iter(contract_decls.iter().copied().chain(precond));
         let span = match precond {
             Some(precond) => precond.span,
             None => postcond_checker.span,
@@ -218,7 +215,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
             &*arena_vec![self; *postcond_checker],
         ));
         let then_block_stmts = self.block_all(span, stmts, Some(postcond_checker));
-        let then_block = self.arena.alloc(self.expr_block(&then_block_stmts));
+        let then_block = self.arena.alloc(self.expr_block(then_block_stmts));
 
         let none_expr = self.arena.alloc(self.expr_enum_variant_lang_item(
             postcond_checker.span,
@@ -272,12 +269,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let body = self.inject_ensures_check(body, postcond_span, check_ident, check_hir_id);
 
         // Flatten the body into precond, then postcond, then wrapped body.
-        let wrapped_body = self.block_all(
-            body.span,
-            self.arena.alloc_from_iter([postcond_decl].into_iter()),
-            Some(body),
-        );
-        wrapped_body
+        self.block_all(body.span, self.arena.alloc_from_iter([postcond_decl]), Some(body))
     }
 
     /// Create an `ExprKind::Ret` that is optionally wrapped by a call to check
@@ -313,7 +305,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
         //         ret
         //     }
         // }
-        let ret_ident: crate::rustc_span::Ident = crate::rustc_span::Ident::from_str_and_span("__ret", span);
+        let ret_ident: crate::rustc_span::Ident =
+            crate::rustc_span::Ident::from_str_and_span("__ret", span);
 
         // Set up the return `let` statement.
         let (ret_pat, ret_hir_id) =
@@ -354,7 +347,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
             ),
         ));
 
-        let attrs: crate::rustc_ast::AttrVec = core::iter::once(self.unreachable_code_attr(span)).collect();
+        let attrs: crate::rustc_ast::AttrVec =
+            core::iter::once(self.unreachable_code_attr(span)).collect();
         self.lower_attrs(contract_check.hir_id, &attrs, span, crate::rustc_hir::Target::Expression);
 
         let ret_block = self.block_all(span, arena_vec![self; ret_stmt], Some(contract_check));

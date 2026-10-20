@@ -1,17 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_errors::formatting::DiagMessageAddArg;
 use crate::rustc_errors::{Diag, EmissionGuarantee, IntoDiagArg, Subdiagnostic, msg};
 use crate::rustc_hir::def_id::LocalDefId;
-use crate::bug;
 use crate::rustc_middle::ty::{self, TyCtxt};
 use crate::rustc_span::{Span, kw};
 
@@ -116,7 +111,10 @@ pub(crate) enum SuffixKind {
 }
 
 impl IntoDiagArg for PrefixKind {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        _: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         let kind = match self {
             Self::Empty => "empty",
             Self::RefValidFor => "ref_valid_for",
@@ -138,7 +136,10 @@ impl IntoDiagArg for PrefixKind {
 }
 
 impl IntoDiagArg for SuffixKind {
-    fn into_diag_arg(self, _: &mut crate::rustc_errors::LongTyPath) -> crate::rustc_errors::DiagArgValue {
+    fn into_diag_arg(
+        self,
+        _: &mut crate::rustc_errors::LongTyPath,
+    ) -> crate::rustc_errors::DiagArgValue {
         let kind = match self {
             Self::Empty => "empty",
             Self::Continues => "continues",

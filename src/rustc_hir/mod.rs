@@ -23,7 +23,6 @@
 // belongs to the diagnostics layer that defines the trait, not to this crate, and it goes
 // when that layer does.
 // tidy-alphabetical-end
-
 mod arena;
 pub mod def;
 mod hir;
@@ -33,11 +32,11 @@ pub mod pat_util;
 mod stable_hash_impls;
 mod target_impls;
 
-#[doc(no_inline)]
-pub use hir::*;
 pub use crate::rustc_attr_ir::{self as attrs, find_attr};
 pub use crate::rustc_hir_id::*;
 pub use crate::rustc_span::def_id;
+#[doc(no_inline)]
+pub use hir::*;
 // FIXME: Remove this use tree, replace by `crate::rustc_hir::attrs` or `rustc_attr_ir` imports
 #[doc(hidden)]
 pub use {

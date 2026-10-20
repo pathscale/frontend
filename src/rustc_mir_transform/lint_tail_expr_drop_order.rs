@@ -2,17 +2,16 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use alloc::rc::Rc;
 use core::cell::RefCell;
 use hashbrown::hash_map;
-use alloc::rc::Rc;
 
-use itertools::Itertools as _;
+use crate::bug;
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
 use crate::rustc_data_structures::unord::{UnordMap, UnordSet};
 use crate::rustc_errors::formatting::DiagMessageAddArg;
@@ -23,8 +22,6 @@ use crate::rustc_index::bit_set::MixedBitSet;
 use crate::rustc_index::{IndexSlice, IndexVec};
 use crate::rustc_lint_defs::LintId;
 use crate::rustc_lint_defs::builtin::TAIL_EXPR_DROP_ORDER;
-use rustc_macros::{Diagnostic, Subdiagnostic};
-use crate::bug;
 use crate::rustc_middle::mir::{
     self, BasicBlock, Body, ClearCrossCrate, Local, Location, MirDumper, Place, StatementKind,
     TerminatorKind,
@@ -37,6 +34,8 @@ use crate::rustc_mir_dataflow::impls::MaybeInitializedPlaces;
 use crate::rustc_mir_dataflow::move_paths::{LookupResult, MoveData, MovePathIndex};
 use crate::rustc_mir_dataflow::{Analysis, MaybeReachable, ResultsCursor};
 use crate::rustc_span::{DUMMY_SP, Span, Symbol};
+use itertools::Itertools as _;
+use rustc_macros::{Diagnostic, Subdiagnostic};
 use tracing::debug;
 
 fn place_has_common_prefix<'tcx>(left: &Place<'tcx>, right: &Place<'tcx>) -> bool {
@@ -534,7 +533,10 @@ struct LocalLabel<'a> {
 
 /// A custom `Subdiagnostic` implementation so that the notes are delivered in a specific order
 impl Subdiagnostic for LocalLabel<'_> {
-    fn add_to_diag<G: crate::rustc_errors::EmissionGuarantee>(self, diag: &mut crate::rustc_errors::Diag<'_, G>) {
+    fn add_to_diag<G: crate::rustc_errors::EmissionGuarantee>(
+        self,
+        diag: &mut crate::rustc_errors::Diag<'_, G>,
+    ) {
         diag.span_label(
             self.span,
             msg!(

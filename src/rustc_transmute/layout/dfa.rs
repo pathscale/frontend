@@ -467,26 +467,15 @@ impl<S: Copy, X: Iterator<Item = (Byte, S)>, Y: Iterator<Item = (Byte, S)>> Iter
                 self.ys.next();
             }
             (Some(x), Some(y)) => {
-                let start;
-                let end;
-                let dst;
-                match x.0.start.cmp(&y.0.start) {
-                    Ordering::Less => {
-                        start = x.0.start;
-                        end = cmp::min(x.0.end, y.0.start);
-                        dst = (Some(x.1), None);
-                    }
+                let (start, end, dst) = match x.0.start.cmp(&y.0.start) {
+                    Ordering::Less => (x.0.start, cmp::min(x.0.end, y.0.start), (Some(x.1), None)),
                     Ordering::Greater => {
-                        start = y.0.start;
-                        end = cmp::min(x.0.start, y.0.end);
-                        dst = (None, Some(y.1));
+                        (y.0.start, cmp::min(x.0.start, y.0.end), (None, Some(y.1)))
                     }
                     Ordering::Equal => {
-                        start = x.0.start;
-                        end = cmp::min(x.0.end, y.0.end);
-                        dst = (Some(x.1), Some(y.1));
+                        (x.0.start, cmp::min(x.0.end, y.0.end), (Some(x.1), Some(y.1)))
                     }
-                }
+                };
                 ret = Some((Byte { start, end }, dst));
                 if start == x.0.start {
                     x.0.start = end;

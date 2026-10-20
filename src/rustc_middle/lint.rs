@@ -4,8 +4,7 @@
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::cmp::min;
@@ -18,9 +17,9 @@ use crate::rustc_lint_defs::{
     EditionFcw, FutureIncompatibilityReason, Level, Lint, LintExpectationId, LintId,
     StableLintExpectationId, UnstableLintExpectationId, builtin,
 };
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_session::Session;
 use crate::rustc_span::{DUMMY_SP, ExpnKind, Span, Symbol, kw};
+use rustc_macros::{Decodable, Encodable, StableHash};
 use tracing::instrument;
 
 use crate::rustc_middle::ty::TyCtxt;
@@ -162,31 +161,30 @@ pub fn reveal_actual_level_spec<Id: Copy>(
     // If we're about to issue a warning, check at the last minute for any
     // directives against the `warnings` lint group. If, for example, there's an
     // `allow(warnings)` in scope then we want to respect that instead.
-    if level_spec.level == Level::Warn {
-        if let Some(configured_level_spec) =
+    if level_spec.level == Level::Warn
+        && let Some(configured_level_spec) =
             probe_for_lint_level_spec(LintId::of(builtin::WARNINGS))
-        {
-            let respect_warnings_lint_group = match configured_level_spec.level {
-                // -Wwarnings is a no-op.
-                Level::Warn => false,
-                // Some warnings cannot be denied from the `warnings` lint group, only individually.
-                Level::Deny | Level::Forbid => !lint.lint.ignore_deny_warnings,
-                // All warnings respect -Awarnings.
-                Level::Allow => true,
-                // Not sure what the right behavior is here, but, sure, why not.
-                // See tests/ui/lint/rfc-2383-lint-reason/expect_warnings.rs.
-                Level::Expect => true,
-                Level::ForceWarn => {
-                    sess.dcx().span_delayed_bug(
-                        configured_level_spec.src.span(),
-                        "cannot --force-warn the `warnings` lint group",
-                    );
-                    false
-                }
-            };
-            if respect_warnings_lint_group {
-                level_spec = configured_level_spec;
+    {
+        let respect_warnings_lint_group = match configured_level_spec.level {
+            // -Wwarnings is a no-op.
+            Level::Warn => false,
+            // Some warnings cannot be denied from the `warnings` lint group, only individually.
+            Level::Deny | Level::Forbid => !lint.lint.ignore_deny_warnings,
+            // All warnings respect -Awarnings.
+            Level::Allow => true,
+            // Not sure what the right behavior is here, but, sure, why not.
+            // See tests/ui/lint/rfc-2383-lint-reason/expect_warnings.rs.
+            Level::Expect => true,
+            Level::ForceWarn => {
+                sess.dcx().span_delayed_bug(
+                    configured_level_spec.src.span(),
+                    "cannot --force-warn the `warnings` lint group",
+                );
+                false
             }
+        };
+        if respect_warnings_lint_group {
+            level_spec = configured_level_spec;
         }
     }
 
@@ -408,7 +406,11 @@ pub fn emit_lint_base<'a, D: Diagnostic<'a, ()> + 'a>(
         level_spec: LevelSpec,
         span: Option<MultiSpan>,
         decorate: Box<
-            dyn FnOnce(crate::rustc_errors::DiagCtxtHandle<'a>, crate::rustc_errors::Level) -> Diag<'a, ()> + 'a,
+            dyn FnOnce(
+                    crate::rustc_errors::DiagCtxtHandle<'a>,
+                    crate::rustc_errors::Level,
+                ) -> Diag<'a, ()>
+                + 'a,
         >,
     ) {
         let LevelSpec { level, lint_id, src } = level_spec;
@@ -492,7 +494,8 @@ pub fn emit_lint_base<'a, D: Diagnostic<'a, ()> + 'a>(
         // 2. If the corresponding `crate::rustc_errors::Level` is warning, then that can be affected by
         //    `-A warnings` or `--cap-lints=xxx` on the command line. In which case, the diagnostic
         //    will be emitted if `can_emit_warnings` is true.
-        let skip = err_level == crate::rustc_errors::Level::Warning && !sess.dcx().can_emit_warnings();
+        let skip =
+            err_level == crate::rustc_errors::Level::Warning && !sess.dcx().can_emit_warnings();
 
         let mut err: Diag<'_, ()> = if !skip {
             decorate(sess.dcx(), err_level)

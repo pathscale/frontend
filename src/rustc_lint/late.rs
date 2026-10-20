@@ -6,11 +6,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::any::Any;
@@ -506,25 +502,35 @@ pub fn check_crate<'tcx>(tcx: TyCtxt<'tcx>) {
     // The compatibility stage API preserves that diagnostic order and evaluates no weights.
     let crate_walk = tcx.crate_stage_weight(cost::WALK);
     stages(|scope| {
-        scope.stage_weighted((), 1, |_, _| crate_walk, |_, _| {
-            tcx.sess.time("crate_lints", || {
-                // Run whole crate non-incremental lints
-                late_lint_crate(tcx);
-            });
-        });
-        scope.stage_weighted((), 1, |_, _| crate_walk, |_, _| {
-            tcx.sess.time("module_lints", || {
-                // Run per-module lints
-                let modules = tcx.hir_module_ids();
-                run_stage_weighted(
-                    modules,
-                    modules.len(),
-                    |modules, index| {
-                        tcx.stage_weight(modules[index].to_local_def_id(), cost::WALK)
-                    },
-                    |modules, index| tcx.ensure_ok().lint_mod(modules[index]),
-                );
-            });
-        });
+        scope.stage_weighted(
+            (),
+            1,
+            |_, _| crate_walk,
+            |_, _| {
+                tcx.sess.time("crate_lints", || {
+                    // Run whole crate non-incremental lints
+                    late_lint_crate(tcx);
+                });
+            },
+        );
+        scope.stage_weighted(
+            (),
+            1,
+            |_, _| crate_walk,
+            |_, _| {
+                tcx.sess.time("module_lints", || {
+                    // Run per-module lints
+                    let modules = tcx.hir_module_ids();
+                    run_stage_weighted(
+                        modules,
+                        modules.len(),
+                        |modules, index| {
+                            tcx.stage_weight(modules[index].to_local_def_id(), cost::WALK)
+                        },
+                        |modules, index| tcx.ensure_ok().lint_mod(modules[index]),
+                    );
+                });
+            },
+        );
     });
 }

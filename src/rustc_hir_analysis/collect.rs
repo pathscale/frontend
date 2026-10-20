@@ -17,16 +17,15 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::{assert_matches, debug_assert_matches};
 use core::cell::Cell;
 use core::iter;
-use crate::{assert_matches, debug_assert_matches};
 
 use crate::rustc_abi::{ExternAbi, Size};
 use crate::rustc_ast::Recovered;
@@ -38,7 +37,9 @@ use crate::rustc_errors::{
 use crate::rustc_hir::def::{DefKind, Res};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
 use crate::rustc_hir::intravisit::{InferKind, Visitor, VisitorExt};
-use crate::rustc_hir::{self as hir, GenericParamKind, HirId, Node, PreciseCapturingArgKind, find_attr};
+use crate::rustc_hir::{
+    self as hir, GenericParamKind, HirId, Node, PreciseCapturingArgKind, find_attr,
+};
 use crate::rustc_infer::infer::{InferCtxt, SolverRegionConstraint, TyCtxtInferExt};
 use crate::rustc_infer::traits::{DynCompatibilityViolation, ObligationCause};
 use crate::rustc_lint_defs::builtin::REPR_C_ENUMS_LARGER_THAN_INT;
@@ -57,9 +58,13 @@ use crate::rustc_trait_selection::traits::{
 };
 use tracing::{debug, instrument};
 
-use crate::rustc_hir_analysis::check::wfcheck::{TestBinderBody, TestBinderExists, TestBinderForall};
+use crate::rustc_hir_analysis::check::wfcheck::{
+    TestBinderBody, TestBinderExists, TestBinderForall,
+};
 use crate::rustc_hir_analysis::diagnostics::{self, ElidedLifetimesAreNotAllowedInDelegations};
-use crate::rustc_hir_analysis::hir_ty_lowering::{HirTyLowerer, InherentAssocCandidate, RegionInferReason};
+use crate::rustc_hir_analysis::hir_ty_lowering::{
+    HirTyLowerer, InherentAssocCandidate, RegionInferReason,
+};
 
 mod clauses_of;
 pub(crate) mod dump;
@@ -359,8 +364,11 @@ impl<'tcx> ItemCtxt<'tcx> {
         for predicate in forall.generics.predicates {
             self.lower_test_binder_assumptions(predicate, &mut type_outlives, &mut region_outlives);
         }
-        let body =
-            crate::rustc_hir_analysis::check::wfcheck::WithWhereClauses { value, type_outlives, region_outlives };
+        let body = crate::rustc_hir_analysis::check::wfcheck::WithWhereClauses {
+            value,
+            type_outlives,
+            region_outlives,
+        };
         let binder = ty::Binder::bind_with_vars(body, bound_vars);
         let assert_on_exit = forall
             .assert_on_exit
@@ -884,7 +892,7 @@ struct NestedSpan {
 }
 
 impl NestedSpan {
-    fn to_field_already_declared_nested_help(&self) -> diagnostics::FieldAlreadyDeclaredNestedHelp {
+    fn field_already_declared_nested_help(&self) -> diagnostics::FieldAlreadyDeclaredNestedHelp {
         diagnostics::FieldAlreadyDeclaredNestedHelp { span: self.span }
     }
 }
@@ -935,7 +943,7 @@ impl<'tcx> FieldUniquenessCheckContext<'tcx> {
                     span,
                     prev_span: prev.span,
                     prev_nested_field_span: prev.nested_field_span,
-                    prev_help: prev.to_field_already_declared_nested_help(),
+                    prev_help: prev.field_already_declared_nested_help(),
                 });
             }
             (
@@ -946,7 +954,7 @@ impl<'tcx> FieldUniquenessCheckContext<'tcx> {
                     field_name,
                     span,
                     nested_field_span,
-                    help: current.to_field_already_declared_nested_help(),
+                    help: current.field_already_declared_nested_help(),
                     prev_span,
                 });
             }
@@ -955,10 +963,10 @@ impl<'tcx> FieldUniquenessCheckContext<'tcx> {
                     field_name,
                     span,
                     nested_field_span,
-                    help: current.to_field_already_declared_nested_help(),
+                    help: current.field_already_declared_nested_help(),
                     prev_span: prev.span,
                     prev_nested_field_span: prev.nested_field_span,
-                    prev_help: prev.to_field_already_declared_nested_help(),
+                    prev_help: prev.field_already_declared_nested_help(),
                 });
             }
             (field_decl, None) => {
@@ -1341,10 +1349,8 @@ fn recover_infer_ret_ty<'tcx>(
     // This is a heuristic approach. If the scope has region parameters,
     // we should change fn_sig's lifetime from `ReErased` to `ReError`,
     // otherwise to `ReStatic`.
-    let has_region_params = generics.params.iter().any(|param| match param.kind {
-        GenericParamKind::Lifetime { .. } => true,
-        _ => false,
-    });
+    let has_region_params =
+        generics.params.iter().any(|param| matches!(param.kind, GenericParamKind::Lifetime { .. }));
     let fn_sig = fold_regions(tcx, fn_sig, |r, _| match r.kind() {
         ty::ReErased => {
             if has_region_params {
@@ -1513,7 +1519,7 @@ pub fn suggest_impl_trait<'tcx>(
             {
                 return None;
             }
-            let ocx = ObligationCtxt::new(&infcx);
+            let ocx = ObligationCtxt::new(infcx);
             let item_ty = ocx.normalize(
                 &ObligationCause::dummy(),
                 param_env,
@@ -1566,16 +1572,13 @@ fn impl_trait_header(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::ImplTraitHeader
 
     check_impl_constness(tcx, impl_.constness, &of_trait.trait_ref);
 
-    let trait_ref = icx
-        .lowerer()
-        .lower_impl_trait_ref(&of_trait.trait_ref, selfty)
-        .unwrap_or_else(|| {
+    let trait_ref =
+        icx.lowerer().lower_impl_trait_ref(&of_trait.trait_ref, selfty).unwrap_or_else(|| {
             // An impl identity cannot stand in for a missing trait. Optional consumers must
             // use impl_opt_trait_ref; this mandatory query refuses an unresolved header.
-            let guar = tcx.dcx().span_err(
-                of_trait.trait_ref.path.span,
-                "the trait in this impl did not resolve",
-            );
+            let guar = tcx
+                .dcx()
+                .span_err(of_trait.trait_ref.path.span, "the trait in this impl did not resolve");
             guar.raise_fatal()
         });
 

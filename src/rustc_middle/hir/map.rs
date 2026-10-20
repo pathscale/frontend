@@ -5,10 +5,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -363,7 +361,10 @@ impl<'tcx> TyCtxt<'tcx> {
 
             BodyOwnerKind::Fn if self.is_constructor(def_id) => return None,
             BodyOwnerKind::Fn | BodyOwnerKind::Closure if self.is_const_fn(def_id) => {
-                if matches!(self.constness(def_id), crate::rustc_hir::Constness::Const { always: true }) {
+                if matches!(
+                    self.constness(def_id),
+                    crate::rustc_hir::Constness::Const { always: true }
+                ) {
                     ConstContext::Const { allow_const_fn_promotion: false }
                 } else {
                     ConstContext::ConstFn
@@ -794,7 +795,7 @@ impl<'tcx> TyCtxt<'tcx> {
             Node::LetStmt(_) => node_str("local"),
             Node::Ctor(ctor) => format!(
                 "{id} (ctor {})",
-                ctor.ctor_def_id().map_or("<missing path>".into(), |def_id| path_str(def_id)),
+                ctor.ctor_def_id().map_or("<missing path>".into(), path_str),
             ),
             Node::Lifetime(_) => node_str("lifetime"),
             Node::GenericParam(param) => {
@@ -1128,13 +1129,11 @@ impl<'tcx> TyCtxt<'tcx> {
             _ => None,
         }?;
 
-        match self.parent_hir_node(expr.hir_id) {
-            Node::ExprField(field) => {
-                if field.ident.name == local.name && field.is_shorthand {
-                    return Some(local.name);
-                }
-            }
-            _ => {}
+        if let Node::ExprField(field) = self.parent_hir_node(expr.hir_id)
+            && field.ident.name == local.name
+            && field.is_shorthand
+        {
+            return Some(local.name);
         }
 
         None

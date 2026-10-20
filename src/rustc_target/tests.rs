@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_target::json::ToJson;
 use crate::rustc_target::spec::Target;
@@ -42,11 +36,14 @@ fn custom_arch_propagates_from_json() {
         "executables": true
     }
     "#;
-    crate::rustc_span::create_session_if_not_set_then(crate::rustc_span::edition::DEFAULT_EDITION, |_| {
-        let (target, warnings) = Target::from_json(json).expect("json target parses");
-        assert!(warnings.warning_messages().is_empty());
-        assert_eq!(target.arch.desc(), "customarch");
-        let serialized = target.to_json();
-        assert_eq!(serialized["arch"], "customarch");
-    });
+    crate::rustc_span::create_session_if_not_set_then(
+        crate::rustc_span::edition::DEFAULT_EDITION,
+        |_| {
+            let (target, warnings) = Target::from_json(json).expect("json target parses");
+            assert!(warnings.warning_messages().is_empty());
+            assert_eq!(target.arch.desc(), "customarch");
+            let serialized = target.to_json();
+            assert_eq!(serialized["arch"], "customarch");
+        },
+    );
 }

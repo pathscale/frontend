@@ -1,7 +1,7 @@
 use crate::rustc_data_structures::fx::FxIndexMap;
-use rustc_macros::StableHash;
 use crate::rustc_span::Symbol;
 use crate::rustc_span::def_id::{DefId, DefIdMap};
+use rustc_macros::StableHash;
 
 #[derive(Debug, Default, StableHash)]
 pub struct DiagnosticItems {

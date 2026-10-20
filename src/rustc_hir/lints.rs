@@ -1,9 +1,9 @@
-#[allow(unused_imports)]
-use {alloc::boxed::Box};
 use crate::rustc_error_messages::MultiSpan;
 use crate::rustc_errors::{Diag, DiagCtxtHandle, Level};
 use crate::rustc_hir_id::HirId;
 use crate::rustc_lint_defs::LintId;
+#[allow(unused_imports)]
+use alloc::boxed::Box;
 
 pub type DelayedLints = Box<[DelayedLint]>;
 
@@ -19,6 +19,10 @@ pub struct DelayedLint {
     pub span: MultiSpan,
     // `+ DynSend + DynSync` dropped: they are no longer auto traits, so a trait object
     // cannot name them (see `rustc_data_structures/marker.rs`).
+    #[expect(
+        clippy::type_complexity,
+        reason = "stores a one-shot lint callback over the diagnostic argument lifetime"
+    )]
     pub callback: Box<
         dyn for<'a> FnOnce(DiagCtxtHandle<'a>, Level, &dyn core::any::Any) -> Diag<'a, ()>
             + 'static,

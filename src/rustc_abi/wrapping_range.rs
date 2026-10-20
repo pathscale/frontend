@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::rustc_data_structures::iter_ext::SliceExt as _;
+use alloc::vec::Vec;
 use core::ops::RangeFull;
 use core::{fmt, iter};
 

@@ -43,9 +43,7 @@ struct ProofBudget {
 
 impl ProofBudget {
     fn new() -> Self {
-        Self {
-            solver_queries_left: MAX_PROOF_SOLVER_QUERIES,
-        }
+        Self { solver_queries_left: MAX_PROOF_SOLVER_QUERIES }
     }
 
     fn consume_solver_query(&mut self) -> bool {
@@ -191,30 +189,21 @@ fn select_trait_implementation<'tcx>(
     caller: LocalDefId,
     depth: u8,
     budget: &mut ProofBudget,
-) -> (
-    StaticFact<ResolvedCallableTraitRefIdentity>,
-    StaticFact<ResolvedCallableTraitSelection>,
-) {
+) -> (StaticFact<ResolvedCallableTraitRefIdentity>, StaticFact<ResolvedCallableTraitSelection>) {
     let caller_def_id = caller.to_def_id();
     let original_identity = trait_ref_identity(tcx, trait_ref, caller_def_id, true, depth);
     if depth > MAX_PROOF_IDENTITY_DEPTH {
         return (original_identity, unknown("trait_selection_depth_limit"));
     }
     if !fully_monomorphic(&trait_ref) {
-        return (
-            original_identity,
-            unknown("trait_obligation_not_fully_monomorphic"),
-        );
+        return (original_identity, unknown("trait_obligation_not_fully_monomorphic"));
     }
 
     let typing_env = ty::TypingEnv::fully_monomorphized();
     let Ok(normalized) =
         tcx.try_normalize_erasing_regions(typing_env, Unnormalized::new_wip(trait_ref))
     else {
-        return (
-            original_identity,
-            unknown("trait_obligation_normalization_failed"),
-        );
+        return (original_identity, unknown("trait_obligation_normalization_failed"));
     };
     if !fully_monomorphic(&normalized) || normalized.has_aliases() {
         return (
@@ -225,16 +214,10 @@ fn select_trait_implementation<'tcx>(
 
     let normalized_identity = trait_ref_identity(tcx, normalized, caller_def_id, false, depth);
     if !trait_ref_identity_is_complete(&normalized_identity) {
-        return (
-            normalized_identity,
-            unknown("trait_obligation_identity_unavailable"),
-        );
+        return (normalized_identity, unknown("trait_obligation_identity_unavailable"));
     }
     if !budget.consume_solver_query() {
-        return (
-            normalized_identity,
-            unknown("trait_solver_query_count_limit"),
-        );
+        return (normalized_identity, unknown("trait_solver_query_count_limit"));
     }
 
     // Query only after rejecting parameters, inference variables, placeholders, bound variables,
@@ -256,20 +239,13 @@ fn select_trait_implementation<'tcx>(
         ),
         Ok(ImplSource::Param(_)) => (
             normalized_identity,
-            StaticFact::Known {
-                value: ResolvedCallableTraitSelection::Param,
-            },
+            StaticFact::Known { value: ResolvedCallableTraitSelection::Param },
         ),
         Ok(ImplSource::Builtin(_, _)) => (
             normalized_identity,
-            StaticFact::Known {
-                value: ResolvedCallableTraitSelection::Builtin,
-            },
+            StaticFact::Known { value: ResolvedCallableTraitSelection::Builtin },
         ),
-        Err(_) => (
-            normalized_identity,
-            unknown("trait_solver_selection_failed"),
-        ),
+        Err(_) => (normalized_identity, unknown("trait_solver_selection_failed")),
     }
 }
 
@@ -318,8 +294,7 @@ fn implemented_trait_ref<'tcx>(
     }
     let typing_env = ty::TypingEnv::fully_monomorphized();
     let raw = tcx.impl_trait_ref(impl_def_id).instantiate(tcx, impl_args);
-    let Ok(normalized) = tcx.try_normalize_erasing_regions(typing_env, raw)
-    else {
+    let Ok(normalized) = tcx.try_normalize_erasing_regions(typing_env, raw) else {
         return unknown("selected_impl_trait_ref_normalization_failed");
     };
     if !fully_monomorphic(&normalized) || normalized.has_aliases() {
@@ -344,10 +319,7 @@ fn selected_associated_types<'tcx>(
     if !tcx.impl_is_of_trait(impl_def_id) {
         return unknown("selected_definition_is_not_trait_impl");
     }
-    let parent = tcx
-        .impl_trait_ref(impl_def_id)
-        .instantiate(tcx, impl_args)
-        .skip_norm_wip();
+    let parent = tcx.impl_trait_ref(impl_def_id).instantiate(tcx, impl_args).skip_norm_wip();
     if !fully_monomorphic(&parent) {
         return unknown("selected_impl_trait_ref_not_fully_monomorphic");
     }
@@ -380,9 +352,8 @@ fn selected_associated_types<'tcx>(
             implementation_item,
             implementation_item_arguments,
             implementation_item_source_attestation,
-        ) = if let Some(&impl_item_id) = tcx
-            .impl_item_implementor_ids(impl_def_id)
-            .get(&trait_item.def_id)
+        ) = if let Some(&impl_item_id) =
+            tcx.impl_item_implementor_ids(impl_def_id).get(&trait_item.def_id)
         {
             let maps_to_trait_item = tcx.opt_associated_item(impl_item_id).is_some_and(|item| {
                 item.trait_item_def_id() == Some(trait_item.def_id)
@@ -417,9 +388,7 @@ fn selected_associated_types<'tcx>(
                     None => unknown("associated_type_projection_arguments_unavailable"),
                 };
                 (
-                    StaticFact::Known {
-                        value: super::stable_def_path_identity(tcx, impl_item_id),
-                    },
+                    StaticFact::Known { value: super::stable_def_path_identity(tcx, impl_item_id) },
                     implementation_args,
                     super::callable_source_attestation::attest_definition(
                         tcx,
@@ -448,16 +417,10 @@ fn selected_associated_types<'tcx>(
                         Some(value),
                     ),
                     Ok(_) => (unknown("associated_type_value_not_fully_normalized"), None),
-                    Err(_) => (
-                        unknown("associated_type_projection_normalization_failed"),
-                        None,
-                    ),
+                    Err(_) => (unknown("associated_type_projection_normalization_failed"), None),
                 }
             }
-            None => (
-                unknown("associated_type_projection_arguments_unavailable"),
-                None,
-            ),
+            None => (unknown("associated_type_projection_arguments_unavailable"), None),
         };
         let trait_obligations = match (projection_args, normalized_projection) {
             (Some(args), Some(projected)) => associated_type_trait_obligations(
@@ -525,10 +488,8 @@ fn associated_type_trait_obligations<'tcx>(
     depth: u8,
     budget: &mut ProofBudget,
 ) -> StaticFact<Vec<ResolvedCallableTraitObligation>> {
-    let clauses = tcx
-        .item_bounds(trait_associated_type)
-        .instantiate(tcx, arguments)
-        .skip_norm_wip();
+    let clauses =
+        tcx.item_bounds(trait_associated_type).instantiate(tcx, arguments).skip_norm_wip();
     if clauses.len() > MAX_PROOF_CLAUSES {
         return unknown("associated_type_trait_bound_count_limit");
     }
@@ -604,10 +565,7 @@ fn selected_trait_methods<'tcx>(
     if !tcx.impl_is_of_trait(impl_def_id) {
         return unknown("selected_definition_is_not_trait_impl");
     }
-    let trait_ref = tcx
-        .impl_trait_ref(impl_def_id)
-        .instantiate(tcx, impl_args)
-        .skip_norm_wip();
+    let trait_ref = tcx.impl_trait_ref(impl_def_id).instantiate(tcx, impl_args).skip_norm_wip();
     if !fully_monomorphic(&trait_ref) {
         return unknown("selected_method_trait_ref_not_fully_monomorphic");
     }
@@ -696,13 +654,10 @@ fn selected_trait_method_body<'tcx>(
     if resolved_trait_method != Some(trait_method) {
         return unknown("selected_trait_method_identity_mismatch");
     }
-    if let Some(&mapped) = tcx
-        .impl_item_implementor_ids(impl_def_id)
-        .get(&trait_method)
+    if let Some(&mapped) = tcx.impl_item_implementor_ids(impl_def_id).get(&trait_method)
+        && mapped != definition
     {
-        if mapped != definition {
-            return unknown("selected_trait_method_map_instance_disagreement");
-        }
+        return unknown("selected_trait_method_map_instance_disagreement");
     }
     let defining_owner = tcx.parent(definition);
     let (source_kind, defining_owner_source_attestation) = match tcx.def_kind(defining_owner) {
@@ -777,9 +732,7 @@ fn generic_substitutions<'tcx>(
             argument: generic_argument_identity(tcx, argument, binding_item, allow_parameters, 0),
         });
     }
-    StaticFact::Known {
-        value: substitutions,
-    }
+    StaticFact::Known { value: substitutions }
 }
 
 fn trait_ref_identity<'tcx>(
@@ -902,9 +855,7 @@ fn generic_type_identity<'tcx>(
                 };
                 elements.push(value);
             }
-            StaticFact::Known {
-                value: ResolvedCallableGenericTypeIdentity::Tuple { elements },
-            }
+            StaticFact::Known { value: ResolvedCallableGenericTypeIdentity::Tuple { elements } }
         }
         TyKind::Ref(region, referent, mutability) => {
             let StaticFact::Known { value: region } = region_identity(tcx, region, binding_item)
@@ -1006,13 +957,9 @@ fn const_identity<'tcx>(
             else {
                 return unknown("const_parameter_type_identity_unavailable");
             };
-            let parameter_ty = tcx
-                .type_of(parameter_def_id)
-                .instantiate_identity()
-                .skip_norm_wip();
-            let StaticFact::Known {
-                value: parameter_ty,
-            } = generic_type_identity(tcx, parameter_ty, binding_item, true, depth + 1)
+            let parameter_ty = tcx.type_of(parameter_def_id).instantiate_identity().skip_norm_wip();
+            let StaticFact::Known { value: parameter_ty } =
+                generic_type_identity(tcx, parameter_ty, binding_item, true, depth + 1)
             else {
                 return unknown("const_parameter_type_identity_unavailable");
             };
@@ -1113,9 +1060,7 @@ fn parameter_def<'tcx>(
 }
 
 fn primitive(primitive: ResolvedPrimitive) -> StaticFact<ResolvedCallableGenericTypeIdentity> {
-    StaticFact::Known {
-        value: ResolvedCallableGenericTypeIdentity::Primitive { primitive },
-    }
+    StaticFact::Known { value: ResolvedCallableGenericTypeIdentity::Primitive { primitive } }
 }
 
 fn polarity(polarity: ty::ClausePolarity) -> ResolvedCallableTraitPolarity {
@@ -1131,10 +1076,7 @@ fn trait_ref_identity_is_complete(
     let StaticFact::Known { value } = trait_ref else {
         return false;
     };
-    value
-        .arguments
-        .iter()
-        .all(generic_argument_identity_is_complete)
+    value.arguments.iter().all(generic_argument_identity_is_complete)
 }
 
 fn generic_argument_identity_is_complete(
@@ -1185,9 +1127,7 @@ fn fully_monomorphic<'tcx, T: TypeVisitableExt<TyCtxt<'tcx>>>(value: &T) -> bool
 }
 
 fn unknown<T>(why: &str) -> StaticFact<T> {
-    StaticFact::Unknown {
-        why: why.to_string(),
-    }
+    StaticFact::Unknown { why: why.to_string() }
 }
 
 trait StaticFactMap<T> {
@@ -1201,18 +1141,14 @@ where
 {
     fn map_type_argument(self) -> StaticFact<ResolvedCallableGenericArgumentIdentity> {
         match self {
-            StaticFact::Known { value } => StaticFact::Known {
-                value: value.into(),
-            },
+            StaticFact::Known { value } => StaticFact::Known { value: value.into() },
             StaticFact::Unknown { why } => StaticFact::Unknown { why },
         }
     }
 
     fn map_lifetime_argument(self) -> StaticFact<ResolvedCallableGenericArgumentIdentity> {
         match self {
-            StaticFact::Known { value } => StaticFact::Known {
-                value: value.into(),
-            },
+            StaticFact::Known { value } => StaticFact::Known { value: value.into() },
             StaticFact::Unknown { why } => StaticFact::Unknown { why },
         }
     }
@@ -1220,9 +1156,7 @@ where
 
 impl From<ResolvedCallableGenericTypeIdentity> for ResolvedCallableGenericArgumentIdentity {
     fn from(value: ResolvedCallableGenericTypeIdentity) -> Self {
-        Self::Type {
-            value: Box::new(value),
-        }
+        Self::Type { value: Box::new(value) }
     }
 }
 

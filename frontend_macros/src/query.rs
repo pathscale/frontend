@@ -14,10 +14,10 @@ mod kw {
     syn::custom_keyword!(query);
 }
 
-/// Ensures only doc comment attributes are used
+/// Accepts documentation and lint allowances forwarded to generated query items.
 fn check_attributes(attrs: Vec<Attribute>) -> Result<Vec<Attribute>> {
     let inner = |attr: Attribute| {
-        if !attr.path().is_ident("doc") {
+        if !attr.path().is_ident("doc") && !attr.path().is_ident("allow") {
             Err(Error::new(attr.span(), "attributes not supported on queries"))
         } else if attr.style != AttrStyle::Outer {
             Err(Error::new(
@@ -68,7 +68,7 @@ struct NonQuery {
 }
 
 enum QueryEntry {
-    Query(Query),
+    Query(Box<Query>),
     NonQuery(NonQuery),
 }
 
@@ -106,11 +106,18 @@ impl Parse for QueryEntry {
 
         // If there are no doc-comments, give at least some idea of what
         // it does by showing the query description.
-        if doc_comments.is_empty() {
+        if !doc_comments.iter().any(|attr| attr.path().is_ident("doc")) {
             doc_comments.push(doc_comment_from_desc(&modifiers.desc.expr_list)?);
         }
 
-        Ok(QueryEntry::Query(Query { doc_comments, modifiers, name, key_pat, key_ty, return_ty }))
+        Ok(QueryEntry::Query(Box::new(Query {
+            doc_comments,
+            modifiers,
+            name,
+            key_pat,
+            key_ty,
+            return_ty,
+        })))
     }
 }
 
@@ -423,7 +430,7 @@ pub(super) fn rustc_queries(input: TokenStream) -> TokenStream {
 
     for query in queries.0 {
         let query = match query {
-            QueryEntry::Query(query) => query,
+            QueryEntry::Query(query) => *query,
             QueryEntry::NonQuery(NonQuery { doc_comments, name }) => {
                 // Get the exceptional non-query case out of the way first.
                 non_query_stream.extend(quote! {

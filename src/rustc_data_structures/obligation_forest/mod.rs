@@ -72,10 +72,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -90,7 +86,6 @@ use tracing::debug;
 
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use crate::rustc_data_structures::sso::{SsoHashMap, SsoHashSet};
-
 
 #[cfg(test)]
 mod tests;
@@ -337,6 +332,12 @@ mod helper {
     // nameable once the constructor is coerced to a fn pointer.
     pub(super) type ObligationTreeIdGenerator =
         core::iter::Map<core::ops::RangeFrom<usize>, fn(usize) -> ObligationTreeId>;
+    impl<O: ForestObligation> Default for ObligationForest<O> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl<O: ForestObligation> ObligationForest<O> {
         pub fn new() -> ObligationForest<O> {
             ObligationForest {
@@ -358,6 +359,10 @@ impl<O: ForestObligation> ObligationForest<O> {
     /// yet been fully resolved.
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
     }
 
     /// Registers an obligation.
@@ -422,7 +427,7 @@ impl<O: ForestObligation> ObligationForest<O> {
             .map(|(index, _node)| Error { error: error.clone(), backtrace: self.error_at(index) })
             .collect();
 
-        self.compress(|_| assert!(false));
+        self.compress(|_| unreachable!("pending obligations cannot be compressed here"));
         errors
     }
 

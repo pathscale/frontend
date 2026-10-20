@@ -1,9 +1,9 @@
+use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use alloc::borrow::ToOwned;
-use eko::file::{self, File};
 use core::marker::PhantomData;
 use core::ops::Range;
+use eko::file::{self, File};
 use eko::path::{Path, PathBuf};
 
 // This code is very hot and uses lots of arithmetic, avoid overflow checks for performance.
@@ -48,6 +48,10 @@ pub struct FileEncoder<'a> {
     // comment on `trait Encoder`.
     res: Result<(), file::Error>,
     path: PathBuf,
+    #[expect(
+        clippy::type_complexity,
+        reason = "the borrowed flushing callback keeps its Send contract and encoder lifetime"
+    )]
     flush_strategy: Option<&'a mut (dyn FnMut(&[u8]) + Send)>,
     #[cfg(debug_assertions)]
     finished: bool,
@@ -311,6 +315,10 @@ pub struct MemDecoder<'a> {
 
 impl<'a> MemDecoder<'a> {
     #[inline]
+    #[expect(
+        clippy::result_unit_err,
+        reason = "the metadata decoder uses a unit failure for an invalid trailer"
+    )]
     pub fn new(data: &'a [u8], position: usize) -> Result<MemDecoder<'a>, ()> {
         let data = data.strip_suffix(MAGIC_END_BYTES).ok_or(())?;
         let Range { start, end } = data.as_ptr_range();
@@ -329,6 +337,11 @@ impl<'a> MemDecoder<'a> {
     pub fn len(&self) -> usize {
         // SAFETY: This recovers the length of the original slice, only using members we never modify.
         unsafe { self.end.offset_from_unsigned(self.start) }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
     }
 
     #[inline]

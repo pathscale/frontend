@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_hir::def_id::LocalDefId;
@@ -53,6 +47,10 @@ pub(crate) struct ConstraintConversion<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> ConstraintConversion<'a, 'tcx> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Borrow-checking helper keeps its established context arguments across compiler call sites."
+    )]
     pub(crate) fn new(
         infcx: &'a BorrowckInferCtxt<'tcx>,
         universal_regions: &'a UniversalRegions<'tcx>,
@@ -161,8 +159,8 @@ impl<'a, 'tcx> ConstraintConversion<'a, 'tcx> {
         let ty::OutlivesClause(k1, r2) = clause;
         match k1.kind() {
             GenericArgKind::Lifetime(r1) => {
-                let r1_vid = self.to_region_vid(r1);
-                let r2_vid = self.to_region_vid(r2);
+                let r1_vid = self.region_vid_for(r1);
+                let r2_vid = self.region_vid_for(r2);
                 self.add_outlives(r1_vid, r2_vid, constraint_category, self.span);
             }
 
@@ -214,11 +212,11 @@ impl<'a, 'tcx> ConstraintConversion<'a, 'tcx> {
         region: ty::Region<'tcx>,
         verify_bound: VerifyBound<'tcx>,
     ) -> TypeTest<'tcx> {
-        let lower_bound = self.to_region_vid(region);
+        let lower_bound = self.region_vid_for(region);
         TypeTest { generic_kind, lower_bound, span: self.span, verify_bound }
     }
 
-    fn to_region_vid(&mut self, r: ty::Region<'tcx>) -> ty::RegionVid {
+    fn region_vid_for(&mut self, r: ty::Region<'tcx>) -> ty::RegionVid {
         if let ty::RePlaceholder(placeholder) = r.kind() {
             self.constraints.placeholder_region(self.infcx, placeholder).as_var()
         } else {
@@ -262,8 +260,8 @@ impl<'a, 'b, 'tcx> TypeOutlivesDelegate<'tcx> for &'a mut ConstraintConversion<'
         b: ty::Region<'tcx>,
         constraint_category: ConstraintCategory<'tcx>,
     ) {
-        let b = self.to_region_vid(b);
-        let a = self.to_region_vid(a);
+        let b = self.region_vid_for(b);
+        let a = self.region_vid_for(a);
         self.add_outlives(b, a, constraint_category, origin.span());
     }
 

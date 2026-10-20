@@ -1,17 +1,12 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
+use alloc::sync::Arc;
 use core::any::Any;
 use core::mem;
-use alloc::sync::Arc;
 
+use crate::bug;
 use crate::rustc_crate_store::{CrateStore, ExternCrate};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_hir::attrs::Deprecation;
@@ -19,11 +14,10 @@ use crate::rustc_hir::def::{CtorKind, DefKind};
 use crate::rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LOCAL_CRATE};
 use crate::rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
 use crate::rustc_middle::arena::ArenaAllocatable;
-use crate::bug;
 use crate::rustc_middle::metadata::{AmbigModChild, ModChild};
-use crate::rustc_middle::mir::interpret::ErrorHandled;
 use crate::rustc_middle::middle::exported_symbols::ExportedSymbol;
 use crate::rustc_middle::middle::stability::DeprecationEntry;
+use crate::rustc_middle::mir::interpret::ErrorHandled;
 use crate::rustc_middle::queries::ExternProviders;
 use crate::rustc_middle::query::LocalCrate;
 use crate::rustc_middle::ty::fast_reject::SimplifiedType;
@@ -55,7 +49,11 @@ impl<T> ProcessQueryValue<'_, T> for T {
 // The `TypeVisitable` bound here is merely for `EarlyBinder`'s rigidness check.
 impl<'tcx, T: TypeVisitable<TyCtxt<'tcx>>> ProcessQueryValue<'tcx, ty::EarlyBinder<'tcx, T>> for T {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> ty::EarlyBinder<'tcx, T> {
+    fn process_decoded(
+        self,
+        _tcx: TyCtxt<'_>,
+        _err: impl Fn() -> crate::Never,
+    ) -> ty::EarlyBinder<'tcx, T> {
         ty::EarlyBinder::bind_no_rigid_aliases(self)
     }
 }
@@ -76,7 +74,11 @@ impl<'tcx, T: ArenaAllocatable<'tcx>> ProcessQueryValue<'tcx, &'tcx T> for Optio
 
 impl<T, E> ProcessQueryValue<'_, Result<Option<T>, E>> for Option<T> {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> Result<Option<T>, E> {
+    fn process_decoded(
+        self,
+        _tcx: TyCtxt<'_>,
+        _err: impl Fn() -> crate::Never,
+    ) -> Result<Option<T>, E> {
         Ok(self)
     }
 }
@@ -94,14 +96,22 @@ impl<'tcx, D: Decoder, T: Copy + Decodable<D>> ProcessQueryValue<'tcx, Option<&'
     for Option<DecodeIterator<T, D>>
 {
     #[inline(always)]
-    fn process_decoded(self, tcx: TyCtxt<'tcx>, _err: impl Fn() -> crate::Never) -> Option<&'tcx [T]> {
+    fn process_decoded(
+        self,
+        tcx: TyCtxt<'tcx>,
+        _err: impl Fn() -> crate::Never,
+    ) -> Option<&'tcx [T]> {
         if let Some(iter) = self { Some(&*tcx.arena.alloc_from_iter(iter)) } else { None }
     }
 }
 
 impl ProcessQueryValue<'_, Option<DeprecationEntry>> for Option<Deprecation> {
     #[inline(always)]
-    fn process_decoded(self, _tcx: TyCtxt<'_>, _err: impl Fn() -> crate::Never) -> Option<DeprecationEntry> {
+    fn process_decoded(
+        self,
+        _tcx: TyCtxt<'_>,
+        _err: impl Fn() -> crate::Never,
+    ) -> Option<DeprecationEntry> {
         self.map(DeprecationEntry::external)
     }
 }
@@ -389,7 +399,9 @@ provide! { tcx, def_id, other, cdata,
     symbol_mangling_version => { cdata.root.symbol_mangling_version }
     specialization_enabled_in => { cdata.root.specialization_enabled_in }
     reachable_non_generics => {
-        let reachable_non_generics = tcx
+
+
+        tcx
             .exported_non_generic_symbols(cdata.cnum)
             .iter()
             .filter_map(|&(exported_symbol, export_info)| {
@@ -399,9 +411,7 @@ provide! { tcx, def_id, other, cdata,
                     None
                 }
             })
-            .collect();
-
-        reachable_non_generics
+            .collect()
     }
     native_libraries => { cdata.get_native_libraries(tcx).collect() }
     foreign_modules => { cdata.get_foreign_modules(tcx).map(|m| (m.def_id, m)).collect() }
@@ -489,8 +499,8 @@ pub(in crate::rustc_metadata::rmeta) fn provide(providers: &mut Providers) {
         // sufficiently visible parent (considering modules that re-export the
         // external item to be parents).
         visible_parent_map: |tcx, ()| {
-            use hashbrown::hash_map::Entry;
             use alloc::collections::vec_deque::VecDeque;
+            use hashbrown::hash_map::Entry;
 
             let mut visible_parent_map: DefIdMap<DefId> = Default::default();
             // This is a secondary visible_parent_map, storing the DefId of
@@ -613,13 +623,14 @@ pub(in crate::rustc_metadata::rmeta) fn provide(providers: &mut Providers) {
             visible_parent_map
         },
 
-        dependency_formats: |tcx, ()| Arc::new(crate::rustc_metadata::dependency_format::calculate(tcx)),
+        dependency_formats: |tcx, ()| {
+            Arc::new(crate::rustc_metadata::dependency_format::calculate(tcx))
+        },
         has_global_allocator: |tcx, LocalCrate| CStore::from_tcx(tcx).has_global_allocator(),
         has_alloc_error_handler: |tcx, LocalCrate| CStore::from_tcx(tcx).has_alloc_error_handler(),
         postorder_cnums: |tcx, ()| {
-            tcx.arena.alloc_from_iter(
-                CStore::from_tcx(tcx).crate_dependencies_in_postorder(LOCAL_CRATE).into_iter(),
-            )
+            tcx.arena
+                .alloc_from_iter(CStore::from_tcx(tcx).crate_dependencies_in_postorder(LOCAL_CRATE))
         },
         crates: |tcx, ()| {
             // The loaded-crate list is now frozen in the query cache; stop
@@ -640,10 +651,7 @@ pub(in crate::rustc_metadata::rmeta) fn provide(providers: &mut Providers) {
         duplicate_crate_names: |tcx, c: CrateNum| {
             let name = tcx.crate_name(c);
             tcx.arena.alloc_from_iter(
-                tcx.crates(())
-                    .into_iter()
-                    .filter(|k| tcx.crate_name(**k) == name && **k != c)
-                    .map(|c| *c),
+                tcx.crates(()).iter().filter(|k| tcx.crate_name(**k) == name && **k != c).copied(),
             )
         },
         ..providers.queries

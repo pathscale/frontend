@@ -2,16 +2,13 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::string::String;
 
+use core::fmt;
 use core::hash::{Hash, Hasher};
-use eko::path::{Path, PathBuf};
-use core::{fmt};
 use eko::file;
+use eko::path::{Path, PathBuf};
 
 use crate::into_diag_arg_using_display;
 use crate::rustc_fs_util::try_canonicalize;
@@ -46,7 +43,7 @@ impl PartialEq for TargetTuple {
 
 // Use a manual implementation to ignore the path field
 impl Hash for TargetTuple {
-    fn hash<H: Hasher>(&self, state: &mut H) -> () {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             TargetTuple::TargetTuple(tuple) => {
                 0u8.hash(state);
@@ -144,9 +141,7 @@ impl TargetTuple {
         match self {
             TargetTuple::TargetTuple(tuple) => tuple.to_owned(),
             TargetTuple::TargetJson { path_for_rustdoc: _, tuple, contents: content } => {
-                let mut hasher = DefaultHashBuilder::default().build_hasher();
-                content.hash(&mut hasher);
-                let hash = hasher.finish();
+                let hash = DefaultHashBuilder::default().hash_one(content);
                 format!("{tuple}-{hash}")
             }
         }

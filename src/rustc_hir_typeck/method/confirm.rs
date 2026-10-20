@@ -1,10 +1,7 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -42,7 +39,9 @@ use crate::rustc_trait_selection::traits;
 use tracing::debug;
 
 use super::{MethodCallee, probe};
-use crate::rustc_hir_typeck::diagnostics::{SupertraitItemShadowee, SupertraitItemShadower, SupertraitItemShadowing};
+use crate::rustc_hir_typeck::diagnostics::{
+    SupertraitItemShadowee, SupertraitItemShadower, SupertraitItemShadowing,
+};
 use crate::rustc_hir_typeck::{FnCtxt, callee};
 
 pub(crate) struct ConfirmContext<'a, 'tcx> {
@@ -449,10 +448,10 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                 &mut self,
                 def_id: DefId,
             ) -> (Option<&'a hir::GenericArgs<'tcx>>, bool) {
-                if def_id == self.pick.item.def_id {
-                    if let Some(data) = self.seg.args {
-                        return (Some(data), false);
-                    }
+                if def_id == self.pick.item.def_id
+                    && let Some(data) = self.seg.args
+                {
+                    return (Some(data), false);
                 }
                 (None, false)
             }

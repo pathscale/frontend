@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use crate::rustc_span::{BytePos, DUMMY_SP, Span};
 use crate::rustc_type_ir::region_constraint::evaluate_solver_constraint;
+use alloc::vec::Vec;
 
 use super::SolverRegionConstraint;
 

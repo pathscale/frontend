@@ -19,7 +19,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -31,8 +30,8 @@ mod dyn_trait;
 pub mod errors;
 pub mod generics;
 
-use core::slice;
 use crate::assert_matches;
+use core::slice;
 
 use crate::rustc_abi::FIRST_VARIANT;
 use crate::rustc_ast::LitKind;
@@ -50,7 +49,6 @@ use crate::rustc_hir::{self as hir, AnonConst, GenericArg, GenericArgs, HirId};
 use crate::rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
 use crate::rustc_infer::traits::DynCompatibilityViolation;
 use crate::rustc_lint_defs::builtin::AMBIGUOUS_ASSOCIATED_ITEMS;
-use rustc_macros::{TypeFoldable, TypeVisitable};
 use crate::rustc_middle::middle::stability::AllowUnstable;
 use crate::rustc_middle::ty::{
     self, Const, FnSigKind, GenericArgKind, GenericArgsRef, GenericParamDefKind, LitToConstInput,
@@ -63,15 +61,20 @@ use crate::rustc_span::def_id::ModId;
 use crate::rustc_span::{DUMMY_SP, Ident, Span, kw, sym};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
 use crate::rustc_trait_selection::traits::{self, FulfillmentError};
+use rustc_macros::{TypeFoldable, TypeVisitable};
 use tracing::{debug, instrument};
 
 use crate::rustc_hir_analysis::check::check_abi;
 use crate::rustc_hir_analysis::check_c_variadic_abi;
-use crate::rustc_hir_analysis::diagnostics::{self, BadReturnTypeNotation, NoFieldOnType, NoVariantNamed};
+use crate::rustc_hir_analysis::diagnostics::{
+    self, BadReturnTypeNotation, NoFieldOnType, NoVariantNamed,
+};
 use crate::rustc_hir_analysis::hir_ty_lowering::errors::{
     GenericsArgsErrExtend, eq_ctxt_suggestion_span, prohibit_assoc_item_constraint,
 };
-use crate::rustc_hir_analysis::hir_ty_lowering::generics::{check_generic_arg_count, lower_generic_args};
+use crate::rustc_hir_analysis::hir_ty_lowering::generics::{
+    check_generic_arg_count, lower_generic_args,
+};
 use crate::rustc_hir_analysis::middle::resolve_bound_vars as rbv;
 
 /// The context in which an implied bound is being added to a item being lowered (i.e. a sizedness
@@ -757,10 +760,10 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             ) -> ty::GenericArg<'tcx> {
                 let tcx = self.lowerer.tcx();
 
-                if let Err(incorrect) = self.incorrect_args {
-                    if incorrect.invalid_args.contains(&(param.index as usize)) {
-                        return param.to_error(tcx);
-                    }
+                if let Err(incorrect) = self.incorrect_args
+                    && incorrect.invalid_args.contains(&(param.index as usize))
+                {
+                    return param.to_error(tcx);
                 }
 
                 let handle_ty_args = |has_default, ty: &hir::Ty<'_>| {
@@ -822,10 +825,10 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             ) -> ty::GenericArg<'tcx> {
                 let tcx = self.lowerer.tcx();
 
-                if let Err(incorrect) = self.incorrect_args {
-                    if incorrect.invalid_args.contains(&(param.index as usize)) {
-                        return param.to_error(tcx);
-                    }
+                if let Err(incorrect) = self.incorrect_args
+                    && incorrect.invalid_args.contains(&(param.index as usize))
+                {
+                    return param.to_error(tcx);
                 }
                 match param.kind {
                     GenericParamDefKind::Lifetime => {
@@ -938,13 +941,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             _ => return None,
         };
 
-        Some(self.lower_mono_trait_ref(
-            trait_ref.path.span,
-            trait_def_id,
-            self_ty,
-            segment,
-            true,
-        ))
+        Some(self.lower_mono_trait_ref(trait_ref.path.span, trait_def_id, self_ty, segment, true))
     }
 
     /// Lower a polymorphic trait reference given a self type into `bounds`.
@@ -1112,14 +1109,16 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     }
                     (None, _) | (_, false) => (Some(tcx.def_span(trait_def_id)), None, ""),
                 };
-            self.dcx().emit_err(crate::rustc_hir_analysis::diagnostics::ConstBoundForNonConstTrait {
-                span,
-                modifier: constness.as_str(),
-                def_span,
-                trait_name: tcx.def_path_str(trait_def_id),
-                suggestion,
-                suggestion_pre,
-            });
+            self.dcx().emit_err(
+                crate::rustc_hir_analysis::diagnostics::ConstBoundForNonConstTrait {
+                    span,
+                    modifier: constness.as_str(),
+                    def_span,
+                    trait_name: tcx.def_path_str(trait_def_id),
+                    suggestion,
+                    suggestion_pre,
+                },
+            );
         } else {
             match predicate_filter {
                 // This is only concerned with trait predicates.
@@ -1315,7 +1314,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         let mut supertraits: SsoHashSet<_> =
             traits::supertrait_def_ids(self.tcx(), child_trait.def_id()).collect();
 
-        let mut remaining_candidates: Vec<_> = matching_candidates[1..].iter().copied().collect();
+        let mut remaining_candidates: Vec<_> = matching_candidates[1..].to_vec();
         while !remaining_candidates.is_empty() {
             let mut made_progress = false;
             let mut next_round = vec![];
@@ -1636,6 +1635,10 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
     }
 
     /// Resolve a [type-relative](hir::QPath::TypeRelative) (and type-level) path.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "HIR analysis helper keeps its established context arguments across compiler call sites."
+    )]
     fn resolve_type_relative_path(
         &self,
         self_ty: Ty<'tcx>,
@@ -1727,7 +1730,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     // with the inherent_associated_types feature gate since it relies on the
                     // same machinery and has similar rough edges.
                     return Err(feature_err(
-                        &tcx.sess,
+                        tcx.sess,
                         sym::inherent_associated_types,
                         span,
                         "inherent associated types are unstable",
@@ -1761,8 +1764,8 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
 
         // FIXME(#142006): Don't eagerly error here, there might be applicable trait candidates.
         let InherentAssocCandidate { impl_, assoc_item, scope: def_scope } =
-            match &applicable_candidates[..] {
-                &[] => Err(self.report_unresolved_inherent_assoc_item(
+            match applicable_candidates[..] {
+                [] => Err(self.report_unresolved_inherent_assoc_item(
                     name,
                     self_ty,
                     candidates,
@@ -1771,9 +1774,9 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     assoc_tag,
                 )),
 
-                &[applicable_candidate] => Ok(applicable_candidate),
+                [applicable_candidate] => Ok(applicable_candidate),
 
-                &[_, ..] => Err(self.report_ambiguous_inherent_assoc_item(
+                [_, ..] => Err(self.report_ambiguous_inherent_assoc_item(
                     name,
                     candidates.into_iter().map(|cand| cand.assoc_item).collect(),
                     span,
@@ -2020,7 +2023,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
     ) -> Result<(), ErrorGuaranteed> {
         let args_visitors = segments.clone().flat_map(|segment| segment.args().args);
         let mut result = Ok(());
-        if let Some(_) = args_visitors.clone().next() {
+        if args_visitors.clone().next().is_some() {
             result = Err(self.report_prohibited_generic_args(
                 segments.clone(),
                 args_visitors,
@@ -2259,7 +2262,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     path.segments.iter().enumerate().filter_map(|(index, seg)| {
                         if !indices.contains(&index) { Some(seg) } else { None }
                     }),
-                    GenericsArgsErrExtend::DefVariant(&path.segments),
+                    GenericsArgsErrExtend::DefVariant(path.segments),
                 );
 
                 let &GenericPathSegment(def_id, index) = generic_segments.last().unwrap();
@@ -2338,7 +2341,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
             }
             Res::Def(..) => {
                 assert_eq!(
-                    path.segments.get(0).map(|seg| seg.ident.name),
+                    path.segments.first().map(|seg| seg.ident.name),
                     Some(kw::SelfUpper),
                     "only expected incorrect resolution for `Self`"
                 );
@@ -2739,17 +2742,16 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
         let variant_did = match qpath {
             hir::QPath::Resolved(maybe_qself, path) => {
                 debug!(?maybe_qself, ?path);
-                let variant_did = match path.res {
+
+                match path.res {
                     Res::Def(DefKind::Variant | DefKind::Struct, did) => did,
                     _ => return non_adt_or_variant_res(),
-                };
-
-                variant_did
+                }
             }
             hir::QPath::TypeRelative(hir_self_ty, segment) => {
                 debug!(?hir_self_ty, ?segment);
 
-                let res_def_id = match opt_res {
+                match opt_res {
                     Ok(r)
                         if matches!(
                             tcx.def_kind(r.def_id()),
@@ -2760,9 +2762,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     }
                     Ok(_) => return non_adt_or_variant_res(),
                     Err(e) => return ty::Const::new_error(tcx, e),
-                };
-
-                res_def_id
+                }
             }
         };
 
@@ -2939,7 +2939,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     path.segments.iter().enumerate().filter_map(|(index, seg)| {
                         if !indices.contains(&index) { Some(seg) } else { None }
                     }),
-                    GenericsArgsErrExtend::DefVariant(&path.segments),
+                    GenericsArgsErrExtend::DefVariant(path.segments),
                 );
 
                 let parent_did = tcx.parent(did);
@@ -2969,7 +2969,7 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                     path.segments.iter().enumerate().filter_map(|(index, seg)| {
                         if !indices.contains(&index) { Some(seg) } else { None }
                     }),
-                    GenericsArgsErrExtend::DefVariant(&path.segments),
+                    GenericsArgsErrExtend::DefVariant(path.segments),
                 );
 
                 let parent_did = tcx.parent(did);
@@ -3350,11 +3350,9 @@ impl<'tcx> dyn HirTyLowerer<'tcx> + '_ {
                         .flat_map(|imp| {
                             tcx.associated_items(*imp).filter_by_name_unhygienic(segment.ident.name)
                         })
-                        .filter(|assoc| {
+                        .find(|assoc| {
                             matches!(assoc.kind, ty::AssocKind::Fn { has_self: false, .. })
-                        })
-                        .next()
-                {
+                        }) {
                     // `let x: S::new(valid_in_ty_ctxt);` -> `let x = S::new(valid_in_ty_ctxt);`
                     let mut err = tcx.dcx().struct_span_err(
                         hir_ty.span,

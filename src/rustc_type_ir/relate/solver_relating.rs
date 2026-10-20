@@ -1,5 +1,5 @@
 #[allow(unused_imports)]
-use {alloc::vec::Vec};
+use alloc::vec::Vec;
 use tracing::{debug, instrument};
 
 use self::combine::{PredicateEmittingRelation, super_combine_consts, super_combine_tys};
@@ -10,6 +10,10 @@ use crate::rustc_type_ir::solve::{Goal, VisibleForLeakCheck};
 use crate::rustc_type_ir::{self as ty, InferCtxtLike, Interner, Region};
 
 pub trait RelateExt: InferCtxtLike {
+    #[expect(
+        clippy::type_complexity,
+        reason = "the result returns generated goals with their relation error"
+    )]
     fn relate<T: Relate<Self::Interner>>(
         &self,
         param_env: <Self::Interner as Interner>::ParamEnv,

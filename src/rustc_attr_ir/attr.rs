@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::fmt;
 
 use crate::rustc_ast::attr::AttributeExt;
@@ -8,8 +8,8 @@ use crate::rustc_ast::token::DocFragmentKind;
 use crate::rustc_ast::{AttrStyle, DelimArgs, MetaItemInner, MetaItemLit, ast, join_path_idents};
 use crate::rustc_data_structures::stable_hash::{StableHash, StableHashCtxt, StableHasher};
 use crate::rustc_error_messages::{DiagArgValue, IntoDiagArg};
-use rustc_macros::{Decodable, Encodable, StableHash};
 use crate::rustc_span::{AttrId, DUMMY_SP, Ident, Span, Symbol, sym};
+use rustc_macros::{Decodable, Encodable, StableHash};
 use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
@@ -111,7 +111,7 @@ pub enum Attribute {
 impl Attribute {
     pub fn get_normal_item(&self) -> &AttrItem {
         match &self {
-            Attribute::Unparsed(normal) => &normal,
+            Attribute::Unparsed(normal) => normal,
             _ => panic!("unexpected parsed attribute"),
         }
     }

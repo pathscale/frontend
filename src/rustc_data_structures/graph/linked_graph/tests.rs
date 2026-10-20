@@ -1,12 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use tracing::debug;
 
@@ -41,7 +35,7 @@ fn create_graph() -> TestGraph {
     graph.add_edge(e, c, "EC");
     graph.add_edge(f, b, "FB");
 
-    return graph;
+    graph
 }
 
 #[test]
@@ -81,13 +75,10 @@ fn test_adjacent_edges<N: PartialEq + Debug, E: PartialEq + Debug>(
             "counter={:?} expected={:?} edge_index={:?} edge={:?}",
             counter, expected_incoming[counter], edge_index, edge
         );
-        match &expected_incoming[counter] {
-            (e, n) => {
-                assert!(e == &edge.data);
-                assert!(n == graph.node_data(edge.source()));
-                assert!(start_index == edge.target);
-            }
-        }
+        let (e, n) = &expected_incoming[counter];
+        assert!(e == &edge.data);
+        assert!(n == graph.node_data(edge.source()));
+        assert!(start_index == edge.target);
         counter += 1;
     }
     assert_eq!(counter, expected_incoming.len());
@@ -99,13 +90,10 @@ fn test_adjacent_edges<N: PartialEq + Debug, E: PartialEq + Debug>(
             "counter={:?} expected={:?} edge_index={:?} edge={:?}",
             counter, expected_outgoing[counter], edge_index, edge
         );
-        match &expected_outgoing[counter] {
-            (e, n) => {
-                assert!(e == &edge.data);
-                assert!(start_index == edge.source);
-                assert!(n == graph.node_data(edge.target));
-            }
-        }
+        let (e, n) = &expected_outgoing[counter];
+        assert!(e == &edge.data);
+        assert!(start_index == edge.source);
+        assert!(n == graph.node_data(edge.target));
         counter += 1;
     }
     assert_eq!(counter, expected_outgoing.len());

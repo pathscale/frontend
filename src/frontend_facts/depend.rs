@@ -16,14 +16,14 @@ use crate::rustc_ast::{
     self as ast, Arm, BinOpKind, Block, Expr, ExprKind, Fn, Item, ItemKind, LocalKind, ModKind,
     Mutability, Pat, PatKind, StmtKind,
 };
-use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_errors::DiagCtxt;
+use crate::rustc_errors::plain_emitter::PlainEmitter;
 use crate::rustc_parse::lexer::StripTokens;
 use crate::rustc_parse::new_parser_from_source_str;
 use crate::rustc_session::parse::ParseSess;
+use crate::rustc_span::SourceFile;
 use crate::rustc_span::edition::Edition;
 use crate::rustc_span::fatal_error::catch_fatal_errors;
-use crate::rustc_span::SourceFile;
 use crate::rustc_span::source_map::{FilePathMapping, SourceMap};
 use crate::rustc_span::{BytePos, FileName, Span, create_session_if_not_set_then};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,9 @@ pub enum Dependency {
         /// Read occurrence that contributes this binding to the dependency.
         occurrence: TextRange,
     },
-    Unknown { why: String },
+    Unknown {
+        why: String,
+    },
 }
 
 /// A branch condition that affects an outgoing value.
@@ -165,10 +167,7 @@ pub struct FunctionDependence {
 ///
 /// Parsing errors, a missing function, and an ambiguous function name are returned as messages.
 /// The analysis itself runs over parser output only; it does not resolve paths or expand macros.
-pub fn dependence(
-    source: &str,
-    function_name: &str,
-) -> Result<FunctionDependence, Vec<String>> {
+pub fn dependence(source: &str, function_name: &str) -> Result<FunctionDependence, Vec<String>> {
     assert!(
         crate::unwind_janky::unwinding_is_enabled(),
         "dependence needs panic=unwind and a catcher installed through unwind_janky::install_catcher"
@@ -238,9 +237,7 @@ fn parse_and_analyze(
                 let mut analyzer = Analyzer::new(source, &file, function_name);
                 Ok(analyzer.run(function))
             }
-            _ => Err(alloc::vec![format!(
-                "error: function name `{function_name}` is ambiguous"
-            )]),
+            _ => Err(alloc::vec![format!("error: function name `{function_name}` is ambiguous")]),
         }
     })
 }
@@ -492,25 +489,20 @@ impl<'a> Analyzer<'a> {
     fn run(&mut self, function: &Fn) -> FunctionDependence {
         let mut state = State::live();
         for param in &function.sig.decl.inputs {
-            self.bind_pattern(
-                &param.pat,
-                VariableKind::Parameter,
-                &Value::default(),
-                &mut state,
-            );
+            self.bind_pattern(&param.pat, VariableKind::Parameter, &Value::default(), &mut state);
         }
         if let Some(body) = &function.body {
             let value = self.analyze_block(body, &mut state, &Vec::new());
-            if state.reachable {
-                if let Some(ast::Stmt { kind: StmtKind::Expr(tail), .. }) = body.stmts.last() {
-                    self.record_exit(
-                        ExitKind::Tail,
-                        tail.span,
-                        Some(self.text(tail.span)),
-                        &value,
-                        &BTreeSet::new(),
-                    );
-                }
+            if state.reachable
+                && let Some(ast::Stmt { kind: StmtKind::Expr(tail), .. }) = body.stmts.last()
+            {
+                self.record_exit(
+                    ExitKind::Tail,
+                    tail.span,
+                    Some(self.text(tail.span)),
+                    &value,
+                    &BTreeSet::new(),
+                );
             }
         }
         self.finish()
@@ -562,10 +554,8 @@ impl<'a> Analyzer<'a> {
             .map(|(id, binding)| {
                 let assigned = if self.assigned.contains(&id) {
                     AssignmentFact::Ever
-                } else if let Some(why) = self
-                    .assignment_unknowns
-                    .get(&id)
-                    .and_then(|reasons| reasons.iter().next())
+                } else if let Some(why) =
+                    self.assignment_unknowns.get(&id).and_then(|reasons| reasons.iter().next())
                 {
                     AssignmentFact::Unknown { why: why.clone() }
                 } else {
@@ -691,7 +681,9 @@ impl<'a> Analyzer<'a> {
         match &local.kind {
             LocalKind::Decl => {
                 let mut value = Value::default();
-                value.unknowns.insert("local has no initializer or reaching assignment".to_string());
+                value
+                    .unknowns
+                    .insert("local has no initializer or reaching assignment".to_string());
                 self.bind_pattern(&local.pat, VariableKind::Local, &value, state);
             }
             LocalKind::Init(initializer) => {
@@ -714,7 +706,12 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn analyze_expr(&mut self, expression: &Expr, state: &mut State, active: &[ControlKey]) -> Value {
+    fn analyze_expr(
+        &mut self,
+        expression: &Expr,
+        state: &mut State,
+        active: &[ControlKey],
+    ) -> Value {
         if !state.reachable {
             return Value::default();
         }
@@ -750,16 +747,16 @@ impl<'a> Analyzer<'a> {
                     let mut carried = argument_value.clone();
                     carried.literal_facts.clear();
                     value.merge(&carried);
-                    value.literal_facts.extend(
-                        argument_value.literal_facts.iter().map(|literal| {
+                    value.literal_facts.extend(argument_value.literal_facts.iter().map(
+                        |literal| {
                             let mut literal = literal.clone();
                             literal.via_unresolved_call = true;
                             if literal.compared_with.is_none() {
                                 literal.compared_with = Some(callee_text.clone());
                             }
                             literal
-                        }),
-                    );
+                        },
+                    ));
                 }
                 value
             }
@@ -797,7 +794,7 @@ impl<'a> Analyzer<'a> {
                 }
                 value.unknowns.insert(format!(
                     "method `{}` is unresolved because names are not resolved",
-                    call.seg.ident.name.to_string()
+                    call.seg.ident.name
                 ));
                 value
             }
@@ -828,22 +825,22 @@ impl<'a> Analyzer<'a> {
                         let condition = self.text(expression.span);
                         let right_text = self.text(right.span);
                         let left_text = self.text(left.span);
-                        value.literal_facts.extend(
-                            left_value.literal_facts.iter().map(|literal| {
+                        value.literal_facts.extend(left_value.literal_facts.iter().map(
+                            |literal| {
                                 let mut literal = literal.clone();
                                 literal.compared_with = Some(right_text.clone());
                                 literal.condition = Some(condition.clone());
                                 literal
-                            }),
-                        );
-                        value.literal_facts.extend(
-                            right_value.literal_facts.iter().map(|literal| {
+                            },
+                        ));
+                        value.literal_facts.extend(right_value.literal_facts.iter().map(
+                            |literal| {
                                 let mut literal = literal.clone();
                                 literal.compared_with = Some(left_text.clone());
                                 literal.condition = Some(condition.clone());
                                 literal
-                            }),
-                        );
+                            },
+                        ));
                     }
                 }
                 value
@@ -952,7 +949,7 @@ impl<'a> Analyzer<'a> {
                 if let Some(label) = label {
                     self.record_unknown(
                         expression.span,
-                        format!("labeled break `{}` target is unresolved", label.ident.name.to_string()),
+                        format!("labeled break `{}` target is unresolved", label.ident.name),
                     );
                 } else if let Some(flow) = self.loops.last_mut() {
                     flow.merge_break(state, &value);
@@ -966,22 +963,31 @@ impl<'a> Analyzer<'a> {
                 if let Some(label) = label {
                     self.record_unknown(
                         expression.span,
-                        format!("labeled continue `{}` target is unresolved", label.ident.name.to_string()),
+                        format!("labeled continue `{}` target is unresolved", label.ident.name),
                     );
                 } else if let Some(flow) = self.loops.last_mut() {
                     flow.merge_continue(state);
                 } else {
-                    self.record_unknown(expression.span, "continue target is unresolved".to_string());
+                    self.record_unknown(
+                        expression.span,
+                        "continue target is unresolved".to_string(),
+                    );
                 }
                 state.reachable = false;
                 Value::default()
             }
             ExprKind::TryBlock(_, _) | ExprKind::Closure(_) | ExprKind::Gen(_, _, _, _) => {
-                self.record_unknown(expression.span, "nested function body is not analyzed".to_string());
+                self.record_unknown(
+                    expression.span,
+                    "nested function body is not analyzed".to_string(),
+                );
                 unknown_value("nested function body is not analyzed".to_string())
             }
             ExprKind::InlineAsm(_) | ExprKind::OffsetOf(_, _) | ExprKind::Yield(_) => {
-                self.record_unknown(expression.span, "expression operands are not represented as local reads".to_string());
+                self.record_unknown(
+                    expression.span,
+                    "expression operands are not represented as local reads".to_string(),
+                );
                 unknown_value("expression operands are not represented as local reads".to_string())
             }
             ExprKind::Yeet(value) => {
@@ -990,15 +996,23 @@ impl<'a> Analyzer<'a> {
                     .map(|value| self.analyze_expr(value, state, active))
                     .unwrap_or_default();
                 result.unknowns.insert("yeet exit semantics are not analyzed".to_string());
-                self.record_unknown(expression.span, "yeet exit semantics are not analyzed".to_string());
+                self.record_unknown(
+                    expression.span,
+                    "yeet exit semantics are not analyzed".to_string(),
+                );
                 result
             }
-            ExprKind::FormatArgs(_) | ExprKind::ConstBlock(_) | ExprKind::UnsafeBinderCast(_, _, _) => {
+            ExprKind::FormatArgs(_)
+            | ExprKind::ConstBlock(_)
+            | ExprKind::UnsafeBinderCast(_, _, _) => {
                 self.record_unknown(expression.span, "expression form is not modeled".to_string());
                 unknown_value("expression form is not modeled".to_string())
             }
             ExprKind::Err(_) | ExprKind::Dummy => {
-                self.record_unknown(expression.span, "parser did not produce a complete expression".to_string());
+                self.record_unknown(
+                    expression.span,
+                    "parser did not produce a complete expression".to_string(),
+                );
                 unknown_value("parser did not produce a complete expression".to_string())
             }
         }
@@ -1133,7 +1147,7 @@ impl<'a> Analyzer<'a> {
             self.bind_pattern(pattern, VariableKind::Local, &condition_value, &mut then_state);
         }
         let then_value = self.analyze_block(then_block, &mut then_state, &branch_active);
-        if let Some(_) = let_pattern {
+        if let_pattern.is_some() {
             self.scopes.pop();
         }
 
@@ -1164,8 +1178,7 @@ impl<'a> Analyzer<'a> {
         let mut break_value = Value::default();
         let loop_key = self.control_key(expression.span, ControlKind::Loop);
         let condition_text = self.text(condition.span);
-        let mut condition_state = entry.clone();
-        loop {
+        let condition_state = loop {
             let mut test_state = head.clone();
             let condition_value = match &condition.kind {
                 ExprKind::Let(_, value, _, _) => self.analyze_expr(value, &mut test_state, active),
@@ -1186,7 +1199,6 @@ impl<'a> Analyzer<'a> {
                 self.scopes.pop();
             }
             let flow = self.loops.pop().unwrap_or_default();
-            condition_state = test_state;
             if let Some(breaks) = flow.breaks {
                 match &mut after_loop {
                     Some(existing) => existing.merge(&breaks),
@@ -1203,10 +1215,10 @@ impl<'a> Analyzer<'a> {
                 next.merge(&backedge);
             }
             if next == head {
-                break;
+                break test_state;
             }
             head = next;
-        }
+        };
         match &mut after_loop {
             Some(existing) => existing.merge(&condition_state),
             None => after_loop = Some(condition_state),
@@ -1317,11 +1329,8 @@ impl<'a> Analyzer<'a> {
         let mut result = Value::default();
         for arm in arms {
             let key = self.control_key(arm.span, ControlKind::Match);
-            let condition = format!(
-                "{} matches {}",
-                self.text(scrutinee.span),
-                self.text(arm.pat.span)
-            );
+            let condition =
+                format!("{} matches {}", self.text(scrutinee.span), self.text(arm.pat.span));
             let mut control_value = scrutinee_value.clone();
             control_value.literal_facts.extend(self.pattern_literal_facts(
                 &arm.pat,
@@ -1414,14 +1423,22 @@ impl<'a> Analyzer<'a> {
             ExprKind::Paren(inner) => self.assignment_target(inner, state, active),
             ExprKind::Unary(ast::UnOp::Deref, pointer) => {
                 let mut value = self.analyze_expr(pointer, state, active);
-                value.unknowns.insert("assignment through a dereference has an unresolved target".to_string());
-                self.record_unknown(place.span, "assignment through a dereference has an unresolved target".to_string());
+                value.unknowns.insert(
+                    "assignment through a dereference has an unresolved target".to_string(),
+                );
+                self.record_unknown(
+                    place.span,
+                    "assignment through a dereference has an unresolved target".to_string(),
+                );
                 (None, value, false)
             }
             _ => {
                 let mut value = self.analyze_expr(place, state, active);
                 value.unknowns.insert("assignment target form is not modeled".to_string());
-                self.record_unknown(place.span, "assignment target form is not modeled".to_string());
+                self.record_unknown(
+                    place.span,
+                    "assignment target form is not modeled".to_string(),
+                );
                 (None, value, false)
             }
         }
@@ -1545,7 +1562,10 @@ impl<'a> Analyzer<'a> {
                 self.bind_pattern(pattern, kind, value, state);
             }
             PatKind::Path(_, path) => {
-                self.record_unknown(pattern.span, format!("pattern path `{}` is unresolved", self.text(path.span)));
+                self.record_unknown(
+                    pattern.span,
+                    format!("pattern path `{}` is unresolved", self.text(path.span)),
+                );
             }
             PatKind::MacCall(_) => {
                 self.record_unknown(pattern.span, "pattern macro expansion is opaque".to_string());
@@ -1553,12 +1573,16 @@ impl<'a> Analyzer<'a> {
             }
             PatKind::Expr(expression) => {
                 if self.literal_fact(expression, None, None).is_none() {
-                    self.record_unknown(expression.span, "constant pattern resolution is unavailable".to_string());
+                    self.record_unknown(
+                        expression.span,
+                        "constant pattern resolution is unavailable".to_string(),
+                    );
                 }
             }
             PatKind::Range(_, _, _) => {}
             PatKind::Guard(pattern, _) => self.bind_pattern(pattern, kind, value, state),
-            PatKind::Missing | PatKind::Wild | PatKind::Rest | PatKind::Never | PatKind::Err(_) => {}
+            PatKind::Missing | PatKind::Wild | PatKind::Rest | PatKind::Never | PatKind::Err(_) => {
+            }
         }
     }
 
@@ -1568,7 +1592,8 @@ impl<'a> Analyzer<'a> {
 
     fn opaque_macro(&mut self, span: Span, state: &mut State) {
         self.record_unknown(span, "macro expansion is opaque".to_string());
-        let visible: BTreeSet<usize> = self.scopes.iter().flat_map(|scope| scope.values().copied()).collect();
+        let visible: BTreeSet<usize> =
+            self.scopes.iter().flat_map(|scope| scope.values().copied()).collect();
         for id in visible {
             if self.bindings.get(id).is_some_and(|binding| binding.mutable) {
                 let reason = "an opaque macro may assign this binding".to_string();
@@ -1585,7 +1610,8 @@ impl<'a> Analyzer<'a> {
 
     fn mark_macro_assignments(&mut self, span: Span) {
         self.record_unknown(span, "macro expansion is opaque".to_string());
-        let visible: BTreeSet<usize> = self.scopes.iter().flat_map(|scope| scope.values().copied()).collect();
+        let visible: BTreeSet<usize> =
+            self.scopes.iter().flat_map(|scope| scope.values().copied()).collect();
         for id in visible {
             if self.bindings.get(id).is_some_and(|binding| binding.mutable)
                 && !self.assigned.contains(&id)
@@ -1611,9 +1637,6 @@ impl<'a> Analyzer<'a> {
 
     fn text(&self, span: Span) -> String {
         let range = self.range(span);
-        self.source
-            .get(range.start as usize..range.end as usize)
-            .unwrap_or("")
-            .to_string()
+        self.source.get(range.start as usize..range.end as usize).unwrap_or("").to_string()
     }
 }

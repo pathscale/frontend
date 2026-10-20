@@ -3,11 +3,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 #[macro_use]
@@ -23,16 +20,16 @@ mod value;
 // slice as they go. `eko` has no equivalent trait and `core::fmt::Write` is a `&str`
 // sink, so replacing these means writing the byte copy by hand. Left as one piece because
 // converting the `io::Error` in their signatures alone would break the `?` on the calls.
+use core::fmt;
 use core::num::NonZero;
-use core::{fmt};
 
 use crate::rustc_abi::{AddressSpace, Endian, HasDataLayout};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::sharded::ShardedHashMap;
 use crate::rustc_data_structures::sync::{AtomicU64, Lock};
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use crate::rustc_serialize::{Decodable, Encodable};
+use rustc_macros::{StableHash, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
 use tracing::{debug, trace};
 // Also make the error macros available from this module.
 pub use {
@@ -48,9 +45,9 @@ pub use self::allocation::{
 pub use self::error::{
     BadBytesAccess, CheckAlignMsg, CheckInAllocMsg, ErrorHandled, EvalStaticInitializerRawResult,
     EvalToAllocationRawResult, EvalToConstValueResult, EvalToValTreeResult, InterpErrorInfo,
-    InterpErrorKind, InterpResult, InterpResultExt, InvalidMetaKind, InvalidProgramInfo, MachineStopType,
-    Misalignment, ReportedErrorInfo, ResourceExhaustionInfo, UndefinedBehaviorInfo,
-    UnsupportedOpInfo, ValTreeCreationError, interp_ok,
+    InterpErrorKind, InterpResult, InterpResultExt, InvalidMetaKind, InvalidProgramInfo,
+    MachineStopType, Misalignment, ReportedErrorInfo, ResourceExhaustionInfo,
+    UndefinedBehaviorInfo, UnsupportedOpInfo, ValTreeCreationError, interp_ok,
 };
 pub use self::pointer::{CtfeProvenance, Pointer, PointerArithmetic, Provenance};
 pub use self::value::Scalar;
@@ -378,10 +375,10 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Reserves a new ID *if* this allocation has not been dedup-reserved before.
     /// Should not be used for mutable memory.
     fn reserve_and_set_dedup(self, alloc: GlobalAlloc<'tcx>, salt: usize) -> AllocId {
-        if let GlobalAlloc::Memory(mem) = alloc {
-            if mem.inner().mutability.is_mut() {
-                bug!("trying to dedup-reserve mutable memory");
-            }
+        if let GlobalAlloc::Memory(mem) = alloc
+            && mem.inner().mutability.is_mut()
+        {
+            bug!("trying to dedup-reserve mutable memory");
         }
         let alloc_salt = (alloc, salt);
         // Locking this *before* `to_alloc` also to ensure correct lock order.
@@ -533,7 +530,8 @@ pub fn read_target_uint(endianness: Endian, source: &[u8]) -> Result<u128, Targe
     }
     // Only the payload is read into the u128, not all sixteen bytes. As above, the slice
     // `Read` impl that advanced `source` is replaced by an explicit copy.
-    let uint = match endianness {
+
+    match endianness {
         Endian::Little => {
             buf[..n].copy_from_slice(source);
             Ok(u128::from_le_bytes(buf))
@@ -542,6 +540,5 @@ pub fn read_target_uint(endianness: Endian, source: &[u8]) -> Result<u128, Targe
             buf[16 - n..].copy_from_slice(source);
             Ok(u128::from_be_bytes(buf))
         }
-    };
-    uint
+    }
 }

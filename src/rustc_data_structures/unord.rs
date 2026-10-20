@@ -5,18 +5,13 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::borrow::{Borrow, BorrowMut};
-use hashbrown::hash_map::{Entry, OccupiedError};
 use core::hash::Hash;
 use core::iter::{Product, Sum};
 use core::ops::Index;
+use hashbrown::hash_map::{Entry, OccupiedError};
 
 use rustc_macros::{Decodable_NoContext, Encodable_NoContext};
 
@@ -309,19 +304,19 @@ impl<V: Eq + Hash> UnordSet<V> {
     }
 
     #[inline]
-    pub fn contains<Q: ?Sized>(&self, v: &Q) -> bool
+    pub fn contains<Q>(&self, v: &Q) -> bool
     where
         V: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.inner.contains(v)
     }
 
     #[inline]
-    pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> bool
+    pub fn remove<Q>(&mut self, k: &Q) -> bool
     where
         V: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.inner.remove(k)
     }
@@ -521,15 +516,19 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
     }
 
     #[inline]
-    pub fn try_insert(&mut self, k: K, v: V) -> Result<&mut V, OccupiedError<'_, K, V, FxBuildHasher>> {
+    pub fn try_insert(
+        &mut self,
+        k: K,
+        v: V,
+    ) -> Result<&mut V, OccupiedError<'_, K, V, FxBuildHasher>> {
         self.inner.try_insert(k, v)
     }
 
     #[inline]
-    pub fn contains_key<Q: ?Sized>(&self, k: &Q) -> bool
+    pub fn contains_key<Q>(&self, k: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.inner.contains_key(k)
     }
@@ -545,28 +544,28 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
     }
 
     #[inline]
-    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    pub fn get<Q>(&self, k: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.inner.get(k)
     }
 
     #[inline]
-    pub fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    pub fn get_mut<Q>(&mut self, k: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.inner.get_mut(k)
     }
 
     #[inline]
-    pub fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
+    pub fn remove<Q>(&mut self, k: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: ?Sized + Hash + Eq,
     {
         self.inner.remove(k)
     }
@@ -714,6 +713,11 @@ impl<V> UnordBag<V> {
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
     #[inline]

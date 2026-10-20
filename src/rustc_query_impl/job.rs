@@ -1,6 +1,6 @@
-use core::fmt::Write as _;
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::Write as _;
 use core::ops::ControlFlow;
 use core::{iter, mem};
 
@@ -138,7 +138,7 @@ pub(crate) fn find_cycle_in_stack<'tcx>(
 ) -> QueryCycle<'tcx> {
     // Find the waitee amongst `current_job` parents.
     let mut frames = Vec::new();
-    let mut current_job = Option::clone(current_job);
+    let mut current_job = *current_job;
 
     while let Some(job) = current_job {
         let info = &job_map.map[&job];
@@ -226,11 +226,7 @@ fn abstracted_waiters_of(job_map: &QueryJobMap<'_>, query: QueryJobId) -> Vec<Ab
     };
 
     // Add the parent which is a non-resumable waiter since it's on the same stack
-    result.push(AbstractedWaiter {
-        span: info.job.span,
-        parent: info.job.parent,
-        resumable: None,
-    });
+    result.push(AbstractedWaiter { span: info.job.span, parent: info.job.parent, resumable: None });
 
     // Add the explicit waiters which use condvars and are resumable. A latch that has
     // completed reads as an empty list rather than panicking, for the same reason as above.

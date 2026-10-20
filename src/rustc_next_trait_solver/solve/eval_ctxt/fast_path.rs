@@ -13,7 +13,9 @@ use crate::rustc_type_ir::solve::{
 use crate::rustc_type_ir::{InferCtxtLike, Interner};
 
 use crate::rustc_next_trait_solver::delegate::SolverDelegate;
-use crate::rustc_next_trait_solver::solve::eval_ctxt::{RerunDecision, should_rerun_after_erased_canonicalization};
+use crate::rustc_next_trait_solver::solve::eval_ctxt::{
+    RerunDecision, should_rerun_after_erased_canonicalization,
+};
 use crate::rustc_next_trait_solver::solve::{GoalEvaluation, HasChanged};
 
 #[derive(Debug, Clone, Copy)]

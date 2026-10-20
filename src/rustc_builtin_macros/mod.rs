@@ -24,11 +24,6 @@
 // `thread_local!` and `println!` name no path. Under `#![no_std]` they resolve through `alloc`
 // and `eko` instead, which is why those imports appear at the top of every file here.
 // ---------------------------------------------------------------------------------------------
-#[macro_use]
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -36,8 +31,8 @@ use alloc::sync::Arc;
 
 use crate::rustc_expand::base::{MacroExpanderFn, ResolverExpand, SyntaxExtensionKind};
 use crate::rustc_expand::proc_macro::BangProcMacro;
-use crate::rustc_span::sym;
 use crate::rustc_span::Symbol;
+use crate::rustc_span::sym;
 
 use crate::rustc_builtin_macros::deriving::*;
 
@@ -192,7 +187,8 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
 
     builtin_derive_registry!(register_derive);
 
-    let client = crate::rustc_proc_macro::bridge::client::Client::expand1(crate::rustc_proc_macro::quote);
+    let client =
+        crate::rustc_proc_macro::bridge::client::Client::expand1(crate::rustc_proc_macro::quote);
     register(sym::quote, SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client })));
     let requires = SyntaxExtensionKind::Attr(Arc::new(contracts::ExpandRequires));
     register(sym::contracts_requires, requires);

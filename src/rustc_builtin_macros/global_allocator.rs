@@ -2,10 +2,7 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -166,8 +163,8 @@ impl AllocFnFactory<'_, '_> {
                 let layout_new = self.cx.expr_path(self.cx.path(self.span, layout_new));
                 let size = self.cx.expr_ident(self.span, size);
                 let align = self.cx.expr_ident(self.span, align);
-                let layout = self.cx.expr_call(self.span, layout_new, thin_vec![size, align]);
-                layout
+
+                self.cx.expr_call(self.span, layout_new, thin_vec![size, align])
             }
 
             AllocatorTy::Ptr => {

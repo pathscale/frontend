@@ -1,12 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_hir::attrs::CanonicalSymbol;
 use crate::rustc_hir::def_id::LocalDefId;
@@ -124,19 +120,19 @@ impl<'tcx> LateLintPass<'tcx> for RuntimeSymbols {
 
                     match item.kind {
                         ForeignItemKind::Fn(fn_sig, _idents, _generics) => {
-                            check_fn(cx, &symbol_name.name, fn_sig, did);
+                            check_fn(cx, symbol_name.name, fn_sig, did);
                         }
                         ForeignItemKind::Static(..) => {
                             // We only check static with #[linkage = "..."] attribute (see std weak! macro)
                             if cx.tcx.codegen_fn_attrs(did).import_linkage.is_some() {
-                                check_static(cx, &symbol_name.name, did, item.span);
+                                check_static(cx, symbol_name.name, did, item.span);
                             }
                         }
                         ForeignItemKind::Type => return,
                     }
                 }
             }
-            _ => return,
+            _ => (),
         }
     }
 }

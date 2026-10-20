@@ -11,10 +11,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -56,6 +52,10 @@ pub trait Annotations<N: Idx> {
     type Ann: Annotation;
     type SccIdx: Idx + Ord;
 
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "this creates the annotation for an element using accumulator state"
+    )]
     fn new(&self, element: N) -> Self::Ann;
     fn annotate_scc(&mut self, scc: Self::SccIdx, annotation: Self::Ann);
 }
@@ -231,6 +231,10 @@ where
     /// The state of each node; used during walk to record the stack
     /// and after walk to record what cycle each node ended up being
     /// in.
+    #[expect(
+        clippy::type_complexity,
+        reason = "each node stores its traversal and computed component state"
+    )]
     node_states: IndexVec<G::Node, NodeState<G::Node, A::SccIdx, A::Ann>>,
 
     /// The stack of nodes that we are visiting as part of the DFS.

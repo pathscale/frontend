@@ -5,12 +5,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing in
 // this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
 
 use core::fmt;
 use core::marker::PhantomData;
@@ -206,11 +200,10 @@ where
                 // Freeze.
                 if !borrowed_place.is_indirect()
                     && (mutability.is_mut() || !target.is_freeze(self.ccx.tcx, self.ccx.typing_env))
+                    && Q::in_any_value_of_ty(self.ccx, *target)
                 {
-                    if Q::in_any_value_of_ty(self.ccx, *target) {
-                        self.state.qualif.insert(borrowed_place.local);
-                        self.state.borrow.insert(borrowed_place.local);
-                    }
+                    self.state.qualif.insert(borrowed_place.local);
+                    self.state.borrow.insert(borrowed_place.local);
                 }
             }
 

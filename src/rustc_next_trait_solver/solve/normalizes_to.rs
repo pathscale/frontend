@@ -1,9 +1,11 @@
-use alloc::vec::Vec;
 use crate::debug_assert_matches;
+use alloc::vec::Vec;
 
 use crate::rustc_type_ir::fast_reject::DeepRejectCtxt;
 use crate::rustc_type_ir::inherent::*;
-use crate::rustc_type_ir::lang_items::{SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem};
+use crate::rustc_type_ir::lang_items::{
+    SolverAdtLangItem, SolverProjectionLangItem, SolverTraitLangItem,
+};
 use crate::rustc_type_ir::solve::{
     FetchEligibleAssocItemResponse, NoSolutionOrRerunNonErased, QueryResultOrRerunNonErased,
     RerunNonErased, RerunReason, RerunResultExt,
@@ -14,7 +16,9 @@ use crate::rustc_type_ir::{
 use tracing::instrument;
 
 use crate::rustc_next_trait_solver::delegate::SolverDelegate;
-use crate::rustc_next_trait_solver::solve::assembly::structural_traits::{self, AsyncCallableRelevantTypes};
+use crate::rustc_next_trait_solver::solve::assembly::structural_traits::{
+    self, AsyncCallableRelevantTypes,
+};
 use crate::rustc_next_trait_solver::solve::assembly::{self, Candidate};
 use crate::rustc_next_trait_solver::solve::inspect::ProbeKind;
 use crate::rustc_next_trait_solver::solve::{

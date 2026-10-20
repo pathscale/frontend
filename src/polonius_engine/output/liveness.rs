@@ -30,19 +30,18 @@ pub(super) fn compute_live_origins<T: FactTypes>(
 
     // Relations
     let var_defined_at: Relation<(T::Variable, T::Point)> = ctx.var_defined_at.into();
-    let cfg_edge_reverse: Relation<(T::Point, T::Point)> = cfg_edge
-        .iter()
-        .map(|&(point1, point2)| (point2, point1))
-        .collect();
+    let cfg_edge_reverse: Relation<(T::Point, T::Point)> =
+        cfg_edge.iter().map(|&(point1, point2)| (point2, point1)).collect();
     let use_of_var_derefs_origin: Relation<(T::Variable, T::Origin)> =
         ctx.use_of_var_derefs_origin.into();
     let drop_of_var_derefs_origin: Relation<(T::Variable, T::Origin)> =
         ctx.drop_of_var_derefs_origin.into();
-    let var_dropped_at: Relation<((T::Variable, T::Point), ())> = ctx
-        .var_dropped_at
-        .into_iter()
-        .map(|(var, point)| ((var, point), ()))
-        .collect();
+    #[expect(
+        clippy::type_complexity,
+        reason = "the relation columns preserve the variable and control-flow point domains"
+    )]
+    let var_dropped_at: Relation<((T::Variable, T::Point), ())> =
+        ctx.var_dropped_at.into_iter().map(|(var, point)| ((var, point), ())).collect();
 
     // Variables
 
@@ -126,28 +125,17 @@ pub(super) fn compute_live_origins<T: FactTypes>(
 
     let origin_live_on_entry = origin_live_on_entry.complete();
 
-    info!(
-        "compute_live_origins() completed: {} tuples",
-        origin_live_on_entry.len()
-    );
+    info!("compute_live_origins() completed: {} tuples", origin_live_on_entry.len());
 
     if output.dump_enabled {
         let var_drop_live_on_entry = var_drop_live_on_entry.complete();
         for &(var, location) in var_drop_live_on_entry.iter() {
-            output
-                .var_drop_live_on_entry
-                .entry(location)
-                .or_default()
-                .push(var);
+            output.var_drop_live_on_entry.entry(location).or_default().push(var);
         }
 
         let var_live_on_entry = var_live_on_entry.complete();
         for &(var, location) in var_live_on_entry.iter() {
-            output
-                .var_live_on_entry
-                .entry(location)
-                .or_default()
-                .push(var);
+            output.var_live_on_entry.entry(location).or_default().push(var);
         }
     }
 

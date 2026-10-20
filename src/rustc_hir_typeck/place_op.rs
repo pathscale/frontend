@@ -1,12 +1,8 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
-use alloc::vec::Vec;
 
 use crate::rustc_ast as ast;
 use crate::rustc_errors::Applicability;
@@ -14,13 +10,13 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir_analysis::autoderef::Autoderef;
 use crate::rustc_infer::infer::InferOk;
 use crate::rustc_infer::traits::{Obligation, ObligationCauseCode};
-use crate::span_bug;
 use crate::rustc_middle::ty::adjustment::{
     Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability, DerefAdjustKind,
     OverloadedDeref, PointerCoercion,
 };
 use crate::rustc_middle::ty::{self, Ty};
 use crate::rustc_span::{Span, sym};
+use crate::span_bug;
 use tracing::debug;
 
 use crate::rustc_hir_typeck::method::{MethodCallee, TreatNotYetDefinedOpaques};

@@ -1,11 +1,12 @@
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 use core::hash::Hasher;
 use core::iter;
 use core::ops::Range;
 
+use crate::bug;
 use crate::rustc_abi::{ExternAbi, Integer};
 use crate::rustc_data_structures::base_n::ToBaseN;
 use crate::rustc_data_structures::either::Either;
@@ -17,7 +18,6 @@ use crate::rustc_hir as hir;
 use crate::rustc_hir::def::CtorKind;
 use crate::rustc_hir::def_id::{CrateNum, DefId};
 use crate::rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
-use crate::bug;
 use crate::rustc_middle::ty::layout::IntegerExt;
 use crate::rustc_middle::ty::print::{Print, PrintError, Printer};
 use crate::rustc_middle::ty::{
@@ -309,7 +309,7 @@ impl<'tcx> V0SymbolMangler<'tcx> {
     }
 
     fn print_pat(&mut self, pat: ty::Pattern<'tcx>) -> Result<(), core::fmt::Error> {
-        Ok(match *pat {
+        let _: () = match *pat {
             ty::PatternKind::Range { start, end } => {
                 self.push("R");
                 self.print_const(start)?;
@@ -325,7 +325,8 @@ impl<'tcx> V0SymbolMangler<'tcx> {
                 }
                 self.push("E");
             }
-        })
+        };
+        Ok(())
     }
 }
 
@@ -750,14 +751,39 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
 
             // We may still encounter alias consts due to the printing
             // logic sometimes passing identity-substituted impl headers.
-            ty::ConstKind::Alias(_, ty::AliasConst { kind, args, .. }) => match kind {
-                ty::AliasConstKind::Projection { def_id }
-                | ty::AliasConstKind::Inherent { def_id }
-                | ty::AliasConstKind::Free { def_id }
-                | ty::AliasConstKind::Anon { def_id } => {
-                    return self.print_def_path(def_id, args);
+            ty::ConstKind::Alias(_, alias) => {
+                let def_id = alias.kind.opt_def_id().expect("constant alias definition");
+                let ct_ty =
+                    self.tcx.type_of(def_id).instantiate(self.tcx, alias.args).skip_norm_wip();
+                // A const position accepts a typed value, never a definition path.
+                // In particular, an anonymous array length is not an `NK` path.
+                if let Some((value, _)) = self.tcx.trivial_const(def_id)
+                    && let Some(integer) = value.try_to_scalar_int()
+                {
+                    let ct = ty::Const::new_value(
+                        self.tcx,
+                        ty::ValTree::from_scalar_int(self.tcx, integer),
+                        ct_ty,
+                    );
+                    return ct.print(self);
                 }
-            },
+                if alias.args.has_non_region_param() {
+                    // Identity-substituted impl headers use the v0 placeholder,
+                    // just as a bare const parameter does above.
+                    self.push("p");
+                    return Ok(());
+                }
+                let valtree = self
+                    .tcx
+                    .const_eval_resolve_for_typeck(
+                        ty::TypingEnv::fully_monomorphized(),
+                        alias,
+                        self.tcx.def_span(def_id),
+                    )
+                    .unwrap_or_else(|_| bug!("symbol_names: could not evaluate constant {ct:?}"))
+                    .unwrap_or_else(|ty| bug!("symbol_names: unsupported constant type {ty:?}"));
+                return ty::Const::new_value(self.tcx, valtree, ct_ty).print(self);
+            }
 
             ty::ConstKind::Expr(_)
             | ty::ConstKind::Infer(_)
@@ -784,8 +810,7 @@ impl<'tcx> Printer<'tcx> for V0SymbolMangler<'tcx> {
 
                 // Negative integer values are mangled using `n` as a "sign prefix".
                 if let ty::Int(ity) = ct_ty.kind() {
-                    let val =
-                        Integer::from_int_ty(&self.tcx, *ity).size().sign_extend(bits) as i128;
+                    let val = Integer::from_int_ty(&self.tcx, *ity).size().sign_extend(bits);
                     if val < 0 {
                         self.push("n");
                     }

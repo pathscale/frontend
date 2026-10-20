@@ -8,13 +8,14 @@
 //!
 //! FIXME(jdonszelmann): delete `rustc_ast/attr/mod.rs`
 
-use alloc::vec::Vec;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::fmt::{Debug, Display};
 #[cfg(debug_assertions)]
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::exp;
 use crate::rustc_ast::token::{self, Delimiter, MetaVarKind};
 use crate::rustc_ast::tokenstream::TokenStream;
 use crate::rustc_ast::{
@@ -23,7 +24,6 @@ use crate::rustc_ast::{
 use crate::rustc_ast_pretty::pprust;
 use crate::rustc_attr_ir::AttrPath;
 use crate::rustc_errors::{Applicability, Diag, PResult};
-use crate::exp;
 use crate::rustc_parse::parser::{ForceCollect, Parser, PathStyle, Recovery, token_descr};
 use crate::rustc_session::diagnostics::create_lit_error;
 use crate::rustc_session::parse::ParseSess;
@@ -60,6 +60,10 @@ impl<P: Borrow<Path>> PathParser<P> {
 
     pub fn len(&self) -> usize {
         self.0.borrow().segments.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().segments.is_empty()
     }
 
     pub fn segments_is(&self, segments: &[Symbol]) -> bool {
@@ -119,10 +123,10 @@ impl ArgParser {
         }
     }
 
-    pub fn from_attr_args<'sess>(
+    pub fn from_attr_args(
         value: &AttrArgs,
         parts: &[Symbol],
-        psess: &'sess ParseSess,
+        psess: &ParseSess,
         should_emit: ShouldEmit,
         allow_expr_metavar: AllowExprMetavar,
     ) -> Option<Self> {

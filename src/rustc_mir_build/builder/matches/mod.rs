@@ -5,15 +5,13 @@
 //! This also includes code for pattern bindings in `let` statements and
 //! function parameters.
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::string::String;
-use core::borrow::Borrow;
-use alloc::sync::Arc;
-use core::mem;
 use crate::debug_assert_matches;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::borrow::Borrow;
+use core::mem;
 
-use itertools::Itertools;
 use crate::rustc_abi::{FIRST_VARIANT, FieldIdx, VariantIdx};
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_hir::attrs::lang_items::LangItem;
@@ -26,6 +24,7 @@ use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_pattern_analysis::constructor::RangeEnd;
 use crate::rustc_pattern_analysis::rustc::{DeconstructedPat, RustcPatCtxt};
 use crate::rustc_span::{BytePos, Pos, Span, Symbol, sym};
+use itertools::Itertools;
 use tracing::{debug, instrument};
 
 use crate::rustc_mir_build::builder::ForGuard::{self, OutsideGuard, RefWithinGuard};
@@ -596,9 +595,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let source_info = self.source_info(irrefutable_pat.span);
                 self.cfg.push_fake_read(block, source_info, FakeReadCause::ForLet(None), place);
 
-                let ascriptions: &[_] =
-                    irrefutable_pat.extra.as_deref().map(|extra| extra.ascriptions.as_slice())
-                        .unwrap_or_default();
+                let ascriptions: &[_] = irrefutable_pat
+                    .extra
+                    .as_deref()
+                    .map(|extra| extra.ascriptions.as_slice())
+                    .unwrap_or_default();
                 for thir::Ascription { annotation, variance: _ } in ascriptions {
                     let ty_source_info = self.source_info(annotation.span);
 
@@ -1762,10 +1763,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         mut start_block: BasicBlock,
         candidates: &mut [&mut Candidate<'tcx>],
     ) -> BasicBlock {
-        if let [first, ..] = candidates {
-            if first.false_edge_start_block.is_none() {
-                first.false_edge_start_block = Some(start_block);
-            }
+        if let [first, ..] = candidates
+            && first.false_edge_start_block.is_none()
+        {
+            first.false_edge_start_block = Some(start_block);
         }
 
         // Process a prefix of the candidates.
@@ -2303,7 +2304,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let branch_start = self.cfg.start_new_block();
                 // Recursively lower the rest of the match tree after the relevant outcome.
                 let branch_otherwise =
-                    self.match_candidates(span, scrutinee_span, branch_start, &mut *candidates);
+                    self.match_candidates(span, scrutinee_span, branch_start, &mut candidates);
 
                 // Link up the `otherwise` block of the subtree to `remainder_start`.
                 let source_info = self.source_info(span);
@@ -2794,6 +2795,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// will have type `&T`. The second local is a binding for occurrences of
     /// `var` in the arm body, which will have type `T`.
     #[instrument(skip(self), level = "debug")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn declare_binding(
         &mut self,
         source_info: SourceInfo,
@@ -2898,7 +2903,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     ) -> Option<BasicBlock> {
         let it = arms.iter().zip(built_match_tree.branches.iter());
         for (&arm_id, branch) in it {
-            let pat = cx.lower_pat(&*self.thir.arms[arm_id].pattern);
+            let pat = cx.lower_pat(&self.thir.arms[arm_id].pattern);
 
             // Peel off or-patterns if they exist.
             if let crate::rustc_pattern_analysis::rustc::Constructor::Or = pat.ctor() {

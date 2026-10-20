@@ -1,17 +1,17 @@
-use alloc::vec::Vec;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use core::fmt::Write;
 use core::iter;
 use core::ops::ControlFlow;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashSet;
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{Applicability, Diag, MultiSpan, pluralize, struct_span_code_err};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::{DefKind, Res};
-use crate::bug;
 use crate::rustc_middle::queries::TaggedQueryKey;
 use crate::rustc_middle::query::QueryCycle;
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
@@ -388,15 +388,8 @@ pub(crate) fn create_cycle_error<'tcx>(
     let is_all_def_kind = |def_kind| {
         // Trivial type alias and trait alias cycles consists of `type_of` and
         // `explicit_implied_clauses_of` queries, so we just check just these here.
-        frames.iter().all(|frame| match frame.tagged_key {
-            TaggedQueryKey::type_of(def_id)
-            | TaggedQueryKey::explicit_implied_clauses_of(def_id)
-                if tcx.def_kind(def_id) == def_kind =>
-            {
-                true
-            }
-            _ => false,
-        })
+        frames.iter().all(|frame| matches!(frame.tagged_key, TaggedQueryKey::type_of(def_id)
+            | TaggedQueryKey::explicit_implied_clauses_of(def_id) if tcx.def_kind(def_id) == def_kind))
     };
 
     let alias = if !nested {

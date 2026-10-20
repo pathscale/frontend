@@ -3,11 +3,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::rustc_abi::{VariantIdx, Variants};
@@ -81,10 +76,7 @@ fn variant_discriminants<'tcx>(
         }
         Variants::Multiple { variants, .. } => variants
             .iter_enumerated()
-            .filter_map(|(idx, layout)| {
-                (!layout.is_uninhabited())
-                    .then(|| ty.discriminant_for_variant(tcx, idx).unwrap().val)
-            })
+            .filter(|&(_idx, layout)| !layout.is_uninhabited()).map(|(idx, _layout)| ty.discriminant_for_variant(tcx, idx).unwrap().val)
             .collect(),
     }
 }

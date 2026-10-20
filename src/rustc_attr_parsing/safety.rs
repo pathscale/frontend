@@ -1,10 +1,10 @@
-use alloc::boxed::Box;
 use crate::rustc_ast::Safety;
 use crate::rustc_attr_ir::AttrPath;
 use crate::rustc_errors::{Diagnostic, MultiSpan};
 use crate::rustc_lint_defs::LintId;
 use crate::rustc_lint_defs::builtin::{UNSAFE_ATTR_OUTSIDE_UNSAFE, UNSAFE_CODE};
 use crate::rustc_span::Span;
+use alloc::boxed::Box;
 
 use crate::rustc_attr_parsing::attributes::AttributeSafety;
 use crate::rustc_attr_parsing::{AttributeParser, EmitAttribute, ShouldEmit, diagnostics};

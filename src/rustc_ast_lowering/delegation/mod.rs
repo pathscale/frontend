@@ -44,10 +44,6 @@ use alloc::vec::Vec;
 
 use core::iter;
 
-use ast::visit::Visitor;
-use generics::GenericsGenerationResult;
-use hir::HirId;
-use hir::def::Res;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_ast as ast;
 use crate::rustc_ast::*;
@@ -58,8 +54,14 @@ use crate::rustc_middle::ty::Asyncness;
 use crate::rustc_span::def_id::DefId;
 use crate::rustc_span::symbol::kw;
 use crate::rustc_span::{Ident, Span, Symbol, sym};
+use ast::visit::Visitor;
+use generics::GenericsGenerationResult;
+use hir::HirId;
+use hir::def::Res;
 
-use crate::rustc_ast_lowering::delegation::generics::{GenericsGenerationResults, GenericsPosition};
+use crate::rustc_ast_lowering::delegation::generics::{
+    GenericsGenerationResults, GenericsPosition,
+};
 use crate::rustc_ast_lowering::delegation::resolution::resolver::DelegationResolver;
 use crate::rustc_ast_lowering::delegation::resolution::{DelegationResolution, ParamInfo};
 use crate::rustc_ast_lowering::{
@@ -385,7 +387,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
         let new_path = match path {
             hir::QPath::Resolved(ty, path) => {
-                let mut new_path = path.clone();
+                let mut new_path = *path;
                 let len = new_path.segments.len();
 
                 new_path.segments = self.arena.alloc_from_iter(
@@ -395,7 +397,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         } else if idx + 1 == len {
                             self.process_segment(span, segment, &mut generics.child)
                         } else {
-                            segment.clone()
+                            *segment
                         }
                     }),
                 );
@@ -409,7 +411,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         let kind = hir::TyKind::Path(path);
 
                         let ty = match ty {
-                            Some(ty) => hir::Ty { kind, ..ty.clone() },
+                            Some(ty) => hir::Ty { kind, ..*ty },
                             None => hir::Ty { kind, hir_id: self.next_id(), span },
                         };
 
@@ -494,7 +496,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let infer_indices = result.generics.infer_indices();
         result.generics.into_hir_generics(self, span);
 
-        let mut segment = segment.clone();
+        let mut segment = *segment;
         let mut args_iter = result.generics.create_args_iterator();
 
         let new_args = segment

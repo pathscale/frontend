@@ -1,12 +1,12 @@
 use core::iter;
 use core::ops::ControlFlow;
 
+use crate::find_attr;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
-use crate::find_attr;
 use crate::rustc_hir::intravisit::{self, Visitor};
 use crate::rustc_middle::hir::nested_filter;
 use crate::rustc_middle::middle::privacy::{EffectiveVisibility, Level};
@@ -38,10 +38,9 @@ impl<'tcx> ExportableItemCollector<'tcx> {
 
     fn report_wrong_site(&self, def_id: LocalDefId) {
         let def_descr = self.tcx.def_descr(def_id.to_def_id());
-        self.tcx.dcx().emit_err(UnexportableItem::Item {
-            descr: &format!("{}", def_descr),
-            span: self.tcx.def_span(def_id),
-        });
+        self.tcx
+            .dcx()
+            .emit_err(UnexportableItem::Item { descr: def_descr, span: self.tcx.def_span(def_id) });
     }
 
     fn item_is_exportable(&self, def_id: LocalDefId) -> bool {
@@ -84,7 +83,8 @@ impl<'tcx> ExportableItemCollector<'tcx> {
         if find_attr!(self.tcx, def_id, ExportStable) {
             self.in_exportable_mod = true;
         }
-        let old_seen_exportable_in_mod = core::mem::replace(&mut self.seen_exportable_in_mod, false);
+        let old_seen_exportable_in_mod =
+            core::mem::replace(&mut self.seen_exportable_in_mod, false);
 
         intravisit::walk_item(self, item);
 
@@ -345,7 +345,7 @@ fn exportable_items_provider_local<'tcx>(tcx: TyCtxt<'tcx>, _: LocalCrate) -> &'
         validator.check();
     }
 
-    tcx.arena.alloc_from_iter(exportable_items.into_iter())
+    tcx.arena.alloc_from_iter(exportable_items)
 }
 
 struct ImplsOrderVisitor<'tcx> {

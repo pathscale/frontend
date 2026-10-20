@@ -1,8 +1,8 @@
 //! Characters and their corresponding confusables were collected from
 //! <https://www.unicode.org/Public/security/10.0.0/confusables.txt>
 
-use alloc::string::ToString;
 use crate::rustc_span::{BytePos, Pos, Span, kw};
+use alloc::string::ToString;
 
 use super::Lexer;
 use crate::rustc_parse::diagnostics::TokenSubstitution;

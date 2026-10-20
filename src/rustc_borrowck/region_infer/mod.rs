@@ -1,7 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -9,9 +8,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use alloc::collections::VecDeque;
-use core::fmt;
 use alloc::sync::Arc;
+use core::fmt;
 
+use crate::bug;
 use crate::rustc_data_structures::frozen::Frozen;
 use crate::rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use crate::rustc_data_structures::graph::scc::Sccs;
@@ -21,7 +21,6 @@ use crate::rustc_index::IndexVec;
 use crate::rustc_infer::infer::outlives::test_type_match;
 use crate::rustc_infer::infer::region_constraints::{GenericKind, VerifyBound, VerifyIfEq};
 use crate::rustc_infer::infer::{InferCtxt, NllRegionVariableOrigin};
-use crate::bug;
 use crate::rustc_middle::mir::{
     AnnotationSource, BasicBlock, Body, ConstraintCategory, Local, Location, ReturnConstraint,
     TerminatorKind,
@@ -36,7 +35,9 @@ use crate::rustc_span::{DUMMY_SP, Span};
 use tracing::{Level, debug, enabled, instrument, trace};
 
 use crate::rustc_borrowck::constraints::graph::NormalConstraintGraph;
-use crate::rustc_borrowck::constraints::{ConstraintSccIndex, OutlivesConstraint, OutlivesConstraintSet};
+use crate::rustc_borrowck::constraints::{
+    ConstraintSccIndex, OutlivesConstraint, OutlivesConstraintSet,
+};
 use crate::rustc_borrowck::dataflow::BorrowIndex;
 use crate::rustc_borrowck::diagnostics::{RegionErrorKind, RegionErrors, UniverseInfo};
 use crate::rustc_borrowck::handle_placeholders::{LoweredConstraints, RegionTracker};
@@ -1529,8 +1530,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
             // Upstream forced this closure inline with `#[inline(always)]`; attributes on
             // expressions are unstable, so the hint is left to the optimiser.
-            let mut handle_trace =
-            |sub, trace| {
+            let mut handle_trace = |sub, trace| {
                 if let Trace::NotVisited = context[sub] {
                     context[sub] = trace;
                     deque.push_back(sub);
@@ -1927,7 +1927,7 @@ impl<'tcx> BestBlame<'tcx> {
                     None
                 }
             })
-            .unwrap_or_else(|| ObligationCauseCode::Misc);
+            .unwrap_or(ObligationCauseCode::Misc);
 
         ObligationCause::new(self.constraint().span, CRATE_DEF_ID, cause_code.clone())
     }

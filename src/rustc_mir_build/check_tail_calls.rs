@@ -1,17 +1,18 @@
-use alloc::string::String;
-use alloc::borrow::ToOwned;
 use crate::rustc_abi::ExternAbi;
 use crate::rustc_errors::Applicability;
 use crate::rustc_hir::attrs::lang_items::LangItem;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::CRATE_DEF_ID;
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
-use crate::span_bug;
 use crate::rustc_middle::thir::visit::{self, Visitor};
 use crate::rustc_middle::thir::{BodyTy, Expr, ExprId, ExprKind, Thir};
 use crate::rustc_middle::ty::{self, Ty, TyCtxt};
 use crate::rustc_span::def_id::{DefId, LocalDefId};
 use crate::rustc_span::{ErrorGuaranteed, Span};
+use crate::span_bug;
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::string::ToString;
 
 pub(crate) fn check_tail_calls(tcx: TyCtxt<'_>, def: LocalDefId) -> Result<(), ErrorGuaranteed> {
     let (thir, expr) = tcx.thir_body(def)?;
@@ -237,8 +238,8 @@ impl<'tcx> TailCallCkVisitor<'_, 'tcx> {
             && matches!(self.tcx.def_kind(parent), DefKind::Trait)
             && let Some(method) = op_trait_as_method_name(self.tcx, parent)
         {
-            match args {
-                &[arg] => {
+            match *args {
+                [arg] => {
                     let arg = &self.thir[arg];
 
                     err.multipart_suggestion(
@@ -250,14 +251,14 @@ impl<'tcx> TailCallCkVisitor<'_, 'tcx> {
                         Applicability::MaybeIncorrect,
                     );
                 }
-                &[lhs, rhs] => {
+                [lhs, rhs] => {
                     let lhs = &self.thir[lhs];
                     let rhs = &self.thir[rhs];
 
                     err.multipart_suggestion(
                         "try using the method directly",
                         vec![
-                            (lhs.span.shrink_to_lo(), format!("(")),
+                            (lhs.span.shrink_to_lo(), "(".to_string()),
                             (lhs.span.between(rhs.span), format!(").{method}(")),
                             (rhs.span.between(expr.span.shrink_to_hi()), ")".to_owned()),
                         ],
@@ -431,7 +432,7 @@ impl<'tcx> TailCallCkVisitor<'_, 'tcx> {
         let err = self
             .tcx
             .dcx()
-            .struct_span_err(sp, format!("unsized arguments cannot be used in a tail call"))
+            .struct_span_err(sp, "unsized arguments cannot be used in a tail call".to_string())
             .with_note(format!("unsized argument of type `{arg_ty}`"))
             .emit();
 
@@ -441,7 +442,7 @@ impl<'tcx> TailCallCkVisitor<'_, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'a, 'tcx> for TailCallCkVisitor<'a, 'tcx> {
     fn thir(&self) -> &'a Thir<'tcx> {
-        &self.thir
+        self.thir
     }
 
     fn visit_expr(&mut self, expr: &'a Expr<'tcx>) {

@@ -148,6 +148,10 @@ where
 
     #[inline(always)]
     #[instrument(level = "debug", skip(self))]
+    #[expect(
+        clippy::type_complexity,
+        reason = "the memo table pairs source and destination states with the query answer"
+    )]
     fn answer_memo(
         &self,
         cache: &mut Map<
@@ -161,13 +165,17 @@ where
             answer.clone()
         } else {
             let answer = self.answer_impl(cache, src_state, dst_state);
-            if let Some(..) = cache.insert((src_state, dst_state), answer.clone()) {
+            if cache.insert((src_state, dst_state), answer.clone()).is_some() {
                 panic!("failed to correctly cache transmutability")
             }
             answer
         }
     }
 
+    #[expect(
+        clippy::type_complexity,
+        reason = "the memo table pairs source and destination states with the query answer"
+    )]
     fn answer_impl(
         &self,
         cache: &mut Map<

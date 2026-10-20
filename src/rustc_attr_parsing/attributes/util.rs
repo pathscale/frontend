@@ -26,7 +26,7 @@ pub fn parse_version(s: Symbol) -> Option<RustcVersion> {
 }
 
 pub fn is_builtin_attr(attr: &ast::AttrItem) -> bool {
-    attr.name().is_some_and(|name| is_builtin_attr_name(name))
+    attr.name().is_some_and(is_builtin_attr_name)
 }
 
 /// Parse a single integer.

@@ -54,19 +54,14 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_crate_store::CrateDepKind;
 use crate::rustc_crate_store::LinkagePreference::{self, RequireDynamic, RequireStatic};
 use crate::rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use crate::rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use crate::rustc_index::IndexVec;
-use crate::bug;
 use crate::rustc_middle::middle::dependency_format::{Dependencies, DependencyList, Linkage};
 use crate::rustc_middle::ty::TyCtxt;
 use crate::rustc_span::sym;

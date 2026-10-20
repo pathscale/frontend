@@ -70,20 +70,20 @@
 //! eof: [a $( a )* a b ·]
 //! ```
 
-use alloc::vec::Vec;
 use alloc::borrow::Cow;
+use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::fmt::Display;
 use core::ops::ControlFlow;
-use alloc::rc::Rc;
 
-pub(crate) use NamedMatch::*;
-pub(crate) use ParseResult::*;
 use crate::rustc_ast::token::{self, DocComment, NonterminalKind, Token, TokenKind};
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_errors::{Diag, ErrorGuaranteed};
-use crate::span_bug;
 use crate::rustc_parse::parser::{ParseNtResult, Parser, token_descr};
 use crate::rustc_span::{Ident, MacroRulesNormalizedIdent, Span};
+use crate::span_bug;
+pub(crate) use NamedMatch::*;
+pub(crate) use ParseResult::*;
 
 use crate::rustc_expand::mbe::macro_rules::Tracker;
 use crate::rustc_expand::mbe::{KleeneOp, TokenTree};

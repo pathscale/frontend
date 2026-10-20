@@ -1,7 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, which is why a
 // `std::` grep cannot see them and the attribute has to be flipped to find them.
 use crate::rustc_ast::ptr::P;
-use alloc::boxed::Box;
 use alloc::format;
 
 use alloc::sync::Arc;
@@ -28,6 +27,10 @@ use crate::rustc_ast_lowering::{
 
 impl<'hir> LoweringContext<'_, 'hir> {
     #[instrument(level = "trace", skip(self))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub(crate) fn lower_qpath(
         &mut self,
         id: NodeId,
@@ -300,7 +303,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         {
                             add_feature_diagnostics(
                                 &mut err,
-                                &self.tcx.sess,
+                                self.tcx.sess,
                                 sym::return_type_notation,
                             );
                         }

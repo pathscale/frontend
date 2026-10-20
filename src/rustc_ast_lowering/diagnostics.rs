@@ -4,15 +4,14 @@
 // and `#[derive(Subdiagnostic)]` expand to `format!`, `Vec`, `String` and `Box`, so searching the
 // source for the names says they are unused - and removing them on that evidence breaks the
 // build, which is how this comment came to be written.
-use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::rustc_errors::codes::*;
 use crate::rustc_errors::{DiagArgFromDisplay, DiagArgValue, DiagSymbolList, IntoDiagArg};
-use rustc_macros::{Diagnostic, Subdiagnostic};
 use crate::rustc_span::{Ident, Span, Symbol};
+use rustc_macros::{Diagnostic, Subdiagnostic};
 
 #[derive(Diagnostic)]
 #[diag("parenthesized type parameters may only be used with a `Fn` trait", code = E0214)]

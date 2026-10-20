@@ -2,10 +2,6 @@
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
 use crate::rustc_ast::ptr::P;
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -29,6 +25,10 @@ fn outer_normal_attr(normal: &P<ast::NormalAttr>, id: ast::AttrId, span: Span) -
     ast::Attribute { kind, id, style, span }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "returns the existing function components as an optional extraction result"
+)]
 fn extract_fn(
     item: &Annotatable,
 ) -> Option<(ast::Visibility, ast::FnSig, Ident, ast::Generics, Option<P<ast::Block>>)> {
@@ -101,8 +101,11 @@ pub(crate) fn expand_kernel(
     );
 
     let device_item = {
-        let mut item =
-            ecx.item(span, core::iter::once(rustc_offload_kernel.clone()).collect(), ast::ItemKind::Fn(device_fn));
+        let mut item = ecx.item(
+            span,
+            core::iter::once(rustc_offload_kernel.clone()).collect(),
+            ast::ItemKind::Fn(device_fn),
+        );
         item.vis = vis.clone();
         Annotatable::Item(item)
     };

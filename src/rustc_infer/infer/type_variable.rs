@@ -3,12 +3,12 @@ use core::cmp;
 use core::marker::PhantomData;
 use core::ops::Range;
 
+use crate::bug;
 use crate::rustc_data_structures::undo_log::Rollback;
 use crate::rustc_data_structures::{snapshot_vec as sv, unify as ut};
 use crate::rustc_hir::HirId;
 use crate::rustc_hir::def_id::DefId;
 use crate::rustc_index::IndexVec;
-use crate::bug;
 use crate::rustc_middle::ty::{self, Ty, TyVid};
 use crate::rustc_span::Span;
 use tracing::debug;

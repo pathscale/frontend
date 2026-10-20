@@ -1,27 +1,22 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::assert_matches;
 
-use hir::Node;
+use crate::find_attr;
 use crate::rustc_data_structures::fx::FxIndexSet;
 use crate::rustc_hir as hir;
 use crate::rustc_hir::def::DefKind;
 use crate::rustc_hir::def_id::{DefId, LocalDefId};
-use crate::find_attr;
 use crate::rustc_middle::ty::{
     self, GenericClauses, ImplTraitInTraitData, RegionExt, Ty, TyCtxt, TypeVisitable, TypeVisitor,
     Upcast,
 };
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{DUMMY_SP, Ident, Span};
+use hir::Node;
 use tracing::{debug, instrument, trace};
 
 use super::item_bounds::explicit_item_bounds_with_filter;
@@ -51,7 +46,7 @@ pub(super) fn clauses_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericClauses<'
         } else {
             result.clauses = tcx
                 .arena
-                .alloc_from_iter(result.clauses.into_iter().copied().chain(inferred_outlives_iter));
+                .alloc_from_iter(result.clauses.iter().copied().chain(inferred_outlives_iter));
         }
     }
 
@@ -428,11 +423,8 @@ fn const_evaluatable_clauses_of<'tcx>(
         let Some(local) = def_id.as_local() else { return false };
 
         let hir_id = tcx.local_def_id_to_hir_id(local);
-        let (_, parent_node) = tcx
-            .hir_parent_iter(hir_id)
-            .skip_while(|(_, n)| matches!(n, Node::ConstArg(..)))
-            .next()
-            .unwrap();
+        let (_, parent_node) =
+            tcx.hir_parent_iter(hir_id).find(|(_, n)| !matches!(n, Node::ConstArg(..))).unwrap();
         matches!(
             parent_node,
             Node::GenericParam(hir::GenericParam { kind: hir::GenericParamKind::Const { .. }, .. })
@@ -489,7 +481,7 @@ fn const_evaluatable_clauses_of<'tcx>(
         self_ty.instantiate_identity().skip_norm_wip().visit_with(&mut collector);
     }
 
-    if let Some(_) = tcx.hir_fn_sig_by_hir_id(hir_id) {
+    if tcx.hir_fn_sig_by_hir_id(hir_id).is_some() {
         debug!("visit fn sig");
         let fn_sig = tcx.fn_sig(def_id);
         let fn_sig = fn_sig.instantiate_identity().skip_norm_wip();
@@ -590,7 +582,7 @@ pub(super) fn explicit_clauses_of<'tcx>(
             // to #106994 is implemented.
             let filtered_clauses = parent_clauses
                 .clauses
-                .into_iter()
+                .iter()
                 .filter(|(clause, _)| {
                     if let ty::ClauseKind::ConstArgHasType(ct, _) = clause.kind().skip_binder() {
                         match ct.kind() {
@@ -1124,20 +1116,17 @@ pub(super) fn const_conditions<'tcx>(
     let mut bounds = Vec::new();
 
     for pred in generics.predicates {
-        match pred.kind {
-            hir::WherePredicateKind::BoundPredicate(bound_pred) => {
-                let ty = icx.lowerer().lower_ty_maybe_return_type_notation(bound_pred.bounded_ty);
-                let bound_vars = tcx.late_bound_vars(pred.hir_id);
-                icx.lowerer().lower_bounds(
-                    ty,
-                    bound_pred.bounds.iter(),
-                    &mut bounds,
-                    bound_vars,
-                    PredicateFilter::ConstIfConst,
-                    OverlappingAsssocItemConstraints::Allowed,
-                );
-            }
-            _ => {}
+        if let hir::WherePredicateKind::BoundPredicate(bound_pred) = pred.kind {
+            let ty = icx.lowerer().lower_ty_maybe_return_type_notation(bound_pred.bounded_ty);
+            let bound_vars = tcx.late_bound_vars(pred.hir_id);
+            icx.lowerer().lower_bounds(
+                ty,
+                bound_pred.bounds.iter(),
+                &mut bounds,
+                bound_vars,
+                PredicateFilter::ConstIfConst,
+                OverlappingAsssocItemConstraints::Allowed,
+            );
         }
     }
 

@@ -4,15 +4,14 @@
 //! Uses `TyEncoder`/`TyDecoder` to serialize `ty::Instance`. DefIds are
 //! encoded as (crate name, DefPath) pairs for stability.
 
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
-use eko::file as fs;
+use alloc::vec::Vec;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxHashMap;
 use crate::rustc_data_structures::sync::Lock;
 use crate::rustc_hir::def_id::{DefId, DefIndex, LOCAL_CRATE, StableCrateId};
-use crate::bug;
 use crate::rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::rustc_middle::mono::MonoItem;
 use crate::rustc_middle::ty::codec::{TyDecoder, TyEncoder};

@@ -240,6 +240,7 @@ impl Parse for Newtype {
                 ///
                 /// Prefer using `from_u32`.
                 #[inline]
+                #[allow(clippy::missing_safety_doc, reason = "the safety section above is emitted by this index macro and the nested expansion loses its documentation span")]
                 #vis const unsafe fn from_u32_unchecked(value: u32) -> Self {
                     // Still `unsafe fn`, so callers keep the contract; with a plain `u32` field
                     // nothing here is unsafe any more, and the `transmute` went with the pattern

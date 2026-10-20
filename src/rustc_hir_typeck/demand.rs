@@ -1,8 +1,6 @@
 // `#![no_std]`: these arrive with the standard prelude and name no path, so a `std::`
 // search cannot see them - and a `#[derive]` can use them without the name appearing
 // in this file at all, which is why they are not trimmed by inspection.
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -16,7 +14,9 @@ use crate::rustc_infer::infer::DefineOpaqueTypes;
 use crate::rustc_middle::ty::adjustment::AllowTwoPhase;
 use crate::rustc_middle::ty::error::{ExpectedFound, TypeError};
 use crate::rustc_middle::ty::print::with_no_trimmed_paths;
-use crate::rustc_middle::ty::{self, AssocItem, BottomUpFolder, Ty, TypeFoldable, TypeVisitableExt};
+use crate::rustc_middle::ty::{
+    self, AssocItem, BottomUpFolder, Ty, TypeFoldable, TypeVisitableExt,
+};
 use crate::rustc_middle::{bug, span_bug};
 use crate::rustc_span::{DUMMY_SP, Ident, Span, sym};
 use crate::rustc_trait_selection::infer::InferCtxtExt;
@@ -597,14 +597,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
         let mut parent_id = self.tcx.parent_hir_id(expr.hir_id);
         let mut parent;
-        'outer: loop {
+        'outer: while let hir::Node::Stmt(&hir::Stmt { kind: hir::StmtKind::Semi(p), .. })
+        | hir::Node::Block(&hir::Block { expr: Some(p), .. })
+        | hir::Node::Expr(p) = self.tcx.hir_node(parent_id)
+        {
             // Climb the HIR tree to see if the current `Expr` is part of a `break;` statement.
-            let (hir::Node::Stmt(&hir::Stmt { kind: hir::StmtKind::Semi(p), .. })
-            | hir::Node::Block(&hir::Block { expr: Some(p), .. })
-            | hir::Node::Expr(p)) = self.tcx.hir_node(parent_id)
-            else {
-                break;
-            };
             parent = p;
             parent_id = self.tcx.parent_hir_id(parent_id);
             let hir::ExprKind::Break(destination, _) = parent.kind else {
@@ -1120,7 +1117,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         checked_ty: Ty<'tcx>,
         hir_id: hir::HirId,
     ) -> Vec<AssocItem> {
-        let methods = self.probe_for_return_type_for_diagnostic(
+        self.probe_for_return_type_for_diagnostic(
             span,
             probe::Mode::MethodCall,
             expected,
@@ -1140,9 +1137,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // `as_mut`?
                 && find_attr!(self.tcx, m.def_id, RustcConversionSuggestion)
             },
-        );
-
-        methods
+        )
     }
 
     /// This function checks whether the method is not static and does not accept other parameters than `self`.
@@ -1324,7 +1319,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 };
                 maybe_emit_help(def_id, method.ident, args, CallableKind::Method)
             }
-            _ => return,
+            _ => (),
         }
     }
 }

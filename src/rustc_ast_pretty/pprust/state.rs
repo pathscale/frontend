@@ -108,7 +108,7 @@ fn split_block_comment_into_lines(text: &str, col: CharPos) -> Vec<String> {
 fn gather_comments(sm: &SourceMap, path: FileName, src: String) -> Vec<Comment> {
     let sm = SourceMap::for_text(sm.path_mapping().clone());
     let source_file = sm.new_source_file(path, src);
-    let text = Arc::clone(&(*source_file.src.as_ref().unwrap()));
+    let text = Arc::clone(source_file.src.as_ref().unwrap());
 
     let text: &str = text.as_str();
     let start_bpos = source_file.start_pos;
@@ -125,7 +125,9 @@ fn gather_comments(sm: &SourceMap, path: FileName, src: String) -> Vec<Comment> 
         pos += shebang_len;
     }
 
-    for token in crate::rustc_lexer::tokenize(&text[pos..], crate::rustc_lexer::FrontmatterAllowed::Yes) {
+    for token in
+        crate::rustc_lexer::tokenize(&text[pos..], crate::rustc_lexer::FrontmatterAllowed::Yes)
+    {
         let token_text = &text[pos..pos + token.len as usize];
         match token.kind {
             crate::rustc_lexer::TokenKind::Whitespace => {
@@ -241,6 +243,10 @@ const INDENT_UNIT: isize = 4;
 
 /// Requires you to pass an input filename and reader so that
 /// it can scan the input text for comments to copy forward.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves separately named inputs at the established compiler phase boundary"
+)]
 pub fn print_crate<'a>(
     sm: &'a SourceMap,
     krate: &ast::Crate,
@@ -593,7 +599,11 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
         self.comments_mut().and_then(|c| c.next())
     }
 
-    fn maybe_print_trailing_comment(&mut self, span: crate::rustc_span::Span, next_pos: Option<BytePos>) {
+    fn maybe_print_trailing_comment(
+        &mut self,
+        span: crate::rustc_span::Span,
+        next_pos: Option<BytePos>,
+    ) {
         if let Some(cmnts) = self.comments_mut()
             && let Some(cmnt) = cmnts.trailing_comment(span, next_pos)
         {
@@ -628,7 +638,7 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
             // Isolated, starts with #! and doesn't continue with `[`
             // See [crate::rustc_lexer::strip_shebang] and [gather_comments] from pprust/state.rs for details
             if cmnt.style == CommentStyle::Isolated
-                && cmnt.lines.first().map_or(false, |l| l.starts_with("#!"))
+                && cmnt.lines.first().is_some_and(|l| l.starts_with("#!"))
             {
                 let cmnt = self.next_comment().unwrap();
                 self.print_comment(cmnt);
@@ -653,13 +663,11 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
     ) -> bool {
         let mut printed = false;
         for attr in attrs {
-            if attr.style == kind {
-                if self.print_attribute_inline(attr, is_inline) {
-                    if is_inline {
-                        self.nbsp();
-                    }
-                    printed = true;
+            if attr.style == kind && self.print_attribute_inline(attr, is_inline) {
+                if is_inline {
+                    self.nbsp();
                 }
+                printed = true;
             }
         }
         if printed && trailing_hardbreak && !is_inline {
@@ -842,6 +850,10 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn print_mac_common(
         &mut self,
         header: Option<MacHeader<'_>>,
@@ -874,7 +886,7 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
                 self.word("{");
 
                 // Respect `Alone`, if provided, and print a space. Unless the list is empty.
-                let open_space = (open_spacing == None || open_spacing == Some(Spacing::Alone))
+                let open_space = (open_spacing.is_none() || open_spacing == Some(Spacing::Alone))
                     && !tts.is_empty();
                 if open_space {
                     self.space();
@@ -980,7 +992,12 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
         self.end(ib);
     }
 
-    fn bclose_maybe_open(&mut self, span: crate::rustc_span::Span, no_space: bool, cb: Option<BoxMarker>) {
+    fn bclose_maybe_open(
+        &mut self,
+        span: crate::rustc_span::Span,
+        no_space: bool,
+        cb: Option<BoxMarker>,
+    ) {
         let has_comment = self.maybe_print_comment(span.hi());
         if !no_space || has_comment {
             self.break_offset_if_not_bol(1, -INDENT_UNIT);
@@ -999,15 +1016,14 @@ pub trait PrintState<'a>: core::ops::Deref<Target = pp::Printer> + core::ops::De
     fn break_offset_if_not_bol(&mut self, n: usize, off: isize) {
         if !self.is_beginning_of_line() {
             self.break_offset(n, off)
-        } else if off != 0 {
-            if let Some(last_token) = self.last_token_still_buffered() {
-                if last_token.is_hardbreak_tok() {
-                    // We do something pretty sketchy here: tuck the nonzero
-                    // offset-adjustment we were going to deposit along with the
-                    // break into the previous hardbreak.
-                    self.replace_last_token_still_buffered(pp::Printer::hardbreak_tok_offset(off));
-                }
-            }
+        } else if off != 0
+            && let Some(last_token) = self.last_token_still_buffered()
+            && last_token.is_hardbreak_tok()
+        {
+            // We do something pretty sketchy here: tuck the nonzero
+            // offset-adjustment we were going to deposit along with the
+            // break into the previous hardbreak.
+            self.replace_last_token_still_buffered(pp::Printer::hardbreak_tok_offset(off));
         }
     }
 
@@ -1229,6 +1245,12 @@ impl<'a> PrintState<'a> for State<'a> {
                 self.word(")");
             }
         }
+    }
+}
+
+impl<'a> Default for State<'a> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1687,9 +1709,7 @@ impl<'a> State<'a> {
         );
     }
 
-    fn inline_asm_template_and_operands<'asm>(
-        asm: &'asm ast::InlineAsm,
-    ) -> (String, Vec<&'asm InlineAsmOperand>) {
+    fn inline_asm_template_and_operands(asm: &ast::InlineAsm) -> (String, Vec<&InlineAsmOperand>) {
         fn is_explicit_reg(op: &InlineAsmOperand) -> bool {
             match op {
                 InlineAsmOperand::In { reg, .. }
@@ -2297,9 +2317,9 @@ impl<'a> State<'a> {
 
     fn print_fn_header_info(&mut self, header: ast::FnHeader) {
         self.print_constness(header.constness);
-        header
-            .coroutine_marker
-            .map(|coroutine_marker| self.print_coroutine_marker(coroutine_marker));
+        if let Some(coroutine_marker) = header.coroutine_marker {
+            self.print_coroutine_marker(coroutine_marker)
+        }
         self.print_safety(header.safety);
 
         match header.ext {

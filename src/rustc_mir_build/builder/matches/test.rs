@@ -6,13 +6,12 @@
 // the candidates based on the result.
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::sync::Arc;
 
+use crate::bug;
 use crate::rustc_data_structures::fx::FxIndexMap;
 use crate::rustc_hir::RangeEnd;
 use crate::rustc_hir::attrs::lang_items::LangItem;
-use crate::bug;
 use crate::rustc_middle::mir::*;
 use crate::rustc_middle::ty::util::IntTypeExt;
 use crate::rustc_middle::ty::{self, GenericArg, Ty, TyCtxt};
@@ -64,6 +63,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 
     #[instrument(skip(self, target_blocks, place), level = "debug")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub(super) fn perform_test(
         &mut self,
         match_start_span: Span,
@@ -192,35 +195,28 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                 let mut actual_value_place = place;
 
-                match value.ty.kind() {
-                    &ty::Pat(base, _) => {
-                        assert!(base.is_trivially_pure_clone_copy());
+                if let &ty::Pat(base, _) = value.ty.kind() {
+                    assert!(base.is_trivially_pure_clone_copy());
 
-                        let transmuted_place = self.temp(base, test.span);
-                        self.cfg.push_assign(
-                            block,
-                            self.source_info(scrutinee_span),
-                            transmuted_place,
-                            Rvalue::Cast(
-                                CastKind::Transmute,
-                                Operand::Copy(actual_value_place),
-                                base,
-                            ),
-                        );
+                    let transmuted_place = self.temp(base, test.span);
+                    self.cfg.push_assign(
+                        block,
+                        self.source_info(scrutinee_span),
+                        transmuted_place,
+                        Rvalue::Cast(CastKind::Transmute, Operand::Copy(actual_value_place), base),
+                    );
 
-                        let transmuted_expect = self.temp(base, test.span);
-                        self.cfg.push_assign(
-                            block,
-                            self.source_info(test.span),
-                            transmuted_expect,
-                            Rvalue::Cast(CastKind::Transmute, expected_value_operand, base),
-                        );
+                    let transmuted_expect = self.temp(base, test.span);
+                    self.cfg.push_assign(
+                        block,
+                        self.source_info(test.span),
+                        transmuted_expect,
+                        Rvalue::Cast(CastKind::Transmute, expected_value_operand, base),
+                    );
 
-                        actual_value_place = transmuted_place;
-                        expected_value_operand = Operand::Copy(transmuted_expect);
-                        expected_value_ty = base;
-                    }
-                    _ => {}
+                    actual_value_place = transmuted_place;
+                    expected_value_operand = Operand::Copy(transmuted_expect);
+                    expected_value_ty = base;
                 }
 
                 assert!(expected_value_ty.is_scalar());
@@ -333,6 +329,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
     /// Perform `let temp = <ty as Deref>::deref(&place)`.
     /// or `let temp = <ty as DerefMut>::deref_mut(&mut place)`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     pub(super) fn call_deref(
         &mut self,
         block: BasicBlock,
@@ -383,6 +383,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 
     /// Compare using the provided built-in comparison operator
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves separately named inputs at the established compiler phase boundary"
+    )]
     fn compare(
         &mut self,
         block: BasicBlock,
