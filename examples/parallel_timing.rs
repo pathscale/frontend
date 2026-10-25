@@ -30,7 +30,9 @@
 //! file's first errors and stops, because that is a defect in a unit template to fix, not
 //! something to time around.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(bench_system)]
+use std::alloc::System;
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
@@ -324,9 +326,11 @@ unsafe impl GlobalAlloc for Counting {
 }
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
-/// The allocator underneath the counting one: the system's, or mimalloc when built with
-/// `RUSTFLAGS="--cfg bench_mimalloc"`, to see what a caller's choice of allocator is worth.
-#[cfg(not(bench_mimalloc))]
+/// The allocator underneath the counting one: ps-rusty_alloc, or mimalloc when built with
+/// `RUSTFLAGS="--cfg bench_mimalloc"`, or the system allocator with `--cfg bench_system`.
+#[cfg(not(any(bench_mimalloc, bench_system)))]
+static INNER: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
+#[cfg(bench_system)]
 static INNER: System = System;
 #[cfg(bench_mimalloc)]
 static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;

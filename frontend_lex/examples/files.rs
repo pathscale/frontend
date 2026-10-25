@@ -9,7 +9,9 @@
 //!   live heap during the pass, the bytes allocated, and the bytes the finished files retain,
 //!   each per MB of source.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(bench_system)]
+use std::alloc::System;
+use std::alloc::{GlobalAlloc, Layout};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -19,8 +21,15 @@ use frontend_lex::{LexedFile, Options};
 use frontend_symbol::Interner;
 use frontend_symbol::edition::Edition;
 
-/// The system allocator, counting live, peak live and total allocated bytes.
+/// ps-rusty_alloc (system with `--cfg bench_system`, mimalloc with `--cfg bench_mimalloc`), counting live, peak live and total allocated bytes.
 struct Counting;
+
+#[cfg(not(any(bench_system, bench_mimalloc)))]
+static INNER: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
+#[cfg(bench_system)]
+static INNER: System = System;
+#[cfg(bench_mimalloc)]
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
@@ -32,19 +41,19 @@ fn grew(by: usize) {
     PEAK.fetch_max(live, Relaxed);
 }
 
-// SAFETY: forwards every call to `System` unchanged; the counters are side effects only.
+// SAFETY: forwards every call to `INNER` unchanged; the counters are side effects only.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         grew(layout.size());
-        unsafe { System.alloc(layout) }
+        unsafe { INNER.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         grew(layout.size());
-        unsafe { System.alloc_zeroed(layout) }
+        unsafe { INNER.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         LIVE.fetch_sub(layout.size(), Relaxed);
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { INNER.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if new_size >= layout.size() {
@@ -52,7 +61,7 @@ unsafe impl GlobalAlloc for Counting {
         } else {
             LIVE.fetch_sub(layout.size() - new_size, Relaxed);
         }
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { INNER.realloc(ptr, layout, new_size) }
     }
 }
 

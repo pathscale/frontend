@@ -16,6 +16,7 @@ fn main() {
     // These inherited compiler switches are caller-supplied rather than Cargo features.
     println!("cargo::rustc-check-cfg=cfg(bootstrap)");
     println!("cargo::rustc-check-cfg=cfg(bench_mimalloc)");
+    println!("cargo::rustc-check-cfg=cfg(bench_system)");
     println!(
         "cargo::rustc-check-cfg=cfg(feature, values(\"no_simd\", \"randomize\", \"rustc_randomized_layouts\"))"
     );

@@ -20,7 +20,7 @@
 //! "item sema", which lists its top queries like every other stage.
 //!
 //! `ONLY=clean|large` runs one corpus. `TOP=N` lists N queries per stage (default 3).
-//! The counting allocator delegates to mimalloc.
+//! The counting allocator delegates to ps-rusty_alloc (mimalloc with `--cfg bench_mimalloc`).
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::Arc;
@@ -31,6 +31,10 @@ use frontend::frontend_facts::check_shared_source_with_width;
 use frontend::rustc_data_structures::stage_timing;
 
 struct Counting;
+/// The backing allocator: ps-rusty_alloc, or mimalloc with `RUSTFLAGS="--cfg bench_mimalloc"`.
+#[cfg(not(bench_mimalloc))]
+static INNER: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
+#[cfg(bench_mimalloc)]
 static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCS: AtomicU64 = AtomicU64::new(0);

@@ -26,3 +26,10 @@ unicode-properties = { version = "0.1.4", default-features = false, features = [
 # The chunk benchmark's pool: chunks and prescan segments as `par_for` pieces.
 nagoya = "^0.1.14"
 ps-st3 = { version = "^0.6", default-features = false, features = ["fanout"] }
+# The benchmark's backing allocator: ps-rusty_alloc by default; `--cfg bench_system` or
+# `--cfg bench_mimalloc` select the others for comparison.
+rusty_alloc = { package = "ps-rusty_alloc", version = "2" }
+mimalloc = { version = "^0.1", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(bench_system)", "cfg(bench_mimalloc)"] }

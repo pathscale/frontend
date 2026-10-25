@@ -8,7 +8,7 @@
 //! are left out of a directory workload and counted, so both builds read the same bytes.
 //! `ONLY=clean|large|dirs` runs one of them.
 //! `WIDTH=N` sets the session width (default 1); files are visited serially.
-//! The counting allocator delegates to mimalloc.
+//! The counting allocator delegates to ps-rusty_alloc (mimalloc with `--cfg bench_mimalloc`).
 //!
 //! Each round parses every file of the workload once with `frontend_facts::syntax::parses`, on
 //! this thread. One untimed round comes first, and one more, untimed, counts allocations.
@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 struct Counting;
+/// The backing allocator: ps-rusty_alloc, or mimalloc with `RUSTFLAGS="--cfg bench_mimalloc"`.
+#[cfg(not(bench_mimalloc))]
+static INNER: rusty_alloc::RustyAlloc = rusty_alloc::RustyAlloc;
+#[cfg(bench_mimalloc)]
 static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
