@@ -89,7 +89,8 @@ pub(super) fn plan_segments(
     }
     let useful = pool_width.saturating_mul(4).max(1);
     let remaining = eof.saturating_sub(start) as usize;
-    let target = 256usize.max(remaining.div_ceil(useful));
+    let min_segment = sync::min_segment_tokens();
+    let target = min_segment.max(remaining.div_ceil(useful));
     let mut output = Vec::new();
     let mut start_attr =
         cuts.iter().position(|&cut| cut == start).map_or(initial_attr, |index| attrs[index]);
@@ -104,7 +105,7 @@ pub(super) fn plan_segments(
             let hi = tape.token(end.saturating_sub(1) as usize).hi;
             if hi.saturating_sub(lo) > 0x7ffe {
                 if let Some((prev_end, prev_attr)) = selected
-                    && prev_end.saturating_sub(start) >= 256
+                    && prev_end.saturating_sub(start) as usize >= min_segment
                 {
                     output.push(PlannedSegment {
                         start,
@@ -124,7 +125,7 @@ pub(super) fn plan_segments(
             }
         }
         if let Some((end, end_attr)) = selected {
-            if end.saturating_sub(start) >= 256 {
+            if end.saturating_sub(start) as usize >= min_segment {
                 output.push(PlannedSegment {
                     start,
                     end,
@@ -338,6 +339,11 @@ impl<'a> Parser<'a> {
         {
             return None;
         }
+        if let Some(eof) = self.token_cursor.eof_index()
+            && (eof as usize) < sync::min_file_tokens()
+        {
+            return None;
+        }
         if let Some(tape) = self.token_cursor.lexed_tape() {
             tape.prepare_parallel_symbols();
         }
@@ -346,6 +352,9 @@ impl<'a> Parser<'a> {
         let original = with_session_globals(|globals| {
             globals.can_share_for_parse().then(|| globals.share_for_parse())
         })?;
+        if !sync::speculation_allowed() {
+            return None;
+        }
         crate::rustc_parse::record_parallel_attempt();
         let (fork, baseline) = original.fork_for_parse();
         let fork = Arc::new(fork);
@@ -476,6 +485,7 @@ impl<'a> Parser<'a> {
         })
         .flatten();
         let Some(candidate) = candidate else {
+            sync::speculation_outcome(false);
             crate::rustc_parse::record_parallel_retry();
             return None;
         };
@@ -483,6 +493,7 @@ impl<'a> Parser<'a> {
         if self.psess.attr_id_generator.position() != attr_start
             || !original.commit_parse_spans(&fork, baseline)
         {
+            sync::speculation_outcome(false);
             crate::rustc_parse::record_parallel_retry();
             return None;
         }
@@ -491,6 +502,7 @@ impl<'a> Parser<'a> {
             self.psess.append_parse_effects(effects);
         }
         candidate.state.install(self);
+        sync::speculation_outcome(true);
         crate::rustc_parse::record_parallel_commit();
         Some(candidate.krate)
     }
@@ -533,6 +545,9 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         if bytes > 0x7ffe || !source_span(open) || !source_span(close) {
+            return Ok(None);
+        }
+        if (inside_bumps as usize) < sync::min_body_tokens() {
             return Ok(None);
         }
         let entry_bumps = self.num_bump_calls;

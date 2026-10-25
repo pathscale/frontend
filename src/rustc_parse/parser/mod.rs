@@ -1646,7 +1646,14 @@ impl<'a> Parser<'a> {
                 // delimited sequence. This is a perf win when dealing with
                 // declarative macros that pass large `tt` fragments through
                 // multiple rules, as seen in the uom-0.37.0 crate.
+                // The skipped tokens still count as bumps, so `num_bump_calls` means the same in
+                // both modes and owned jobs can predict it from token counts alone.
+                let before = self.token_cursor.next_index();
                 self.token_cursor.bump_to_end();
+                if let (Some(before), Some(after)) = (before, self.token_cursor.next_index()) {
+                    self.num_bump_calls =
+                        self.num_bump_calls.wrapping_add(after.saturating_sub(before));
+                }
                 self.bump();
                 debug_assert_eq!(self.token_cursor.depth(), target_depth);
             } else {

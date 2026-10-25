@@ -2968,6 +2968,7 @@ fn r24_on_demand_parallel_bodies_match_serial_ast() {
 
     // Set the width before creating globals or sessions so all shared parse
     // state is synchronized. Owned body jobs use the existing pool boundary.
+    crate::rustc_data_structures::sync::set_parse_thresholds(0, 0, 256);
     let _mode = enter_session_width(4);
     create_default_session_globals_then(|| {
         for source in [
@@ -3011,6 +3012,7 @@ fn r24_on_demand_parallel_bodies_match_serial_ast() {
 #[test]
 fn r24_on_demand_parallel_segments_match_serial_ast() {
     let _metrics = PARSE_METRICS_TEST_LOCK.lock();
+    crate::rustc_data_structures::sync::set_parse_thresholds(0, 0, 256);
     let _mode = crate::rustc_data_structures::sync::enter_session_width(4);
     create_default_session_globals_then(|| {
         let mut many = String::new();
@@ -3110,6 +3112,7 @@ fn r24_on_demand_parallel_segments_match_serial_ast() {
 #[cfg(feature = "parallel")]
 #[test]
 fn r25_segment_diagnostic_retries_before_guard_construction() {
+    crate::rustc_data_structures::sync::set_parse_thresholds(0, 0, 256);
     let _mode = crate::rustc_data_structures::sync::enter_session_width(4);
     create_default_session_globals_then(|| {
         let mut source = String::new();

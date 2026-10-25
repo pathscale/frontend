@@ -201,3 +201,67 @@ pub(crate) fn resume(payload: Payload, message: Option<alloc::string::String>) -
     }
     std::panic::resume_unwind(payload)
 }
+
+// Measured on a 4-core box: below these sizes the fixed cost of a speculative attempt (forking
+// the span tables, one owned session and parser state per job, the merge) exceeds what the jobs
+// save, and each refused attempt parses the file twice. `set_parse_thresholds(0, 0, 256)`
+// restores unconditional speculation for tests and oracles.
+const DEFAULT_FILE_TOKENS: usize = 20_000;
+const DEFAULT_BODY_TOKENS: usize = 1_000;
+const DEFAULT_SEGMENT_TOKENS: usize = 1_024;
+static MIN_FILE_TOKENS: AtomicUsize = AtomicUsize::new(DEFAULT_FILE_TOKENS);
+static MIN_BODY_TOKENS: AtomicUsize = AtomicUsize::new(DEFAULT_BODY_TOKENS);
+static MIN_SEGMENT_TOKENS: AtomicUsize = AtomicUsize::new(DEFAULT_SEGMENT_TOKENS);
+static REFUSED_STREAK: AtomicUsize = AtomicUsize::new(0);
+static SKIP_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Tune when speculative owned parsing is worth its fixed cost: the fewest tokens a file needs
+/// before a parallel attempt, the fewest a deferred body needs, and the fewest a top-level
+/// segment needs. For benchmarks; the defaults are the shipped thresholds.
+pub fn set_parse_thresholds(file: usize, body: usize, segment: usize) {
+    MIN_FILE_TOKENS.store(file, Ordering::Relaxed);
+    MIN_BODY_TOKENS.store(body, Ordering::Relaxed);
+    MIN_SEGMENT_TOKENS.store(segment, Ordering::Relaxed);
+}
+
+pub(crate) fn min_file_tokens() -> usize {
+    MIN_FILE_TOKENS.load(Ordering::Relaxed)
+}
+pub(crate) fn min_body_tokens() -> usize {
+    MIN_BODY_TOKENS.load(Ordering::Relaxed)
+}
+pub(crate) fn min_segment_tokens() -> usize {
+    MIN_SEGMENT_TOKENS.load(Ordering::Relaxed)
+}
+
+/// Back off after refused attempts: a refused attempt costs a second, serial parse, so after `n`
+/// consecutive refusals the next `2^n` attempts (at most 64) are not made. A commit resets it.
+/// Only active with the shipped thresholds; zero thresholds mean unconditional speculation.
+pub(crate) fn speculation_allowed() -> bool {
+    if MIN_FILE_TOKENS.load(Ordering::Relaxed) == 0 {
+        return true;
+    }
+    let mut skip = SKIP_ATTEMPTS.load(Ordering::Relaxed);
+    while skip > 0 {
+        match SKIP_ATTEMPTS.compare_exchange_weak(
+            skip,
+            skip - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return false,
+            Err(seen) => skip = seen,
+        }
+    }
+    true
+}
+
+/// Record whether an attempt committed, for [`speculation_allowed`].
+pub(crate) fn speculation_outcome(committed: bool) {
+    if committed {
+        REFUSED_STREAK.store(0, Ordering::Relaxed);
+    } else {
+        let streak = (REFUSED_STREAK.fetch_add(1, Ordering::Relaxed) + 1).min(6);
+        SKIP_ATTEMPTS.store(1 << streak, Ordering::Relaxed);
+    }
+}

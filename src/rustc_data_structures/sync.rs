@@ -46,9 +46,12 @@ pub use self::mode::{
 };
 pub use self::owned_stage::run_owned_stage;
 #[cfg(feature = "parallel")]
-pub use self::pool::set_parallel_executor;
+pub(crate) use self::pool::{
+    min_body_tokens, min_file_tokens, min_segment_tokens, parse_pool_width, retry_parse_serial,
+    speculate_parse, speculation_allowed, speculation_outcome,
+};
 #[cfg(feature = "parallel")]
-pub(crate) use self::pool::{parse_pool_width, retry_parse_serial, speculate_parse};
+pub use self::pool::{set_parallel_executor, set_parse_thresholds};
 pub use self::stage::{
     Chain, ReadySlot, Slots, StageScope, cost, run_stage, run_stage_weighted, stages,
 };

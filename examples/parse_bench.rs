@@ -131,9 +131,21 @@ fn bench(label: &str, files: &[String], rounds: usize) {
     ms.sort_by(f64::total_cmp);
     ALLOCS.store(0, Relaxed);
     ALLOC_BYTES.store(0, Relaxed);
+    frontend::rustc_parse::reset_fast_path_metrics();
     COUNTING.store(true, Relaxed);
     parse_all(files);
     COUNTING.store(false, Relaxed);
+    let m = frontend::rustc_parse::fast_path_metrics();
+    println!(
+        "  par attempts {} commits {} retries {} body_jobs {} seg_jobs {} seg_tokens {} seg_bytes {}",
+        m.parallel_attempts,
+        m.parallel_commits,
+        m.parallel_retries,
+        m.parallel_body_jobs,
+        m.parallel_segment_jobs,
+        m.parallel_segment_tokens,
+        m.parallel_segment_bytes
+    );
     let median = ms[ms.len() / 2];
     println!(
         "{label:<6} {:>4} files {mb:>6.2} MB  median {median:>8.2} ms {:>6.1} MB/s  best {:>8.2} ms {:>6.1} MB/s  {:>9} allocs {:>7.1} MB alloc",
@@ -154,6 +166,18 @@ fn main() {
         .unwrap_or(1);
     assert!(width > 0, "WIDTH must be a positive integer");
     let _session_width = frontend::rustc_data_structures::sync::enter_session_width(width);
+    #[cfg(feature = "parallel")]
+    let knob = |name: &str, default: usize| -> usize {
+        std::env::var(name)
+            .ok()
+            .map_or(default, |v| v.parse().expect("threshold must be an integer"))
+    };
+    #[cfg(feature = "parallel")]
+    if ["PAR_FILE", "PAR_BODY", "PAR_SEG"].iter().any(|k| std::env::var_os(k).is_some()) {
+        let (file, body, segment) =
+            (knob("PAR_FILE", 0), knob("PAR_BODY", 0), knob("PAR_SEG", 256));
+        frontend::rustc_data_structures::sync::set_parse_thresholds(file, body, segment);
+    }
     let mut args = std::env::args().skip(1);
     let rounds: usize = args.next().and_then(|n| n.parse().ok()).unwrap_or(15);
     let dirs: Vec<String> = args.collect();

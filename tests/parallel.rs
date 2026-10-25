@@ -149,6 +149,8 @@ struct Answers {
 
 fn answers(width: usize) -> Answers {
     frontend::unwind_janky::install_catcher(catcher);
+    #[cfg(feature = "parallel")]
+    frontend::rustc_data_structures::sync::set_parse_thresholds(0, 0, 256);
     let inputs = inputs();
     Answers {
         checked: inputs.iter().map(|s| check_source_with_width("parallel", s, width)).collect(),

@@ -28,6 +28,8 @@ fn catcher(f: &mut dyn FnMut()) -> Result<(), frontend::unwind_janky::Payload> {
 
 fn main() {
     frontend::unwind_janky::install_catcher(catcher);
+    #[cfg(feature = "parallel")]
+    frontend::rustc_data_structures::sync::set_parse_thresholds(0, 0, 256);
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let expected = info
